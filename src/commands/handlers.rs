@@ -160,7 +160,7 @@ fn handle_remote_status(
     progress: &dyn ProgressSink,
     output: OutputMode,
 ) -> Result<String, CommandError> {
-    if request.all || !request.repo_filters.is_empty() {
+    if request.all || request.changed || !request.repo_filters.is_empty() {
         return handle_global_remote_status(request, environment, services, progress, output);
     }
 
@@ -187,10 +187,18 @@ fn handle_global_remote_status(
 
     for repository in repositories {
         progress.status(&format!("Checking {}…", repository.key));
+        let result = global_remote_status_for_repository(&repository.root, environment, services)
+            .map_err(|error| error.to_string());
+        if request.changed
+            && result
+                .as_ref()
+                .is_ok_and(|report| !status_report_has_changes(report))
+        {
+            continue;
+        }
         entries.push(GlobalStatusEntry {
-            root: repository.root.clone(),
-            result: global_remote_status_for_repository(&repository.root, environment, services)
-                .map_err(|error| error.to_string()),
+            display_root: display_path(&repository.root, environment),
+            result,
         });
     }
 
@@ -207,6 +215,25 @@ fn global_remote_status_for_repository(
     let context = RepositoryContext::discover(&environment)?;
     let workspace = services.status_workspace_facts(&context)?;
     Ok(services.status_report(&context, workspace)?)
+}
+
+fn status_report_has_changes(report: &StatusReport) -> bool {
+    report.remotes.iter().any(|remote| {
+        remote.comparison.state != domain::StatusState::UpToDate || remote.local_ahead_by > 0
+    })
+}
+
+fn display_path(path: &Path, environment: &RuntimeEnvironment) -> String {
+    if let Some(home) = environment.home_dir() {
+        if path == home {
+            return "~".to_owned();
+        }
+        if let Ok(relative) = path.strip_prefix(home) {
+            return format!("~/{}", relative.display());
+        }
+    }
+
+    path.display().to_string()
 }
 
 fn handle_work(

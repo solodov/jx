@@ -40,6 +40,13 @@ impl RuntimeEnvironment {
         }
     }
 
+    /// Home directory from the captured environment, used only for display shortening.
+    pub fn home_dir(&self) -> Option<&Path> {
+        self.variable("HOME")
+            .filter(|home| !home.is_empty())
+            .map(Path::new)
+    }
+
     pub(super) fn variable(&self, name: &str) -> Option<&str> {
         self.variables.get(name).map(String::as_str)
     }

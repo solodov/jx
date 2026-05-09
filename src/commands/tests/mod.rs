@@ -1103,11 +1103,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!(
-            "{} remote: origin (\x1b]8;;https://github.com/example-owner/alpha/tree/main\x1b\\ssh://git@github.com/example-owner/alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n{} remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n",
-            alpha.display(),
-            beta.display()
-        )
+        "~/projects/alpha remote: origin (\x1b]8;;https://github.com/example-owner/alpha/tree/main\x1b\\ssh://git@github.com/example-owner/alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n~/projects/beta remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n"
     );
 }
 
@@ -1156,10 +1152,54 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!(
-            "{} remote: origin (\x1b]8;;https://github.com/example-owner/api-alpha/tree/main\x1b\\ssh://git@github.com/example-owner/api-alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n",
-            alpha.display()
-        )
+        "~/projects/api-alpha remote: origin (\x1b]8;;https://github.com/example-owner/api-alpha/tree/main\x1b\\ssh://git@github.com/example-owner/api-alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+    );
+}
+
+#[test]
+fn remote_status_changed_omits_up_to_date_repositories() {
+    // Verifies: --changed keeps global status focused on repos with local or remote deltas.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let changed = workspace.create_jj_workspace("projects/changed");
+    let clean = workspace.create_jj_workspace("projects/clean");
+    TestWorkspace::write_git_config_at(
+        &changed,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/changed.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &clean,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/clean.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        clean_status_repos: vec!["clean".to_owned()],
+        ..FakeServices::default()
+    };
+
+    let result =
+        run_with_args_and_services(["jx", "remote-status", "-a", "-c"], &environment, &services)
+            .expect("changed global remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "~/projects/changed remote: origin (\x1b]8;;https://github.com/example-owner/changed/tree/main\x1b\\ssh://git@github.com/example-owner/changed.git\x1b]8;;\x1b\\), 3 commits ahead\n"
     );
 }
 
@@ -1178,7 +1218,7 @@ path = "{repo}"
 "#,
     );
     let ok = workspace.create_jj_workspace("projects/ok");
-    let missing = workspace.create_jj_workspace("projects/missing-origin");
+    let _missing = workspace.create_jj_workspace("projects/missing-origin");
     TestWorkspace::write_git_config_at(
         &ok,
         r#"
@@ -1198,11 +1238,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!(
-            "{} error: The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n{} remote: origin (\x1b]8;;https://github.com/example-owner/ok/tree/main\x1b\\ssh://git@github.com/example-owner/ok.git\x1b]8;;\x1b\\), 3 commits ahead\n",
-            missing.display(),
-            ok.display()
-        )
+        "~/projects/missing-origin error: The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n~/projects/ok remote: origin (\x1b]8;;https://github.com/example-owner/ok/tree/main\x1b\\ssh://git@github.com/example-owner/ok.git\x1b]8;;\x1b\\), 3 commits ahead\n"
     );
 }
 
@@ -2748,6 +2784,7 @@ struct FakeServices {
     check: CheckReport,
     status: StatusReport,
     status_uses_context_remotes: bool,
+    clean_status_repos: Vec<String>,
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
@@ -2832,6 +2869,7 @@ impl Default for FakeServices {
                 }],
             },
             status_uses_context_remotes: false,
+            clean_status_repos: Vec::new(),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -3158,6 +3196,20 @@ impl CommandServices for FakeServices {
                     remote.url = context_remote.url.clone();
                     remote.github_url = context_remote.github.https_url();
                 }
+            }
+        }
+        if self
+            .clean_status_repos
+            .iter()
+            .any(|repo| repo == &context.origin.github.name)
+        {
+            for remote in &mut status.remotes {
+                remote.local_ahead_by = 0;
+                remote.comparison = StatusComparison {
+                    state: StatusState::UpToDate,
+                    github_ahead_by: 0,
+                    github_behind_by: 0,
+                };
             }
         }
         Ok(status)

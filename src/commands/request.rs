@@ -86,6 +86,7 @@ pub(super) struct ShellInitRequest {
 pub(super) struct RemoteStatusRequest {
     pub(super) all: bool,
     pub(super) repo_filters: Vec<String>,
+    pub(super) changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +128,7 @@ impl CommandRequest {
                 Ok(Self::RemoteStatus(RemoteStatusRequest {
                     all: matches.get_flag("all"),
                     repo_filters: repo_filters(matches),
+                    changed: matches.get_flag("changed"),
                 }))
             }
             Some(("fetch" | "f", _)) => Ok(Self::Workflow {
@@ -457,7 +459,8 @@ pub(super) fn cli() -> ClapCommand {
                 .visible_alias("rs")
                 .about("Compare local remote trunks with GitHub")
                 .arg(remote_status_all_arg())
-                .arg(remote_status_repo_arg()),
+                .arg(remote_status_repo_arg())
+                .arg(remote_status_changed_arg()),
         )
         .subcommand(
             ClapCommand::new("fetch")
@@ -577,6 +580,7 @@ fn source_arg() -> Arg {
 
 fn remote_status_all_arg() -> Arg {
     Arg::new("all")
+        .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
         .help("Check every primary repository in configured layout roots")
@@ -588,6 +592,14 @@ fn remote_status_repo_arg() -> Arg {
         .value_name("GLOB")
         .action(ArgAction::Append)
         .help("Check matching configured repository keys; repeat for multiple filters")
+}
+
+fn remote_status_changed_arg() -> Arg {
+    Arg::new("changed")
+        .short('c')
+        .long("changed")
+        .action(ArgAction::SetTrue)
+        .help("Show only repositories with remote or local changes")
 }
 
 fn push_revision_arg() -> Arg {
