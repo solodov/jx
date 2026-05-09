@@ -1,5 +1,28 @@
 use super::*;
 
+/// Initializes the current directory as a Git-backed jj repository.
+pub fn run_jj_git_init(current_dir: &Path) -> Result<(), JjError> {
+    let status = Command::new("jj")
+        .arg("--no-pager")
+        .arg("--quiet")
+        .arg("git")
+        .arg("init")
+        .current_dir(current_dir)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|source| JjError::InitStart { source })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(JjError::InitFailed {
+            status: exit_status_summary(status),
+        })
+    }
+}
+
 /// Adds a jj workspace at the resolved destination while keeping command output concise.
 pub fn run_jj_workspace_add(
     current_dir: &Path,

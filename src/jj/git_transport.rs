@@ -223,6 +223,8 @@ impl GitSubprocessCallback for SilentGitCallback {
     }
 }
 
+const DEFAULT_INITIAL_COMMIT_DESCRIPTION: &str = "initial commit";
+
 impl JjWorkspace {
     /// Returns the commit that should seed a newly created remote repository.
     pub fn initial_publish_target(&self) -> Result<InitialPublishTarget, JjError> {
@@ -257,11 +259,78 @@ impl JjWorkspace {
             });
         }
 
-        Ok(InitialPublishTarget {
-            commit_id: target.id().hex(),
-            short_commit_id: short_commit_id(target.id()),
-            description: target.description().to_owned(),
-        })
+        Ok(initial_publish_target_summary(&target))
+    }
+
+    /// Gives a fresh root-child commit a description so Git export can publish it.
+    pub fn prepare_initial_publish_target(
+        &mut self,
+        target: &InitialPublishTarget,
+    ) -> Result<InitialPublishTarget, JjError> {
+        self.ensure_git_backed()?;
+        let target_id = initial_publish_commit_id(target)?;
+        let target_commit = self.load_commit(&target_id)?;
+
+        if !self.should_describe_initial_publish_target(&target_commit) {
+            return Ok(initial_publish_target_summary(&target_commit));
+        }
+
+        let current_before = self.current_commit()?;
+        let current_before_tree = current_before.tree();
+        let workspace_name = self.workspace.workspace_name().to_owned();
+
+        let mut tx = self.repo.start_transaction();
+        let rewritten = pollster::block_on(
+            tx.repo_mut()
+                .rewrite_commit(&target_commit)
+                .set_description(DEFAULT_INITIAL_COMMIT_DESCRIPTION)
+                .write(),
+        )
+        .map_err(|error| JjError::Backend {
+            message: error.to_string(),
+        })?;
+        pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(|error| {
+            JjError::Backend {
+                message: error.to_string(),
+            }
+        })?;
+        export_git_refs(tx.repo_mut())?;
+        let final_current_id = tx
+            .repo()
+            .view()
+            .get_wc_commit_id(&workspace_name)
+            .cloned()
+            .ok_or_else(|| JjError::MissingWorkingCopy {
+                workspace: workspace_name.as_str().to_owned(),
+            })?;
+        let repo =
+            pollster::block_on(tx.commit("jx describe initial commit")).map_err(|error| {
+                JjError::Transaction {
+                    message: error.to_string(),
+                }
+            })?;
+
+        if final_current_id != *current_before.id() {
+            let final_current = load_commit_from_repo(repo.as_ref(), &final_current_id)?;
+            pollster::block_on(self.workspace.check_out(
+                repo.op_id().clone(),
+                Some(&current_before_tree),
+                &final_current,
+            ))
+            .map_err(|error| JjError::WorkingCopyCheckout {
+                message: error.to_string(),
+            })?;
+        }
+        self.repo = repo;
+
+        Ok(initial_publish_target_summary(&rewritten))
+    }
+
+    fn should_describe_initial_publish_target(&self, commit: &Commit) -> bool {
+        let root_id = self.repo.store().root_commit().id().clone();
+
+        commit.description().trim().is_empty()
+            && matches!(commit.parent_ids(), [parent] if parent == &root_id)
     }
 
     /// Adds `origin`, points `main` at `target`, then pushes the initial branch through jj.
@@ -271,11 +340,7 @@ impl JjWorkspace {
         target: &InitialPublishTarget,
     ) -> Result<BootstrapPushOutcome, JjError> {
         self.ensure_git_backed()?;
-        let target_id = CommitId::try_from_hex(&target.commit_id).ok_or_else(|| {
-            JjError::InvalidTargetCommitId {
-                commit_id: target.commit_id.clone(),
-            }
-        })?;
+        let target_id = initial_publish_commit_id(target)?;
         let target_commit = self.load_commit(&target_id)?;
         let branch = "main";
         let current_before = self.current_commit()?;
@@ -377,5 +442,19 @@ impl JjWorkspace {
         }
 
         Ok(remotes)
+    }
+}
+
+fn initial_publish_commit_id(target: &InitialPublishTarget) -> Result<CommitId, JjError> {
+    CommitId::try_from_hex(&target.commit_id).ok_or_else(|| JjError::InvalidTargetCommitId {
+        commit_id: target.commit_id.clone(),
+    })
+}
+
+fn initial_publish_target_summary(commit: &Commit) -> InitialPublishTarget {
+    InitialPublishTarget {
+        commit_id: commit.id().hex(),
+        short_commit_id: short_commit_id(commit.id()),
+        description: commit.description().to_owned(),
     }
 }

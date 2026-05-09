@@ -196,6 +196,22 @@ impl LayoutConfig {
             .join(workspace_name))
     }
 
+    /// Returns every configured layout root that can contain repositories or managed workspaces.
+    pub fn configured_roots(
+        &self,
+        environment: &RuntimeEnvironment,
+    ) -> Result<Vec<PathBuf>, RepositoryError> {
+        let mut roots = vec![resolve_config_root(&self.default_root, environment)?];
+        for rule in &self.rules {
+            if let Some(root) = &rule.root {
+                roots.push(resolve_config_root(root, environment)?);
+            }
+        }
+        roots.sort();
+        roots.dedup();
+        Ok(roots)
+    }
+
     /// Resolves repository identity from an explicit remote URL using configured layout sources.
     pub fn identity_for_remote_url(
         &self,

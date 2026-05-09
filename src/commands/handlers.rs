@@ -191,9 +191,28 @@ fn handle_work(
             progress.finish();
             Ok(render_work_add(&options))
         }
-        WorkRequest::List => {
-            let workspaces = services.workspace_entries(environment.current_dir())?;
-            Ok(render_work_list(&workspaces))
+        WorkRequest::List(request) => {
+            if request.all || !request.prefix.is_empty() {
+                let config = WorkflowConfig::discover_global(environment)?;
+                let locations = global_work_locations(&config, environment)?;
+                let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
+                Ok(render_global_work_list(&locations))
+            } else {
+                let workspaces = services.workspace_entries(environment.current_dir())?;
+                Ok(render_work_list(&workspaces))
+            }
+        }
+        WorkRequest::Complete(request) => {
+            let config = WorkflowConfig::discover_global(environment)?;
+            let locations = global_work_locations(&config, environment)?;
+            let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
+            Ok(render_work_complete(&locations))
+        }
+        WorkRequest::Root(request) => {
+            let config = WorkflowConfig::discover_global(environment)?;
+            let locations = global_work_locations(&config, environment)?;
+            let root = resolve_work_location(&locations, &request.key)?;
+            Ok(render_work_root(&root))
         }
         WorkRequest::Remove(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
@@ -303,7 +322,64 @@ fn handle_sync(
     prompts: &PromptHandlers<'_>,
     output: OutputMode,
 ) -> Result<String, CommandError> {
-    let local_context = LocalRepositoryContext::discover(environment)?;
+    let local_context = match LocalRepositoryContext::discover(environment) {
+        Ok(context) => context,
+        Err(RepositoryError::WorkspaceNotFound) => {
+            initialize_layout_repository_for_sync(environment, services, progress)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    sync_local_context(
+        local_context,
+        environment,
+        services,
+        progress,
+        prompts,
+        output,
+    )
+}
+
+fn initialize_layout_repository_for_sync(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+) -> Result<LocalRepositoryContext, CommandError> {
+    let config = WorkflowConfig::discover_for_uninitialized(environment)?;
+    let workspace_root = uninitialized_layout_workspace_root(&config.layout, environment)?;
+
+    progress.status("Initializing jj repository…");
+    services.init_repository(&workspace_root)?;
+    progress.finish();
+
+    Ok(LocalRepositoryContext::discover(environment)?)
+}
+
+fn uninitialized_layout_workspace_root(
+    layout: &LayoutConfig,
+    environment: &RuntimeEnvironment,
+) -> Result<PathBuf, RepositoryError> {
+    for candidate in environment.current_dir().ancestors() {
+        match layout.identity_for_workspace_root(candidate, environment) {
+            Ok(_) => return Ok(candidate.to_path_buf()),
+            Err(RepositoryError::LayoutPathNotMatched { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(RepositoryError::LayoutPathNotMatched {
+        path: environment.current_dir().to_path_buf(),
+    })
+}
+
+fn sync_local_context(
+    local_context: LocalRepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    prompts: &PromptHandlers<'_>,
+    output: OutputMode,
+) -> Result<String, CommandError> {
     if local_context
         .remotes
         .iter()
@@ -321,6 +397,24 @@ fn handle_sync(
         return Err(RepositoryError::MissingOrigin.into());
     }
 
+    sync_missing_origin(
+        local_context,
+        environment,
+        services,
+        progress,
+        prompts,
+        output,
+    )
+}
+
+fn sync_missing_origin(
+    local_context: LocalRepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    prompts: &PromptHandlers<'_>,
+    output: OutputMode,
+) -> Result<String, CommandError> {
     let identity = local_context
         .config
         .layout
@@ -346,17 +440,17 @@ fn handle_sync(
         return Ok("cancelled\n".to_owned());
     }
 
+    let target =
+        services.prepare_initial_publish_target(&local_context.workspace_root, &plan.target)?;
+
     progress.status(&format!("Creating private {} repository", plan.remote_url));
     let creation = services.create_repository(&local_context, &plan.repository)?;
     progress.status(&format!(
         "Pushing {} to {}",
-        plan.target.short_commit_id, plan.branch
+        target.short_commit_id, plan.branch
     ));
-    let push = services.bootstrap_origin_main(
-        &local_context.workspace_root,
-        &plan.remote_url,
-        &plan.target,
-    )?;
+    let push =
+        services.bootstrap_origin_main(&local_context.workspace_root, &plan.remote_url, &target)?;
     progress.finish();
 
     render_repository_bootstrap(

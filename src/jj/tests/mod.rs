@@ -1111,6 +1111,61 @@ fn export_git_refs_updates_backing_git_bookmark_view() {
 }
 
 #[test]
+fn prepare_initial_publish_target_describes_undescribed_root_child() {
+    // Verifies: Repository bootstrap can publish a fresh jj repo whose first commit lacks text.
+    let fixture = TestWorkspace::new("prepare-initial-description");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, initial) = pollster::block_on(async {
+        let (mut workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let initial =
+            write_child_with_files(tx.repo_mut(), &root, "", &[("README.md", b"hello\n")]).await;
+
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), initial.id().clone())
+            .expect("set current working-copy change");
+        let repo = tx
+            .commit("arrange undescribed initial commit")
+            .await
+            .expect("commit");
+        workspace
+            .check_out(repo.op_id().clone(), None, &initial)
+            .await
+            .expect("checkout initial working-copy tree");
+        (workspace, repo, initial)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let target = subject
+        .initial_publish_target()
+        .expect("initial publish target exists");
+    let prepared = subject
+        .prepare_initial_publish_target(&target)
+        .expect("initial publish target is described");
+
+    let current_id = subject
+        .repo
+        .view()
+        .get_wc_commit_id(subject.workspace.workspace_name())
+        .expect("working-copy commit exists");
+    let current = load_commit_from_repo(subject.repo.as_ref(), current_id)
+        .expect("load prepared working-copy commit");
+    let current_is_empty = pollster::block_on(current.is_empty(subject.repo.as_ref()))
+        .expect("check prepared working-copy tree");
+
+    assert_eq!(target.commit_id, initial.id().hex());
+    assert!(target.description.is_empty());
+    assert_ne!(prepared.commit_id, target.commit_id);
+    assert_eq!(prepared.description, "initial commit");
+    assert_eq!(current_id.hex(), prepared.commit_id);
+    assert_eq!(current.description(), "initial commit");
+    assert!(!current_is_empty);
+}
+
+#[test]
 fn push_bookmark_validates_local_and_remote_state_before_transport() {
     // Verifies: Bookmark push validates local and remote state before transport.
     let fixture = TestWorkspace::new("push-validation");

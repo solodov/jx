@@ -30,6 +30,18 @@ impl WorkflowConfig {
         Self::discover_for_workspace(&workspace_root, environment)
     }
 
+    /// Discovers only global config for commands that operate across configured layout roots.
+    pub fn discover_global(environment: &RuntimeEnvironment) -> Result<Self, RepositoryError> {
+        let mut config = Self::default();
+
+        if let Some(path) = global_config_dir(environment) {
+            config.apply_optional_global_configs(path)?;
+        }
+        config.validate()?;
+
+        Ok(config)
+    }
+
     /// Discovers global layout config, plus project config when run inside a jj workspace.
     pub fn discover_for_clone(environment: &RuntimeEnvironment) -> Result<Self, RepositoryError> {
         let mut config = Self::default();
@@ -40,6 +52,22 @@ impl WorkflowConfig {
         if let Ok(workspace_root) = find_workspace_root(environment.current_dir()) {
             config.apply_optional_project_config(workspace_root.join(PROJECT_CONFIG_FILE))?;
         }
+        config.validate()?;
+
+        Ok(config)
+    }
+
+    /// Discovers config for a layout-resolved directory before a jj workspace exists.
+    pub fn discover_for_uninitialized(
+        environment: &RuntimeEnvironment,
+    ) -> Result<Self, RepositoryError> {
+        let mut config = Self::default();
+
+        if let Some(path) = global_config_dir(environment) {
+            config.apply_optional_global_configs(path)?;
+        }
+        config
+            .apply_optional_project_config(environment.current_dir().join(PROJECT_CONFIG_FILE))?;
         config.validate()?;
 
         Ok(config)
@@ -196,6 +224,10 @@ pub enum RepositoryError {
         path: PathBuf,
         workspace_dir: String,
     },
+    #[error("Work location `{key}` was not found in configured layouts")]
+    WorkLocationNotFound { key: String },
+    #[error("Work location `{key}` matches multiple paths: {paths:?}")]
+    WorkLocationAmbiguous { key: String, paths: Vec<PathBuf> },
     #[error("Layout source `{name}` is not configured. Add `[[layout.sources]]` for that source or use an explicit host/URL.")]
     UnknownLayoutSource { name: String },
     #[error("Multiple layout sources use host `{host}`: {sources:?}. Use `source:owner/repo` to disambiguate.")]

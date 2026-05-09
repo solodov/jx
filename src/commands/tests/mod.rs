@@ -22,7 +22,7 @@ use jj_lib::{
 };
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -398,6 +398,145 @@ fn work_list_marks_current_workspace_and_aligns_paths() {
     assert_eq!(
         result.stdout,
         "default@  /Users/example/projects/jx\nfix       /Users/example/projects/.work/jx/fix\n"
+    );
+}
+
+#[test]
+fn work_complete_lists_global_repositories_and_workspaces() {
+    // Verifies: Completion scans configured layout roots and orders each repo before workspaces.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let project_root = workspace.home.join("projects/project");
+    create_jj_workspace_marker(&project_root);
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/project/fix"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/project/review"));
+    create_jj_workspace_marker(&workspace.home.join("projects/other"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "complete", "--prefix", "p"],
+        &environment,
+        &services,
+    )
+    .expect("work completion succeeds");
+
+    assert_eq!(result.stdout, "project\nproject@fix\nproject@review\n");
+}
+
+#[test]
+fn work_root_resolves_global_workspace_key() {
+    // Verifies: Shell integration can resolve a global repo@workspace key to a path-only result.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let expected_root = workspace.home.join("projects/.work/project/fix");
+    create_jj_workspace_marker(&workspace.home.join("projects/project"));
+    create_jj_workspace_marker(&expected_root);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "root", "project@fix"],
+        &environment,
+        &services,
+    )
+    .expect("work root succeeds");
+
+    assert_eq!(result.stdout, format!("{}\n", expected_root.display()));
+}
+
+#[test]
+fn work_complete_qualifies_colliding_repository_names() {
+    // Verifies: Global keys stay deterministic when two configured repos share a basename.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[layout.default]
+path = "{owner}/{repo}"
+
+[[layout.rules]]
+source = "github"
+root = "~/projects"
+path = "{owner}/{repo}"
+owner = "alpha"
+
+[[layout.rules]]
+source = "github"
+root = "~/projects"
+path = "{owner}/{repo}"
+owner = "beta"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/alpha/tool"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/alpha/tool/fix"));
+    create_jj_workspace_marker(&workspace.home.join("projects/beta/tool"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "complete", "--prefix", ""],
+        &environment,
+        &services,
+    )
+    .expect("work completion succeeds");
+
+    assert_eq!(result.stdout, "alpha/tool\nalpha/tool@fix\nbeta/tool\n");
+}
+
+#[test]
+fn work_list_all_renders_global_keys_and_paths() {
+    // Verifies: The global work list exposes the same keys that shell completion resolves.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let project_root = workspace.home.join("projects/project");
+    let workspace_root = workspace.home.join("projects/.work/project/fix");
+    create_jj_workspace_marker(&project_root);
+    create_jj_workspace_marker(&workspace_root);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "list", "--all", "--prefix", "project"],
+        &environment,
+        &services,
+    )
+    .expect("global work list succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "project      {}\nproject@fix  {}\n",
+            project_root.display(),
+            workspace_root.display()
+        )
     );
 }
 
@@ -1237,6 +1376,150 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_initializes_layout_directory_before_bootstrap() {
+    // Verifies: Missing-workspace sync initializes the inferred layout repo before bootstrap.
+    let workspace = TestWorkspace::new_uninitialized_under("work/example-repo");
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/work"
+path = "{repo}"
+"#,
+    );
+    workspace.write_file("README.md", "hello\n");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            (
+                "HOME".to_owned(),
+                workspace.home.to_string_lossy().into_owned(),
+            ),
+            ("GH_TOKEN".to_owned(), "placeholder-token".to_owned()),
+        ],
+    );
+    let target = InitialPublishTarget {
+        commit_id: "a1b2c3d4e5f6".to_owned(),
+        short_commit_id: "a1b2c3d4".to_owned(),
+        description: "example change".to_owned(),
+    };
+    let services = FakeServices {
+        expected_init_repository: Some(workspace.path()),
+        initial_publish_target: target.clone(),
+        expected_bootstrap: Some((
+            "git@github.com:example-owner/example-repo.git".to_owned(),
+            target,
+        )),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync"], &environment, &services)
+        .expect("sync bootstrap succeeds");
+
+    assert_eq!(services.init_repository_calls.get(), 1);
+    assert_eq!(services.create_repository_calls.get(), 1);
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created private {} repo\nPushed a1b2c3d4 to {}\nWorking copy now at bf4799d5 (empty)\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "git@github.com:example-owner/example-repo.git"
+            ),
+            osc8_link("https://github.com/example-owner/example-repo/tree/main", "main")
+        )
+    );
+}
+
+#[test]
+fn sync_refuses_uninitialized_directory_outside_configured_layout() {
+    // Verifies: Sync only initializes directories whose GitHub identity is layout-derived.
+    let workspace = TestWorkspace::new_uninitialized_under("misc/example-repo");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(["jx", "sync"], &environment, &services)
+        .expect_err("off-layout directory is not initialized");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::LayoutPathNotMatched { .. })
+    ));
+    assert_eq!(services.init_repository_calls.get(), 0);
+    assert_eq!(services.create_repository_calls.get(), 0);
+}
+
+#[test]
+fn sync_prepares_undescribed_initial_commit_before_bootstrap() {
+    // Verifies: Missing-origin sync describes a fresh initial commit before pushing main.
+    let workspace = TestWorkspace::new_under("work/example-repo");
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/work"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            (
+                "HOME".to_owned(),
+                workspace.home.to_string_lossy().into_owned(),
+            ),
+            ("GH_TOKEN".to_owned(), "placeholder-token".to_owned()),
+        ],
+    );
+    let target = InitialPublishTarget {
+        commit_id: "a1b2c3d4e5f6".to_owned(),
+        short_commit_id: "a1b2c3d4".to_owned(),
+        description: String::new(),
+    };
+    let prepared = InitialPublishTarget {
+        commit_id: "111122223333".to_owned(),
+        short_commit_id: "11112222".to_owned(),
+        description: "initial commit".to_owned(),
+    };
+    let services = FakeServices {
+        initial_publish_target: target,
+        prepared_initial_publish_target: Some(prepared.clone()),
+        expected_bootstrap: Some((
+            "git@github.com:example-owner/example-repo.git".to_owned(),
+            prepared.clone(),
+        )),
+        bootstrap_push: BootstrapPushOutcome {
+            branch: "main".to_owned(),
+            short_commit_id: prepared.short_commit_id.clone(),
+            description: prepared.description.clone(),
+            working_copy_short_commit_id: Some("bf4799d5".to_owned()),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync"], &environment, &services)
+        .expect("sync bootstrap succeeds");
+
+    assert_eq!(services.prepare_initial_publish_calls.get(), 1);
+    assert_eq!(services.create_repository_calls.get(), 1);
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created private {} repo\nPushed 11112222 to {}\nWorking copy now at bf4799d5 (empty)\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "git@github.com:example-owner/example-repo.git"
+            ),
+            osc8_link("https://github.com/example-owner/example-repo/tree/main", "main")
+        )
+    );
+}
+
+#[test]
 fn sync_can_cancel_missing_origin_repository_creation() {
     // Verifies: Declining repository creation stops before GitHub or jj mutation.
     let workspace = TestWorkspace::new_under("work/example-repo");
@@ -1271,6 +1554,7 @@ path = "{repo}"
     )
     .expect("sync cancellation succeeds");
 
+    assert_eq!(services.prepare_initial_publish_calls.get(), 0);
     assert_eq!(services.create_repository_calls.get(), 0);
     assert_eq!(result.stdout, "cancelled\n");
 }
@@ -2243,10 +2527,14 @@ struct FakeServices {
     expected_labels: Vec<String>,
     expected_draft: Option<bool>,
     expected_clone: Option<(String, PathBuf)>,
+    expected_init_repository: Option<PathBuf>,
+    init_repository_calls: std::cell::Cell<usize>,
     expected_workspace_add: Option<WorkspaceAddOptions>,
     workspaces: Vec<WorkspaceEntry>,
     workspace_removes: std::cell::RefCell<Vec<WorkspaceRemoveOptions>>,
     initial_publish_target: InitialPublishTarget,
+    prepared_initial_publish_target: Option<InitialPublishTarget>,
+    prepare_initial_publish_calls: std::cell::Cell<usize>,
     created_repository: RepositoryCreation,
     create_repository_calls: std::cell::Cell<usize>,
     expected_bootstrap: Option<(String, InitialPublishTarget)>,
@@ -2405,6 +2693,8 @@ impl Default for FakeServices {
             expected_labels: Vec::new(),
             expected_draft: None,
             expected_clone: None,
+            expected_init_repository: None,
+            init_repository_calls: std::cell::Cell::new(0),
             expected_workspace_add: None,
             workspaces: vec![WorkspaceEntry {
                 name: "default".to_owned(),
@@ -2417,6 +2707,8 @@ impl Default for FakeServices {
                 short_commit_id: "a1b2c3d4".to_owned(),
                 description: "example change".to_owned(),
             },
+            prepared_initial_publish_target: None,
+            prepare_initial_publish_calls: std::cell::Cell::new(0),
             created_repository: RepositoryCreation {
                 repository: GitHubRepository {
                     owner: "example-owner".to_owned(),
@@ -2488,6 +2780,20 @@ impl CommandServices for FakeServices {
         Ok(())
     }
 
+    fn init_repository(&self, current_dir: &Path) -> Result<(), JjError> {
+        if let Some(expected) = &self.expected_init_repository {
+            assert_eq!(current_dir, expected);
+        }
+        self.init_repository_calls
+            .set(self.init_repository_calls.get() + 1);
+        let settings = test_settings();
+        pollster::block_on(Workspace::init_internal_git(&settings, current_dir))
+            .map(|_| ())
+            .map_err(|error| JjError::InitFailed {
+                status: error.to_string(),
+            })
+    }
+
     fn add_workspace(
         &self,
         _current_dir: &Path,
@@ -2517,6 +2823,19 @@ impl CommandServices for FakeServices {
         _workspace_root: &Path,
     ) -> Result<InitialPublishTarget, JjError> {
         Ok(self.initial_publish_target.clone())
+    }
+
+    fn prepare_initial_publish_target(
+        &self,
+        _workspace_root: &Path,
+        target: &InitialPublishTarget,
+    ) -> Result<InitialPublishTarget, JjError> {
+        self.prepare_initial_publish_calls
+            .set(self.prepare_initial_publish_calls.get() + 1);
+        Ok(self
+            .prepared_initial_publish_target
+            .clone()
+            .unwrap_or_else(|| target.clone()))
     }
 
     fn create_repository(
@@ -2731,6 +3050,10 @@ impl CommandServices for FakeServices {
     }
 }
 
+fn create_jj_workspace_marker(root: &Path) {
+    fs::create_dir_all(root.join(".jj")).expect("create jj workspace marker");
+}
+
 fn project_workspaces(workspace: &TestWorkspace) -> Vec<WorkspaceEntry> {
     vec![
         WorkspaceEntry {
@@ -2846,6 +3169,14 @@ impl TestWorkspace {
     }
 
     fn new_under(relative_path: &str) -> Self {
+        let workspace = Self::new_uninitialized_under(relative_path);
+        let settings = test_settings();
+        pollster::block_on(Workspace::init_internal_git(&settings, &workspace.root))
+            .expect("initialize jj workspace");
+        workspace
+    }
+
+    fn new_uninitialized_under(relative_path: &str) -> Self {
         let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
         let home =
             std::env::temp_dir().join(format!("jx-command-test-{}-{unique}", std::process::id()));
@@ -2855,9 +3186,6 @@ impl TestWorkspace {
             home.join(relative_path)
         };
         fs::create_dir_all(&root).expect("create workspace root");
-        let settings = test_settings();
-        pollster::block_on(Workspace::init_internal_git(&settings, &root))
-            .expect("initialize jj workspace");
         Self { home, root }
     }
 

@@ -10,6 +10,9 @@ pub(super) trait CommandServices {
     /// Clones a Git repository through jj into the resolved layout destination.
     fn clone_repository(&self, current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError>;
 
+    /// Initializes a layout-resolved directory as a Git-backed jj repository.
+    fn init_repository(&self, current_dir: &Path) -> Result<(), JjError>;
+
     /// Adds a jj workspace at the resolved hidden layout destination.
     fn add_workspace(
         &self,
@@ -31,6 +34,13 @@ pub(super) trait CommandServices {
     fn initial_publish_target(
         &self,
         workspace_root: &Path,
+    ) -> Result<InitialPublishTarget, JjError>;
+
+    /// Rewrites a fresh undescribed initial commit before GitHub repository bootstrap.
+    fn prepare_initial_publish_target(
+        &self,
+        workspace_root: &Path,
+        target: &InitialPublishTarget,
     ) -> Result<InitialPublishTarget, JjError>;
 
     /// Creates a private GitHub repository for missing-origin bootstrap.
@@ -181,6 +191,10 @@ impl CommandServices for ProductionServices<'_> {
         run_jj_git_clone(current_dir, &plan.remote_url, &plan.destination)
     }
 
+    fn init_repository(&self, current_dir: &Path) -> Result<(), JjError> {
+        run_jj_git_init(current_dir)
+    }
+
     fn add_workspace(
         &self,
         current_dir: &Path,
@@ -206,6 +220,14 @@ impl CommandServices for ProductionServices<'_> {
         workspace_root: &Path,
     ) -> Result<InitialPublishTarget, JjError> {
         JjWorkspace::load(workspace_root.to_path_buf())?.initial_publish_target()
+    }
+
+    fn prepare_initial_publish_target(
+        &self,
+        workspace_root: &Path,
+        target: &InitialPublishTarget,
+    ) -> Result<InitialPublishTarget, JjError> {
+        JjWorkspace::load(workspace_root.to_path_buf())?.prepare_initial_publish_target(target)
     }
 
     fn create_repository(

@@ -38,14 +38,14 @@ use crate::{
     },
     jj::{
         jj_workspace_entries, remove_jj_workspace, run_current_diff, run_jj_git_clone,
-        run_jj_workspace_add, AdvanceTrunkOutcome, BookmarkUpdate, BootstrapPushOutcome,
-        DiffOptions, DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget,
-        JjError, JjWorkspace, PipeDiffTool, PushOutcome, RebaseOnTrunkOutcome,
-        StatusWorkspaceFacts, TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry,
-        WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
+        run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome, BookmarkUpdate,
+        BootstrapPushOutcome, DiffOptions, DiffToolInvocation, ExternalDiffTool, FetchOutcome,
+        InitialPublishTarget, JjError, JjWorkspace, PipeDiffTool, PushOutcome,
+        RebaseOnTrunkOutcome, StatusWorkspaceFacts, TrackedPushOutcome, WorkspaceAddOptions,
+        WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
     },
     repository::{
-        validate_workspace_name, ClonePlan, DiffToolConfig, GitHubRepository,
+        validate_workspace_name, ClonePlan, DiffToolConfig, GitHubRepository, LayoutConfig,
         LocalRepositoryContext, RepositoryContext, RepositoryError, RepositoryIdentity,
         RuntimeEnvironment, WorkflowConfig,
     },
@@ -57,6 +57,7 @@ mod prompts;
 mod render;
 mod request;
 mod services;
+mod work;
 
 use handlers::*;
 use progress::*;
@@ -68,6 +69,7 @@ pub use prompts::{
 use render::*;
 use request::*;
 use services::*;
+use work::*;
 
 /// Structured output returned by command orchestration.
 #[derive(Debug, Clone, PartialEq, Eq)]

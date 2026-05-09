@@ -33,8 +33,10 @@ fn root_help_uses_operator_facing_command_descriptions() {
     assert!(stdout.contains("rt"));
     assert!(stdout.contains("Rebase jj source revisions onto origin trunk"));
     assert!(stdout.contains("Push a selected jj change or tracked bookmark state"));
-    assert!(stdout
-        .contains("Fetch origin, or create the configured repository, then push bookmark state"));
+    assert!(stdout.contains("Fetch origin"));
+    assert!(stdout.contains("initialize/create the configured repository"));
+    assert!(stdout.contains("then push bookmark"));
+    assert!(stdout.contains("state"));
     assert!(stdout.contains("Publish or update a GitHub pull request for a jj change"));
     assert!(output.stderr.is_empty());
 }
@@ -158,8 +160,9 @@ fn sync_help_explains_fetch_then_push_without_loading_repo() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
-    assert!(stdout
-        .contains("Fetch origin, or create the configured repository, then push bookmark state"));
+    assert!(stdout.contains(
+        "Fetch origin, or initialize/create the configured repository, then push bookmark state"
+    ));
     assert!(output.stderr.is_empty());
 }
 

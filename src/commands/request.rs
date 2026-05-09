@@ -37,7 +37,9 @@ pub(super) struct CloneRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkRequest {
     Add(WorkAddRequest),
-    List,
+    List(WorkListRequest),
+    Complete(WorkCompleteRequest),
+    Root(WorkRootRequest),
     Remove(WorkRemoveRequest),
 }
 
@@ -45,6 +47,22 @@ pub(super) enum WorkRequest {
 pub(super) struct WorkAddRequest {
     pub(super) name: String,
     pub(super) revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkListRequest {
+    pub(super) all: bool,
+    pub(super) prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkCompleteRequest {
+    pub(super) prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkRootRequest {
+    pub(super) key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,19 +151,32 @@ fn required_arg(matches: &ArgMatches, name: &str) -> String {
         .expect("clap enforces required arguments")
 }
 
+fn string_arg(matches: &ArgMatches, name: &str) -> Option<String> {
+    matches.get_one::<String>(name).cloned()
+}
+
 fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
     match matches.subcommand() {
         Some(("add", matches)) => Ok(WorkRequest::Add(WorkAddRequest {
             name: required_arg(matches, "name"),
             revision: revision(matches),
         })),
-        Some(("list", _)) => Ok(WorkRequest::List),
+        Some(("list", matches)) => Ok(WorkRequest::List(WorkListRequest {
+            all: matches.get_flag("all"),
+            prefix: string_arg(matches, "prefix").unwrap_or_default(),
+        })),
+        Some(("complete", matches)) => Ok(WorkRequest::Complete(WorkCompleteRequest {
+            prefix: string_arg(matches, "prefix").unwrap_or_default(),
+        })),
+        Some(("root", matches)) => Ok(WorkRequest::Root(WorkRootRequest {
+            key: required_arg(matches, "key"),
+        })),
         Some(("remove", matches)) => Ok(WorkRequest::Remove(WorkRemoveRequest {
             name: required_arg(matches, "name"),
         })),
         _ => Err(clap::Error::raw(
             ErrorKind::MissingSubcommand,
-            "`jx work` requires `add`, `list`, or `remove`",
+            "`jx work` requires `add`, `list`, `complete`, `root`, or `remove`",
         )),
     }
 }
@@ -337,7 +368,22 @@ pub(super) fn cli() -> ClapCommand {
                         .arg(workspace_name_arg())
                         .arg(workspace_revision_arg()),
                 )
-                .subcommand(ClapCommand::new("list").about("List jj workspaces and roots"))
+                .subcommand(
+                    ClapCommand::new("list")
+                        .about("List jj workspaces and roots")
+                        .arg(work_all_arg())
+                        .arg(work_prefix_arg()),
+                )
+                .subcommand(
+                    ClapCommand::new("complete")
+                        .about("List global work-location completion keys")
+                        .arg(work_prefix_arg()),
+                )
+                .subcommand(
+                    ClapCommand::new("root")
+                        .about("Resolve a global work-location key to its root path")
+                        .arg(work_key_arg()),
+                )
                 .subcommand(
                     ClapCommand::new("remove")
                         .about("Forget and delete a managed workspace")
@@ -369,7 +415,7 @@ pub(super) fn cli() -> ClapCommand {
         )
         .subcommand(
             ClapCommand::new("sync").about(
-                "Fetch origin, or create the configured repository, then push bookmark state",
+                "Fetch origin, or initialize/create the configured repository, then push bookmark state",
             ),
         )
         .subcommand(
@@ -411,6 +457,27 @@ fn workspace_revision_arg() -> Arg {
         .long("revision")
         .value_name("REVISION")
         .help("Create the workspace working-copy change on the selected revision")
+}
+
+fn work_all_arg() -> Arg {
+    Arg::new("all")
+        .long("all")
+        .action(ArgAction::SetTrue)
+        .help("List global work locations from configured layout roots")
+}
+
+fn work_prefix_arg() -> Arg {
+    Arg::new("prefix")
+        .long("prefix")
+        .value_name("PREFIX")
+        .help("Filter global work-location keys by prefix")
+}
+
+fn work_key_arg() -> Arg {
+    Arg::new("key")
+        .value_name("KEY")
+        .required(true)
+        .help("Work-location key such as `repo` or `repo@workspace`")
 }
 
 fn task_id_arg() -> Arg {

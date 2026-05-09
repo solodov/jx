@@ -147,24 +147,52 @@ pub(super) fn render_work_add(options: &WorkspaceAddOptions) -> String {
 
 pub(super) fn render_work_list(workspaces: &[WorkspaceEntry]) -> String {
     let labels = workspaces.iter().map(workspace_label).collect::<Vec<_>>();
-    let width = labels
+    render_keyed_paths(
+        labels
+            .into_iter()
+            .zip(workspaces.iter().map(|workspace| &workspace.root)),
+    )
+}
+
+pub(super) fn render_global_work_list(locations: &[WorkLocation]) -> String {
+    render_keyed_paths(
+        locations
+            .iter()
+            .map(|location| (location.key.clone(), &location.root)),
+    )
+}
+
+pub(super) fn render_work_complete(locations: &[WorkLocation]) -> String {
+    locations
         .iter()
-        .map(|label| label.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut output = String::new();
-    for (workspace, label) in workspaces.iter().zip(labels) {
-        output.push_str(&format!(
-            "{label:<width$}  {}\n",
-            workspace.root.display(),
-            width = width
-        ));
-    }
-    output
+        .map(|location| format!("{}\n", location.key))
+        .collect()
+}
+
+pub(super) fn render_work_root(root: &Path) -> String {
+    format!("{}\n", root.display())
 }
 
 pub(super) fn render_work_remove(workspace: &WorkspaceEntry) -> String {
     format!("Removed workspace: {}\n", workspace.name)
+}
+
+fn render_keyed_paths<'a>(rows: impl IntoIterator<Item = (String, &'a PathBuf)>) -> String {
+    let rows = rows.into_iter().collect::<Vec<_>>();
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut output = String::new();
+    for (label, path) in rows {
+        output.push_str(&format!(
+            "{label:<width$}  {}\n",
+            path.display(),
+            width = width
+        ));
+    }
+    output
 }
 
 fn workspace_label(workspace: &WorkspaceEntry) -> String {

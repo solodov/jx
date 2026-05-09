@@ -53,6 +53,10 @@ pub enum JjError {
     CloneStart { source: io::Error },
     #[error("`jj git clone` failed with {status}")]
     CloneFailed { status: String },
+    #[error("Could not run `jj git init`: {source}")]
+    InitStart { source: io::Error },
+    #[error("`jj git init` failed with {status}")]
+    InitFailed { status: String },
     #[error("Could not run `jj workspace add`: {source}")]
     WorkspaceAddStart { source: io::Error },
     #[error("`jj workspace add` failed with {status}")]
