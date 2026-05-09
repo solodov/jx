@@ -72,6 +72,30 @@ pub(super) fn global_work_repositories(
         .collect())
 }
 
+pub(super) fn filter_work_repositories_by_prefix(
+    repositories: &[WorkRepository],
+    prefix: &str,
+) -> Vec<WorkRepository> {
+    repositories
+        .iter()
+        .filter(|repository| repository.key.starts_with(prefix))
+        .cloned()
+        .collect()
+}
+
+pub(super) fn resolve_work_repository(
+    repositories: &[WorkRepository],
+    key: &str,
+) -> Result<WorkRepository, RepositoryError> {
+    repositories
+        .iter()
+        .find(|repository| repository.key == key)
+        .cloned()
+        .ok_or_else(|| RepositoryError::RepositoryFilterNotFound {
+            pattern: key.to_owned(),
+        })
+}
+
 pub(super) fn filter_work_repositories(
     repositories: &[WorkRepository],
     patterns: &[String],

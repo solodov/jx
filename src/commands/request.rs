@@ -12,7 +12,7 @@ pub(super) enum CommandRequest {
     Fetch(FetchRequest),
     RebaseOnTrunk(RebaseOnTrunkRequest),
     Push(PushRequest),
-    Sync,
+    Sync(SyncRequest),
     Workflow {
         command: WorkflowCommand,
         task_id: Option<String>,
@@ -61,6 +61,7 @@ pub(super) struct WorkListRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkCompleteRequest {
     pub(super) prefix: String,
+    pub(super) repositories: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,13 +87,21 @@ pub(super) struct ShellInitRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RemoteStatusRequest {
     pub(super) all: bool,
+    pub(super) repository: Option<String>,
     pub(super) repo_filters: Vec<String>,
     pub(super) changed: bool,
+    pub(super) parallelism: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FetchRequest {
     pub(super) all: bool,
+    pub(super) repository: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SyncRequest {
+    pub(super) repository: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,12 +142,15 @@ impl CommandRequest {
             Some(("remote-status" | "rs", matches)) => {
                 Ok(Self::RemoteStatus(RemoteStatusRequest {
                     all: matches.get_flag("all"),
+                    repository: repository_arg(matches),
                     repo_filters: repo_filters(matches),
                     changed: matches.get_flag("changed"),
+                    parallelism: remote_status_parallelism(matches)?,
                 }))
             }
             Some(("fetch" | "f", matches)) => Ok(Self::Fetch(FetchRequest {
                 all: matches.get_flag("all"),
+                repository: repository_arg(matches),
             })),
             Some(("rebase-on-trunk" | "rt", matches)) => {
                 Ok(Self::RebaseOnTrunk(RebaseOnTrunkRequest {
@@ -149,7 +161,9 @@ impl CommandRequest {
                 revision: revision(matches),
                 tracked: matches.get_flag("tracked"),
             })),
-            Some(("sync", _)) => Ok(Self::Sync),
+            Some(("sync", matches)) => Ok(Self::Sync(SyncRequest {
+                repository: repository_arg(matches),
+            })),
             Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
                 command: WorkflowCommand::PullRequest,
                 task_id: task_id(matches),
@@ -187,6 +201,7 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
         })),
         Some(("complete", matches)) => Ok(WorkRequest::Complete(WorkCompleteRequest {
             prefix: string_arg(matches, "prefix").unwrap_or_default(),
+            repositories: matches.get_flag("repositories"),
         })),
         Some(("root", matches)) => Ok(WorkRequest::Root(WorkRootRequest {
             key: required_arg(matches, "key"),
@@ -240,6 +255,10 @@ fn sources(matches: &ArgMatches) -> Vec<String> {
         .collect()
 }
 
+fn repository_arg(matches: &ArgMatches) -> Option<String> {
+    matches.get_one::<String>("repository").cloned()
+}
+
 fn repo_filters(matches: &ArgMatches) -> Vec<String> {
     matches
         .get_many::<String>("repo")
@@ -249,6 +268,20 @@ fn repo_filters(matches: &ArgMatches) -> Vec<String> {
         .filter(|filter| !filter.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn remote_status_parallelism(matches: &ArgMatches) -> Result<usize, clap::Error> {
+    let parallelism = *matches
+        .get_one::<usize>("jobs")
+        .expect("clap applies the remote-status jobs default");
+    if parallelism == 0 {
+        return Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "remote-status jobs must be at least 1",
+        ));
+    }
+
+    Ok(parallelism)
 }
 
 fn revision(matches: &ArgMatches) -> Option<String> {
@@ -430,7 +463,8 @@ pub(super) fn cli() -> ClapCommand {
                 .subcommand(
                     ClapCommand::new("complete")
                         .about("List global work-location completion keys")
-                        .arg(work_prefix_arg()),
+                        .arg(work_prefix_arg())
+                        .arg(work_repositories_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("root")
@@ -461,13 +495,16 @@ pub(super) fn cli() -> ClapCommand {
                 .about("Compare local remote trunks with GitHub")
                 .arg(remote_status_all_arg())
                 .arg(remote_status_repo_arg())
-                .arg(remote_status_changed_arg()),
+                .arg(remote_status_changed_arg())
+                .arg(remote_status_jobs_arg())
+                .arg(repository_arg_definition().conflicts_with("repo")),
         )
         .subcommand(
             ClapCommand::new("fetch")
                 .visible_alias("f")
                 .about("Fetch origin and rebase/repair the jj stack")
-                .arg(fetch_all_arg()),
+                .arg(fetch_all_arg())
+                .arg(repository_arg_definition()),
         )
         .subcommand(
             ClapCommand::new("rebase-on-trunk")
@@ -482,9 +519,11 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(tracked_arg()),
         )
         .subcommand(
-            ClapCommand::new("sync").about(
-                "Fetch origin, or initialize/create the configured repository, then push bookmark state",
-            ),
+            ClapCommand::new("sync")
+                .about(
+                    "Fetch origin, or initialize/create the configured repository, then push bookmark state",
+                )
+                .arg(repository_arg_definition()),
         )
         .subcommand(
             ClapCommand::new("pull-request")
@@ -541,6 +580,13 @@ fn work_prefix_arg() -> Arg {
         .help("Filter global work-location keys by prefix")
 }
 
+fn work_repositories_arg() -> Arg {
+    Arg::new("repositories")
+        .long("repositories")
+        .action(ArgAction::SetTrue)
+        .help("Complete only primary repository keys")
+}
+
 fn work_key_arg() -> Arg {
     Arg::new("key")
         .value_name("KEY")
@@ -585,6 +631,7 @@ fn remote_status_all_arg() -> Arg {
         .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
+        .conflicts_with("repository")
         .help("Check every primary repository in configured layout roots")
 }
 
@@ -593,7 +640,14 @@ fn fetch_all_arg() -> Arg {
         .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
+        .conflicts_with("repository")
         .help("Fetch every safe primary repository in configured layout roots")
+}
+
+fn repository_arg_definition() -> Arg {
+    Arg::new("repository")
+        .value_name("REPOSITORY")
+        .help("Run against a configured primary repository key")
 }
 
 fn remote_status_repo_arg() -> Arg {
@@ -610,6 +664,16 @@ fn remote_status_changed_arg() -> Arg {
         .long("changed")
         .action(ArgAction::SetTrue)
         .help("Show only repositories with remote or local changes")
+}
+
+fn remote_status_jobs_arg() -> Arg {
+    Arg::new("jobs")
+        .short('j')
+        .long("jobs")
+        .value_name("N")
+        .default_value("8")
+        .value_parser(clap::value_parser!(usize))
+        .help("Limit concurrent GitHub checks for global remote status")
 }
 
 fn push_revision_arg() -> Arg {

@@ -2,6 +2,17 @@ use super::*;
 
 pub(super) trait ProgressSink {
     fn status(&self, message: &str);
+
+    /// Shows bounded command progress with a concise action label and integer percentage.
+    fn percentage(&self, action: &str, completed: usize, total: usize) {
+        let percent = completed
+            .min(total)
+            .saturating_mul(100)
+            .checked_div(total)
+            .unwrap_or(100);
+        self.status(&format!("{action}… {percent}%"));
+    }
+
     fn finish(&self);
 }
 

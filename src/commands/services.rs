@@ -1,4 +1,5 @@
 use super::*;
+use futures::{stream, StreamExt};
 
 pub(super) trait CommandServices {
     /// Renders the no-argument workspace log.
@@ -95,6 +96,40 @@ pub(super) trait CommandServices {
         context: &RepositoryContext,
         workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError>;
+
+    /// Loads global remote-status rows, preserving layout order and filtering clean repos when requested.
+    fn global_remote_status_entries(
+        &self,
+        repositories: &[WorkRepository],
+        request: &RemoteStatusRequest,
+        environment: &RuntimeEnvironment,
+        progress: &dyn ProgressSink,
+    ) -> Vec<GlobalStatusEntry> {
+        let mut entries = Vec::new();
+
+        for (index, repository) in repositories.iter().enumerate() {
+            let result: Result<StatusReport, CommandError> = (|| {
+                let environment = environment.with_current_dir(&repository.root);
+                let context = RepositoryContext::discover(&environment)?;
+                let workspace = self.status_workspace_facts(&context)?;
+                Ok(self.status_report(&context, workspace)?)
+            })();
+            let result = result.map_err(|error| error.to_string());
+            if !(request.changed
+                && result
+                    .as_ref()
+                    .is_ok_and(|report| !status_report_has_changes(report)))
+            {
+                entries.push(GlobalStatusEntry {
+                    display_root: display_path(&repository.root, environment),
+                    result,
+                });
+            }
+            progress.percentage("Checking remote status", index + 1, repositories.len());
+        }
+
+        entries
+    }
 
     /// Returns whether global fetch can safely mutate this repository without touching local work.
     fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError>;
@@ -316,6 +351,51 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn global_remote_status_entries(
+        &self,
+        repositories: &[WorkRepository],
+        request: &RemoteStatusRequest,
+        environment: &RuntimeEnvironment,
+        progress: &dyn ProgressSink,
+    ) -> Vec<GlobalStatusEntry> {
+        let parallelism = request.parallelism.max(1);
+        let changed = request.changed;
+
+        self.github_runtime.block_on(async {
+            let mut stream = stream::iter(repositories.iter().enumerate().map(
+                |(index, repository)| async move {
+                    (
+                        index,
+                        production_global_remote_status_entry(
+                            repository,
+                            environment,
+                            self.environment,
+                            changed,
+                        )
+                        .await,
+                    )
+                },
+            ))
+            .buffer_unordered(parallelism);
+            let mut completed = 0;
+            let mut entries = Vec::new();
+
+            while let Some((index, entry)) = stream.next().await {
+                completed += 1;
+                progress.percentage("Checking remote status", completed, repositories.len());
+                if let Some(entry) = entry {
+                    entries.push((index, entry));
+                }
+            }
+
+            entries.sort_by_key(|(index, _)| *index);
+            entries
+                .into_iter()
+                .map(|(_, entry)| entry)
+                .collect::<Vec<_>>()
+        })
+    }
+
     fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError> {
         JjWorkspace::load(context.workspace_root.clone())?
             .is_empty_working_copy_child_of_origin_trunk()
@@ -411,4 +491,66 @@ impl CommandServices for ProductionServices<'_> {
             domain::publish_pull_request(context, plan, bookmark_update, push, &github).await
         })
     }
+}
+
+async fn production_global_remote_status_entry(
+    repository: &WorkRepository,
+    environment: &RuntimeEnvironment,
+    token_environment: &RuntimeEnvironment,
+    changed: bool,
+) -> Option<GlobalStatusEntry> {
+    let display_root = display_path(&repository.root, environment);
+    let result = prepare_global_remote_status(repository.root.clone(), environment.clone()).await;
+    let result = match result {
+        Ok((context, workspace)) => {
+            match OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
+                .map_err(WorkflowError::from)
+                .map_err(CommandError::from)
+                .map_err(|error| error.to_string())
+            {
+                Ok(github) => domain::status_report(&context, workspace, &github)
+                    .await
+                    .map_err(CommandError::from)
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    };
+    if changed
+        && result
+            .as_ref()
+            .is_ok_and(|report| !status_report_has_changes(report))
+    {
+        return None;
+    }
+
+    Some(GlobalStatusEntry {
+        display_root,
+        result,
+    })
+}
+
+async fn prepare_global_remote_status(
+    root: PathBuf,
+    environment: RuntimeEnvironment,
+) -> Result<(RepositoryContext, StatusWorkspaceFacts), String> {
+    tokio::task::spawn_blocking(move || {
+        let result: Result<(RepositoryContext, StatusWorkspaceFacts), CommandError> = (|| {
+            let environment = environment.with_current_dir(&root);
+            let context = RepositoryContext::discover(&environment)?;
+            let workspace = JjWorkspace::load(context.workspace_root.clone())?.status_facts(
+                context
+                    .github_remotes
+                    .iter()
+                    .map(|remote| remote.name.as_str()),
+            )?;
+
+            Ok((context, workspace))
+        })();
+
+        result.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("status worker failed: {error}"))?
 }

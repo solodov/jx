@@ -91,7 +91,9 @@ pub(super) fn handle_request(
                 render_push(&report, environment.current_dir(), output.color)?
             }
         }
-        CommandRequest::Sync => handle_sync(environment, services, progress, &prompts, output)?,
+        CommandRequest::Sync(request) => {
+            handle_sync(request, environment, services, progress, &prompts, output)?
+        }
         CommandRequest::Workflow {
             command,
             task_id,
@@ -159,6 +161,20 @@ fn handle_fetch(
         return handle_global_fetch(environment, services, progress, output);
     }
 
+    if let Some(repository) = request.repository {
+        let repository_environment = repository_environment(&repository, environment)?;
+        return fetch_current_repository(&repository_environment, services, progress, output);
+    }
+
+    fetch_current_repository(environment, services, progress, output)
+}
+
+fn fetch_current_repository(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     progress.status("Fetching origin…");
     let outcome = services.fetch_origin(&context)?;
@@ -221,16 +237,41 @@ fn handle_remote_status(
     progress: &dyn ProgressSink,
     output: OutputMode,
 ) -> Result<String, CommandError> {
+    if let Some(repository) = &request.repository {
+        let repository_environment = repository_environment(repository, environment)?;
+        return remote_status_current_repository(
+            &request,
+            &repository_environment,
+            services,
+            progress,
+            output,
+        );
+    }
+
     if request.all || request.changed || !request.repo_filters.is_empty() {
         return handle_global_remote_status(request, environment, services, progress, output);
     }
 
+    remote_status_current_repository(&request, environment, services, progress, output)
+}
+
+fn remote_status_current_repository(
+    request: &RemoteStatusRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     progress.status("Loading remote status…");
     let workspace = services.status_workspace_facts(&context)?;
     progress.status("Checking GitHub remotes…");
     let report = services.status_report(&context, workspace)?;
     progress.finish();
+    if request.changed && !status_report_has_changes(&report) {
+        return Ok(String::new());
+    }
+
     render_status(&report, environment.current_dir(), output.color).map_err(Into::into)
 }
 
@@ -244,47 +285,34 @@ fn handle_global_remote_status(
     let config = WorkflowConfig::discover_global(environment)?;
     let repositories = global_work_repositories(&config, environment)?;
     let repositories = filter_work_repositories(&repositories, &request.repo_filters)?;
-    let mut entries = Vec::new();
 
-    for repository in repositories {
-        progress.status(&format!("Checking {}…", repository.key));
-        let result = global_remote_status_for_repository(&repository.root, environment, services)
-            .map_err(|error| error.to_string());
-        if request.changed
-            && result
-                .as_ref()
-                .is_ok_and(|report| !status_report_has_changes(report))
-        {
-            continue;
-        }
-        entries.push(GlobalStatusEntry {
-            display_root: display_path(&repository.root, environment),
-            result,
-        });
+    if !repositories.is_empty() {
+        progress.percentage("Checking remote status", 0, repositories.len());
     }
-
+    let entries =
+        services.global_remote_status_entries(&repositories, &request, environment, progress);
     progress.finish();
     render_global_status(&entries, environment.current_dir(), output.color).map_err(Into::into)
 }
 
-fn global_remote_status_for_repository(
-    root: &Path,
-    environment: &RuntimeEnvironment,
-    services: &dyn CommandServices,
-) -> Result<StatusReport, CommandError> {
-    let environment = environment.with_current_dir(root);
-    let context = RepositoryContext::discover(&environment)?;
-    let workspace = services.status_workspace_facts(&context)?;
-    Ok(services.status_report(&context, workspace)?)
-}
-
-fn status_report_has_changes(report: &StatusReport) -> bool {
+pub(super) fn status_report_has_changes(report: &StatusReport) -> bool {
     report.remotes.iter().any(|remote| {
         remote.comparison.state != domain::StatusState::UpToDate || remote.local_ahead_by > 0
     })
 }
 
-fn display_path(path: &Path, environment: &RuntimeEnvironment) -> String {
+fn repository_environment(
+    repository: &str,
+    environment: &RuntimeEnvironment,
+) -> Result<RuntimeEnvironment, CommandError> {
+    let config = WorkflowConfig::discover_global(environment)?;
+    let repositories = global_work_repositories(&config, environment)?;
+    let repository = resolve_work_repository(&repositories, repository)?;
+
+    Ok(environment.with_current_dir(repository.root))
+}
+
+pub(super) fn display_path(path: &Path, environment: &RuntimeEnvironment) -> String {
     if let Some(home) = environment.home_dir() {
         if path == home {
             return "~".to_owned();
@@ -343,9 +371,16 @@ fn handle_work(
         }
         WorkRequest::Complete(request) => {
             let config = WorkflowConfig::discover_global(environment)?;
-            let locations = global_work_locations(&config, environment)?;
-            let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
-            Ok(render_work_complete(&locations))
+            if request.repositories {
+                let repositories = global_work_repositories(&config, environment)?;
+                let repositories =
+                    filter_work_repositories_by_prefix(&repositories, &request.prefix);
+                Ok(render_work_repository_complete(&repositories))
+            } else {
+                let locations = global_work_locations(&config, environment)?;
+                let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
+                Ok(render_work_complete(&locations))
+            }
         }
         WorkRequest::Root(request) => {
             let config = WorkflowConfig::discover_global(environment)?;
@@ -467,6 +502,28 @@ fn removable_workspace(
 }
 
 fn handle_sync(
+    request: SyncRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    prompts: &PromptHandlers<'_>,
+    output: OutputMode,
+) -> Result<String, CommandError> {
+    if let Some(repository) = request.repository {
+        let repository_environment = repository_environment(&repository, environment)?;
+        return sync_current_repository(
+            &repository_environment,
+            services,
+            progress,
+            prompts,
+            output,
+        );
+    }
+
+    sync_current_repository(environment, services, progress, prompts, output)
+}
+
+fn sync_current_repository(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,

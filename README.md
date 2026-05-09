@@ -8,8 +8,12 @@ publishing GitHub pull requests.
 
 The motivation is simple: common jj workflows are powerful, but the happy path
 can still feel like stitching together local revsets, Git transport, GitHub
-state, and repository conventions. `jx` makes that path feel like one workflow
-without becoming a replacement for `jj`.
+state, code layout, and repository conventions. `jx` makes that path feel like
+one workflow without becoming a replacement for `jj`.
+
+`jx` also models a local code layout: it can place primary repository clones,
+manage hidden parallel workspaces, and target configured projects from outside
+their checkout.
 
 ## What it helps with
 
@@ -111,7 +115,8 @@ Configuration is optional. Without config, `jx` uses `origin`, clones GitHub
 shorthands under `~/src`, reads tokens from `JX_GITHUB_TOKEN`, `GH_TOKEN`, then
 `GITHUB_TOKEN`, and applies no default reviewers. See
 [configuration options](docs/configuration.md) for the full configuration
-reference.
+reference and [code layout](docs/code-layout.md) for how configured projects are
+found and shared across commands.
 
 Terminal links use OSC8 hyperlinks and the jj `link` color label. `jx`
 underlines links by default; override `colors.link` in `~/.config/jj/config.toml`

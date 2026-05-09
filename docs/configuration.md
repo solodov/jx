@@ -17,6 +17,9 @@ and deduplicated where the workflow expects sets.
 
 ## Clone and workspace layout
 
+This section is the configuration reference. See the [code layout guide](code-layout.md)
+for how layout discovery and project keys apply across commands.
+
 `jx clone` normalizes shorthand inputs to a source, owner, and repo, then places
 the checkout at `root/path`. `jx work` uses the same identity to place managed
 workspaces at `root/workspace_dir/path/name`, keeping primary checkouts visible

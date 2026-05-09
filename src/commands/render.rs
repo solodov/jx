@@ -206,6 +206,13 @@ pub(super) fn render_work_complete(locations: &[WorkLocation]) -> String {
         .collect()
 }
 
+pub(super) fn render_work_repository_complete(repositories: &[WorkRepository]) -> String {
+    repositories
+        .iter()
+        .map(|repository| format!("{}\n", repository.key))
+        .collect()
+}
+
 pub(super) fn render_work_root(root: &Path) -> String {
     format!("{}\n", root.display())
 }

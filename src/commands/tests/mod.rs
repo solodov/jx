@@ -54,6 +54,28 @@ fn example_pull_request_link(number: u64) -> String {
     )
 }
 
+#[derive(Default)]
+struct RecordingProgress {
+    messages: std::cell::RefCell<Vec<String>>,
+    finished: std::cell::Cell<bool>,
+}
+
+impl RecordingProgress {
+    fn messages(&self) -> Vec<String> {
+        self.messages.borrow().clone()
+    }
+}
+
+impl ProgressSink for RecordingProgress {
+    fn status(&self, message: &str) {
+        self.messages.borrow_mut().push(message.to_owned());
+    }
+
+    fn finish(&self) {
+        self.finished.set(true);
+    }
+}
+
 #[test]
 fn no_args_renders_workspace_scoped_log() {
     // Verifies: No-argument invocation renders the workspace-scoped log.
@@ -465,6 +487,36 @@ path = "{repo}"
 }
 
 #[test]
+fn work_complete_can_list_only_primary_repositories() {
+    // Verifies: Project-argument shell completion omits secondary workspaces.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/project"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/project/fix"));
+    create_jj_workspace_marker(&workspace.home.join("projects/other"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "complete", "--repositories", "--prefix", "p"],
+        &environment,
+        &services,
+    )
+    .expect("repository completion succeeds");
+
+    assert_eq!(result.stdout, "project\n");
+}
+
+#[test]
 fn work_root_resolves_global_workspace_key() {
     // Verifies: Shell integration can resolve a global repo@workspace key to a path-only result.
     let workspace = TestWorkspace::new();
@@ -591,8 +643,14 @@ zoxide = "auto"
             .expect("shell init succeeds");
 
     assert!(result.stdout.contains("complete -F _jx"));
+    assert!(result
+        .stdout
+        .contains("complete -F __jx_project_arg_completion jx"));
     assert!(result.stdout.contains("remote-status"));
     assert!(result.stdout.contains("--changed"));
+    assert!(result
+        .stdout
+        .contains("command jx work complete --repositories --prefix \"$cur\""));
     assert!(result.stdout.contains("u() {"));
     assert!(result.stdout.contains("command jx work root \"$1\""));
     assert!(result
@@ -1000,6 +1058,22 @@ fn rs_alias_runs_remote_status() {
 }
 
 #[test]
+fn remote_status_jobs_rejects_zero_parallelism() {
+    // Verifies: Global remote-status keeps a positive batch size so progress cannot stall.
+    let environment = RuntimeEnvironment::new("/workspace", []);
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(
+        ["jx", "remote-status", "--all", "--jobs", "0"],
+        &environment,
+        &services,
+    )
+    .expect_err("zero jobs is rejected");
+
+    assert!(matches!(error, CommandError::Usage(_)));
+}
+
+#[test]
 fn remote_status_shows_local_commits_as_remote_behind() {
     // Verifies: A synchronized remote still reports unpublished local workspace commits.
     let workspace = TestWorkspace::new();
@@ -1099,7 +1173,7 @@ fn remote_status_renders_one_line_per_github_remote() {
 
 #[test]
 fn remote_status_all_prefixes_each_layout_repository_path() {
-    // Verifies: Global remote-status scans configured repos and keeps the normal per-remote row.
+    // Verifies: Global remote-status scans configured repos with a custom concurrency limit and keeps the normal per-remote row.
     let workspace = TestWorkspace::new();
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -1133,13 +1207,83 @@ path = "{repo}"
         ..FakeServices::default()
     };
 
-    let result =
-        run_with_args_and_services(["jx", "remote-status", "--all"], &environment, &services)
-            .expect("global remote-status succeeds");
+    let progress = RecordingProgress::default();
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+    let result = run_with_args_and_progress(
+        ["jx", "remote-status", "--all", "--jobs", "1"],
+        &environment,
+        &services,
+        &progress,
+        prompts,
+        OutputMode::plain(),
+    )
+    .expect("global remote-status succeeds");
+
+    assert_eq!(
+        progress.messages(),
+        [
+            "Checking remote status… 0%",
+            "Checking remote status… 50%",
+            "Checking remote status… 100%"
+        ]
+    );
+    assert!(progress.finished.get());
 
     assert_eq!(
         result.stdout,
         "~/projects/alpha remote: origin (\x1b]8;;https://github.com/example-owner/alpha/tree/main\x1b\\ssh://git@github.com/example-owner/alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n~/projects/beta remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+    );
+}
+
+#[test]
+fn remote_status_accepts_specific_repository_argument() {
+    // Verifies: A positional project key runs remote-status from that configured repository only.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let alpha = workspace.create_jj_workspace("projects/alpha");
+    let beta = workspace.create_jj_workspace("projects/beta");
+    TestWorkspace::write_git_config_at(
+        &alpha,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/alpha.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &beta,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/beta.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "rs", "beta"], &environment, &services)
+        .expect("specific remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n"
     );
 }
 
@@ -1444,6 +1588,54 @@ path = "{repo}"
 }
 
 #[test]
+fn fetch_accepts_specific_repository_argument() {
+    // Verifies: A positional project key fetches that repository with normal single-repo behavior.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let target = workspace.create_jj_workspace("projects/target");
+    TestWorkspace::write_git_config_at(
+        &target,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/target.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        fetch: FetchOutcome {
+            branch: "main".to_owned(),
+            changed_remote_bookmarks: 0,
+            changed_remote_tags: 0,
+            abandoned_commits: 0,
+            rebased_trunk_children: 0,
+            rebased_descendants: 0,
+            skipped_trunk_children: 0,
+            current_repaired: false,
+            rebased_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "fetch", "target"], &environment, &services)
+        .expect("specific fetch succeeds");
+
+    assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [target]);
+    assert_eq!(
+        result.stdout,
+        "Fetched: origin/main (\x1b]8;;https://github.com/example-owner/target/tree/main\x1b\\ssh://git@github.com/example-owner/target.git\x1b]8;;\x1b\\)\n"
+    );
+}
+
+#[test]
 fn f_alias_accepts_all_flag() {
     // Verifies: The short fetch alias supports global fetch ergonomics.
     let workspace = TestWorkspace::new();
@@ -1725,6 +1917,40 @@ fn sync_fetches_then_pushes_tracked_state_with_commit_lists() {
                 example_bookmark_link("example-user/old")
             )
         );
+}
+
+#[test]
+fn sync_accepts_specific_repository_argument() {
+    // Verifies: A positional project key runs the normal sync flow from that configured repository.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let target = workspace.create_jj_workspace("projects/target");
+    TestWorkspace::write_git_config_at(
+        &target,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/target.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "sync", "target"], &environment, &services)
+        .expect("specific sync succeeds");
+
+    assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [target]);
+    assert!(result.stdout.starts_with(
+        "Synced: origin/main (\x1b]8;;https://github.com/example-owner/target/tree/main"
+    ));
 }
 
 #[test]
