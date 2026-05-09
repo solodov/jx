@@ -1,0 +1,384 @@
+use super::*;
+
+pub(super) trait CommandServices {
+    /// Renders the no-argument workspace log.
+    fn workspace_log(&self) -> Result<String, JjError>;
+
+    /// Shows the current jj diff, optionally constraining it to non-test files.
+    fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError>;
+
+    /// Clones a Git repository through jj into the resolved layout destination.
+    fn clone_repository(&self, current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError>;
+
+    /// Adds a jj workspace at the resolved hidden layout destination.
+    fn add_workspace(
+        &self,
+        current_dir: &Path,
+        options: &WorkspaceAddOptions,
+    ) -> Result<(), JjError>;
+
+    /// Lists jj workspaces with root paths and current-workspace state.
+    fn workspace_entries(&self, current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError>;
+
+    /// Forgets a jj workspace and deletes its managed directory.
+    fn remove_workspace(
+        &self,
+        current_dir: &Path,
+        options: &WorkspaceRemoveOptions,
+    ) -> Result<(), JjError>;
+
+    /// Selects the local commit that should seed a newly created remote repository.
+    fn initial_publish_target(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<InitialPublishTarget, JjError>;
+
+    /// Creates a private GitHub repository for missing-origin bootstrap.
+    fn create_repository(
+        &self,
+        context: &LocalRepositoryContext,
+        repository: &GitHubRepository,
+    ) -> Result<RepositoryCreation, WorkflowError>;
+
+    /// Adds origin/main locally and pushes the initial branch after GitHub creation.
+    fn bootstrap_origin_main(
+        &self,
+        workspace_root: &Path,
+        remote_url: &str,
+        target: &InitialPublishTarget,
+    ) -> Result<BootstrapPushOutcome, JjError>;
+
+    /// Loads the current working-copy status block shared by status and PR preview.
+    fn workspace_status(&self, current_dir: &Path, color: bool)
+        -> Result<WorkspaceStatus, JjError>;
+
+    /// Loads jj facts for the working copy or an explicitly selected revision.
+    fn workspace_facts(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<WorkspaceFacts, JjError>;
+
+    /// Loads push planning facts, allowing existing local bookmarks before origin trunk exists.
+    fn push_workspace_facts(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<WorkspaceFacts, JjError>;
+
+    /// Runs non-mutating local and GitHub readiness checks.
+    fn check_readiness(
+        &self,
+        context: &RepositoryContext,
+        workspace: WorkspaceFacts,
+    ) -> Result<CheckReport, WorkflowError>;
+
+    /// Loads local cached trunk facts for every configured GitHub remote.
+    fn status_workspace_facts(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<StatusWorkspaceFacts, JjError>;
+
+    /// Compares local cached remote-trunk state with live GitHub remotes.
+    fn status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<StatusReport, WorkflowError>;
+
+    /// Fetches origin and applies jj stack repair/rebase behavior.
+    fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError>;
+
+    /// Rebases selected source revisions and descendants onto the fixed origin trunk.
+    fn rebase_on_trunk(
+        &self,
+        context: &RepositoryContext,
+        sources: &[String],
+    ) -> Result<RebaseOnTrunkOutcome, JjError>;
+
+    /// Ensures the selected PR bookmark points at the selected jj commit.
+    fn ensure_bookmark(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+        target_commit_id: &str,
+    ) -> Result<BookmarkUpdate, JjError>;
+
+    /// Pushes the selected bookmark through the jj Git transport boundary.
+    fn push_bookmark(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<PushOutcome, JjError>;
+
+    /// Optionally prepares sync by advancing the local trunk bookmark to current work.
+    fn advance_trunk_for_sync(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<AdvanceTrunkOutcome, JjError>;
+
+    /// Pushes all tracked fixed-origin bookmarks, including deleted bookmarks.
+    fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError>;
+
+    /// Loads best-effort PR metadata for tracked bookmark updates rendered by sync.
+    fn sync_pull_requests(
+        &self,
+        context: &RepositoryContext,
+        push: &TrackedPushOutcome,
+    ) -> Result<Vec<PullRequestRecord>, WorkflowError>;
+
+    /// Builds PR metadata and bookmark intent before mutation.
+    fn pull_request_plan(
+        &self,
+        context: &RepositoryContext,
+        workspace: WorkspaceFacts,
+        task_id: Option<String>,
+        labels: Vec<String>,
+        draft: bool,
+    ) -> Result<PullRequestPlan, WorkflowError>;
+
+    /// Creates or updates the GitHub PR after local bookmark state has been pushed.
+    fn publish_pull_request(
+        &self,
+        context: &RepositoryContext,
+        plan: PullRequestPlan,
+        bookmark_update: BookmarkUpdate,
+        push: PushOutcome,
+    ) -> Result<PullRequestReport, WorkflowError>;
+}
+
+/// Production command boundary backed by real jj and GitHub clients.
+pub(super) struct ProductionServices<'environment> {
+    environment: &'environment RuntimeEnvironment,
+    pub(super) github_runtime: tokio::runtime::Runtime,
+}
+
+impl<'environment> ProductionServices<'environment> {
+    /// Builds production services with a Tokio runtime for octocrab's background HTTP tasks.
+    pub(super) fn new(environment: &'environment RuntimeEnvironment) -> io::Result<Self> {
+        let github_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        Ok(Self {
+            environment,
+            github_runtime,
+        })
+    }
+}
+
+impl CommandServices for ProductionServices<'_> {
+    fn workspace_log(&self) -> Result<String, JjError> {
+        JjWorkspace::current_workspace_log(self.environment.current_dir())
+    }
+
+    fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError> {
+        run_current_diff(current_dir, options)?;
+        Ok(String::new())
+    }
+
+    fn clone_repository(&self, current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError> {
+        run_jj_git_clone(current_dir, &plan.remote_url, &plan.destination)
+    }
+
+    fn add_workspace(
+        &self,
+        current_dir: &Path,
+        options: &WorkspaceAddOptions,
+    ) -> Result<(), JjError> {
+        run_jj_workspace_add(current_dir, options)
+    }
+
+    fn workspace_entries(&self, current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError> {
+        jj_workspace_entries(current_dir)
+    }
+
+    fn remove_workspace(
+        &self,
+        current_dir: &Path,
+        options: &WorkspaceRemoveOptions,
+    ) -> Result<(), JjError> {
+        remove_jj_workspace(current_dir, options)
+    }
+
+    fn initial_publish_target(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<InitialPublishTarget, JjError> {
+        JjWorkspace::load(workspace_root.to_path_buf())?.initial_publish_target()
+    }
+
+    fn create_repository(
+        &self,
+        context: &LocalRepositoryContext,
+        repository: &GitHubRepository,
+    ) -> Result<RepositoryCreation, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+            Ok(github.create_repository(repository, true).await?)
+        })
+    }
+
+    fn bootstrap_origin_main(
+        &self,
+        workspace_root: &Path,
+        remote_url: &str,
+        target: &InitialPublishTarget,
+    ) -> Result<BootstrapPushOutcome, JjError> {
+        JjWorkspace::load(workspace_root.to_path_buf())?.bootstrap_origin_main(remote_url, target)
+    }
+
+    fn workspace_status(
+        &self,
+        current_dir: &Path,
+        color: bool,
+    ) -> Result<WorkspaceStatus, JjError> {
+        JjWorkspace::current_status(current_dir, color)
+    }
+
+    fn workspace_facts(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<WorkspaceFacts, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.facts_for_revision(revision)
+    }
+
+    fn push_workspace_facts(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<WorkspaceFacts, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.push_facts_for_revision(revision)
+    }
+
+    fn check_readiness(
+        &self,
+        context: &RepositoryContext,
+        workspace: WorkspaceFacts,
+    ) -> Result<CheckReport, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+
+            domain::check_readiness(context, workspace, &github).await
+        })
+    }
+
+    fn status_workspace_facts(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<StatusWorkspaceFacts, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.status_facts(
+            context
+                .github_remotes
+                .iter()
+                .map(|remote| remote.name.as_str()),
+        )
+    }
+
+    fn status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<StatusReport, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+
+            domain::status_report(context, workspace, &github).await
+        })
+    }
+
+    fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.fetch_origin()
+    }
+
+    fn rebase_on_trunk(
+        &self,
+        context: &RepositoryContext,
+        sources: &[String],
+    ) -> Result<RebaseOnTrunkOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.rebase_on_trunk(sources)
+    }
+
+    fn ensure_bookmark(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+        target_commit_id: &str,
+    ) -> Result<BookmarkUpdate, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.ensure_bookmark(branch, target_commit_id)
+    }
+
+    fn push_bookmark(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<PushOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.push_bookmark(branch)
+    }
+
+    fn advance_trunk_for_sync(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<AdvanceTrunkOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.advance_trunk_for_sync()
+    }
+
+    fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.push_tracked_deleted()
+    }
+
+    fn sync_pull_requests(
+        &self,
+        context: &RepositoryContext,
+        push: &TrackedPushOutcome,
+    ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let Ok(github) =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)
+            else {
+                return Ok(Vec::new());
+            };
+
+            // PR rows are navigational metadata. Sync's fetch/push result should stay usable even
+            // when GitHub lookup is unavailable after the local and remote state already changed.
+            Ok(domain::sync_pull_requests(context, push, &github)
+                .await
+                .unwrap_or_default())
+        })
+    }
+
+    fn pull_request_plan(
+        &self,
+        context: &RepositoryContext,
+        workspace: WorkspaceFacts,
+        task_id: Option<String>,
+        labels: Vec<String>,
+        draft: bool,
+    ) -> Result<PullRequestPlan, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+
+            domain::pull_request_plan(context, workspace, &github, task_id, labels, draft).await
+        })
+    }
+
+    fn publish_pull_request(
+        &self,
+        context: &RepositoryContext,
+        plan: PullRequestPlan,
+        bookmark_update: BookmarkUpdate,
+        push: PushOutcome,
+    ) -> Result<PullRequestReport, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+
+            domain::publish_pull_request(context, plan, bookmark_update, push, &github).await
+        })
+    }
+}

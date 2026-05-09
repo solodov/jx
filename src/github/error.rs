@@ -1,0 +1,63 @@
+use super::*;
+
+/// GitHub boundary failures with operation-specific diagnostics.
+#[derive(Debug, Error)]
+pub enum GitHubError {
+    #[error("No GitHub token found. Set JX_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, or configure [auth.keychain].")]
+    MissingToken,
+    #[error(transparent)]
+    TokenRead(#[from] TokenReadError),
+    #[error("Could not initialize GitHub client: {source}")]
+    ClientBuild { source: octocrab::Error },
+    #[error("GitHub authentication failed while trying to {operation}: {message}")]
+    AuthenticationFailed {
+        operation: &'static str,
+        message: String,
+    },
+    #[error(
+        "GitHub could not compare `{base}` with `{head}` because one target was not found: {message}. Run `jx fetch` if the branch moved, or ensure the local trunk commit exists on GitHub."
+    )]
+    ComparisonTargetNotFound {
+        base: String,
+        head: String,
+        message: String,
+    },
+    #[error("Could not {operation} through GitHub: {source}")]
+    Api {
+        operation: &'static str,
+        source: octocrab::Error,
+    },
+}
+
+pub(super) fn api_error(operation: &'static str, source: octocrab::Error) -> GitHubError {
+    if let Some(message) = octocrab_github_error(&source)
+        .filter(|error| matches!(error.status_code.as_u16(), 401 | 403))
+        .map(|error| error.message.clone())
+    {
+        return GitHubError::AuthenticationFailed { operation, message };
+    }
+
+    GitHubError::Api { operation, source }
+}
+
+pub(super) fn compare_error(base: &str, head: &str, source: octocrab::Error) -> GitHubError {
+    if let Some(message) = octocrab_github_error(&source)
+        .filter(|error| error.status_code.as_u16() == 404)
+        .map(|error| error.message.clone())
+    {
+        return GitHubError::ComparisonTargetNotFound {
+            base: base.to_owned(),
+            head: head.to_owned(),
+            message,
+        };
+    }
+
+    api_error("compare commits", source)
+}
+
+fn octocrab_github_error(source: &octocrab::Error) -> Option<&octocrab::GitHubError> {
+    match source {
+        octocrab::Error::GitHub { source, .. } => Some(source.as_ref()),
+        _ => None,
+    }
+}
