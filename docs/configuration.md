@@ -113,6 +113,21 @@ paths = ["foo/bar/**", "bar/bux/*.py"]
 reviewers = ["work-reviewer", "ExampleOrg/frontend"]
 ```
 
+## Shell integration
+
+`jx shell init bash` prints optional shell integration for `eval`. The generated
+navigation function resolves `jx work` locations first, then optionally falls
+back to zoxide when `zoxide = "auto"` and the `zoxide` binary is installed.
+
+```toml
+[shell]
+navigation = "u"
+zoxide = "auto"
+```
+
+Set `zoxide = "never"` to omit zoxide fallback. Omit `navigation` or set it to
+an empty string to skip generating a navigation function.
+
 ## Diff tools
 
 Named diff tools can be selected by config or command flag:

@@ -746,6 +746,7 @@ fn context() -> RepositoryContext {
             repo: RepoConfig::default(),
             diff: Default::default(),
             auth: Default::default(),
+            shell: Default::default(),
         },
     }
 }

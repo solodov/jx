@@ -7,6 +7,7 @@ pub(super) enum CommandRequest {
     Diff(DiffRequest),
     Clone(CloneRequest),
     Work(WorkRequest),
+    Shell(ShellRequest),
     RebaseOnTrunk(RebaseOnTrunkRequest),
     Push(PushRequest),
     Sync,
@@ -71,6 +72,16 @@ pub(super) struct WorkRemoveRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ShellRequest {
+    Init(ShellInitRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShellInitRequest {
+    pub(super) shell: ShellKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RebaseOnTrunkRequest {
     pub(super) sources: Vec<String>,
 }
@@ -95,6 +106,7 @@ impl CommandRequest {
                 destination: matches.get_one::<PathBuf>("destination").cloned(),
             })),
             Some(("work", matches)) => Ok(Self::Work(work_request(matches)?)),
+            Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("status" | "st", _)) => Ok(Self::Status),
             Some(("check", _)) => Ok(Self::Workflow {
                 command: WorkflowCommand::Check,
@@ -177,6 +189,28 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
         _ => Err(clap::Error::raw(
             ErrorKind::MissingSubcommand,
             "`jx work` requires `add`, `list`, `complete`, `root`, or `remove`",
+        )),
+    }
+}
+
+fn shell_request(matches: &ArgMatches) -> Result<ShellRequest, clap::Error> {
+    match matches.subcommand() {
+        Some(("init", matches)) => Ok(ShellRequest::Init(ShellInitRequest {
+            shell: shell_kind(matches)?,
+        })),
+        _ => Err(clap::Error::raw(
+            ErrorKind::MissingSubcommand,
+            "`jx shell` requires `init`",
+        )),
+    }
+}
+
+fn shell_kind(matches: &ArgMatches) -> Result<ShellKind, clap::Error> {
+    match required_arg(matches, "shell").as_str() {
+        "bash" => Ok(ShellKind::Bash),
+        shell => Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            format!("unsupported shell `{shell}`; supported shells: bash"),
         )),
     }
 }
@@ -390,6 +424,17 @@ pub(super) fn cli() -> ClapCommand {
                         .arg(workspace_name_arg()),
                 ),
         )
+        .subcommand(
+            ClapCommand::new("shell")
+                .about("Generate shell integration scripts")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    ClapCommand::new("init")
+                        .about("Print shell integration for eval")
+                        .arg(shell_arg()),
+                ),
+        )
         .subcommand(ClapCommand::new("check").about("Check repository and PR readiness"))
         .subcommand(
             ClapCommand::new("remote-status")
@@ -478,6 +523,13 @@ fn work_key_arg() -> Arg {
         .value_name("KEY")
         .required(true)
         .help("Work-location key such as `repo` or `repo@workspace`")
+}
+
+fn shell_arg() -> Arg {
+    Arg::new("shell")
+        .value_name("SHELL")
+        .required(true)
+        .help("Shell to initialize; currently supports `bash`")
 }
 
 fn task_id_arg() -> Arg {

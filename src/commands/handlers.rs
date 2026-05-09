@@ -34,6 +34,7 @@ pub(super) fn handle_request(
         CommandRequest::Work(request) => {
             handle_work(request, environment, services, progress, &prompts)?
         }
+        CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::RebaseOnTrunk(request) => {
             let context = RepositoryContext::discover(environment)?;
             progress.status("Rebasing onto trunk…");
@@ -243,6 +244,18 @@ fn handle_work(
             )?;
             progress.finish();
             Ok(render_work_remove(&workspace))
+        }
+    }
+}
+
+fn handle_shell(
+    request: ShellRequest,
+    environment: &RuntimeEnvironment,
+) -> Result<String, CommandError> {
+    match request {
+        ShellRequest::Init(request) => {
+            let config = WorkflowConfig::discover_global(environment)?;
+            Ok(shell_init_script(request.shell, &config.shell))
         }
     }
 }

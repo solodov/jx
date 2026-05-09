@@ -4,11 +4,13 @@ mod diff;
 mod layout;
 mod parse;
 mod repo_policy;
+mod shell;
 
 pub use diff::*;
 pub use layout::*;
 use parse::{config_file_label, parse_workflow_config_layer, WorkflowConfigLayer};
 pub use repo_policy::*;
+pub use shell::*;
 
 const GLOBAL_CONFIG_RELATIVE_PATH: [&str; 2] = [".config", "jx"];
 const PROJECT_CONFIG_FILE: &str = ".jx.toml";
@@ -21,6 +23,7 @@ pub struct WorkflowConfig {
     pub repo: RepoConfig,
     pub diff: DiffConfig,
     pub auth: AuthConfig,
+    pub shell: ShellConfig,
 }
 
 impl WorkflowConfig {
@@ -128,10 +131,14 @@ impl WorkflowConfig {
         if let Some(auth) = layer.auth {
             self.auth.apply_layer(auth);
         }
+        if let Some(shell) = layer.shell {
+            self.shell.apply_layer(shell);
+        }
     }
 
     fn validate(&self) -> Result<(), RepositoryError> {
         self.layout.validate()?;
+        self.shell.validate()?;
 
         if let Some(default_tool) = &self.diff.default_tool {
             if !self.diff.tools.contains_key(default_tool) {
@@ -201,7 +208,7 @@ pub enum RepositoryError {
         source: toml::de::Error,
     },
     #[error(
-        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[[repo.rules]]`, `[diff]`, and `[auth.keychain] service/account`; remotes and hooks are not configurable."
+        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[[repo.rules]]`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes and hooks are not configurable."
     )]
     UnsupportedConfigKey { file: String, key: String },
     #[error("Invalid workflow config `{file}`: {message}")]

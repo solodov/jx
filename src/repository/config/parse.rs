@@ -7,6 +7,7 @@ pub(super) struct WorkflowConfigLayer {
     pub(super) repo: Option<RepoConfig>,
     pub(super) diff: Option<DiffConfig>,
     pub(super) auth: Option<AuthConfig>,
+    pub(super) shell: Option<ShellConfigLayer>,
 }
 
 pub(super) fn parse_workflow_config_layer(
@@ -21,7 +22,7 @@ pub(super) fn parse_workflow_config_layer(
         })?;
 
     for key in table.keys() {
-        if !matches!(key.as_str(), "layout" | "repo" | "diff" | "auth") {
+        if !matches!(key.as_str(), "layout" | "repo" | "diff" | "auth" | "shell") {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file,
                 key: key.clone(),
@@ -45,6 +46,10 @@ pub(super) fn parse_workflow_config_layer(
         .get("auth")
         .map(|value| parse_auth_config(&file, value))
         .transpose()?;
+    let shell = table
+        .get("shell")
+        .map(|value| parse_shell_config(&file, value))
+        .transpose()?;
 
     Ok(WorkflowConfigLayer {
         path,
@@ -52,6 +57,7 @@ pub(super) fn parse_workflow_config_layer(
         repo,
         diff,
         auth,
+        shell,
     })
 }
 
@@ -711,6 +717,56 @@ fn parse_rule_paths(
     Ok(normalized)
 }
 
+fn parse_shell_config(
+    file: &str,
+    value: &toml::Value,
+) -> Result<ShellConfigLayer, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: "`shell` must be a table".to_owned(),
+        });
+    };
+
+    for key in table.keys() {
+        if !matches!(key.as_str(), "navigation" | "zoxide") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("shell.{key}"),
+            });
+        }
+    }
+
+    let navigation = table
+        .get("navigation")
+        .map(|value| {
+            parse_string_value(file, "shell.navigation", value).map(|value| value.trim().to_owned())
+        })
+        .transpose()?;
+    let zoxide = table
+        .get("zoxide")
+        .map(|value| parse_shell_zoxide_mode(file, "shell.zoxide", value))
+        .transpose()?;
+
+    Ok(ShellConfigLayer { navigation, zoxide })
+}
+
+fn parse_shell_zoxide_mode(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<ShellZoxideMode, RepositoryError> {
+    let mode = parse_non_empty_string_value(file, key, value)?;
+    match mode.as_str() {
+        "auto" => Ok(ShellZoxideMode::Auto),
+        "never" => Ok(ShellZoxideMode::Never),
+        _ => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be `auto` or `never`"),
+        }),
+    }
+}
+
 fn parse_auth_config(file: &str, value: &toml::Value) -> Result<AuthConfig, RepositoryError> {
     let Some(table) = value.as_table() else {
         return Err(RepositoryError::InvalidConfig {
@@ -783,12 +839,7 @@ fn parse_non_empty_string_value(
     key: &str,
     value: &toml::Value,
 ) -> Result<String, RepositoryError> {
-    let Some(value) = value.as_str() else {
-        return Err(RepositoryError::InvalidConfig {
-            file: file.to_owned(),
-            message: format!("`{key}` must be a string"),
-        });
-    };
+    let value = parse_string_value(file, key, value)?;
     let value = value.trim();
 
     if value.is_empty() {
@@ -799,6 +850,20 @@ fn parse_non_empty_string_value(
     }
 
     Ok(value.to_owned())
+}
+
+fn parse_string_value(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<String, RepositoryError> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be a string"),
+        })
 }
 
 fn parse_bool_value(file: &str, key: &str, value: &toml::Value) -> Result<bool, RepositoryError> {

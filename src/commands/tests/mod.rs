@@ -541,6 +541,98 @@ path = "{repo}"
 }
 
 #[test]
+fn shell_init_bash_emits_configured_navigation_with_completion() {
+    // Verifies: Shell init includes work navigation, completion, and auto zoxide fallback.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation = "u"
+zoxide = "auto"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect("shell init succeeds");
+
+    assert!(result.stdout.contains("u() {"));
+    assert!(result.stdout.contains("command jx work root \"$1\""));
+    assert!(result
+        .stdout
+        .contains("command jx work complete --prefix \"$cur\""));
+    assert!(result.stdout.contains("command -v zoxide"));
+    assert!(result.stdout.contains("zoxide query \"$@\""));
+    assert!(result
+        .stdout
+        .contains("complete -o nospace -F __jx_u_completion u"));
+}
+
+#[test]
+fn shell_init_bash_can_disable_zoxide_fallback() {
+    // Verifies: zoxide integration is config-enabled and omitted when disabled.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation = "u"
+zoxide = "never"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect("shell init succeeds");
+
+    assert!(result.stdout.contains("u() {"));
+    assert!(!result.stdout.contains("zoxide"));
+}
+
+#[test]
+fn shell_init_bash_omits_navigation_when_unconfigured() {
+    // Verifies: The navigation command name is explicit user preference, not a baked-in default.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect("shell init succeeds");
+
+    assert_eq!(result.stdout, "");
+}
+
+#[test]
+fn shell_init_rejects_invalid_navigation_function_name() {
+    // Verifies: Generated shell snippets only interpolate safe function names.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation = "bad-name"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect_err("invalid shell command names are rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::InvalidConfig { .. })
+    ));
+}
+
+#[test]
 fn work_remove_can_be_cancelled() {
     // Verifies: Declining removal stops before jj forget or filesystem deletion.
     let workspace = TestWorkspace::new_under("projects/jx");

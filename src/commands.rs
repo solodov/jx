@@ -47,7 +47,7 @@ use crate::{
     repository::{
         validate_workspace_name, ClonePlan, DiffToolConfig, GitHubRepository, LayoutConfig,
         LocalRepositoryContext, RepositoryContext, RepositoryError, RepositoryIdentity,
-        RuntimeEnvironment, WorkflowConfig,
+        RuntimeEnvironment, ShellConfig, ShellZoxideMode, WorkflowConfig,
     },
 };
 
@@ -57,6 +57,7 @@ mod prompts;
 mod render;
 mod request;
 mod services;
+mod shell;
 mod work;
 
 use handlers::*;
@@ -69,6 +70,7 @@ pub use prompts::{
 use render::*;
 use request::*;
 use services::*;
+use shell::*;
 use work::*;
 
 /// Structured output returned by command orchestration.
