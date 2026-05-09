@@ -96,6 +96,9 @@ pub(super) trait CommandServices {
         workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError>;
 
+    /// Returns whether global fetch can safely mutate this repository without touching local work.
+    fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError>;
+
     /// Fetches origin and applies jj stack repair/rebase behavior.
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError>;
 
@@ -311,6 +314,11 @@ impl CommandServices for ProductionServices<'_> {
 
             domain::status_report(context, workspace, &github).await
         })
+    }
+
+    fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?
+            .is_empty_working_copy_child_of_origin_trunk()
     }
 
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {

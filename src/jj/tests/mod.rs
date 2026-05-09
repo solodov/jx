@@ -488,6 +488,91 @@ fn status_facts_reports_each_requested_remote_trunk() {
 }
 
 #[test]
+fn global_fetch_ready_accepts_empty_current_child_of_origin_trunk() {
+    // Verifies: Global fetch may safely run when only jj's empty working-copy commit is local.
+    let fixture = TestWorkspace::new("global-fetch-ready");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "main trunk",
+            &[("src/lib.rs", b"published")],
+        )
+        .await;
+        let empty_current = write_child(tx.repo_mut(), &trunk, "").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                empty_current.id().clone(),
+            )
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange global fetch ready workspace")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    assert!(subject
+        .is_empty_working_copy_child_of_origin_trunk()
+        .expect("readiness loads"));
+}
+
+#[test]
+fn global_fetch_ready_rejects_changed_current() {
+    // Verifies: Global fetch skips repos with local work above trunk.
+    let fixture = TestWorkspace::new("global-fetch-local-work");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "main trunk",
+            &[("src/lib.rs", b"published")],
+        )
+        .await;
+        let current = write_child_with_files(
+            tx.repo_mut(),
+            &trunk,
+            "local work",
+            &[("src/local.rs", b"local")],
+        )
+        .await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange global fetch local work workspace")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    assert!(!subject
+        .is_empty_working_copy_child_of_origin_trunk()
+        .expect("readiness loads"));
+}
+
+#[test]
 fn status_facts_ignore_empty_working_copy_commit() {
     // Verifies: Remote status does not report an empty jj working-copy commit as unpublished work.
     let fixture = TestWorkspace::new("status-empty-current");

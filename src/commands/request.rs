@@ -9,6 +9,7 @@ pub(super) enum CommandRequest {
     Work(WorkRequest),
     Shell(ShellRequest),
     RemoteStatus(RemoteStatusRequest),
+    Fetch(FetchRequest),
     RebaseOnTrunk(RebaseOnTrunkRequest),
     Push(PushRequest),
     Sync,
@@ -90,6 +91,11 @@ pub(super) struct RemoteStatusRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FetchRequest {
+    pub(super) all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RebaseOnTrunkRequest {
     pub(super) sources: Vec<String>,
 }
@@ -131,14 +137,9 @@ impl CommandRequest {
                     changed: matches.get_flag("changed"),
                 }))
             }
-            Some(("fetch" | "f", _)) => Ok(Self::Workflow {
-                command: WorkflowCommand::Fetch,
-                task_id: None,
-                commit: None,
-                labels: Vec::new(),
-                reviewers: Vec::new(),
-                draft: false,
-            }),
+            Some(("fetch" | "f", matches)) => Ok(Self::Fetch(FetchRequest {
+                all: matches.get_flag("all"),
+            })),
             Some(("rebase-on-trunk" | "rt", matches)) => {
                 Ok(Self::RebaseOnTrunk(RebaseOnTrunkRequest {
                     sources: sources(matches),
@@ -465,7 +466,8 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(
             ClapCommand::new("fetch")
                 .visible_alias("f")
-                .about("Fetch origin and rebase/repair the jj stack"),
+                .about("Fetch origin and rebase/repair the jj stack")
+                .arg(fetch_all_arg()),
         )
         .subcommand(
             ClapCommand::new("rebase-on-trunk")
@@ -584,6 +586,14 @@ fn remote_status_all_arg() -> Arg {
         .long("all")
         .action(ArgAction::SetTrue)
         .help("Check every primary repository in configured layout roots")
+}
+
+fn fetch_all_arg() -> Arg {
+    Arg::new("all")
+        .short('a')
+        .long("all")
+        .action(ArgAction::SetTrue)
+        .help("Fetch every safe primary repository in configured layout roots")
 }
 
 fn remote_status_repo_arg() -> Arg {

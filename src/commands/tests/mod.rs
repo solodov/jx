@@ -21,6 +21,7 @@ use jj_lib::{
     workspace::{default_working_copy_factories, Workspace},
 };
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -1351,6 +1352,104 @@ fn f_alias_runs_fetch() {
         .expect("fetch alias succeeds");
 
     assert!(result.stdout.starts_with("Fetched: origin/main "));
+}
+
+#[test]
+fn fetch_all_only_fetches_global_ready_repositories() {
+    // Verifies: Global fetch mutates only repos whose working copy is safe to auto-fetch.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let ready = workspace.create_jj_workspace("projects/ready");
+    let local_work = workspace.create_jj_workspace("projects/local-work");
+    TestWorkspace::write_git_config_at(
+        &ready,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/ready.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &local_work,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/local-work.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        global_fetch_ready_roots: Some(BTreeSet::from([ready.clone()])),
+        fetch: FetchOutcome {
+            branch: "main".to_owned(),
+            changed_remote_bookmarks: 0,
+            changed_remote_tags: 0,
+            abandoned_commits: 0,
+            rebased_trunk_children: 0,
+            rebased_descendants: 0,
+            skipped_trunk_children: 0,
+            current_repaired: false,
+            rebased_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "fetch", "--all"], &environment, &services)
+        .expect("global fetch succeeds");
+
+    assert_eq!(result.stdout, "~/projects/ready\n");
+    assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [ready]);
+}
+
+#[test]
+fn f_alias_accepts_all_flag() {
+    // Verifies: The short fetch alias supports global fetch ergonomics.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let ready = workspace.create_jj_workspace("projects/ready");
+    TestWorkspace::write_git_config_at(
+        &ready,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/ready.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        fetch: FetchOutcome {
+            branch: "main".to_owned(),
+            changed_remote_bookmarks: 0,
+            changed_remote_tags: 0,
+            abandoned_commits: 0,
+            rebased_trunk_children: 0,
+            rebased_descendants: 0,
+            skipped_trunk_children: 0,
+            current_repaired: false,
+            rebased_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "f", "-a"], &environment, &services)
+        .expect("global fetch alias succeeds");
+
+    assert_eq!(result.stdout, "~/projects/ready\n");
 }
 
 #[test]
@@ -2785,6 +2884,8 @@ struct FakeServices {
     status: StatusReport,
     status_uses_context_remotes: bool,
     clean_status_repos: Vec<String>,
+    global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
+    fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
@@ -2870,6 +2971,8 @@ impl Default for FakeServices {
             },
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
+            global_fetch_ready_roots: None,
+            fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -3215,7 +3318,17 @@ impl CommandServices for FakeServices {
         Ok(status)
     }
 
-    fn fetch_origin(&self, _context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
+    fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError> {
+        Ok(self
+            .global_fetch_ready_roots
+            .as_ref()
+            .is_none_or(|roots| roots.contains(&context.workspace_root)))
+    }
+
+    fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
+        self.fetch_origin_roots
+            .borrow_mut()
+            .push(context.workspace_root.clone());
         Ok(self.fetch.clone())
     }
 

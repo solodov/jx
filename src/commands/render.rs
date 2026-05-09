@@ -63,6 +63,12 @@ pub(super) fn write_check(formatter: &mut dyn Formatter, report: &CheckReport) -
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GlobalFetchEntry {
+    pub(super) display_root: String,
+    pub(super) result: Result<(), String>,
+}
+
 pub(super) fn render_fetch(
     report: &FetchReport,
     current_dir: &Path,
@@ -73,7 +79,34 @@ pub(super) fn render_fetch(
     })
 }
 
+pub(super) fn render_global_fetch(
+    entries: &[GlobalFetchEntry],
+    current_dir: &Path,
+    color: bool,
+) -> Result<String, JjError> {
+    render_linked_output(current_dir, color, |formatter| {
+        for entry in entries {
+            match &entry.result {
+                Ok(()) => writeln!(formatter, "{}", entry.display_root)?,
+                Err(message) => writeln!(formatter, "{} error: {message}", entry.display_root)?,
+            }
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn write_fetch(formatter: &mut dyn Formatter, report: &FetchReport) -> io::Result<()> {
+    write_fetch_prefix(formatter, report)?;
+    writeln!(formatter, ")")?;
+    write_rebased_section(
+        formatter,
+        report.repository.origin_name,
+        &report.outcome.branch,
+        visible_rebased_commits(&report.outcome),
+    )
+}
+
+fn write_fetch_prefix(formatter: &mut dyn Formatter, report: &FetchReport) -> io::Result<()> {
     write!(
         formatter,
         "Fetched: {}/{} (",
@@ -83,13 +116,6 @@ pub(super) fn write_fetch(formatter: &mut dyn Formatter, report: &FetchReport) -
         formatter,
         &branch_url(&report.repository.github_url, &report.outcome.branch),
         &report.repository.origin_url,
-    )?;
-    writeln!(formatter, ")")?;
-    write_rebased_section(
-        formatter,
-        report.repository.origin_name,
-        &report.outcome.branch,
-        visible_rebased_commits(&report.outcome),
     )
 }
 

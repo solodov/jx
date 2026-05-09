@@ -38,6 +38,9 @@ pub(super) fn handle_request(
         CommandRequest::RemoteStatus(request) => {
             handle_remote_status(request, environment, services, progress, output)?
         }
+        CommandRequest::Fetch(request) => {
+            handle_fetch(request, environment, services, progress, output)?
+        }
         CommandRequest::RebaseOnTrunk(request) => {
             let context = RepositoryContext::discover(environment)?;
             progress.status("Rebasing onto trunk…");
@@ -105,14 +108,6 @@ pub(super) fn handle_request(
                     let report = services.check_readiness(&context, workspace)?;
                     render_check(&report, environment.current_dir(), output.color)?
                 }
-                WorkflowCommand::Fetch => {
-                    let _ = labels;
-                    progress.status("Fetching origin…");
-                    let outcome = services.fetch_origin(&context)?;
-                    progress.finish();
-                    let report = domain::fetch_report(&context, outcome);
-                    render_fetch(&report, environment.current_dir(), output.color)?
-                }
                 WorkflowCommand::PullRequest => {
                     progress.status("Planning pull request…");
                     let status = services
@@ -151,6 +146,72 @@ pub(super) fn handle_request(
     };
 
     Ok(CommandResult { stdout })
+}
+
+fn handle_fetch(
+    request: FetchRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
+    if request.all {
+        return handle_global_fetch(environment, services, progress, output);
+    }
+
+    let context = RepositoryContext::discover(environment)?;
+    progress.status("Fetching origin…");
+    let outcome = services.fetch_origin(&context)?;
+    progress.finish();
+    let report = domain::fetch_report(&context, outcome);
+    render_fetch(&report, environment.current_dir(), output.color).map_err(Into::into)
+}
+
+fn handle_global_fetch(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
+    let config = WorkflowConfig::discover_global(environment)?;
+    let repositories = global_work_repositories(&config, environment)?;
+    let mut entries = Vec::new();
+
+    for repository in repositories {
+        progress.status(&format!("Fetching {}…", repository.key));
+        match global_fetch_for_repository(&repository.root, environment, services) {
+            Ok(true) => entries.push(GlobalFetchEntry {
+                display_root: display_path(&repository.root, environment),
+                result: Ok(()),
+            }),
+            Ok(false) => {}
+            Err(error) => entries.push(GlobalFetchEntry {
+                display_root: display_path(&repository.root, environment),
+                result: Err(error.to_string()),
+            }),
+        }
+    }
+
+    progress.finish();
+    render_global_fetch(&entries, environment.current_dir(), output.color).map_err(Into::into)
+}
+
+fn global_fetch_for_repository(
+    root: &Path,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+) -> Result<bool, CommandError> {
+    let environment = environment.with_current_dir(root);
+    let context = match RepositoryContext::discover(&environment) {
+        Ok(context) => context,
+        Err(_) => return Ok(false),
+    };
+    if !services.global_fetch_ready(&context)? {
+        return Ok(false);
+    }
+
+    services.fetch_origin(&context)?;
+    Ok(true)
 }
 
 fn handle_remote_status(

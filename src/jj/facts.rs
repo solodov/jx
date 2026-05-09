@@ -47,6 +47,33 @@ impl JjWorkspace {
         Ok(count)
     }
 
+    /// Returns whether global fetch can safely update this repo without touching local work.
+    pub fn is_empty_working_copy_child_of_origin_trunk(&self) -> Result<bool, JjError> {
+        self.ensure_git_backed()?;
+        let current = self.current_commit()?;
+        if !current.description().trim().is_empty() {
+            return Ok(false);
+        }
+
+        let is_empty =
+            pollster::block_on(current.is_empty(self.repo.as_ref())).map_err(|error| {
+                JjError::Backend {
+                    message: error.to_string(),
+                }
+            })?;
+        if !is_empty {
+            return Ok(false);
+        }
+
+        let parents = current.parent_ids();
+        let [parent] = parents else {
+            return Ok(false);
+        };
+        let (_, trunk) = self.resolve_trunk_for_remote(&current, ORIGIN_REMOTE_NAME)?;
+
+        Ok(parent == trunk.id())
+    }
+
     /// Returns read-side facts for the selected revision, or the working copy when omitted.
     pub fn facts_for_revision(&self, revision: Option<&str>) -> Result<WorkspaceFacts, JjError> {
         self.ensure_git_backed()?;
