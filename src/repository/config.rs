@@ -235,6 +235,10 @@ pub enum RepositoryError {
     WorkLocationNotFound { key: String },
     #[error("Work location `{key}` matches multiple paths: {paths:?}")]
     WorkLocationAmbiguous { key: String, paths: Vec<PathBuf> },
+    #[error("Invalid repository filter `{pattern}`: {message}")]
+    InvalidRepositoryFilter { pattern: String, message: String },
+    #[error("No configured repository matched `{pattern}`")]
+    RepositoryFilterNotFound { pattern: String },
     #[error("Layout source `{name}` is not configured. Add `[[layout.sources]]` for that source or use an explicit host/URL.")]
     UnknownLayoutSource { name: String },
     #[error("Multiple layout sources use host `{host}`: {sources:?}. Use `source:owner/repo` to disambiguate.")]

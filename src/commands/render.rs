@@ -849,6 +849,12 @@ pub(super) fn workspace_remove_confirmation_prompt(workspace: &WorkspaceEntry) -
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GlobalStatusEntry {
+    pub(super) root: PathBuf,
+    pub(super) result: Result<StatusReport, String>,
+}
+
 pub(super) fn render_status(
     report: &StatusReport,
     current_dir: &Path,
@@ -859,8 +865,36 @@ pub(super) fn render_status(
     })
 }
 
+pub(super) fn render_global_status(
+    entries: &[GlobalStatusEntry],
+    current_dir: &Path,
+    color: bool,
+) -> Result<String, JjError> {
+    render_linked_output(current_dir, color, |formatter| {
+        for entry in entries {
+            match &entry.result {
+                Ok(report) => write_status_with_prefix(formatter, report, &entry.root)?,
+                Err(message) => writeln!(formatter, "{} error: {message}", entry.root.display())?,
+            }
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn write_status(formatter: &mut dyn Formatter, report: &StatusReport) -> io::Result<()> {
     for remote in &report.remotes {
+        write_remote_status(formatter, remote)?;
+    }
+    Ok(())
+}
+
+pub(super) fn write_status_with_prefix(
+    formatter: &mut dyn Formatter,
+    report: &StatusReport,
+    prefix: &Path,
+) -> io::Result<()> {
+    for remote in &report.remotes {
+        write!(formatter, "{} ", prefix.display())?;
         write_remote_status(formatter, remote)?;
     }
     Ok(())

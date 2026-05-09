@@ -1062,6 +1062,151 @@ fn remote_status_renders_one_line_per_github_remote() {
 }
 
 #[test]
+fn remote_status_all_prefixes_each_layout_repository_path() {
+    // Verifies: Global remote-status scans configured repos and keeps the normal per-remote row.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let alpha = workspace.create_jj_workspace("projects/alpha");
+    let beta = workspace.create_jj_workspace("projects/beta");
+    TestWorkspace::write_git_config_at(
+        &alpha,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/alpha.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &beta,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/beta.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        ..FakeServices::default()
+    };
+
+    let result =
+        run_with_args_and_services(["jx", "remote-status", "--all"], &environment, &services)
+            .expect("global remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "{} remote: origin (\x1b]8;;https://github.com/example-owner/alpha/tree/main\x1b\\ssh://git@github.com/example-owner/alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n{} remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n",
+            alpha.display(),
+            beta.display()
+        )
+    );
+}
+
+#[test]
+fn remote_status_repo_filter_accepts_globs() {
+    // Verifies: --repo selects configured repository keys with glob matching.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let alpha = workspace.create_jj_workspace("projects/api-alpha");
+    let beta = workspace.create_jj_workspace("projects/web-beta");
+    TestWorkspace::write_git_config_at(
+        &alpha,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api-alpha.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &beta,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/web-beta.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "remote-status", "--repo", "api-*"],
+        &environment,
+        &services,
+    )
+    .expect("filtered global remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "{} remote: origin (\x1b]8;;https://github.com/example-owner/api-alpha/tree/main\x1b\\ssh://git@github.com/example-owner/api-alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n",
+            alpha.display()
+        )
+    );
+}
+
+#[test]
+fn remote_status_all_renders_repository_errors_as_rows() {
+    // Verifies: One misconfigured repo does not hide status for the rest of the layout.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let ok = workspace.create_jj_workspace("projects/ok");
+    let missing = workspace.create_jj_workspace("projects/missing-origin");
+    TestWorkspace::write_git_config_at(
+        &ok,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/ok.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        ..FakeServices::default()
+    };
+
+    let result =
+        run_with_args_and_services(["jx", "remote-status", "--all"], &environment, &services)
+            .expect("global remote-status keeps going");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "{} error: The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n{} remote: origin (\x1b]8;;https://github.com/example-owner/ok/tree/main\x1b\\ssh://git@github.com/example-owner/ok.git\x1b]8;;\x1b\\), 3 commits ahead\n",
+            missing.display(),
+            ok.display()
+        )
+    );
+}
+
+#[test]
 fn fetch_renders_rebased_commit_details_like_sync() {
     // Verifies: Fetch uses the same rebased-commit detail section as sync.
     let workspace = TestWorkspace::new();
@@ -2602,6 +2747,7 @@ struct FakeServices {
     status_workspace: StatusWorkspaceFacts,
     check: CheckReport,
     status: StatusReport,
+    status_uses_context_remotes: bool,
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
@@ -2685,6 +2831,7 @@ impl Default for FakeServices {
                     },
                 }],
             },
+            status_uses_context_remotes: false,
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -2997,10 +3144,23 @@ impl CommandServices for FakeServices {
 
     fn status_report(
         &self,
-        _context: &RepositoryContext,
+        context: &RepositoryContext,
         _workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError> {
-        Ok(self.status.clone())
+        let mut status = self.status.clone();
+        if self.status_uses_context_remotes {
+            for remote in &mut status.remotes {
+                if let Some(context_remote) = context
+                    .github_remotes
+                    .iter()
+                    .find(|context_remote| context_remote.name == remote.name)
+                {
+                    remote.url = context_remote.url.clone();
+                    remote.github_url = context_remote.github.https_url();
+                }
+            }
+        }
+        Ok(status)
     }
 
     fn fetch_origin(&self, _context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
@@ -3305,18 +3465,27 @@ impl TestWorkspace {
         fs::write(path, contents).expect("write home test file");
     }
 
+    fn create_jj_workspace(&self, relative_path: &str) -> PathBuf {
+        let root = self.home.join(relative_path);
+        fs::create_dir_all(&root).expect("create workspace root");
+        let settings = test_settings();
+        pollster::block_on(Workspace::init_internal_git(&settings, &root))
+            .expect("initialize jj workspace");
+        root
+    }
+
     fn write_git_config(&self, contents: &str) {
+        Self::write_git_config_at(&self.root, contents);
+    }
+
+    fn write_git_config_at(root: &Path, contents: &str) {
         for (name, url) in test_config_remotes(contents) {
             let settings = test_settings();
             let store_factories = StoreFactories::default();
             let working_copy_factories = default_working_copy_factories();
-            let workspace = Workspace::load(
-                &settings,
-                &self.root,
-                &store_factories,
-                &working_copy_factories,
-            )
-            .expect("load jj workspace");
+            let workspace =
+                Workspace::load(&settings, root, &store_factories, &working_copy_factories)
+                    .expect("load jj workspace");
             let repo =
                 pollster::block_on(workspace.repo_loader().load_at_head()).expect("load jj repo");
             let mut tx = repo.start_transaction();

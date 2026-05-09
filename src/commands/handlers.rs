@@ -35,6 +35,9 @@ pub(super) fn handle_request(
             handle_work(request, environment, services, progress, &prompts)?
         }
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
+        CommandRequest::RemoteStatus(request) => {
+            handle_remote_status(request, environment, services, progress, output)?
+        }
         CommandRequest::RebaseOnTrunk(request) => {
             let context = RepositoryContext::discover(environment)?;
             progress.status("Rebasing onto trunk…");
@@ -102,15 +105,6 @@ pub(super) fn handle_request(
                     let report = services.check_readiness(&context, workspace)?;
                     render_check(&report, environment.current_dir(), output.color)?
                 }
-                WorkflowCommand::RemoteStatus => {
-                    let _ = labels;
-                    progress.status("Loading remote status…");
-                    let workspace = services.status_workspace_facts(&context)?;
-                    progress.status("Checking GitHub remotes…");
-                    let report = services.status_report(&context, workspace)?;
-                    progress.finish();
-                    render_status(&report, environment.current_dir(), output.color)?
-                }
                 WorkflowCommand::Fetch => {
                     let _ = labels;
                     progress.status("Fetching origin…");
@@ -157,6 +151,62 @@ pub(super) fn handle_request(
     };
 
     Ok(CommandResult { stdout })
+}
+
+fn handle_remote_status(
+    request: RemoteStatusRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
+    if request.all || !request.repo_filters.is_empty() {
+        return handle_global_remote_status(request, environment, services, progress, output);
+    }
+
+    let context = RepositoryContext::discover(environment)?;
+    progress.status("Loading remote status…");
+    let workspace = services.status_workspace_facts(&context)?;
+    progress.status("Checking GitHub remotes…");
+    let report = services.status_report(&context, workspace)?;
+    progress.finish();
+    render_status(&report, environment.current_dir(), output.color).map_err(Into::into)
+}
+
+fn handle_global_remote_status(
+    request: RemoteStatusRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
+    let config = WorkflowConfig::discover_global(environment)?;
+    let repositories = global_work_repositories(&config, environment)?;
+    let repositories = filter_work_repositories(&repositories, &request.repo_filters)?;
+    let mut entries = Vec::new();
+
+    for repository in repositories {
+        progress.status(&format!("Checking {}…", repository.key));
+        entries.push(GlobalStatusEntry {
+            root: repository.root.clone(),
+            result: global_remote_status_for_repository(&repository.root, environment, services)
+                .map_err(|error| error.to_string()),
+        });
+    }
+
+    progress.finish();
+    render_global_status(&entries, environment.current_dir(), output.color).map_err(Into::into)
+}
+
+fn global_remote_status_for_repository(
+    root: &Path,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+) -> Result<StatusReport, CommandError> {
+    let environment = environment.with_current_dir(root);
+    let context = RepositoryContext::discover(&environment)?;
+    let workspace = services.status_workspace_facts(&context)?;
+    Ok(services.status_report(&context, workspace)?)
 }
 
 fn handle_work(

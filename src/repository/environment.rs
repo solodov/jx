@@ -32,6 +32,14 @@ impl RuntimeEnvironment {
         &self.current_dir
     }
 
+    /// Returns a copy of this process state rooted at a different working directory.
+    pub fn with_current_dir(&self, current_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            current_dir: current_dir.into(),
+            variables: self.variables.clone(),
+        }
+    }
+
     pub(super) fn variable(&self, name: &str) -> Option<&str> {
         self.variables.get(name).map(String::as_str)
     }

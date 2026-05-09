@@ -1,9 +1,17 @@
 use super::*;
+use globset::Glob;
 use std::fs;
 
 /// One globally navigable work location discovered from the configured layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkLocation {
+    pub(super) key: String,
+    pub(super) root: PathBuf,
+}
+
+/// One primary repository checkout discovered from the configured layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkRepository {
     pub(super) key: String,
     pub(super) root: PathBuf,
 }
@@ -49,6 +57,48 @@ pub(super) fn filter_work_locations_by_prefix(
         .collect()
 }
 
+/// Builds the global primary-checkout index used by cross-repository commands.
+pub(super) fn global_work_repositories(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+) -> Result<Vec<WorkRepository>, RepositoryError> {
+    Ok(global_work_locations(config, environment)?
+        .into_iter()
+        .filter(|location| !location.key.contains('@'))
+        .map(|location| WorkRepository {
+            key: location.key,
+            root: location.root,
+        })
+        .collect())
+}
+
+pub(super) fn filter_work_repositories(
+    repositories: &[WorkRepository],
+    patterns: &[String],
+) -> Result<Vec<WorkRepository>, RepositoryError> {
+    if patterns.is_empty() {
+        return Ok(repositories.to_vec());
+    }
+
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for pattern in patterns {
+        let matches = matching_work_repositories(repositories, pattern)?;
+        if matches.is_empty() {
+            return Err(RepositoryError::RepositoryFilterNotFound {
+                pattern: pattern.clone(),
+            });
+        }
+        for repository in matches {
+            if seen.insert(repository.key.clone()) {
+                selected.push(repository.clone());
+            }
+        }
+    }
+
+    Ok(selected)
+}
+
 pub(super) fn resolve_work_location(
     locations: &[WorkLocation],
     key: &str,
@@ -71,6 +121,35 @@ pub(super) fn resolve_work_location(
                 .collect(),
         }),
     }
+}
+
+fn matching_work_repositories<'a>(
+    repositories: &'a [WorkRepository],
+    pattern: &str,
+) -> Result<Vec<&'a WorkRepository>, RepositoryError> {
+    if contains_glob_meta(pattern) {
+        let matcher = Glob::new(pattern)
+            .map_err(|source| RepositoryError::InvalidRepositoryFilter {
+                pattern: pattern.to_owned(),
+                message: source.to_string(),
+            })?
+            .compile_matcher();
+        Ok(repositories
+            .iter()
+            .filter(|repository| matcher.is_match(&repository.key))
+            .collect())
+    } else {
+        Ok(repositories
+            .iter()
+            .filter(|repository| repository.key.starts_with(pattern))
+            .collect())
+    }
+}
+
+fn contains_glob_meta(pattern: &str) -> bool {
+    pattern
+        .bytes()
+        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
 }
 
 fn collect_jj_workspace_roots(root: &Path, max_depth: usize, roots: &mut Vec<PathBuf>) {

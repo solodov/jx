@@ -8,6 +8,7 @@ pub(super) enum CommandRequest {
     Clone(CloneRequest),
     Work(WorkRequest),
     Shell(ShellRequest),
+    RemoteStatus(RemoteStatusRequest),
     RebaseOnTrunk(RebaseOnTrunkRequest),
     Push(PushRequest),
     Sync,
@@ -82,6 +83,12 @@ pub(super) struct ShellInitRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RemoteStatusRequest {
+    pub(super) all: bool,
+    pub(super) repo_filters: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RebaseOnTrunkRequest {
     pub(super) sources: Vec<String>,
 }
@@ -116,14 +123,12 @@ impl CommandRequest {
                 reviewers: Vec::new(),
                 draft: false,
             }),
-            Some(("remote-status" | "rs", _)) => Ok(Self::Workflow {
-                command: WorkflowCommand::RemoteStatus,
-                task_id: None,
-                commit: None,
-                labels: Vec::new(),
-                reviewers: Vec::new(),
-                draft: false,
-            }),
+            Some(("remote-status" | "rs", matches)) => {
+                Ok(Self::RemoteStatus(RemoteStatusRequest {
+                    all: matches.get_flag("all"),
+                    repo_filters: repo_filters(matches),
+                }))
+            }
             Some(("fetch" | "f", _)) => Ok(Self::Workflow {
                 command: WorkflowCommand::Fetch,
                 task_id: None,
@@ -229,6 +234,17 @@ fn sources(matches: &ArgMatches) -> Vec<String> {
         .into_iter()
         .flatten()
         .cloned()
+        .collect()
+}
+
+fn repo_filters(matches: &ArgMatches) -> Vec<String> {
+    matches
+        .get_many::<String>("repo")
+        .into_iter()
+        .flatten()
+        .map(|filter| filter.trim())
+        .filter(|filter| !filter.is_empty())
+        .map(str::to_owned)
         .collect()
 }
 
@@ -439,7 +455,9 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(
             ClapCommand::new("remote-status")
                 .visible_alias("rs")
-                .about("Compare local remote trunks with GitHub"),
+                .about("Compare local remote trunks with GitHub")
+                .arg(remote_status_all_arg())
+                .arg(remote_status_repo_arg()),
         )
         .subcommand(
             ClapCommand::new("fetch")
@@ -555,6 +573,21 @@ fn source_arg() -> Arg {
         .value_name("COMMIT")
         .action(ArgAction::Append)
         .help("Rebase a specific jj revision and its descendants; repeat for multiple sources")
+}
+
+fn remote_status_all_arg() -> Arg {
+    Arg::new("all")
+        .long("all")
+        .action(ArgAction::SetTrue)
+        .help("Check every primary repository in configured layout roots")
+}
+
+fn remote_status_repo_arg() -> Arg {
+    Arg::new("repo")
+        .long("repo")
+        .value_name("GLOB")
+        .action(ArgAction::Append)
+        .help("Check matching configured repository keys; repeat for multiple filters")
 }
 
 fn push_revision_arg() -> Arg {
