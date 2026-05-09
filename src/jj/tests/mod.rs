@@ -439,8 +439,20 @@ fn status_facts_reports_each_requested_remote_trunk() {
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let origin_trunk = write_child(tx.repo_mut(), &root, "origin trunk").await;
-        let upstream_trunk = write_child(tx.repo_mut(), &origin_trunk, "upstream trunk").await;
-        let current = write_child(tx.repo_mut(), &upstream_trunk, "current change").await;
+        let upstream_trunk = write_child_with_files(
+            tx.repo_mut(),
+            &origin_trunk,
+            "upstream trunk",
+            &[("upstream.txt", b"upstream")],
+        )
+        .await;
+        let current = write_child_with_files(
+            tx.repo_mut(),
+            &upstream_trunk,
+            "current change",
+            &[("current.txt", b"current")],
+        )
+        .await;
 
         set_remote_bookmark(tx.repo_mut(), "origin", "main", origin_trunk.id());
         set_remote_bookmark(tx.repo_mut(), "upstream", "main", upstream_trunk.id());
@@ -473,6 +485,47 @@ fn status_facts_reports_each_requested_remote_trunk() {
         upstream_trunk.id().hex()
     );
     assert_eq!(facts.remotes[1].local_ahead_by, 1);
+}
+
+#[test]
+fn status_facts_ignore_empty_working_copy_commit() {
+    // Verifies: Remote status does not report an empty jj working-copy commit as unpublished work.
+    let fixture = TestWorkspace::new("status-empty-current");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "main trunk",
+            &[("src/lib.rs", b"published")],
+        )
+        .await;
+        let empty_current = write_child(tx.repo_mut(), &trunk, "").await;
+
+        set_remote_bookmark(tx.repo_mut(), "origin", "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                empty_current.id().clone(),
+            )
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange empty current status workspace")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject.status_facts(["origin"]).expect("status facts load");
+
+    assert_eq!(facts.remotes[0].local_ahead_by, 0);
 }
 
 #[test]

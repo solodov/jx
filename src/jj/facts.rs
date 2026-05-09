@@ -17,7 +17,8 @@ impl JjWorkspace {
 
         for remote in remote_names {
             let (branch, trunk) = self.resolve_trunk_for_remote(&target, remote)?;
-            let local_ahead_by = self.linear_stack_path(&trunk, &target)?.len() as i64;
+            let stack_path = self.linear_stack_path(&trunk, &target)?;
+            let local_ahead_by = self.non_empty_commit_count(&stack_path)?;
             remotes.push(StatusRemoteFacts {
                 remote: remote.to_owned(),
                 branch,
@@ -28,6 +29,22 @@ impl JjWorkspace {
         }
 
         Ok(StatusWorkspaceFacts { remotes })
+    }
+
+    fn non_empty_commit_count(&self, commits: &[Commit]) -> Result<i64, JjError> {
+        let mut count = 0;
+        for commit in commits {
+            let is_empty =
+                pollster::block_on(commit.is_empty(self.repo.as_ref())).map_err(|error| {
+                    JjError::Backend {
+                        message: error.to_string(),
+                    }
+                })?;
+            if !is_empty {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     /// Returns read-side facts for the selected revision, or the working copy when omitted.
