@@ -32,7 +32,7 @@ pub struct PipeDiffTool {
     pub args: Vec<String>,
 }
 
-/// Clones a Git repository through jj while inheriting the operator's terminal.
+/// Clones a Git repository through jj while keeping operator-facing output owned by `jx`.
 pub fn run_jj_git_clone(
     current_dir: &Path,
     remote_url: &str,
@@ -40,6 +40,7 @@ pub fn run_jj_git_clone(
 ) -> Result<(), JjError> {
     let status = Command::new("jj")
         .arg("--no-pager")
+        .arg("--quiet")
         .arg("git")
         .arg("clone")
         .arg(remote_url)

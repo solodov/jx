@@ -163,8 +163,19 @@ pub(super) fn render_pull_request(report: &PullRequestReport) -> String {
     }
 }
 
-pub(super) fn render_clone(plan: &ClonePlan) -> String {
-    format!("Cloned: {}\n", plan.destination.display())
+pub(super) fn render_clone(plan: &ClonePlan, destination: &str) -> String {
+    format!("Cloned {} to {destination}\n", clone_link(plan))
+}
+
+pub(super) fn clone_link(plan: &ClonePlan) -> String {
+    osc8_link(&clone_web_url(plan), &plan.remote_url)
+}
+
+fn clone_web_url(plan: &ClonePlan) -> String {
+    format!(
+        "https://{}/{}/{}",
+        plan.identity.host, plan.identity.owner, plan.identity.repo
+    )
 }
 
 pub(super) fn render_work_add(options: &WorkspaceAddOptions) -> String {
@@ -1028,7 +1039,6 @@ pub(super) fn url_query_encode(value: &str) -> String {
     encoded
 }
 
-#[cfg(test)]
 pub(super) fn osc8_link(uri: &str, label: &str) -> String {
     format!("\x1b]8;;{uri}\x1b\\{label}\x1b]8;;\x1b\\")
 }

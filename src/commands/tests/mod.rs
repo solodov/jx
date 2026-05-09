@@ -158,7 +158,13 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!("Cloned: {}\n", expected_destination.display())
+        format!(
+            "Cloned {} to ~/work/example-repo\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "git@github.com:example-owner/example-repo.git"
+            )
+        )
     );
 }
 
@@ -187,7 +193,13 @@ fn clone_uses_default_layout_for_unmatched_github_repos() {
 
     assert_eq!(
         result.stdout,
-        format!("Cloned: {}\n", expected_destination.display())
+        format!(
+            "Cloned {} to ~/src/github.com/example-owner/example-repo\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "git@github.com:example-owner/example-repo.git"
+            )
+        )
     );
 }
 
@@ -224,7 +236,13 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!("Cloned: {}\n", expected_destination.display())
+        format!(
+            "Cloned {} to ~/work/example-repo\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "git@github.com:example-owner/example-repo.git"
+            )
+        )
     );
 }
 
@@ -263,7 +281,13 @@ clone_url = "https"
 
     assert_eq!(
         result.stdout,
-        format!("Cloned: {}\n", expected_destination.display())
+        format!(
+            "Cloned {} to ~/src/github.com/example-owner/example-repo\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "https://github.com/example-owner/example-repo.git"
+            )
+        )
     );
 }
 
@@ -304,7 +328,13 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!("Cloned: {}\n", expected_destination.display())
+        format!(
+            "Cloned {} to ~/work/example-repo\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo",
+                "https://github.com/example-owner/example-repo.git"
+            )
+        )
     );
 }
 

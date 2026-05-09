@@ -26,10 +26,10 @@ pub(super) fn handle_request(
                 request.destination.as_deref(),
                 environment,
             )?;
-            progress.status("Cloning repository…");
+            progress.status(&format!("Cloning {}", clone_link(&plan)));
             services.clone_repository(environment.current_dir(), &plan)?;
             progress.finish();
-            render_clone(&plan)
+            render_clone(&plan, &display_path(&plan.destination, environment))
         }
         CommandRequest::Work(request) => {
             handle_work(request, environment, services, progress, &prompts)?
