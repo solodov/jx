@@ -560,6 +560,9 @@ zoxide = "auto"
         run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
             .expect("shell init succeeds");
 
+    assert!(result.stdout.contains("complete -F _jx"));
+    assert!(result.stdout.contains("remote-status"));
+    assert!(result.stdout.contains("--changed"));
     assert!(result.stdout.contains("u() {"));
     assert!(result.stdout.contains("command jx work root \"$1\""));
     assert!(result
@@ -596,8 +599,8 @@ zoxide = "never"
 }
 
 #[test]
-fn shell_init_bash_omits_navigation_when_unconfigured() {
-    // Verifies: The navigation command name is explicit user preference, not a baked-in default.
+fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
+    // Verifies: CLI completion is default while navigation remains an explicit user preference.
     let workspace = TestWorkspace::new();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices::default();
@@ -606,7 +609,9 @@ fn shell_init_bash_omits_navigation_when_unconfigured() {
         run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
             .expect("shell init succeeds");
 
-    assert_eq!(result.stdout, "");
+    assert!(result.stdout.contains("complete -F _jx"));
+    assert!(result.stdout.contains("remote-status"));
+    assert!(!result.stdout.contains("u() {"));
 }
 
 #[test]

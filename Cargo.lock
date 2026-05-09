@@ -3075,6 +3075,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "clap_complete",
  "dialoguer",
  "futures 0.3.32",
  "gix",

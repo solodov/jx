@@ -14,15 +14,28 @@ pub(super) fn shell_init_script(shell: ShellKind, config: &ShellConfig) -> Strin
 }
 
 fn bash_init_script(config: &ShellConfig) -> String {
-    let Some(command) = config.navigation_command() else {
-        return String::new();
-    };
+    let mut script = bash_cli_completion_script();
 
-    if config.zoxide == ShellZoxideMode::Auto {
-        bash_navigation_script_with_zoxide(command)
-    } else {
-        bash_navigation_script_without_zoxide(command)
+    if let Some(command) = config.navigation_command() {
+        if !script.ends_with('\n') {
+            script.push('\n');
+        }
+        script.push('\n');
+        if config.zoxide == ShellZoxideMode::Auto {
+            script.push_str(&bash_navigation_script_with_zoxide(command));
+        } else {
+            script.push_str(&bash_navigation_script_without_zoxide(command));
+        }
     }
+
+    script
+}
+
+fn bash_cli_completion_script() -> String {
+    let mut command = cli();
+    let mut output = Vec::new();
+    clap_complete::generate(clap_complete::Shell::Bash, &mut command, "jx", &mut output);
+    String::from_utf8(output).expect("clap_complete emits valid UTF-8")
 }
 
 fn bash_navigation_script_with_zoxide(command: &str) -> String {
