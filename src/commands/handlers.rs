@@ -750,20 +750,16 @@ fn handle_global_sync(
 ) -> Result<String, CommandError> {
     let config = WorkflowConfig::discover_global(environment)?;
     let repositories = global_work_repositories(&config, environment)?;
+    let total = repositories.len();
     let mut entries = Vec::new();
 
-    for repository in repositories {
-        progress.status(&format!("Checking {}…", repository.key));
+    for (index, repository) in repositories.into_iter().enumerate() {
+        progress.percentage(&format!("Syncing {}", repository.key), index, total);
         entries.push(GlobalSyncEntry {
             display_root: display_path(&repository.root, environment),
-            outcome: global_sync_for_repository(
-                &repository.root,
-                &repository.key,
-                environment,
-                services,
-                progress,
-            ),
+            outcome: global_sync_for_repository(&repository.root, environment, services),
         });
+        progress.percentage(&format!("Syncing {}", repository.key), index + 1, total);
     }
 
     progress.finish();
@@ -772,12 +768,10 @@ fn handle_global_sync(
 
 fn global_sync_for_repository(
     root: &Path,
-    label: &str,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
-    progress: &dyn ProgressSink,
 ) -> GlobalSyncOutcome {
-    match try_global_sync_for_repository(root, label, environment, services, progress) {
+    match try_global_sync_for_repository(root, environment, services) {
         Ok(outcome) => outcome,
         Err(error) => GlobalSyncOutcome::Error(error.to_string()),
     }
@@ -785,10 +779,8 @@ fn global_sync_for_repository(
 
 fn try_global_sync_for_repository(
     root: &Path,
-    label: &str,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
-    progress: &dyn ProgressSink,
 ) -> Result<GlobalSyncOutcome, CommandError> {
     let repository_environment = environment.with_current_dir(root);
     let context = match RepositoryContext::discover(&repository_environment) {
@@ -833,7 +825,7 @@ fn try_global_sync_for_repository(
         (false, _) => {}
     }
 
-    global_sync_existing_origin(context, label, services, progress)?;
+    global_sync_existing_origin(context, services)?;
     Ok(GlobalSyncOutcome::Synced)
 }
 
@@ -873,11 +865,8 @@ fn origin_only_status_context(context: &RepositoryContext) -> RepositoryContext 
 
 fn global_sync_existing_origin(
     context: RepositoryContext,
-    label: &str,
     services: &dyn CommandServices,
-    progress: &dyn ProgressSink,
 ) -> Result<(), CommandError> {
-    progress.status(&format!("Fetching {label} from origin…"));
     let fetch = services.fetch_origin(&context)?;
     domain::ensure_fetch_is_pushable(&fetch)?;
     if context
@@ -885,10 +874,8 @@ fn global_sync_existing_origin(
         .repo
         .advance_trunk_enabled_for(&context.origin.github)
     {
-        progress.status(&format!("Advancing {label} trunk bookmark…"));
         services.advance_trunk_for_sync(&context)?;
     }
-    progress.status(&format!("Pushing {label} tracked bookmarks…"));
     services.push_tracked(&context)?;
     Ok(())
 }
