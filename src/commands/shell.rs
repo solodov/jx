@@ -55,28 +55,45 @@ __jx_project_arg_completion() {
     word="${COMP_WORDS[i]}"
     if [[ -z "$command" ]]; then
       case "$word" in
-        remote-status|rs|fetch|f|sync) command="$word" ;;
+        remote-status|rs|fetch|f|sync|open|o) command="$word" ;;
       esac
       continue
     fi
 
     case "$previous" in
-      --repo|--jobs|-j)
+      --repo)
+        previous=""
+        (( positional_count++ ))
+        continue
+        ;;
+      --jobs|-j)
         previous=""
         continue
         ;;
     esac
 
     case "$word" in
-      -a|--all) all_selected=1 ;;
+      -a|--all) [[ "$command" != "open" && "$command" != "o" ]] && all_selected=1 ;;
       --repo=*|--jobs=*) ;;
       -*) previous="$word" ;;
+      prs|pull-requests)
+        if [[ ( "$command" == "open" || "$command" == "o" ) && $positional_count -eq 0 ]]; then
+          :
+        else
+          (( positional_count++ ))
+        fi
+        ;;
       *) (( positional_count++ )) ;;
     esac
   done
 
   case "$previous" in
-    --repo|--jobs|-j)
+    --repo)
+      local IFS=$'\n'
+      COMPREPLY=($(compgen -W "$(command jx work complete --repositories --prefix "$cur" 2>/dev/null)" -- "$cur"))
+      return
+      ;;
+    --jobs|-j)
       _jx
       return
       ;;

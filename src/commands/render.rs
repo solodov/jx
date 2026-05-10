@@ -895,7 +895,10 @@ pub(super) fn workspace_remove_confirmation_prompt(workspace: &WorkspaceEntry) -
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GlobalStatusEntry {
+    pub(super) key: Option<String>,
+    pub(super) root: PathBuf,
     pub(super) display_root: String,
+    pub(super) repository: Option<GitHubRepository>,
     pub(super) result: Result<StatusReport, String>,
 }
 
@@ -909,13 +912,106 @@ pub(super) fn render_status(
     })
 }
 
+pub(super) fn render_status_json(entries: &[GlobalStatusEntry]) -> String {
+    let output = RemoteStatusJson {
+        command: "remote-status",
+        version: 1,
+        repositories: sorted_global_status_entries(entries)
+            .into_iter()
+            .map(RemoteStatusRepositoryJson::from)
+            .collect(),
+    };
+    let mut rendered = serde_json::to_string_pretty(&output)
+        .expect("remote-status JSON contains only serializable values");
+    rendered.push('\n');
+    rendered
+}
+
+#[derive(serde::Serialize)]
+struct RemoteStatusJson {
+    command: &'static str,
+    version: u8,
+    repositories: Vec<RemoteStatusRepositoryJson>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteStatusRepositoryJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    remotes: Vec<RemoteStatusRemoteJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl From<&GlobalStatusEntry> for RemoteStatusRepositoryJson {
+    fn from(entry: &GlobalStatusEntry) -> Self {
+        let remotes = entry
+            .result
+            .as_ref()
+            .map(|report| {
+                sorted_remote_statuses(report)
+                    .into_iter()
+                    .map(RemoteStatusRemoteJson::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            key: entry.key.clone(),
+            root: entry.root.display().to_string(),
+            repository: entry.repository.as_ref().map(GitHubRepository::slug),
+            url: entry.repository.as_ref().map(GitHubRepository::https_url),
+            remotes,
+            error: entry.result.as_ref().err().cloned(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteStatusRemoteJson {
+    name: String,
+    url: String,
+    github_url: String,
+    branch: String,
+    local_trunk_sha: String,
+    local_trunk_short_sha: String,
+    local_ahead_by: i64,
+    state: &'static str,
+    github_ahead_by: i64,
+    github_behind_by: i64,
+}
+
+impl From<&RemoteStatusReport> for RemoteStatusRemoteJson {
+    fn from(remote: &RemoteStatusReport) -> Self {
+        Self {
+            name: remote.name.clone(),
+            url: remote.url.clone(),
+            github_url: remote.github_url.clone(),
+            branch: remote.branch.clone(),
+            local_trunk_sha: remote.local_trunk_sha.clone(),
+            local_trunk_short_sha: remote.local_trunk_short_sha.clone(),
+            local_ahead_by: remote.local_ahead_by,
+            state: remote.comparison.label(),
+            github_ahead_by: remote.comparison.github_ahead_by,
+            github_behind_by: remote.comparison.github_behind_by,
+        }
+    }
+}
+
 pub(super) fn render_global_status(
     entries: &[GlobalStatusEntry],
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
     render_linked_output(current_dir, color, |formatter| {
-        for entry in entries {
+        for entry in sorted_global_status_entries(entries) {
             match &entry.result {
                 Ok(report) => write_status_with_prefix(formatter, report, &entry.display_root)?,
                 Err(message) => writeln!(formatter, "{} error: {message}", entry.display_root)?,
@@ -925,8 +1021,27 @@ pub(super) fn render_global_status(
     })
 }
 
+fn sorted_global_status_entries(entries: &[GlobalStatusEntry]) -> Vec<&GlobalStatusEntry> {
+    let mut sorted = entries.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|entry| entry.root.clone());
+    sorted
+}
+
+fn sorted_remote_statuses(report: &StatusReport) -> Vec<&RemoteStatusReport> {
+    let mut remotes = report.remotes.iter().collect::<Vec<_>>();
+    remotes.sort_by(|left, right| {
+        (&left.name, &left.branch, &left.github_url, &left.url).cmp(&(
+            &right.name,
+            &right.branch,
+            &right.github_url,
+            &right.url,
+        ))
+    });
+    remotes
+}
+
 pub(super) fn write_status(formatter: &mut dyn Formatter, report: &StatusReport) -> io::Result<()> {
-    for remote in &report.remotes {
+    for remote in sorted_remote_statuses(report) {
         write_remote_status(formatter, remote)?;
     }
     Ok(())
@@ -937,7 +1052,7 @@ pub(super) fn write_status_with_prefix(
     report: &StatusReport,
     prefix: &str,
 ) -> io::Result<()> {
-    for remote in &report.remotes {
+    for remote in sorted_remote_statuses(report) {
         write!(formatter, "{prefix} ")?;
         write_remote_status(formatter, remote)?;
     }

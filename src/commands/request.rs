@@ -8,6 +8,7 @@ pub(super) enum CommandRequest {
     Clone(CloneRequest),
     Work(WorkRequest),
     Shell(ShellRequest),
+    Open(OpenRequest),
     RemoteStatus(RemoteStatusRequest),
     Fetch(FetchRequest),
     RebaseOnTrunk(RebaseOnTrunkRequest),
@@ -85,12 +86,33 @@ pub(super) struct ShellInitRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OpenRequest {
+    pub(super) target: OpenTarget,
+    pub(super) repository: Option<String>,
+    pub(super) repo_filters: Vec<String>,
+    pub(super) print: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpenTarget {
+    Repository,
+    PullRequests { all: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RemoteStatusRequest {
     pub(super) all: bool,
     pub(super) repository: Option<String>,
     pub(super) repo_filters: Vec<String>,
     pub(super) changed: bool,
     pub(super) parallelism: usize,
+    pub(super) format: RemoteStatusFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteStatusFormat {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +152,7 @@ impl CommandRequest {
             })),
             Some(("work", matches)) => Ok(Self::Work(work_request(matches)?)),
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
+            Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
             Some(("status" | "st", _)) => Ok(Self::Status),
             Some(("check", _)) => Ok(Self::Workflow {
                 command: WorkflowCommand::Check,
@@ -146,6 +169,7 @@ impl CommandRequest {
                     repo_filters: repo_filters(matches),
                     changed: matches.get_flag("changed"),
                     parallelism: remote_status_parallelism(matches)?,
+                    format: remote_status_format(matches),
                 }))
             }
             Some(("fetch" | "f", matches)) => Ok(Self::Fetch(FetchRequest {
@@ -228,6 +252,25 @@ fn shell_request(matches: &ArgMatches) -> Result<ShellRequest, clap::Error> {
     }
 }
 
+fn open_request(matches: &ArgMatches) -> OpenRequest {
+    match matches.subcommand() {
+        Some(("prs", matches)) => OpenRequest {
+            target: OpenTarget::PullRequests {
+                all: matches.get_flag("all"),
+            },
+            repository: repository_arg(matches),
+            repo_filters: repo_filters(matches),
+            print: matches.get_flag("print"),
+        },
+        _ => OpenRequest {
+            target: OpenTarget::Repository,
+            repository: repository_arg(matches),
+            repo_filters: repo_filters(matches),
+            print: matches.get_flag("print"),
+        },
+    }
+}
+
 fn shell_kind(matches: &ArgMatches) -> Result<ShellKind, clap::Error> {
     match required_arg(matches, "shell").as_str() {
         "bash" => Ok(ShellKind::Bash),
@@ -282,6 +325,18 @@ fn remote_status_parallelism(matches: &ArgMatches) -> Result<usize, clap::Error>
     }
 
     Ok(parallelism)
+}
+
+fn remote_status_format(matches: &ArgMatches) -> RemoteStatusFormat {
+    match matches
+        .get_one::<String>("format")
+        .map(String::as_str)
+        .expect("clap applies the remote-status format default")
+    {
+        "human" => RemoteStatusFormat::Human,
+        "json" => RemoteStatusFormat::Json,
+        _ => unreachable!("clap rejects unsupported remote-status formats"),
+    }
 }
 
 fn revision(matches: &ArgMatches) -> Option<String> {
@@ -488,6 +543,23 @@ pub(super) fn cli() -> ClapCommand {
                         .arg(shell_arg()),
                 ),
         )
+        .subcommand(
+            ClapCommand::new("open")
+                .visible_alias("o")
+                .about("Open a configured repository or pull request list in the browser")
+                .arg(open_print_arg())
+                .arg(open_repo_arg())
+                .arg(repository_arg_definition().conflicts_with("repo"))
+                .subcommand(
+                    ClapCommand::new("prs")
+                        .visible_alias("pull-requests")
+                        .about("Open pull requests for a configured repository")
+                        .arg(open_all_pull_requests_arg())
+                        .arg(open_print_arg())
+                        .arg(open_repo_arg())
+                        .arg(repository_arg_definition().conflicts_with("repo")),
+                ),
+        )
         .subcommand(ClapCommand::new("check").about("Check repository and PR readiness"))
         .subcommand(
             ClapCommand::new("remote-status")
@@ -497,6 +569,7 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(remote_status_repo_arg())
                 .arg(remote_status_changed_arg())
                 .arg(remote_status_jobs_arg())
+                .arg(remote_status_format_arg())
                 .arg(repository_arg_definition().conflicts_with("repo")),
         )
         .subcommand(
@@ -658,6 +731,29 @@ fn remote_status_repo_arg() -> Arg {
         .help("Check matching configured repository keys; repeat for multiple filters")
 }
 
+fn open_repo_arg() -> Arg {
+    Arg::new("repo")
+        .long("repo")
+        .value_name("GLOB")
+        .action(ArgAction::Append)
+        .help("Open matching configured repository keys; repeat for multiple filters")
+}
+
+fn open_print_arg() -> Arg {
+    Arg::new("print")
+        .long("print")
+        .action(ArgAction::SetTrue)
+        .help("Print resolved URLs instead of opening the browser")
+}
+
+fn open_all_pull_requests_arg() -> Arg {
+    Arg::new("all")
+        .short('a')
+        .long("all")
+        .action(ArgAction::SetTrue)
+        .help("Show all open pull requests instead of only pull requests authored by you")
+}
+
 fn remote_status_changed_arg() -> Arg {
     Arg::new("changed")
         .short('c')
@@ -674,6 +770,15 @@ fn remote_status_jobs_arg() -> Arg {
         .default_value("8")
         .value_parser(clap::value_parser!(usize))
         .help("Limit concurrent GitHub checks for global remote status")
+}
+
+fn remote_status_format_arg() -> Arg {
+    Arg::new("format")
+        .long("format")
+        .value_name("FORMAT")
+        .default_value("human")
+        .value_parser(["human", "json"])
+        .help("Select remote-status output format")
 }
 
 fn push_revision_arg() -> Arg {

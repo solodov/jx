@@ -19,8 +19,8 @@ their checkout.
 
 - **See the right local context**: workspace-scoped log, current status, and
   focused diffs that can skip tests or use a configured renderer.
-- **Understand remote freshness**: compare local `origin` trunk state with
-  GitHub before deciding whether to fetch.
+- **Understand and navigate remote state**: compare local `origin` trunk state
+  with GitHub and open repositories or PR lists from layout keys.
 - **Update safely**: fetch from `origin`, then rebase or repair local jj work
   around the updated trunk.
 - **Clone, bootstrap, and branch out in a consistent layout**: expand

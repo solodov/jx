@@ -123,6 +123,9 @@ for navigation and workspace management.
 - `jx remote-status` uses the current repository by default, can target one
   primary repository key, and can scan all configured primary repositories.
   `--repo` remains a glob filter for global scans.
+- `jx open` uses the current repository by default, can target one primary
+  repository key, and can use `--repo` globs to open matching GitHub repository
+  pages or matching pull-request searches.
 - `jx fetch` uses the current repository by default, can target one primary
   repository key, and can scan every safe primary repository with `--all`.
 - `jx sync` uses the current repository by default and can target one primary

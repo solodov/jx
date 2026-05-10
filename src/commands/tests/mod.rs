@@ -699,6 +699,7 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
 
     assert!(result.stdout.contains("complete -F _jx"));
     assert!(result.stdout.contains("remote-status"));
+    assert!(result.stdout.contains("open"));
     assert!(!result.stdout.contains("u() {"));
 }
 
@@ -986,6 +987,190 @@ fn diff_rejects_file_arguments() {
 }
 
 #[test]
+fn open_prints_current_repository_url() {
+    // Verifies: Open can resolve the current repository without launching a browser.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "open", "--print"], &environment, &services)
+        .expect("open print succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo\n"
+    );
+    assert!(services.opened_urls.borrow().is_empty());
+}
+
+#[test]
+fn o_alias_runs_open() {
+    // Verifies: The short open alias keeps repository navigation quick.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "o", "--print"], &environment, &services)
+        .expect("open alias succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo\n"
+    );
+}
+
+#[test]
+fn open_accepts_specific_repository_argument() {
+    // Verifies: Open resolves a layout project key and launches that repository URL.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let target = workspace.create_jj_workspace("projects/target");
+    TestWorkspace::write_git_config_at(
+        &target,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/target.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "open", "target"], &environment, &services)
+        .expect("open project succeeds");
+
+    assert_eq!(
+        services.opened_urls.borrow().as_slice(),
+        ["https://github.com/example-owner/target".to_owned()]
+    );
+    assert_eq!(
+        result.stdout,
+        "Opened: https://github.com/example-owner/target\n"
+    );
+}
+
+#[test]
+fn open_repo_filter_prints_matching_repository_urls() {
+    // Verifies: Open uses the same configured project glob matching as global status commands.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let api = workspace.create_jj_workspace("projects/api");
+    let web = workspace.create_jj_workspace("projects/web");
+    TestWorkspace::write_git_config_at(
+        &api,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &web,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/web.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "--print", "--repo", "*"],
+        &environment,
+        &services,
+    )
+    .expect("open filtered repos succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/api\nhttps://github.com/example-owner/web\n"
+    );
+}
+
+#[test]
+fn open_prs_builds_authored_pull_request_search_url() {
+    // Verifies: PR navigation uses the authenticated login and repo qualifiers for glob matches.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let api = workspace.create_jj_workspace("projects/api");
+    let web = workspace.create_jj_workspace("projects/web");
+    TestWorkspace::write_git_config_at(
+        &api,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &web,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/web.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            (
+                "HOME".to_owned(),
+                workspace.home.to_string_lossy().into_owned(),
+            ),
+            ("GH_TOKEN".to_owned(), "placeholder-token".to_owned()),
+        ],
+    );
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "prs", "--print", "--repo", "*"],
+        &environment,
+        &services,
+    )
+    .expect("open prs succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3Aexample-user+repo%3Aexample-owner%2Fapi+repo%3Aexample-owner%2Fweb\n"
+    );
+}
+
+#[test]
 fn check_loads_context_and_renders_readiness_summary() {
     // Verifies: Check loads repository context and renders the readiness summary.
     let workspace = TestWorkspace::new();
@@ -1055,6 +1240,97 @@ fn rs_alias_runs_remote_status() {
             result.stdout,
             "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), 3 commits ahead\n"
         );
+}
+
+#[test]
+fn remote_status_format_json_renders_current_repository_report() {
+    // Verifies: JSON remote status keeps the same top-level shape for single-repo output.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "remote-status", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("remote-status json succeeds");
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("valid json");
+
+    assert_eq!(value["command"], "remote-status");
+    assert_eq!(value["version"], 1);
+    assert_eq!(
+        value["repositories"][0]["root"],
+        workspace.path().display().to_string()
+    );
+    assert_eq!(
+        value["repositories"][0]["repository"],
+        "example-owner/example-repo"
+    );
+    assert_eq!(
+        value["repositories"][0]["url"],
+        "https://github.com/example-owner/example-repo"
+    );
+    assert_eq!(value["repositories"][0]["remotes"][0]["name"], "origin");
+    assert_eq!(
+        value["repositories"][0]["remotes"][0]["state"],
+        "github-ahead"
+    );
+    assert_eq!(value["repositories"][0]["remotes"][0]["githubAheadBy"], 3);
+}
+
+#[test]
+fn remote_status_format_json_renders_global_repository_keys() {
+    // Verifies: Global JSON output includes layout keys and absolute roots for org table consumers.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let alpha = workspace.create_jj_workspace("projects/alpha");
+    TestWorkspace::write_git_config_at(
+        &alpha,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/alpha.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "remote-status", "--all", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("global remote-status json succeeds");
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("valid json");
+
+    assert_eq!(value["repositories"].as_array().expect("repos").len(), 1);
+    assert_eq!(value["repositories"][0]["key"], "alpha");
+    assert_eq!(
+        value["repositories"][0]["root"],
+        alpha.display().to_string()
+    );
+    assert_eq!(
+        value["repositories"][0]["repository"],
+        "example-owner/alpha"
+    );
 }
 
 #[test]
@@ -1169,6 +1445,35 @@ fn remote_status_renders_one_line_per_github_remote() {
             result.stdout,
             "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), 1 commit ahead, 2 commits behind\nremote: upstream (\x1b]8;;https://github.com/upstream-owner/example-repo/tree/main\x1b\\https://github.com/upstream-owner/example-repo.git\x1b]8;;\x1b\\), 3 commits behind\n"
         );
+}
+
+#[test]
+fn remote_status_global_renderer_sorts_entries_by_directory() {
+    // Verifies: All-project remote-status output follows stable filesystem order when checks complete out of order.
+    let entries = vec![
+        GlobalStatusEntry {
+            key: Some("alpha".to_owned()),
+            root: PathBuf::from("/workspace/src/alpha"),
+            display_root: "alpha".to_owned(),
+            repository: None,
+            result: Err("alpha failed".to_owned()),
+        },
+        GlobalStatusEntry {
+            key: Some("beta".to_owned()),
+            root: PathBuf::from("/workspace/projects/beta"),
+            display_root: "beta".to_owned(),
+            repository: None,
+            result: Err("beta failed".to_owned()),
+        },
+    ];
+
+    let output = render_global_status(&entries, Path::new("/workspace"), false)
+        .expect("global status renders");
+
+    assert_eq!(
+        output,
+        "alpha error: alpha failed\nbeta error: beta failed\n"
+    );
 }
 
 #[test]
@@ -3145,6 +3450,8 @@ struct FakeServices {
     status: StatusReport,
     status_uses_context_remotes: bool,
     clean_status_repos: Vec<String>,
+    github_login: String,
+    opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
     fetch: FetchOutcome,
@@ -3232,6 +3539,8 @@ impl Default for FakeServices {
             },
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
+            github_login: "example-user".to_owned(),
+            opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
@@ -3577,6 +3886,15 @@ impl CommandServices for FakeServices {
             }
         }
         Ok(status)
+    }
+
+    fn authenticated_login(&self, _token_source: &TokenSource) -> Result<String, WorkflowError> {
+        Ok(self.github_login.clone())
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        self.opened_urls.borrow_mut().push(url.to_owned());
+        Ok(())
     }
 
     fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError> {

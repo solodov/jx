@@ -35,6 +35,7 @@ pub(super) fn handle_request(
             handle_work(request, environment, services, progress, &prompts)?
         }
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
+        CommandRequest::Open(request) => handle_open(request, environment, services)?,
         CommandRequest::RemoteStatus(request) => {
             handle_remote_status(request, environment, services, progress, output)?
         }
@@ -230,6 +231,176 @@ fn global_fetch_for_repository(
     Ok(true)
 }
 
+fn handle_open(
+    request: OpenRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+) -> Result<String, CommandError> {
+    let targets = open_targets(&request, environment)?;
+    let urls = match request.target {
+        OpenTarget::Repository => targets
+            .iter()
+            .map(|target| target.repository.https_url())
+            .collect::<Vec<_>>(),
+        OpenTarget::PullRequests { all } => vec![pull_requests_url(&targets, all, services)?],
+    };
+
+    if request.print {
+        return Ok(render_url_list(&urls));
+    }
+
+    for url in &urls {
+        services.open_url(url)?;
+    }
+
+    Ok(render_opened_urls(&urls))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenTargetInfo {
+    repository: GitHubRepository,
+    token_source: Option<TokenSource>,
+}
+
+fn open_targets(
+    request: &OpenRequest,
+    environment: &RuntimeEnvironment,
+) -> Result<Vec<OpenTargetInfo>, CommandError> {
+    if let Some(repository) = &request.repository {
+        return Ok(vec![open_target_for_repository_key(
+            repository,
+            environment,
+        )?]);
+    }
+    if !request.repo_filters.is_empty() {
+        let config = WorkflowConfig::discover_global(environment)?;
+        let repositories = global_work_repositories(&config, environment)?;
+        return filter_work_repositories(&repositories, &request.repo_filters)?
+            .iter()
+            .map(|repository| open_target_for_root(&repository.root, environment))
+            .collect();
+    }
+
+    Ok(vec![open_target_for_environment(environment)?])
+}
+
+fn open_target_for_repository_key(
+    key: &str,
+    environment: &RuntimeEnvironment,
+) -> Result<OpenTargetInfo, CommandError> {
+    let config = WorkflowConfig::discover_global(environment)?;
+    let repositories = global_work_repositories(&config, environment)?;
+    let repository = resolve_work_repository(&repositories, key)?;
+    open_target_for_root(&repository.root, environment)
+}
+
+fn open_target_for_root(
+    root: &Path,
+    environment: &RuntimeEnvironment,
+) -> Result<OpenTargetInfo, CommandError> {
+    open_target_for_environment(&environment.with_current_dir(root))
+}
+
+fn open_target_for_environment(
+    environment: &RuntimeEnvironment,
+) -> Result<OpenTargetInfo, CommandError> {
+    match LocalRepositoryContext::discover(environment) {
+        Ok(context) => open_target_for_local_context(context, environment),
+        Err(RepositoryError::WorkspaceNotFound) => {
+            let config = WorkflowConfig::discover_for_uninitialized(environment)?;
+            let workspace_root = uninitialized_layout_workspace_root(&config.layout, environment)?;
+            let identity = config
+                .layout
+                .identity_for_workspace_root(&workspace_root, environment)?;
+            Ok(OpenTargetInfo {
+                repository: identity.github_repository(),
+                token_source: None,
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn open_target_for_local_context(
+    context: LocalRepositoryContext,
+    environment: &RuntimeEnvironment,
+) -> Result<OpenTargetInfo, CommandError> {
+    let repository = context
+        .remotes
+        .iter()
+        .find(|remote| remote.name == crate::repository::ORIGIN_REMOTE_NAME)
+        .and_then(|remote| GitHubRepository::parse(&remote.url).ok())
+        .map(Ok)
+        .unwrap_or_else(|| {
+            context
+                .config
+                .layout
+                .identity_for_workspace_root(&context.workspace_root, environment)
+                .map(|identity| identity.github_repository())
+        })?;
+
+    Ok(OpenTargetInfo {
+        repository,
+        token_source: Some(context.token_source),
+    })
+}
+
+fn pull_requests_url(
+    targets: &[OpenTargetInfo],
+    all: bool,
+    services: &dyn CommandServices,
+) -> Result<String, CommandError> {
+    let login = if all {
+        None
+    } else {
+        let token_source = targets
+            .iter()
+            .find_map(|target| target.token_source.as_ref())
+            .ok_or(RepositoryError::WorkspaceNotFound)?;
+        Some(services.authenticated_login(token_source)?)
+    };
+    let mut query = vec!["is:pr".to_owned(), "is:open".to_owned()];
+    if let Some(login) = login {
+        query.push(format!("author:{login}"));
+    }
+
+    if let [target] = targets {
+        let query = encode_url_query(&query.join(" "));
+        return Ok(format!("{}/pulls?q={query}", target.repository.https_url()));
+    }
+
+    query.extend(
+        targets
+            .iter()
+            .map(|target| format!("repo:{}", target.repository.slug())),
+    );
+    Ok(format!(
+        "https://github.com/pulls?q={}",
+        encode_url_query(&query.join(" "))
+    ))
+}
+
+fn encode_url_query(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            b' ' => "+".to_owned(),
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+fn render_url_list(urls: &[String]) -> String {
+    urls.iter().map(|url| format!("{url}\n")).collect()
+}
+
+fn render_opened_urls(urls: &[String]) -> String {
+    urls.iter().map(|url| format!("Opened: {url}\n")).collect()
+}
+
 fn handle_remote_status(
     request: RemoteStatusRequest,
     environment: &RuntimeEnvironment,
@@ -266,10 +437,26 @@ fn remote_status_current_repository(
     progress.status("Loading remote status…");
     let workspace = services.status_workspace_facts(&context)?;
     progress.status("Checking GitHub remotes…");
+    let repository = context.origin.github.clone();
+    let root = context.workspace_root.clone();
     let report = services.status_report(&context, workspace)?;
     progress.finish();
     if request.changed && !status_report_has_changes(&report) {
-        return Ok(String::new());
+        return if request.format == RemoteStatusFormat::Json {
+            Ok(render_status_json(&[]))
+        } else {
+            Ok(String::new())
+        };
+    }
+
+    if request.format == RemoteStatusFormat::Json {
+        return Ok(render_status_json(&[GlobalStatusEntry {
+            key: request.repository.clone(),
+            root,
+            display_root: display_path(environment.current_dir(), environment),
+            repository: Some(repository),
+            result: Ok(report),
+        }]));
     }
 
     render_status(&report, environment.current_dir(), output.color).map_err(Into::into)
@@ -292,7 +479,11 @@ fn handle_global_remote_status(
     let entries =
         services.global_remote_status_entries(&repositories, &request, environment, progress);
     progress.finish();
-    render_global_status(&entries, environment.current_dir(), output.color).map_err(Into::into)
+    if request.format == RemoteStatusFormat::Json {
+        Ok(render_status_json(&entries))
+    } else {
+        render_global_status(&entries, environment.current_dir(), output.color).map_err(Into::into)
+    }
 }
 
 pub(super) fn status_report_has_changes(report: &StatusReport) -> bool {

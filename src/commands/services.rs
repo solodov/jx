@@ -97,6 +97,12 @@ pub(super) trait CommandServices {
         workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError>;
 
+    /// Returns the authenticated GitHub login used for authored PR filters.
+    fn authenticated_login(&self, token_source: &TokenSource) -> Result<String, WorkflowError>;
+
+    /// Opens a URL in the platform default browser.
+    fn open_url(&self, url: &str) -> io::Result<()>;
+
     /// Loads global remote-status rows, preserving layout order and filtering clean repos when requested.
     fn global_remote_status_entries(
         &self,
@@ -108,20 +114,27 @@ pub(super) trait CommandServices {
         let mut entries = Vec::new();
 
         for (index, repository) in repositories.iter().enumerate() {
-            let result: Result<StatusReport, CommandError> = (|| {
+            let resolved: Result<(GitHubRepository, StatusReport), CommandError> = (|| {
                 let environment = environment.with_current_dir(&repository.root);
                 let context = RepositoryContext::discover(&environment)?;
+                let origin = context.origin.github.clone();
                 let workspace = self.status_workspace_facts(&context)?;
-                Ok(self.status_report(&context, workspace)?)
+                Ok((origin, self.status_report(&context, workspace)?))
             })();
-            let result = result.map_err(|error| error.to_string());
+            let (repository_identity, result) = match resolved {
+                Ok((repository, report)) => (Some(repository), Ok(report)),
+                Err(error) => (None, Err(error.to_string())),
+            };
             if !(request.changed
                 && result
                     .as_ref()
                     .is_ok_and(|report| !status_report_has_changes(report)))
             {
                 entries.push(GlobalStatusEntry {
+                    key: Some(repository.key.clone()),
+                    root: repository.root.clone(),
                     display_root: display_path(&repository.root, environment),
+                    repository: repository_identity,
                     result,
                 });
             }
@@ -351,6 +364,22 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn authenticated_login(&self, token_source: &TokenSource) -> Result<String, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let user = github.authenticated_user().await?;
+            if user.login.is_empty() {
+                return Err(WorkflowError::MissingGitHubLogin);
+            }
+
+            Ok(user.login)
+        })
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        open_url_in_browser(url)
+    }
+
     fn global_remote_status_entries(
         &self,
         repositories: &[WorkRepository],
@@ -493,6 +522,25 @@ impl CommandServices for ProductionServices<'_> {
     }
 }
 
+fn open_url_in_browser(url: &str) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        ProcessCommand::new("open").arg(url).spawn()?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        ProcessCommand::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        ProcessCommand::new("xdg-open").arg(url).spawn()?;
+    }
+
+    Ok(())
+}
+
 async fn production_global_remote_status_entry(
     repository: &WorkRepository,
     environment: &RuntimeEnvironment,
@@ -501,21 +549,26 @@ async fn production_global_remote_status_entry(
 ) -> Option<GlobalStatusEntry> {
     let display_root = display_path(&repository.root, environment);
     let result = prepare_global_remote_status(repository.root.clone(), environment.clone()).await;
-    let result = match result {
+    let (repository_identity, result) = match result {
         Ok((context, workspace)) => {
-            match OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
-                .map_err(WorkflowError::from)
-                .map_err(CommandError::from)
-                .map_err(|error| error.to_string())
+            let repository_identity = context.origin.github.clone();
+            let result = match OctocrabGitHubClient::from_token_source(
+                &context.token_source,
+                token_environment,
+            )
+            .map_err(WorkflowError::from)
+            .map_err(CommandError::from)
+            .map_err(|error| error.to_string())
             {
                 Ok(github) => domain::status_report(&context, workspace, &github)
                     .await
                     .map_err(CommandError::from)
                     .map_err(|error| error.to_string()),
                 Err(error) => Err(error),
-            }
+            };
+            (Some(repository_identity), result)
         }
-        Err(error) => Err(error),
+        Err(error) => (None, Err(error)),
     };
     if changed
         && result
@@ -526,7 +579,10 @@ async fn production_global_remote_status_entry(
     }
 
     Some(GlobalStatusEntry {
+        key: Some(repository.key.clone()),
+        root: repository.root.clone(),
         display_root,
+        repository: repository_identity,
         result,
     })
 }
