@@ -1521,7 +1521,7 @@ fn remote_status_global_renderer_sorts_entries_by_directory() {
 
     assert_eq!(
         output,
-        "Remote status: 2 repositories checked, 2 need attention\n\nSetup needed\n  beta   beta failed\n  alpha  alpha failed\n"
+        "Remote status: 2 repositories checked, 2 need attention\n\nSetup needed:\n  beta   beta failed\n  alpha  alpha failed\n"
     );
 }
 
@@ -1772,7 +1772,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "Remote status: 2 repositories checked, 2 need attention\n\nPull needed: GitHub has new commits\n  ~/projects/ok              3 commits to pull\n\nSetup needed\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
+        "Remote status: 2 repositories checked, 2 need attention\n\nPull needed: GitHub has new commits\n  ~/projects/ok              3 commits to pull\n\nSetup needed:\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
     );
 }
 
@@ -1939,6 +1939,112 @@ path = "{repo}"
 
     assert_eq!(result.stdout, "~/projects/ready\n");
     assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [ready]);
+}
+
+#[test]
+fn sync_all_syncs_writable_repositories_when_origin_does_not_need_pulling() {
+    // Verifies: Global sync can push tracked state even when local jj work is present.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let local_work = workspace.create_jj_workspace("projects/local-work");
+    let _missing_origin = workspace.create_jj_workspace("projects/missing-origin");
+    let pull_needed = workspace.create_jj_workspace("projects/pull-needed");
+    let read_only = workspace.create_jj_workspace("projects/read-only");
+    let writable = workspace.create_jj_workspace("projects/writable");
+    for (root, name) in [
+        (&local_work, "local-work"),
+        (&pull_needed, "pull-needed"),
+        (&read_only, "read-only"),
+        (&writable, "writable"),
+    ] {
+        TestWorkspace::write_git_config_at(
+            root,
+            &format!(
+                r#"
+[remote "origin"]
+    url = https://github.com/example-owner/{name}.git
+"#,
+            ),
+        );
+    }
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        global_fetch_ready_roots: Some(BTreeSet::new()),
+        origin_push_access_roots: Some(BTreeSet::from([
+            local_work.clone(),
+            pull_needed.clone(),
+            writable.clone(),
+        ])),
+        clean_status_repos: vec!["local-work".to_owned(), "writable".to_owned()],
+        fetch: FetchOutcome {
+            branch: "main".to_owned(),
+            changed_remote_bookmarks: 0,
+            changed_remote_tags: 0,
+            abandoned_commits: 0,
+            rebased_trunk_children: 0,
+            rebased_descendants: 0,
+            skipped_trunk_children: 0,
+            current_repaired: false,
+            rebased_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let progress = RecordingProgress::default();
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+    let result = run_with_args_and_progress(
+        ["jx", "sync", "--all"],
+        &environment,
+        &services,
+        &progress,
+        prompts,
+        OutputMode::plain(),
+    )
+    .expect("global sync succeeds");
+
+    assert_eq!(
+        progress.messages(),
+        [
+            "Checking local-work…",
+            "Fetching local-work from origin…",
+            "Pushing local-work tracked bookmarks…",
+            "Checking missing-origin…",
+            "Checking pull-needed…",
+            "Checking read-only…",
+            "Checking writable…",
+            "Fetching writable from origin…",
+            "Pushing writable tracked bookmarks…",
+        ]
+    );
+    assert!(progress.finished.get());
+    assert_eq!(
+        services.fetch_origin_roots.borrow().as_slice(),
+        [local_work.clone(), writable.clone()]
+    );
+    assert_eq!(
+        services.push_tracked_roots.borrow().as_slice(),
+        [local_work.clone(), writable]
+    );
+    assert_eq!(
+        result.stdout,
+        "Synced:\n  ~/projects/local-work\n  ~/projects/writable\n\nSkipped: pull needed\n  ~/projects/pull-needed  GitHub has 3 new commits\n\nSkipped: read-only origin\n  ~/projects/read-only\n\nSetup needed:\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
+    );
 }
 
 #[test]
@@ -3567,7 +3673,9 @@ struct FakeServices {
     github_login: String,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
+    origin_push_access_roots: Option<BTreeSet<PathBuf>>,
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
+    push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
@@ -3657,7 +3765,9 @@ impl Default for FakeServices {
             github_login: "example-user".to_owned(),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
+            origin_push_access_roots: None,
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
+            push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -4004,6 +4114,13 @@ impl CommandServices for FakeServices {
         Ok(status)
     }
 
+    fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError> {
+        Ok(self
+            .origin_push_access_roots
+            .as_ref()
+            .is_none_or(|roots| roots.contains(&context.workspace_root)))
+    }
+
     fn authenticated_login(&self, _token_source: &TokenSource) -> Result<String, WorkflowError> {
         Ok(self.github_login.clone())
     }
@@ -4068,7 +4185,10 @@ impl CommandServices for FakeServices {
         Ok(self.advance_trunk.clone())
     }
 
-    fn push_tracked(&self, _context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError> {
+    fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError> {
+        self.push_tracked_roots
+            .borrow_mut()
+            .push(context.workspace_root.clone());
         Ok(self.tracked_push.clone())
     }
 

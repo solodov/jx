@@ -95,6 +95,185 @@ pub(super) fn render_global_fetch(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GlobalSyncEntry {
+    pub(super) display_root: String,
+    pub(super) outcome: GlobalSyncOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GlobalSyncOutcome {
+    Synced,
+    Skipped(GlobalSyncSkipReason),
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GlobalSyncSkipReason {
+    PullNeeded { commits: i64 },
+    Diverged { pull: i64, push: i64 },
+    ReadOnlyOrigin,
+    PushAccessUnavailable(String),
+    SetupNeeded(String),
+}
+
+pub(super) fn render_global_sync(
+    entries: &[GlobalSyncEntry],
+    current_dir: &Path,
+    color: bool,
+) -> Result<String, JjError> {
+    render_linked_output(current_dir, color, |formatter| {
+        let mut wrote_any = false;
+        write_global_sync_path_section(
+            formatter,
+            &mut wrote_any,
+            "Synced:",
+            entries.iter().filter_map(|entry| {
+                (entry.outcome == GlobalSyncOutcome::Synced).then_some(entry.display_root.as_str())
+            }),
+        )?;
+
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Skipped: pull needed",
+            entries.iter().filter_map(|entry| match &entry.outcome {
+                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::PullNeeded { commits }) => {
+                    Some(GlobalSyncSectionRow {
+                        label: entry.display_root.as_str(),
+                        detail: format!("GitHub has {}", new_commit_count(*commits)),
+                    })
+                }
+                _ => None,
+            }),
+        )?;
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Skipped: diverged",
+            entries.iter().filter_map(|entry| match &entry.outcome {
+                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::Diverged { pull, push }) => {
+                    Some(GlobalSyncSectionRow {
+                        label: entry.display_root.as_str(),
+                        detail: format!(
+                            "pull {}, push {}",
+                            commit_count_i64(*pull),
+                            commit_count_i64(*push)
+                        ),
+                    })
+                }
+                _ => None,
+            }),
+        )?;
+        write_global_sync_path_section(
+            formatter,
+            &mut wrote_any,
+            "Skipped: read-only origin",
+            entries.iter().filter_map(|entry| match &entry.outcome {
+                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin) => {
+                    Some(entry.display_root.as_str())
+                }
+                _ => None,
+            }),
+        )?;
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Skipped: push access unavailable",
+            entries.iter().filter_map(|entry| match &entry.outcome {
+                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::PushAccessUnavailable(
+                    message,
+                )) => Some(GlobalSyncSectionRow {
+                    label: entry.display_root.as_str(),
+                    detail: message.clone(),
+                }),
+                _ => None,
+            }),
+        )?;
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Setup needed:",
+            entries.iter().filter_map(|entry| match &entry.outcome {
+                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::SetupNeeded(message)) => {
+                    Some(GlobalSyncSectionRow {
+                        label: entry.display_root.as_str(),
+                        detail: message.clone(),
+                    })
+                }
+                _ => None,
+            }),
+        )?;
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Errors",
+            entries.iter().filter_map(|entry| match &entry.outcome {
+                GlobalSyncOutcome::Error(message) => Some(GlobalSyncSectionRow {
+                    label: entry.display_root.as_str(),
+                    detail: message.clone(),
+                }),
+                _ => None,
+            }),
+        )
+    })
+}
+
+struct GlobalSyncSectionRow<'a> {
+    label: &'a str,
+    detail: String,
+}
+
+fn write_global_sync_path_section<'a>(
+    formatter: &mut dyn Formatter,
+    wrote_any: &mut bool,
+    title: &str,
+    rows: impl Iterator<Item = &'a str>,
+) -> io::Result<()> {
+    let rows = rows.collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    if *wrote_any {
+        writeln!(formatter)?;
+    }
+    writeln!(formatter, "{title}")?;
+    *wrote_any = true;
+    for row in rows {
+        writeln!(formatter, "  {row}")?;
+    }
+    Ok(())
+}
+
+fn write_global_sync_section<'a>(
+    formatter: &mut dyn Formatter,
+    wrote_any: &mut bool,
+    title: &str,
+    rows: impl Iterator<Item = GlobalSyncSectionRow<'a>>,
+) -> io::Result<()> {
+    let rows = rows.collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let label_width = rows.iter().map(|row| row.label.len()).max().unwrap_or(0);
+    if *wrote_any {
+        writeln!(formatter)?;
+    }
+    writeln!(formatter, "{title}")?;
+    *wrote_any = true;
+    for row in rows {
+        writeln!(
+            formatter,
+            "  {label:<label_width$}  {detail}",
+            label = row.label,
+            detail = row.detail
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn write_fetch(formatter: &mut dyn Formatter, report: &FetchReport) -> io::Result<()> {
     write_fetch_prefix(formatter, report)?;
     writeln!(formatter, ")")?;
@@ -1039,7 +1218,12 @@ pub(super) fn render_global_status(
             &groups.diverged,
             label_width,
         )?;
-        write_global_status_section(formatter, "Setup needed", &groups.setup_needed, label_width)?;
+        write_global_status_section(
+            formatter,
+            "Setup needed:",
+            &groups.setup_needed,
+            label_width,
+        )?;
 
         if groups.synced_repositories > 0 {
             writeln!(formatter)?;

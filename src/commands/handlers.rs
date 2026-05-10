@@ -724,6 +724,10 @@ fn handle_sync(
     prompts: &PromptHandlers<'_>,
     output: OutputMode,
 ) -> Result<String, CommandError> {
+    if request.all {
+        return handle_global_sync(environment, services, progress, output);
+    }
+
     if let Some(repository) = request.repository {
         let repository_environment = repository_environment(&repository, environment)?;
         return sync_current_repository(
@@ -736,6 +740,157 @@ fn handle_sync(
     }
 
     sync_current_repository(environment, services, progress, prompts, output)
+}
+
+fn handle_global_sync(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<String, CommandError> {
+    let config = WorkflowConfig::discover_global(environment)?;
+    let repositories = global_work_repositories(&config, environment)?;
+    let mut entries = Vec::new();
+
+    for repository in repositories {
+        progress.status(&format!("Checking {}…", repository.key));
+        entries.push(GlobalSyncEntry {
+            display_root: display_path(&repository.root, environment),
+            outcome: global_sync_for_repository(
+                &repository.root,
+                &repository.key,
+                environment,
+                services,
+                progress,
+            ),
+        });
+    }
+
+    progress.finish();
+    render_global_sync(&entries, environment.current_dir(), output.color).map_err(Into::into)
+}
+
+fn global_sync_for_repository(
+    root: &Path,
+    label: &str,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+) -> GlobalSyncOutcome {
+    match try_global_sync_for_repository(root, label, environment, services, progress) {
+        Ok(outcome) => outcome,
+        Err(error) => GlobalSyncOutcome::Error(error.to_string()),
+    }
+}
+
+fn try_global_sync_for_repository(
+    root: &Path,
+    label: &str,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+) -> Result<GlobalSyncOutcome, CommandError> {
+    let repository_environment = environment.with_current_dir(root);
+    let context = match RepositoryContext::discover(&repository_environment) {
+        Ok(context) => context,
+        Err(error @ (RepositoryError::MissingOrigin | RepositoryError::OriginNotGitHub { .. })) => {
+            return Ok(GlobalSyncOutcome::Skipped(
+                GlobalSyncSkipReason::SetupNeeded(error.to_string()),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    match services.origin_can_push(&context) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Ok(GlobalSyncOutcome::Skipped(
+                GlobalSyncSkipReason::ReadOnlyOrigin,
+            ));
+        }
+        Err(error) => {
+            return Ok(GlobalSyncOutcome::Skipped(
+                GlobalSyncSkipReason::PushAccessUnavailable(error.to_string()),
+            ));
+        }
+    }
+
+    let origin_status = origin_remote_status(&context, services)?;
+    let pull = origin_status.comparison.github_ahead_by;
+    let push = origin_status.comparison.github_behind_by + origin_status.local_ahead_by;
+    match (pull > 0, push > 0) {
+        (true, true) => {
+            return Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::Diverged {
+                pull,
+                push,
+            }));
+        }
+        (true, false) => {
+            return Ok(GlobalSyncOutcome::Skipped(
+                GlobalSyncSkipReason::PullNeeded { commits: pull },
+            ));
+        }
+        (false, _) => {}
+    }
+
+    global_sync_existing_origin(context, label, services, progress)?;
+    Ok(GlobalSyncOutcome::Synced)
+}
+
+fn origin_remote_status(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+) -> Result<RemoteStatusReport, CommandError> {
+    let context = origin_only_status_context(context);
+    let workspace = services.status_workspace_facts(&context)?;
+    let report = services.status_report(&context, workspace)?;
+    report
+        .remotes
+        .into_iter()
+        .find(|remote| remote.name == crate::repository::ORIGIN_REMOTE_NAME)
+        .ok_or_else(|| {
+            WorkflowError::MissingStatusRemote {
+                remote: crate::repository::ORIGIN_REMOTE_NAME.to_owned(),
+            }
+            .into()
+        })
+}
+
+fn origin_only_status_context(context: &RepositoryContext) -> RepositoryContext {
+    let mut context = context.clone();
+    context
+        .github_remotes
+        .retain(|remote| remote.name == crate::repository::ORIGIN_REMOTE_NAME);
+    if context.github_remotes.is_empty() {
+        context.github_remotes.push(GitHubRemote {
+            name: crate::repository::ORIGIN_REMOTE_NAME.to_owned(),
+            url: context.origin.url.clone(),
+            github: context.origin.github.clone(),
+        });
+    }
+    context
+}
+
+fn global_sync_existing_origin(
+    context: RepositoryContext,
+    label: &str,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+) -> Result<(), CommandError> {
+    progress.status(&format!("Fetching {label} from origin…"));
+    let fetch = services.fetch_origin(&context)?;
+    domain::ensure_fetch_is_pushable(&fetch)?;
+    if context
+        .config
+        .repo
+        .advance_trunk_enabled_for(&context.origin.github)
+    {
+        progress.status(&format!("Advancing {label} trunk bookmark…"));
+        services.advance_trunk_for_sync(&context)?;
+    }
+    progress.status(&format!("Pushing {label} tracked bookmarks…"));
+    services.push_tracked(&context)?;
+    Ok(())
 }
 
 fn sync_current_repository(

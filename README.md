@@ -12,8 +12,8 @@ state, code layout, and repository conventions. `jx` makes that path feel like
 one workflow without becoming a replacement for `jj`.
 
 `jx` also models a local code layout: it can place primary repository clones,
-manage hidden parallel workspaces, and target configured projects from outside
-their checkout.
+manage hidden parallel workspaces, target configured projects from outside their
+checkout, and run safe maintenance across every known primary checkout.
 
 ## What it helps with
 
@@ -22,7 +22,8 @@ their checkout.
 - **Understand and navigate remote state**: compare local `origin` trunk state
   with GitHub and open repositories or PR lists from layout keys.
 - **Update safely**: fetch from `origin`, then rebase or repair local jj work
-  around the updated trunk.
+  around the updated trunk; with a configured layout, fetch or sync all eligible
+  primary checkouts.
 - **Clone, bootstrap, and branch out in a consistent layout**: expand
   repository shorthands into configured local roots, place parallel workspaces
   under the hidden workspace layout, and infer new GitHub repositories from that
@@ -68,6 +69,9 @@ jx sync
 `jx sync` fetches from `origin`, rebases or repairs local jj work onto the
 updated trunk, then pushes tracked `origin` bookmark updates, including
 deletions. It stops before pushing if the fetch/rebase step creates conflicts.
+With a configured layout, `jx fetch --all` and `jx sync --all` apply the same
+idea across safe primary checkouts; see [code layout](docs/code-layout.md) for
+the eligibility rules.
 
 Push the current commit after more changes:
 

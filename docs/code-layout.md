@@ -129,9 +129,11 @@ for navigation and workspace management.
   pages or matching pull-request searches.
 - `jx fetch` uses the current repository by default, can target one primary
   repository key, and can scan every safe primary repository with `--all`.
-- `jx sync` uses the current repository by default and can target one primary
-  repository key. When run from an uninitialized or no-remote layout path, it can
-  initialize the jj repo or infer the GitHub repository to create from the path.
+- `jx sync` uses the current repository by default, can target one primary
+  repository key, and can conservatively sync every eligible primary repository
+  with `--all`. When run from an uninitialized or no-remote layout path without
+  `--all`, it can initialize the jj repo or infer the GitHub repository to
+  create from the path.
 - `jx pr` uses an explicit `--task-id` when present; otherwise it can read the
   task id stored in workspace-local metadata created by `jx work add --task-id`.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
@@ -170,6 +172,35 @@ task_id = "ABC-123"
 The visible workspace name makes completion entries such as `repo@ABC-123-fix`
 scannable. The metadata file remains the source of truth for `jx pr`, so the
 workspace name is not parsed for task information.
+
+## All-repository fetch and sync
+
+The layout index lets `jx` run maintenance commands over primary checkouts from
+any directory. These global modes use only primary repository keys; managed
+workspace keys with `@` remain navigation/workspace targets and are not scanned.
+
+`jx fetch --all` is intentionally broad but local-work safe. For each configured
+primary checkout, it discovers fixed-origin repository context and fetches only
+when the current workspace is a clean empty child of `origin` trunk. Repositories
+that are not discoverable or are not safe for automatic fetch are skipped;
+repositories that fail after selection are rendered as error rows.
+
+`jx sync --all` is narrower because it can push. It does not initialize missing
+repositories, create GitHub repositories, or prompt. A repository is eligible
+only when all of these gates pass:
+
+1. The primary checkout is discoverable and already has a GitHub `origin`.
+2. The GitHub token can push to `origin`.
+3. GitHub `origin` is not ahead of the local cached trunk, and the origin branch
+   is not diverged.
+
+Eligible repositories run the normal existing-origin sync steps: fetch origin,
+stop before pushing if fetch introduced conflicts, optionally advance the local
+trunk bookmark according to repo policy, then push tracked bookmark state. Local
+jj work does not by itself block `sync --all`; if GitHub `origin` has not moved
+ahead of the cached trunk, pushing tracked bookmark state is still safe. Skips
+are grouped by reason so read-only third-party checkouts, pull-needed repos, and
+setup issues remain visible without being treated as failures.
 
 ## Current repository versus layout repository
 

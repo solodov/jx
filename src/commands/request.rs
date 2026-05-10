@@ -124,6 +124,7 @@ pub(super) struct FetchRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SyncRequest {
+    pub(super) all: bool,
     pub(super) repository: Option<String>,
 }
 
@@ -187,6 +188,7 @@ impl CommandRequest {
                 tracked: matches.get_flag("tracked"),
             })),
             Some(("sync", matches)) => Ok(Self::Sync(SyncRequest {
+                all: matches.get_flag("all"),
                 repository: repository_arg(matches),
             })),
             Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
@@ -599,6 +601,10 @@ pub(super) fn cli() -> ClapCommand {
                 .about(
                     "Fetch origin, or initialize/create the configured repository, then push bookmark state",
                 )
+                .long_about(
+                    "Fetch origin, or initialize/create the configured repository, then push bookmark state.\n\nWith --all, sync every eligible primary repository from configured layout roots without prompting. A repository is eligible only when it already has a GitHub origin, GitHub origin is not ahead or diverged, and the token has origin push access. Repositories that need a pull or lack push access are skipped.",
+                )
+                .arg(sync_all_arg())
                 .arg(repository_arg_definition()),
         )
         .subcommand(
@@ -718,6 +724,15 @@ fn fetch_all_arg() -> Arg {
         .action(ArgAction::SetTrue)
         .conflicts_with("repository")
         .help("Fetch every safe primary repository in configured layout roots")
+}
+
+fn sync_all_arg() -> Arg {
+    Arg::new("all")
+        .short('a')
+        .long("all")
+        .action(ArgAction::SetTrue)
+        .conflicts_with("repository")
+        .help("Sync every eligible primary repository in configured layout roots")
 }
 
 fn repository_arg_definition() -> Arg {

@@ -97,6 +97,9 @@ pub(super) trait CommandServices {
         workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError>;
 
+    /// Returns whether the current token can push to the fixed origin repository.
+    fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError>;
+
     /// Returns the authenticated GitHub login used for authored PR filters.
     fn authenticated_login(&self, token_source: &TokenSource) -> Result<String, WorkflowError>;
 
@@ -361,6 +364,21 @@ impl CommandServices for ProductionServices<'_> {
                 OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
 
             domain::status_report(context, workspace, &github).await
+        })
+    }
+
+    fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+            let access = github.repository_access(&context.origin.github).await?;
+            if !access.can_read {
+                return Err(WorkflowError::MissingReadAccess {
+                    repository: context.origin.github.slug(),
+                });
+            }
+
+            Ok(access.can_push)
         })
     }
 

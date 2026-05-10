@@ -47,9 +47,9 @@ use crate::{
     },
     repository::{
         read_workspace_metadata, validate_workspace_name, write_workspace_metadata, ClonePlan,
-        DiffToolConfig, GitHubRepository, LayoutConfig, LocalRepositoryContext, RepositoryContext,
-        RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode,
-        TokenSource, WorkflowConfig, WorkspaceMetadata,
+        DiffToolConfig, GitHubRemote, GitHubRepository, LayoutConfig, LocalRepositoryContext,
+        RepositoryContext, RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig,
+        ShellZoxideMode, TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 
