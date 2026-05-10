@@ -1007,18 +1007,198 @@ impl From<&RemoteStatusReport> for RemoteStatusRemoteJson {
 
 pub(super) fn render_global_status(
     entries: &[GlobalStatusEntry],
+    total_repositories: usize,
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
+    let groups = global_status_groups(entries, total_repositories);
     render_linked_output(current_dir, color, |formatter| {
-        for entry in sorted_global_status_entries(entries) {
-            match &entry.result {
-                Ok(report) => write_status_with_prefix(formatter, report, &entry.display_root)?,
-                Err(message) => writeln!(formatter, "{} error: {message}", entry.display_root)?,
-            }
+        writeln!(
+            formatter,
+            "Remote status: {} checked, {}",
+            repository_count(total_repositories),
+            attention_count(groups.attention_repositories)
+        )?;
+
+        let label_width = groups.label_width();
+        write_global_status_section(
+            formatter,
+            "Pull needed: GitHub has new commits",
+            &groups.pull_needed,
+            label_width,
+        )?;
+        write_global_status_section(
+            formatter,
+            "Push needed: local commits are unpublished",
+            &groups.push_needed,
+            label_width,
+        )?;
+        write_global_status_section(
+            formatter,
+            "Diverged: pull and push needed",
+            &groups.diverged,
+            label_width,
+        )?;
+        write_global_status_section(formatter, "Setup needed", &groups.setup_needed, label_width)?;
+
+        if groups.synced_repositories > 0 {
+            writeln!(formatter)?;
+            writeln!(
+                formatter,
+                "Synced: {}",
+                repository_count(groups.synced_repositories)
+            )?;
         }
         Ok(())
     })
+}
+
+#[derive(Debug, Default)]
+struct GlobalStatusGroups {
+    pull_needed: Vec<GlobalStatusRow>,
+    push_needed: Vec<GlobalStatusRow>,
+    diverged: Vec<GlobalStatusRow>,
+    setup_needed: Vec<GlobalStatusRow>,
+    attention_repositories: usize,
+    synced_repositories: usize,
+}
+
+impl GlobalStatusGroups {
+    fn label_width(&self) -> usize {
+        self.pull_needed
+            .iter()
+            .chain(&self.push_needed)
+            .chain(&self.diverged)
+            .chain(&self.setup_needed)
+            .map(|row| row.label.len())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+#[derive(Debug)]
+struct GlobalStatusRow {
+    label: String,
+    detail: String,
+}
+
+fn global_status_groups(
+    entries: &[GlobalStatusEntry],
+    total_repositories: usize,
+) -> GlobalStatusGroups {
+    let mut groups = GlobalStatusGroups::default();
+
+    for entry in sorted_global_status_entries(entries) {
+        match &entry.result {
+            Ok(report) => {
+                let before = groups.changed_row_count();
+                push_global_status_rows(&mut groups, entry, report);
+                if groups.changed_row_count() > before {
+                    groups.attention_repositories += 1;
+                }
+            }
+            Err(message) => {
+                groups.attention_repositories += 1;
+                groups.setup_needed.push(GlobalStatusRow {
+                    label: entry.display_root.clone(),
+                    detail: message.clone(),
+                });
+            }
+        }
+    }
+
+    groups.synced_repositories = total_repositories.saturating_sub(groups.attention_repositories);
+    groups
+}
+
+impl GlobalStatusGroups {
+    fn changed_row_count(&self) -> usize {
+        self.pull_needed.len() + self.push_needed.len() + self.diverged.len()
+    }
+}
+
+fn push_global_status_rows(
+    groups: &mut GlobalStatusGroups,
+    entry: &GlobalStatusEntry,
+    report: &StatusReport,
+) {
+    let remotes = sorted_remote_statuses(report);
+    let show_remote_name = remotes.len() > 1;
+    for remote in remotes {
+        let counts = remote_status_counts(remote);
+        let label = global_status_remote_label(entry, remote, show_remote_name);
+        match (counts.pull > 0, counts.push > 0) {
+            (true, false) => groups.pull_needed.push(GlobalStatusRow {
+                label,
+                detail: format!("{} to pull", commit_count_i64(counts.pull)),
+            }),
+            (false, true) => groups.push_needed.push(GlobalStatusRow {
+                label,
+                detail: format!("{} to push", commit_count_i64(counts.push)),
+            }),
+            (true, true) => groups.diverged.push(GlobalStatusRow {
+                label,
+                detail: format!(
+                    "pull {}, push {}",
+                    commit_count_i64(counts.pull),
+                    commit_count_i64(counts.push)
+                ),
+            }),
+            (false, false) => {}
+        }
+    }
+}
+
+fn global_status_remote_label(
+    entry: &GlobalStatusEntry,
+    remote: &RemoteStatusReport,
+    show_remote_name: bool,
+) -> String {
+    if show_remote_name || remote.name != "origin" {
+        format!("{} ({})", entry.display_root, remote.name)
+    } else {
+        entry.display_root.clone()
+    }
+}
+
+fn write_global_status_section(
+    formatter: &mut dyn Formatter,
+    title: &str,
+    rows: &[GlobalStatusRow],
+    label_width: usize,
+) -> io::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(formatter)?;
+    writeln!(formatter, "{title}")?;
+    for row in rows {
+        writeln!(
+            formatter,
+            "  {label:<label_width$}  {detail}",
+            label = row.label.as_str(),
+            detail = row.detail.as_str()
+        )?;
+    }
+    Ok(())
+}
+
+fn repository_count(count: usize) -> String {
+    let noun = if count == 1 {
+        "repository"
+    } else {
+        "repositories"
+    };
+    format!("{count} {noun}")
+}
+
+fn attention_count(count: usize) -> String {
+    if count == 1 {
+        "1 needs attention".to_owned()
+    } else {
+        format!("{count} need attention")
+    }
 }
 
 fn sorted_global_status_entries(entries: &[GlobalStatusEntry]) -> Vec<&GlobalStatusEntry> {
@@ -1042,18 +1222,6 @@ fn sorted_remote_statuses(report: &StatusReport) -> Vec<&RemoteStatusReport> {
 
 pub(super) fn write_status(formatter: &mut dyn Formatter, report: &StatusReport) -> io::Result<()> {
     for remote in sorted_remote_statuses(report) {
-        write_remote_status(formatter, remote)?;
-    }
-    Ok(())
-}
-
-pub(super) fn write_status_with_prefix(
-    formatter: &mut dyn Formatter,
-    report: &StatusReport,
-    prefix: &str,
-) -> io::Result<()> {
-    for remote in sorted_remote_statuses(report) {
-        write!(formatter, "{prefix} ")?;
         write_remote_status(formatter, remote)?;
     }
     Ok(())
@@ -1107,27 +1275,56 @@ pub(super) fn write_remote_status(
 }
 
 pub(super) fn render_status_delta(remote: &domain::RemoteStatusReport) -> String {
-    let ahead = remote.comparison.github_ahead_by;
-    let behind = remote.comparison.github_behind_by + remote.local_ahead_by;
-    let mut parts = Vec::new();
-
-    if ahead > 0 {
-        parts.push(commit_delta(ahead, "ahead"));
-    }
-    if behind > 0 {
-        parts.push(commit_delta(behind, "behind"));
-    }
-
-    if parts.is_empty() {
-        "up to date".to_owned()
-    } else {
-        parts.join(", ")
+    let counts = remote_status_counts(remote);
+    match (counts.pull > 0, counts.push > 0) {
+        (true, false) => format!("pull needed: GitHub has {}", new_commit_count(counts.pull)),
+        (false, true) => format!(
+            "push needed: local has {}",
+            unpublished_commit_count(counts.push)
+        ),
+        (true, true) => format!(
+            "diverged: pull {}, push {}",
+            commit_count_i64(counts.pull),
+            commit_count_i64(counts.push)
+        ),
+        (false, false) => "synced".to_owned(),
     }
 }
 
-pub(super) fn commit_delta(count: i64, direction: &str) -> String {
+#[derive(Debug, Clone, Copy)]
+struct RemoteStatusCounts {
+    pull: i64,
+    push: i64,
+}
+
+fn remote_status_counts(remote: &domain::RemoteStatusReport) -> RemoteStatusCounts {
+    RemoteStatusCounts {
+        pull: remote.comparison.github_ahead_by,
+        push: remote.comparison.github_behind_by + remote.local_ahead_by,
+    }
+}
+
+fn commit_count_i64(count: i64) -> String {
     let noun = if count == 1 { "commit" } else { "commits" };
-    format!("{count} {noun} {direction}")
+    format!("{count} {noun}")
+}
+
+fn new_commit_count(count: i64) -> String {
+    let noun = if count == 1 {
+        "new commit"
+    } else {
+        "new commits"
+    };
+    format!("{count} {noun}")
+}
+
+fn unpublished_commit_count(count: i64) -> String {
+    let noun = if count == 1 {
+        "unpublished commit"
+    } else {
+        "unpublished commits"
+    };
+    format!("{count} {noun}")
 }
 
 pub(super) fn branch_url(repository_url: &str, branch: &str) -> String {

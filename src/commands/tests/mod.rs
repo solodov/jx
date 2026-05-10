@@ -1265,7 +1265,7 @@ fn remote_status_loads_context_and_renders_github_freshness() {
 
     assert_eq!(
             result.stdout,
-            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), pull needed: GitHub has 3 new commits\n"
         );
 }
 
@@ -1287,7 +1287,7 @@ fn rs_alias_runs_remote_status() {
 
     assert_eq!(
             result.stdout,
-            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), pull needed: GitHub has 3 new commits\n"
         );
 }
 
@@ -1434,7 +1434,7 @@ fn remote_status_shows_local_commits_as_remote_behind() {
 
     assert_eq!(
             result.stdout,
-            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), 2 commits behind\n"
+            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), push needed: local has 2 unpublished commits\n"
         );
 }
 
@@ -1492,7 +1492,7 @@ fn remote_status_renders_one_line_per_github_remote() {
 
     assert_eq!(
             result.stdout,
-            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), 1 commit ahead, 2 commits behind\nremote: upstream (\x1b]8;;https://github.com/upstream-owner/example-repo/tree/main\x1b\\https://github.com/upstream-owner/example-repo.git\x1b]8;;\x1b\\), 3 commits behind\n"
+            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), diverged: pull 1 commit, push 2 commits\nremote: upstream (\x1b]8;;https://github.com/upstream-owner/example-repo/tree/main\x1b\\https://github.com/upstream-owner/example-repo.git\x1b]8;;\x1b\\), push needed: local has 3 unpublished commits\n"
         );
 }
 
@@ -1516,18 +1516,18 @@ fn remote_status_global_renderer_sorts_entries_by_directory() {
         },
     ];
 
-    let output = render_global_status(&entries, Path::new("/workspace"), false)
+    let output = render_global_status(&entries, entries.len(), Path::new("/workspace"), false)
         .expect("global status renders");
 
     assert_eq!(
         output,
-        "beta error: beta failed\nalpha error: alpha failed\n"
+        "Remote status: 2 repositories checked, 2 need attention\n\nSetup needed\n  beta   beta failed\n  alpha  alpha failed\n"
     );
 }
 
 #[test]
-fn remote_status_all_prefixes_each_layout_repository_path() {
-    // Verifies: Global remote-status scans configured repos with a custom concurrency limit and keeps the normal per-remote row.
+fn remote_status_all_groups_repositories_by_action_needed() {
+    // Verifies: Global remote-status scans configured repos with a custom concurrency limit and groups pull work by path.
     let workspace = TestWorkspace::new();
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -1592,7 +1592,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "~/projects/alpha remote: origin (\x1b]8;;https://github.com/example-owner/alpha/tree/main\x1b\\ssh://git@github.com/example-owner/alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n~/projects/beta remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+        "Remote status: 2 repositories checked, 2 need attention\n\nPull needed: GitHub has new commits\n  ~/projects/alpha  3 commits to pull\n  ~/projects/beta   3 commits to pull\n"
     );
 }
 
@@ -1637,7 +1637,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+        "remote: origin (\x1b]8;;https://github.com/example-owner/beta/tree/main\x1b\\ssh://git@github.com/example-owner/beta.git\x1b]8;;\x1b\\), pull needed: GitHub has 3 new commits\n"
     );
 }
 
@@ -1686,7 +1686,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "~/projects/api-alpha remote: origin (\x1b]8;;https://github.com/example-owner/api-alpha/tree/main\x1b\\ssh://git@github.com/example-owner/api-alpha.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+        "Remote status: 1 repository checked, 1 needs attention\n\nPull needed: GitHub has new commits\n  ~/projects/api-alpha  3 commits to pull\n"
     );
 }
 
@@ -1733,7 +1733,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "~/projects/changed remote: origin (\x1b]8;;https://github.com/example-owner/changed/tree/main\x1b\\ssh://git@github.com/example-owner/changed.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+        "Remote status: 2 repositories checked, 1 needs attention\n\nPull needed: GitHub has new commits\n  ~/projects/changed  3 commits to pull\n\nSynced: 1 repository\n"
     );
 }
 
@@ -1772,7 +1772,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "~/projects/missing-origin error: The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n~/projects/ok remote: origin (\x1b]8;;https://github.com/example-owner/ok/tree/main\x1b\\ssh://git@github.com/example-owner/ok.git\x1b]8;;\x1b\\), 3 commits ahead\n"
+        "Remote status: 2 repositories checked, 2 need attention\n\nPull needed: GitHub has new commits\n  ~/projects/ok              3 commits to pull\n\nSetup needed\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
     );
 }
 

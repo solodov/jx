@@ -486,7 +486,13 @@ fn handle_global_remote_status(
     if request.format == RemoteStatusFormat::Json {
         Ok(render_status_json(&entries))
     } else {
-        render_global_status(&entries, environment.current_dir(), output.color).map_err(Into::into)
+        render_global_status(
+            &entries,
+            repositories.len(),
+            environment.current_dir(),
+            output.color,
+        )
+        .map_err(Into::into)
     }
 }
 
