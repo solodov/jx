@@ -178,7 +178,7 @@ fn pull_request_help_documents_task_id_and_commit_without_loading_repo() {
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
     assert!(stdout.contains("Publish or update a GitHub pull request for a jj change"));
     assert!(stdout.contains("--task-id"));
-    assert!(stdout.contains("Include a task identifier in generated PR bookmark names"));
+    assert!(stdout.contains("Associate a task identifier with generated workspace or PR bookmark"));
     assert!(stdout.contains("TASK_ID"));
     assert!(stdout.contains("--commit"));
     assert!(stdout.contains("Publish a specific jj revision instead of the working copy"));

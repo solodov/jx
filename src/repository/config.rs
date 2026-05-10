@@ -252,6 +252,15 @@ pub enum RepositoryError {
         path: PathBuf,
         identities: Vec<String>,
     },
+    #[error("Could not read workspace metadata `{file}`: {source}")]
+    WorkspaceMetadataRead { file: PathBuf, source: io::Error },
+    #[error("Could not parse workspace metadata `{file}`: {source}")]
+    WorkspaceMetadataParse {
+        file: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("Could not write workspace metadata `{file}`: {source}")]
+    WorkspaceMetadataWrite { file: PathBuf, source: io::Error },
 }
 
 fn global_config_dir(environment: &RuntimeEnvironment) -> Option<PathBuf> {

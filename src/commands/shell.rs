@@ -94,7 +94,7 @@ __jx_project_arg_completion() {
       return
       ;;
     --jobs|-j)
-      _jx
+      _jx "$@"
       return
       ;;
   esac
@@ -103,7 +103,7 @@ __jx_project_arg_completion() {
     local IFS=$'\n'
     COMPREPLY=($(compgen -W "$(command jx work complete --repositories --prefix "$cur" 2>/dev/null)" -- "$cur"))
   else
-    _jx
+    _jx "$@"
   fi
 }
 

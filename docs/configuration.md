@@ -23,7 +23,9 @@ for how layout discovery and project keys apply across commands.
 `jx clone` normalizes shorthand inputs to a source, owner, and repo, then places
 the checkout at `root/path`. `jx work` uses the same identity to place managed
 workspaces at `root/workspace_dir/path/name`, keeping primary checkouts visible
-while parallel work stays under the hidden workspace directory. `jx sync` uses
+while parallel work stays under the hidden workspace directory. Task workspaces
+created with `jx work add --task-id` prefix that workspace name with the task id
+and store the task id in workspace-local metadata for `jx pr`. `jx sync` uses
 the same layout in reverse to infer private GitHub repository creation when a
 new local repo has no remotes. Without config, `owner/repo` uses the built-in
 GitHub source and clones to `~/src/github.com/owner/repo` with an SSH URL.

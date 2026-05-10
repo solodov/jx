@@ -88,6 +88,41 @@ fn discovers_all_configured_github_remotes() {
 }
 
 #[test]
+fn workspace_metadata_missing_file_returns_default() {
+    // Verifies: Workspace metadata is optional for existing workspaces.
+    let workspace = TestWorkspace::new();
+
+    let metadata = read_workspace_metadata(&workspace.path()).expect("metadata reads");
+
+    assert_eq!(metadata, WorkspaceMetadata::default());
+}
+
+#[test]
+fn workspace_metadata_write_creates_ignored_state_file() {
+    // Verifies: Workspace metadata stays local by ignoring the metadata directory.
+    let workspace = TestWorkspace::new();
+
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        },
+    )
+    .expect("metadata writes");
+
+    assert_eq!(
+        fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("gitignore"),
+        "*\n"
+    );
+    assert_eq!(
+        read_workspace_metadata(&workspace.path()).expect("metadata reads"),
+        WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        }
+    );
+}
+
+#[test]
 fn discovers_workspace_from_nested_directory() {
     // Verifies: Discovers workspace from nested directory.
     let workspace = TestWorkspace::new();

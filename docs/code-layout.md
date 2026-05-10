@@ -119,7 +119,8 @@ for navigation and workspace management.
   is provided.
 - `jx work` lists, completes, resolves, adds, and removes locations in the
   configured layout. `jx work add` creates managed workspaces under the hidden
-  workspace tree, and `jx work remove` refuses paths outside that managed tree.
+  workspace tree, can prefix task workspaces with `--task-id`, and `jx work
+  remove` refuses paths outside that managed tree.
 - `jx remote-status` uses the current repository by default, can target one
   primary repository key, and can scan all configured primary repositories.
   `--repo` remains a glob filter for global scans.
@@ -131,9 +132,44 @@ for navigation and workspace management.
 - `jx sync` uses the current repository by default and can target one primary
   repository key. When run from an uninitialized or no-remote layout path, it can
   initialize the jj repo or infer the GitHub repository to create from the path.
+- `jx pr` uses an explicit `--task-id` when present; otherwise it can read the
+  task id stored in workspace-local metadata created by `jx work add --task-id`.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
   completion includes primary repositories and managed workspaces; project
   argument completion includes only primary repositories.
+
+## Workspace metadata
+
+Task workspaces keep the task id visible in navigation while storing the task
+association as workspace-local metadata.
+
+```sh
+jx work add fix --task-id ABC-123
+```
+
+This creates a managed workspace whose directory and jj workspace name are both:
+
+```text
+ABC-123-fix
+```
+
+It also writes:
+
+```text
+<workspace-root>/.jx/.gitignore
+<workspace-root>/.jx/workspace.toml
+```
+
+The `.gitignore` file ignores the whole `.jx` metadata directory, and
+`workspace.toml` contains:
+
+```toml
+task_id = "ABC-123"
+```
+
+The visible workspace name makes completion entries such as `repo@ABC-123-fix`
+scannable. The metadata file remains the source of truth for `jx pr`, so the
+workspace name is not parsed for task information.
 
 ## Current repository versus layout repository
 

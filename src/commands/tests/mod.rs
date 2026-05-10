@@ -399,6 +399,54 @@ path = "{repo}"
 }
 
 #[test]
+fn work_add_task_id_prefixes_workspace_name_and_writes_metadata() {
+    // Verifies: Task workspaces use task-visible names while metadata remains the source of truth.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/ABC-123-fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "ABC-123-fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "add", "fix", "--task-id", "ABC-123"],
+        &environment,
+        &services,
+    )
+    .expect("task workspace add succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("Added workspace: {}\n", expected_destination.display())
+    );
+    assert_eq!(
+        read_workspace_metadata(&expected_destination).expect("metadata reads"),
+        WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        }
+    );
+    assert_eq!(
+        fs::read_to_string(expected_destination.join(".jx/.gitignore")).expect("gitignore"),
+        "*\n"
+    );
+}
+
+#[test]
 fn work_add_rejects_invalid_workspace_name() {
     // Verifies: Workspace names are validated before they become filesystem paths.
     let workspace = TestWorkspace::new_under("projects/jx");
@@ -646,6 +694,7 @@ zoxide = "auto"
     assert!(result
         .stdout
         .contains("complete -F __jx_project_arg_completion jx"));
+    assert!(result.stdout.contains("_jx \"$@\""));
     assert!(result.stdout.contains("remote-status"));
     assert!(result.stdout.contains("--changed"));
     assert!(result
@@ -1472,7 +1521,7 @@ fn remote_status_global_renderer_sorts_entries_by_directory() {
 
     assert_eq!(
         output,
-        "alpha error: alpha failed\nbeta error: beta failed\n"
+        "beta error: beta failed\nalpha error: alpha failed\n"
     );
 }
 
@@ -2859,6 +2908,71 @@ fn pull_request_accepts_short_task_id_flag_and_renders_published_pr() {
 }
 
 #[test]
+fn pull_request_infers_task_id_from_workspace_metadata() {
+    // Verifies: Workspace metadata supplies the default task ID for PR planning.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        expected_task_id: Some(Some("ABC-123".to_owned())),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "pr"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        result.stdout,
+        "Created https://github.com/example-owner/example-repo/pull/42\n"
+    );
+}
+
+#[test]
+fn pull_request_task_id_flag_overrides_workspace_metadata() {
+    // Verifies: Explicit PR task IDs win over workspace-local defaults.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        expected_task_id: Some(Some("XYZ-9".to_owned())),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "pr", "--task-id", "XYZ-9"], &environment, &services)
+        .expect("pull request publishes");
+}
+
+#[test]
 fn pull_request_accepts_repeated_label_flags() {
     // Verifies: PR publishing applies each operator-supplied label once.
     let workspace = TestWorkspace::new();
@@ -3468,6 +3582,7 @@ struct FakeServices {
     existing_pull_request: Option<PullRequestRecord>,
     reviewer_candidates: Vec<ReviewerCandidate>,
     expected_reviewers: Option<ReviewerSelection>,
+    expected_task_id: Option<Option<String>>,
     expected_labels: Vec<String>,
     expected_draft: Option<bool>,
     expected_clone: Option<(String, PathBuf)>,
@@ -3640,6 +3755,7 @@ impl Default for FakeServices {
             existing_pull_request: None,
             reviewer_candidates: Vec::new(),
             expected_reviewers: None,
+            expected_task_id: None,
             expected_labels: Vec::new(),
             expected_draft: None,
             expected_clone: None,
@@ -3972,6 +4088,9 @@ impl CommandServices for FakeServices {
         labels: Vec<String>,
         draft: bool,
     ) -> Result<PullRequestPlan, WorkflowError> {
+        if let Some(expected) = &self.expected_task_id {
+            assert_eq!(&task_id, expected);
+        }
         let short = workspace.target_change.short_commit_id.as_str();
         let branch = match task_id.as_deref() {
             Some(task_id) => format!(

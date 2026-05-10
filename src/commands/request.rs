@@ -51,6 +51,7 @@ pub(super) enum WorkRequest {
 pub(super) struct WorkAddRequest {
     pub(super) name: String,
     pub(super) revision: Option<String>,
+    pub(super) task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +219,7 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
         Some(("add", matches)) => Ok(WorkRequest::Add(WorkAddRequest {
             name: required_arg(matches, "name"),
             revision: revision(matches),
+            task_id: task_id(matches),
         })),
         Some(("list", matches)) => Ok(WorkRequest::List(WorkListRequest {
             all: matches.get_flag("all"),
@@ -507,7 +509,8 @@ pub(super) fn cli() -> ClapCommand {
                     ClapCommand::new("add")
                         .about("Add a workspace under the configured hidden layout")
                         .arg(workspace_name_arg())
-                        .arg(workspace_revision_arg()),
+                        .arg(workspace_revision_arg())
+                        .arg(task_id_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("list")
@@ -679,7 +682,7 @@ fn task_id_arg() -> Arg {
         .short('t')
         .long("task-id")
         .value_name("TASK_ID")
-        .help("Include a task identifier in generated PR bookmark names")
+        .help("Associate a task identifier with generated workspace or PR bookmark names")
 }
 
 fn commit_arg() -> Arg {

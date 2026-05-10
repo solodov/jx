@@ -112,6 +112,10 @@ pub(super) fn handle_request(
                     render_check(&report, environment.current_dir(), output.color)?
                 }
                 WorkflowCommand::PullRequest => {
+                    let task_id = match task_id {
+                        Some(task_id) => Some(task_id),
+                        None => read_workspace_metadata(&context.workspace_root)?.task_id,
+                    };
                     progress.status("Planning pull request…");
                     let status = services
                         .workspace_status(environment.current_dir(), io::stderr().is_terminal())?;
@@ -503,6 +507,10 @@ fn repository_environment(
     Ok(environment.with_current_dir(repository.root))
 }
 
+fn workspace_name_for_task(name: &str, task_id: Option<&str>) -> String {
+    task_id.map_or_else(|| name.to_owned(), |task_id| format!("{task_id}-{name}"))
+}
+
 pub(super) fn display_path(path: &Path, environment: &RuntimeEnvironment) -> String {
     if let Some(home) = environment.home_dir() {
         if path == home {
@@ -526,15 +534,17 @@ fn handle_work(
     match request {
         WorkRequest::Add(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
-            validate_workspace_name(&request.name)?;
+            let task_id = domain::normalize_task_id(request.task_id.as_deref())?;
+            let workspace_name = workspace_name_for_task(&request.name, task_id.as_deref());
+            validate_workspace_name(&workspace_name)?;
             let identity = workspace_identity(&context, environment)?;
             let options = WorkspaceAddOptions {
                 destination: context.config.layout.workspace_destination(
                     &identity,
-                    &request.name,
+                    &workspace_name,
                     environment,
                 )?,
-                name: request.name,
+                name: workspace_name,
                 revision: request.revision,
             };
             if options.destination.exists() {
@@ -546,6 +556,14 @@ fn handle_work(
 
             progress.status("Adding workspace…");
             services.add_workspace(environment.current_dir(), &options)?;
+            if task_id.is_some() {
+                write_workspace_metadata(
+                    &options.destination,
+                    &WorkspaceMetadata {
+                        task_id: task_id.clone(),
+                    },
+                )?;
+            }
             progress.finish();
             Ok(render_work_add(&options))
         }

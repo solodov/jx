@@ -46,9 +46,10 @@ use crate::{
         WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
     },
     repository::{
-        validate_workspace_name, ClonePlan, DiffToolConfig, GitHubRepository, LayoutConfig,
-        LocalRepositoryContext, RepositoryContext, RepositoryError, RepositoryIdentity,
-        RuntimeEnvironment, ShellConfig, ShellZoxideMode, TokenSource, WorkflowConfig,
+        read_workspace_metadata, validate_workspace_name, write_workspace_metadata, ClonePlan,
+        DiffToolConfig, GitHubRepository, LayoutConfig, LocalRepositoryContext, RepositoryContext,
+        RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode,
+        TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 

@@ -131,7 +131,8 @@ fn normalize_github_login(login: &str) -> Result<&str, WorkflowError> {
     Ok(login)
 }
 
-fn normalize_task_id(task_id: Option<&str>) -> Result<Option<String>, WorkflowError> {
+/// Normalizes a task identifier used in generated bookmark and workspace names.
+pub fn normalize_task_id(task_id: Option<&str>) -> Result<Option<String>, WorkflowError> {
     let Some(task_id) = task_id else {
         return Ok(None);
     };
