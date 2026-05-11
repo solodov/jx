@@ -2021,15 +2021,16 @@ path = "{repo}"
     assert_eq!(
         progress.messages(),
         [
-            "Checking local-work…",
-            "Fetching local-work from origin…",
-            "Pushing local-work tracked bookmarks…",
-            "Checking missing-origin…",
-            "Checking pull-needed…",
-            "Checking read-only…",
-            "Checking writable…",
-            "Fetching writable from origin…",
-            "Pushing writable tracked bookmarks…",
+            "Syncing local-work… 0%",
+            "Syncing local-work… 20%",
+            "Syncing missing-origin… 20%",
+            "Syncing missing-origin… 40%",
+            "Syncing pull-needed… 40%",
+            "Syncing pull-needed… 60%",
+            "Syncing read-only… 60%",
+            "Syncing read-only… 80%",
+            "Syncing writable… 80%",
+            "Syncing writable… 100%",
         ]
     );
     assert!(progress.finished.get());

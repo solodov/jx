@@ -50,6 +50,38 @@ This is what makes commands such as global remote status, all-repository fetch,
 and conservative all-repository sync practical: `jx` knows which directories are
 projects, which are workspaces, and which ones are safe candidates.
 
+A small layout config turns repository names into destinations and shell targets:
+
+```toml
+[layout]
+default_root = "~/src"
+workspace_dir = ".work"
+
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/work"
+path = "{repo}"
+```
+
+With that in place, `jx` can clone and find work by identity instead of by
+remembered paths:
+
+```sh
+jx clone example-owner/api        # -> ~/work/api
+jx work add fix-auth --task-id ABC-123
+jx work                           # lists primary and managed workspaces
+jx work root api@ABC-123-fix-auth # prints the managed workspace path
+jx remote-status --all            # checks every primary checkout
+jx fetch --all                    # fetches safe primary checkouts
+jx sync --all                     # syncs eligible writable primary checkouts
+```
+
+Shell integration makes those layout keys interactive. `jx shell init bash`
+installs completion for project arguments and can define a navigation helper,
+so jumping between primary repositories and managed workspaces becomes a
+completion-driven workflow rather than a path-memory exercise.
+
 ## Task-aware work
 
 For work repositories, task ids are part of the workflow rather than just branch
