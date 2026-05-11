@@ -244,13 +244,20 @@ fn handle_open(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
 ) -> Result<String, CommandError> {
-    let targets = open_targets(&request, environment)?;
-    let urls = match request.target {
-        OpenTarget::Repository => targets
+    let urls = match &request.target {
+        OpenTarget::Repository => open_targets(&request, environment)?
             .iter()
             .map(|target| target.repository.https_url())
             .collect::<Vec<_>>(),
-        OpenTarget::PullRequests { all } => vec![pull_requests_url(&targets, all, services)?],
+        OpenTarget::PullRequest { commit } => vec![selected_pull_request_url(
+            environment,
+            services,
+            commit.as_deref(),
+        )?],
+        OpenTarget::PullRequests { all } => {
+            let targets = open_targets(&request, environment)?;
+            vec![pull_requests_url(&targets, *all, services)?]
+        }
     };
 
     if request.print {
@@ -262,6 +269,24 @@ fn handle_open(
     }
 
     Ok(render_opened_urls(&urls))
+}
+
+fn selected_pull_request_url(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    revision: Option<&str>,
+) -> Result<String, CommandError> {
+    let context = RepositoryContext::discover(environment)?;
+    for branch in services.pull_request_candidate_bookmarks(&context, revision)? {
+        if let Some(pull_request) = services.find_pull_request_for_head(&context, &branch)? {
+            return Ok(pull_request_url(
+                &context.origin.github.https_url(),
+                &pull_request,
+            ));
+        }
+    }
+
+    Err(WorkflowError::MissingPullRequest.into())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

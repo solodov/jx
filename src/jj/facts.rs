@@ -80,6 +80,40 @@ impl JjWorkspace {
         self.facts_for_commit(self.target_for_revision(revision)?)
     }
 
+    /// Returns local bookmark heads on the selected revision or linear descendants, nearest first.
+    pub fn pull_request_candidate_bookmarks(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<Vec<String>, JjError> {
+        self.ensure_git_backed()?;
+        let target = self.target_for_revision(revision)?;
+        let mut candidates = Vec::new();
+
+        for (bookmark, ref_target) in self.repo.view().local_bookmarks() {
+            let Some(commit_id) = ref_target.as_normal() else {
+                continue;
+            };
+            let commit = self.load_commit(commit_id)?;
+            let Some(distance) = self.linear_descendant_distance(&target, &commit)? else {
+                continue;
+            };
+
+            candidates.push((distance, bookmark.as_str().to_owned()));
+        }
+
+        candidates.sort_by(
+            |(left_distance, left_bookmark), (right_distance, right_bookmark)| {
+                left_distance
+                    .cmp(right_distance)
+                    .then_with(|| left_bookmark.cmp(right_bookmark))
+            },
+        );
+        Ok(candidates
+            .into_iter()
+            .map(|(_, bookmark)| bookmark)
+            .collect())
+    }
+
     /// Returns push planning facts, reusing local bookmarks even before an origin trunk is known.
     pub fn push_facts_for_revision(
         &self,

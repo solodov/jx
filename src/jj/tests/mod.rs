@@ -358,6 +358,76 @@ fn facts_for_revision_reports_selected_commit_without_changing_workspace() {
 }
 
 #[test]
+fn pull_request_candidates_include_linear_descendant_bookmarks() {
+    // Verifies: Opening a PR from a lower stack change can use a bookmark on its direct descendant.
+    let fixture = TestWorkspace::new("pr-candidate-descendant");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let selected = write_child(tx.repo_mut(), &trunk, "selected change").await;
+        let descendant = write_child(tx.repo_mut(), &selected, "review head").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "review/descendant", descendant.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), selected.id().clone())
+            .expect("set selected working-copy change");
+
+        let repo = tx
+            .commit("arrange descendant bookmark")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let candidates = subject
+        .pull_request_candidate_bookmarks(None)
+        .expect("candidate bookmarks load");
+
+    assert_eq!(candidates, ["review/descendant"]);
+}
+
+#[test]
+fn pull_request_candidates_order_selected_bookmarks_before_descendants() {
+    // Verifies: A PR directly attached to the selected change wins over descendant fallback heads.
+    let fixture = TestWorkspace::new("pr-candidate-order");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let selected = write_child(tx.repo_mut(), &trunk, "selected change").await;
+        let descendant = write_child(tx.repo_mut(), &selected, "review head").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "review/selected", selected.id());
+        set_local_bookmark(tx.repo_mut(), "review/descendant", descendant.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), selected.id().clone())
+            .expect("set selected working-copy change");
+
+        let repo = tx.commit("arrange bookmark order").await.expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let candidates = subject
+        .pull_request_candidate_bookmarks(None)
+        .expect("candidate bookmarks load");
+
+    assert_eq!(candidates, ["review/selected", "review/descendant"]);
+}
+
+#[test]
 fn push_facts_reuse_local_bookmark_without_origin_trunk() {
     // Verifies: Push planning can reuse a local bookmark before any origin bookmark exists.
     let fixture = TestWorkspace::new("push-facts-local-bookmark-no-trunk");

@@ -76,6 +76,9 @@ __jx_project_arg_completion() {
       -a|--all) [[ "$command" != "open" && "$command" != "o" ]] && all_selected=1 ;;
       --repo=*|--jobs=*) ;;
       -*) previous="$word" ;;
+      pr|pull-request)
+        (( positional_count++ ))
+        ;;
       prs|pull-requests)
         if [[ ( "$command" == "open" || "$command" == "o" ) && $positional_count -eq 0 ]]; then
           :

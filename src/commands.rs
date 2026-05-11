@@ -34,7 +34,7 @@ use crate::{
         StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
     },
     github::{
-        GitHubClient, OctocrabGitHubClient, PullRequestRecord, RepositoryCreation,
+        GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
         ReviewerCandidate, ReviewerSelection, ReviewerTarget,
     },
     jj::{

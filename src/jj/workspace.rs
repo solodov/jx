@@ -245,6 +245,38 @@ impl JjWorkspace {
         }
     }
 
+    /// Returns the distance when `descendant` is on a single-parent path from `ancestor`.
+    pub(super) fn linear_descendant_distance(
+        &self,
+        ancestor: &Commit,
+        descendant: &Commit,
+    ) -> Result<Option<usize>, JjError> {
+        if !self.is_ancestor_or_equal(ancestor.id(), descendant.id())? {
+            return Ok(None);
+        }
+
+        let mut cursor = descendant.clone();
+        let mut seen = HashSet::new();
+        let mut distance = 0;
+
+        loop {
+            if cursor.id() == ancestor.id() {
+                return Ok(Some(distance));
+            }
+            if !seen.insert(cursor.id().clone()) {
+                return Ok(None);
+            }
+
+            let parents = cursor.parent_ids();
+            if parents.len() != 1 {
+                return Ok(None);
+            }
+
+            distance += 1;
+            cursor = self.load_commit(&parents[0])?;
+        }
+    }
+
     pub(super) fn nearest_ancestor_bookmark(
         &self,
         trunk: &Commit,

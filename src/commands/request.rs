@@ -94,9 +94,10 @@ pub(super) struct OpenRequest {
     pub(super) print: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OpenTarget {
     Repository,
+    PullRequest { commit: Option<String> },
     PullRequests { all: bool },
 }
 
@@ -258,6 +259,14 @@ fn shell_request(matches: &ArgMatches) -> Result<ShellRequest, clap::Error> {
 
 fn open_request(matches: &ArgMatches) -> OpenRequest {
     match matches.subcommand() {
+        Some(("pr", matches)) => OpenRequest {
+            target: OpenTarget::PullRequest {
+                commit: commit(matches),
+            },
+            repository: None,
+            repo_filters: Vec::new(),
+            print: matches.get_flag("print"),
+        },
         Some(("prs", matches)) => OpenRequest {
             target: OpenTarget::PullRequests {
                 all: matches.get_flag("all"),
@@ -551,10 +560,17 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(
             ClapCommand::new("open")
                 .visible_alias("o")
-                .about("Open a configured repository or pull request list in the browser")
+                .about("Open a configured repository or pull request in the browser")
                 .arg(open_print_arg())
                 .arg(open_repo_arg())
                 .arg(repository_arg_definition().conflicts_with("repo"))
+                .subcommand(
+                    ClapCommand::new("pr")
+                        .visible_alias("pull-request")
+                        .about("Open the pull request for the selected jj change")
+                        .arg(open_commit_arg())
+                        .arg(open_print_arg()),
+                )
                 .subcommand(
                     ClapCommand::new("prs")
                         .visible_alias("pull-requests")
@@ -697,6 +713,14 @@ fn commit_arg() -> Arg {
         .long("commit")
         .value_name("COMMIT")
         .help("Publish a specific jj revision instead of the working copy")
+}
+
+fn open_commit_arg() -> Arg {
+    Arg::new("commit")
+        .short('c')
+        .long("commit")
+        .value_name("COMMIT")
+        .help("Open the pull request for a specific jj revision instead of the working copy")
 }
 
 fn source_arg() -> Arg {

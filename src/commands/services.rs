@@ -103,6 +103,20 @@ pub(super) trait CommandServices {
     /// Returns the authenticated GitHub login used for authored PR filters.
     fn authenticated_login(&self, token_source: &TokenSource) -> Result<String, WorkflowError>;
 
+    /// Lists local bookmark heads on the selected change or linear descendants, nearest first.
+    fn pull_request_candidate_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<Vec<String>, JjError>;
+
+    /// Finds the most recent GitHub pull request for a same-repository bookmark head.
+    fn find_pull_request_for_head(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError>;
+
     /// Opens a URL in the platform default browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
 
@@ -391,6 +405,31 @@ impl CommandServices for ProductionServices<'_> {
             }
 
             Ok(user.login)
+        })
+    }
+
+    fn pull_request_candidate_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<Vec<String>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?
+            .pull_request_candidate_bookmarks(revision)
+    }
+
+    fn find_pull_request_for_head(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+            let head = PullRequestHead::same_repository(&context.origin.github.owner, branch);
+
+            Ok(github
+                .find_pull_request_for_head(&context.origin.github, &head)
+                .await?)
         })
     }
 

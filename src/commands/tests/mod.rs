@@ -21,7 +21,7 @@ use jj_lib::{
     workspace::{default_working_copy_factories, Workspace},
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -1217,6 +1217,55 @@ path = "{repo}"
         result.stdout,
         "https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3Aexample-user+repo%3Aexample-owner%2Fapi+repo%3Aexample-owner%2Fweb\n"
     );
+}
+
+#[test]
+fn open_pr_prints_first_candidate_with_pull_request() {
+    // Verifies: Open PR follows candidate bookmark order until GitHub has a pull request to open.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        open_pull_request_candidates: vec![
+            "topic/without-review".to_owned(),
+            "topic/with-review".to_owned(),
+        ],
+        pull_requests_by_head: BTreeMap::from([(
+            "topic/with-review".to_owned(),
+            PullRequestRecord {
+                number: 24,
+                title: "Reviewable change".to_owned(),
+                body: None,
+                head_branch: "topic/with-review".to_owned(),
+                base_branch: "main".to_owned(),
+                html_url: Some("https://github.com/example-owner/example-repo/pull/24".to_owned()),
+                draft: false,
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let result =
+        run_with_args_and_services(["jx", "open", "pr", "--print"], &environment, &services)
+            .expect("open pr succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/pull/24\n"
+    );
+    assert_eq!(
+        services.pull_request_head_calls.borrow().as_slice(),
+        ["topic/without-review", "topic/with-review"]
+    );
+    assert!(services.opened_urls.borrow().is_empty());
 }
 
 #[test]
@@ -3783,6 +3832,9 @@ struct FakeServices {
     status_uses_context_remotes: bool,
     clean_status_repos: Vec<String>,
     github_login: String,
+    open_pull_request_candidates: Vec<String>,
+    pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
+    pull_request_head_calls: std::cell::RefCell<Vec<String>>,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
@@ -3876,6 +3928,9 @@ impl Default for FakeServices {
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
             github_login: "example-user".to_owned(),
+            open_pull_request_candidates: Vec::new(),
+            pull_requests_by_head: BTreeMap::new(),
+            pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             origin_push_access_roots: None,
@@ -4237,6 +4292,25 @@ impl CommandServices for FakeServices {
 
     fn authenticated_login(&self, _token_source: &TokenSource) -> Result<String, WorkflowError> {
         Ok(self.github_login.clone())
+    }
+
+    fn pull_request_candidate_bookmarks(
+        &self,
+        _context: &RepositoryContext,
+        _revision: Option<&str>,
+    ) -> Result<Vec<String>, JjError> {
+        Ok(self.open_pull_request_candidates.clone())
+    }
+
+    fn find_pull_request_for_head(
+        &self,
+        _context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.pull_request_head_calls
+            .borrow_mut()
+            .push(branch.to_owned());
+        Ok(self.pull_requests_by_head.get(branch).cloned())
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {

@@ -41,6 +41,8 @@ pub enum WorkflowError {
         "Selected change description is empty; describe it before creating or updating a pull request"
     )]
     MissingPullRequestDescription,
+    #[error("Selected change and its descendant bookmarks do not have a pull request")]
+    MissingPullRequest,
     #[error(
         "GitHub could not compare `{branch}` with local trunk `{local_sha}`; status is unavailable"
     )]
