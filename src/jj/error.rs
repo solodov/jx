@@ -100,6 +100,19 @@ pub enum JjError {
     Transaction { message: String },
     #[error("Could not update the working copy after jj mutation: {message}")]
     WorkingCopyCheckout { message: String },
+    #[error("Current change has no previous commit in its editable chain")]
+    NoPreviousCommit,
+    #[error("Current change has no next commit in its editable chain")]
+    NoNextCommit,
+    #[error("Current change has {count} parent commits; choose one explicitly before moving")]
+    AmbiguousPreviousCommit { count: usize },
+    #[error("Current change has {count} next commits; choose one explicitly before moving")]
+    AmbiguousNextCommit { count: usize },
+    #[error("Could not move working copy to {direction} commit: {message}")]
+    CommitNavigation {
+        direction: &'static str,
+        message: String,
+    },
     #[error("Local bookmark `{branch}` is conflicted; resolve it before pushing")]
     ConflictedBookmark { branch: String },
     #[error(

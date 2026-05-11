@@ -145,6 +145,30 @@ fn st_alias_runs_status() {
 }
 
 #[test]
+fn prev_commit_renders_navigation_graph() {
+    // Verifies: Commit navigation replaces jj's edit/status output with the focused graph.
+    let environment = RuntimeEnvironment::new("/workspace", []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "prev-commit"], &environment, &services)
+        .expect("previous commit navigation succeeds");
+
+    assert_eq!(result.stdout, "previous commit graph\n");
+}
+
+#[test]
+fn next_alias_renders_navigation_graph() {
+    // Verifies: The short next alias reaches the same focused graph renderer.
+    let environment = RuntimeEnvironment::new("/workspace", []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "next"], &environment, &services)
+        .expect("next commit navigation succeeds");
+
+    assert_eq!(result.stdout, "next commit graph\n");
+}
+
+#[test]
 fn clone_uses_owner_rule_and_default_source_shorthand() {
     // Verifies: Clone resolves owner/repo shorthands through layout rules before invoking jj.
     let workspace = TestWorkspace::new();
@@ -3824,6 +3848,8 @@ fn preview_plan() -> PullRequestPlan {
 
 struct FakeServices {
     workspace_log: String,
+    previous_commit_log: String,
+    next_commit_log: String,
     workspace_status: WorkspaceStatus,
     workspace: WorkspaceFacts,
     status_workspace: StatusWorkspaceFacts,
@@ -3887,6 +3913,8 @@ impl Default for FakeServices {
 
         Self {
             workspace_log: "workspace log\n".to_owned(),
+            previous_commit_log: "previous commit graph\n".to_owned(),
+            next_commit_log: "next commit graph\n".to_owned(),
             workspace_status: workspace_status(),
             workspace: workspace_facts(),
             status_workspace: status_workspace_facts(),
@@ -4115,6 +4143,14 @@ impl CommandServices for FakeServices {
             "diff:{revision} no_tests={} tool={tool}\n",
             options.no_tests
         ))
+    }
+
+    fn previous_commit_log(&self, _current_dir: &Path) -> Result<String, JjError> {
+        Ok(self.previous_commit_log.clone())
+    }
+
+    fn next_commit_log(&self, _current_dir: &Path) -> Result<String, JjError> {
+        Ok(self.next_commit_log.clone())
     }
 
     fn clone_repository(&self, _current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError> {

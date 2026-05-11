@@ -36,6 +36,10 @@ pub(super) fn handle_request(
         }
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::Open(request) => handle_open(request, environment, services)?,
+        CommandRequest::PreviousCommit => {
+            services.previous_commit_log(environment.current_dir())?
+        }
+        CommandRequest::NextCommit => services.next_commit_log(environment.current_dir())?,
         CommandRequest::RemoteStatus(request) => {
             handle_remote_status(request, environment, services, progress, output)?
         }

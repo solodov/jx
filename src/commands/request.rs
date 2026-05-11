@@ -4,6 +4,8 @@ use super::*;
 pub(super) enum CommandRequest {
     Log,
     Status,
+    PreviousCommit,
+    NextCommit,
     Diff(DiffRequest),
     Clone(CloneRequest),
     Work(WorkRequest),
@@ -157,6 +159,8 @@ impl CommandRequest {
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
             Some(("status" | "st", _)) => Ok(Self::Status),
+            Some(("prev-commit" | "prev", _)) => Ok(Self::PreviousCommit),
+            Some(("next-commit" | "next", _)) => Ok(Self::NextCommit),
             Some(("check", _)) => Ok(Self::Workflow {
                 command: WorkflowCommand::Check,
                 task_id: None,
@@ -582,6 +586,16 @@ pub(super) fn cli() -> ClapCommand {
                 ),
         )
         .subcommand(ClapCommand::new("check").about("Check repository and PR readiness"))
+        .subcommand(
+            ClapCommand::new("prev-commit")
+                .visible_alias("prev")
+                .about("Move to the previous commit and show the surrounding chain"),
+        )
+        .subcommand(
+            ClapCommand::new("next-commit")
+                .visible_alias("next")
+                .about("Move to the next commit and show the surrounding chain"),
+        )
         .subcommand(
             ClapCommand::new("remote-status")
                 .visible_alias("rs")

@@ -80,6 +80,7 @@ mod facts;
 mod fetch;
 mod git_transport;
 mod log;
+mod navigation;
 mod push;
 mod rebase;
 mod status;

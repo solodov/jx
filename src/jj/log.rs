@@ -243,6 +243,92 @@ pub(super) fn render_current_workspace_log(
     )
 }
 
+pub(super) fn render_commit_ids_log(
+    workspace: &Workspace,
+    repo: &ReadonlyRepo,
+    current_dir: &Path,
+    commit_ids: Vec<CommitId>,
+) -> Result<String, JjError> {
+    let settings = workspace.settings();
+    let ui = Ui::with_config(settings.config()).map_err(log_command_error)?;
+    let fileset_aliases_map =
+        load_fileset_aliases(&ui, settings.config()).map_err(log_command_error)?;
+    let revset_aliases_map =
+        load_revset_aliases(&ui, settings.config()).map_err(log_command_error)?;
+    let template_aliases_map =
+        load_template_aliases(&ui, settings.config()).map_err(log_command_error)?;
+    let revset_extensions = Arc::new(RevsetExtensions::default());
+    let path_converter = RepoPathUiConverter::Fs {
+        cwd: current_dir.to_path_buf(),
+        base: workspace.workspace_root().to_path_buf(),
+    };
+    let workspace_context = RevsetWorkspaceContext {
+        path_converter: &path_converter,
+        workspace_name: workspace.workspace_name(),
+    };
+    let revset_context = revset_parse_context(
+        settings,
+        repo,
+        &fileset_aliases_map,
+        &revset_aliases_map,
+        &revset_extensions,
+        Some(workspace_context),
+    )?;
+    let id_prefix_context =
+        log_id_prefix_context(settings, &ui, &revset_context, revset_extensions.clone())?;
+    let revset = ResolvedRevsetExpression::commits(commit_ids)
+        .evaluate(repo)
+        .map_err(log_error)?;
+    let prioritize_revset = graph_prioritize_revset(
+        settings,
+        &ui,
+        repo,
+        &revset_context,
+        &id_prefix_context,
+        &revset_extensions,
+    )?;
+    let immutable_expression = immutable_expression(&ui, &revset_context)?;
+    let conflict_marker_style = settings
+        .get("ui.conflict-marker-style")
+        .map_err(log_error)?;
+    let language = CommitTemplateLanguage::new(
+        repo,
+        &path_converter,
+        workspace.workspace_name(),
+        revset_context.clone(),
+        &id_prefix_context,
+        immutable_expression,
+        conflict_marker_style,
+        &[] as &[Box<dyn CommitTemplateLanguageExtension>],
+    );
+    let template = parse_log_template(
+        &ui,
+        &language,
+        &template_aliases_map,
+        &settings.get_string("templates.log").map_err(log_error)?,
+    )?
+    .labeled(["log", "commit"]);
+    let node_template = parse_log_template(
+        &ui,
+        &language,
+        &template_aliases_map,
+        &settings
+            .get_string("templates.log_node")
+            .map_err(log_error)?,
+    )?
+    .labeled(["log", "commit", "node"]);
+
+    render_log_graph(
+        &ui,
+        settings,
+        repo,
+        revset,
+        prioritize_revset,
+        template,
+        node_template,
+    )
+}
+
 pub(super) fn revset_parse_context<'a>(
     settings: &'a UserSettings,
     repo: &'a ReadonlyRepo,

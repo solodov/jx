@@ -8,6 +8,12 @@ pub(super) trait CommandServices {
     /// Shows the current jj diff, optionally constraining it to non-test files.
     fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError>;
 
+    /// Moves to the previous commit in the active chain and renders the new position.
+    fn previous_commit_log(&self, current_dir: &Path) -> Result<String, JjError>;
+
+    /// Moves to the next commit in the active chain and renders the new position.
+    fn next_commit_log(&self, current_dir: &Path) -> Result<String, JjError>;
+
     /// Clones a Git repository through jj into the resolved layout destination.
     fn clone_repository(&self, current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError>;
 
@@ -253,6 +259,14 @@ impl CommandServices for ProductionServices<'_> {
     fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError> {
         run_current_diff(current_dir, options)?;
         Ok(String::new())
+    }
+
+    fn previous_commit_log(&self, current_dir: &Path) -> Result<String, JjError> {
+        JjWorkspace::move_to_previous_commit_and_render_log(current_dir)
+    }
+
+    fn next_commit_log(&self, current_dir: &Path) -> Result<String, JjError> {
+        JjWorkspace::move_to_next_commit_and_render_log(current_dir)
     }
 
     fn clone_repository(&self, current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError> {
