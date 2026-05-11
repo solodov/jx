@@ -400,7 +400,7 @@ fn previous_commit_moves_and_renders_surrounding_chain() {
     assert!(log.contains("top change"), "{log}");
     assert!(log.contains("middle change"), "{log}");
     assert!(log.contains("bottom change"), "{log}");
-    assert!(!log.contains("shared base"), "{log}");
+    assert!(log.contains("shared base"), "{log}");
     assert!(!log.contains("Working copy"), "{log}");
 }
 
@@ -442,7 +442,45 @@ fn next_commit_moves_to_single_child() {
     assert!(log.contains("top change"), "{log}");
     assert!(log.contains("middle change"), "{log}");
     assert!(log.contains("bottom change"), "{log}");
-    assert!(!log.contains("shared base"), "{log}");
+    assert!(log.contains("shared base"), "{log}");
+}
+
+#[test]
+fn previous_commit_rejects_immutable_parent() {
+    // Verifies: Previous navigation stops at the editable chain boundary instead of entering trunk.
+    let fixture = TestWorkspace::new("previous-navigation-immutable");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, current) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let base = write_child(tx.repo_mut(), &root, "shared base").await;
+        let current = write_child(tx.repo_mut(), &base, "current change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", base.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange immutable previous navigation")
+            .await
+            .expect("commit");
+        (workspace, repo, current)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let error = subject
+        .move_to_previous_commit()
+        .expect_err("immutable parent is not editable");
+
+    assert!(matches!(error, JjError::NoPreviousCommit));
+    assert_eq!(
+        subject.current_commit().expect("current commit").id(),
+        current.id()
+    );
 }
 
 #[test]

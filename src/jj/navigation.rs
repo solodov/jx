@@ -32,6 +32,10 @@ impl JjWorkspace {
         }
 
         let target = self.load_commit(parent_id)?;
+        if self.is_immutable_commit(&target)? {
+            return Err(JjError::NoPreviousCommit);
+        }
+
         self.move_to_commit(&target, "previous")
     }
 
@@ -47,6 +51,10 @@ impl JjWorkspace {
         };
 
         let target = self.load_commit(child_id)?;
+        if self.is_immutable_commit(&target)? {
+            return Err(JjError::NoNextCommit);
+        }
+
         self.move_to_commit(&target, "next")
     }
 
@@ -130,22 +138,58 @@ impl JjWorkspace {
             let [parent_id] = parents else {
                 return Ok(());
             };
-            if parent_id == self.repo.store().root_commit_id()
-                || self.has_remote_bookmark(parent_id)
-            {
+            if parent_id == self.repo.store().root_commit_id() {
                 return Ok(());
             }
 
             let parent = self.load_commit(parent_id)?;
+            let is_immutable = self.is_immutable_commit(&parent)?;
             ids.push(parent.id().clone());
+            if is_immutable {
+                return Ok(());
+            }
             cursor = parent;
         }
     }
 
-    fn has_remote_bookmark(&self, commit_id: &CommitId) -> bool {
-        self.repo
-            .view()
-            .all_remote_bookmarks()
-            .any(|(_, remote_ref)| remote_ref.target.added_ids().any(|id| id == commit_id))
+    fn is_immutable_commit(&self, commit: &Commit) -> Result<bool, JjError> {
+        let ui = Ui::null();
+        let settings = self.workspace.settings();
+        let fileset_aliases_map =
+            load_fileset_aliases(&ui, settings.config()).map_err(log_command_error)?;
+        let revset_aliases_map =
+            load_revset_aliases(&ui, settings.config()).map_err(log_command_error)?;
+        let revset_extensions = Arc::new(RevsetExtensions::default());
+        let path_converter = RepoPathUiConverter::Fs {
+            cwd: self.workspace.workspace_root().to_path_buf(),
+            base: self.workspace.workspace_root().to_path_buf(),
+        };
+        let workspace_context = RevsetWorkspaceContext {
+            path_converter: &path_converter,
+            workspace_name: self.workspace.workspace_name(),
+        };
+        let revset_context = revset_parse_context(
+            settings,
+            self.repo.as_ref(),
+            &fileset_aliases_map,
+            &revset_aliases_map,
+            &revset_extensions,
+            Some(workspace_context),
+        )?;
+        let id_prefix_context =
+            log_id_prefix_context(settings, &ui, &revset_context, revset_extensions.clone())?;
+        let expression = immutable_expression(&ui, &revset_context)?
+            .intersection(&RevsetExpression::commit(commit.id().clone()));
+        let evaluator = RevsetExpressionEvaluator::new(
+            self.repo.as_ref(),
+            revset_extensions,
+            &id_prefix_context,
+            expression,
+        );
+        let mut commits = evaluator.evaluate_to_commit_ids().map_err(log_error)?;
+
+        Ok(pollster::block_on(commits.try_next())
+            .map_err(log_error)?
+            .is_some())
     }
 }
