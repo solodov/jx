@@ -69,7 +69,7 @@ pub fn run_jj_workspace_add(
 /// Lists jj workspaces with their root paths and current-workspace marker.
 pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError> {
     let workspace_root = find_jj_workspace_root(current_dir)?;
-    let current_workspace = JjWorkspace::load(workspace_root)?.workspace_name();
+    let current_workspace = JjWorkspace::load(&workspace_root)?.workspace_name();
     let output = Command::new("jj")
         .arg("--no-pager")
         .arg("--color=never")
@@ -94,9 +94,14 @@ pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, J
     workspace_names_from_jj_list(&stdout)
         .into_iter()
         .map(|name| {
+            let is_current = name == current_workspace;
             Ok(WorkspaceEntry {
-                root: jj_workspace_root(current_dir, &name)?,
-                is_current: name == current_workspace,
+                root: if is_current {
+                    workspace_root.clone()
+                } else {
+                    jj_workspace_root(current_dir, &name)?
+                },
+                is_current,
                 name,
             })
         })

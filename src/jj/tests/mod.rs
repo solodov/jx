@@ -82,6 +82,26 @@ fn workspace_list_parser_extracts_workspace_names() {
 }
 
 #[test]
+fn workspace_entries_use_repository_root_for_current_workspace() {
+    // Verifies: Current workspace removal can resolve the active root even when jj has no recorded path for it.
+    let fixture = TestWorkspace::new("workspace-entries-current-root");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(Workspace::init_internal_git(&settings, fixture.path()))
+        .expect("initialize jj workspace");
+
+    let entries = jj_workspace_entries(fixture.path()).expect("workspace entries load");
+
+    assert_eq!(
+        entries,
+        vec![WorkspaceEntry {
+            name: "default".to_owned(),
+            root: fixture.path().to_path_buf(),
+            is_current: true,
+        }]
+    );
+}
+
+#[test]
 fn workspace_cleanup_removes_empty_managed_parents() {
     // Verifies: Workspace removal prunes the repo layout directory and `.work` when both are empty.
     let fixture = TestWorkspace::new("workspace-cleanup-empty");
