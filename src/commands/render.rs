@@ -8,11 +8,15 @@ pub(super) fn render_linked_output(
     if color {
         JjWorkspace::render_workspace_formatted_output(current_dir, render)
     } else {
-        let mut output = Vec::new();
-        let mut formatter = PlainTextFormatter::new(&mut output);
-        render(&mut formatter).expect("writing command output to a string cannot fail");
-        Ok(String::from_utf8(output).expect("command output is UTF-8"))
+        Ok(render_plain_output(render))
     }
+}
+
+fn render_plain_output(render: impl FnOnce(&mut dyn Formatter) -> io::Result<()>) -> String {
+    let mut output = Vec::new();
+    let mut formatter = PlainTextFormatter::new(&mut output);
+    render(&mut formatter).expect("writing command output to a string cannot fail");
+    String::from_utf8(output).expect("command output is UTF-8")
 }
 
 pub(super) fn render_check(
@@ -86,7 +90,8 @@ pub(super) fn render_global_fetch(
     color: bool,
 ) -> Result<String, JjError> {
     let sorted_entries = sorted_global_fetch_entries(entries);
-    render_linked_output(current_dir, color, |formatter| {
+    let _ = (current_dir, color);
+    Ok(render_plain_output(|formatter| {
         let fetched = sorted_entries
             .iter()
             .filter(|entry| entry.result.is_ok())
@@ -104,7 +109,7 @@ pub(super) fn render_global_fetch(
                 }),
             });
         write_fetch_error_section(formatter, "Errors:", errors)
-    })
+    }))
 }
 
 struct GlobalFetchErrorRow<'a> {
@@ -190,7 +195,8 @@ pub(super) fn render_global_sync(
     color: bool,
 ) -> Result<String, JjError> {
     let sorted_entries = sorted_global_sync_entries(entries);
-    render_linked_output(current_dir, color, |formatter| {
+    let _ = (current_dir, color);
+    Ok(render_plain_output(|formatter| {
         let mut wrote_any = false;
         write_global_sync_path_section(
             formatter,
@@ -307,7 +313,7 @@ pub(super) fn render_global_sync(
                     _ => None,
                 }),
         )
-    })
+    }))
 }
 
 fn sorted_global_sync_entries(entries: &[GlobalSyncEntry]) -> Vec<&GlobalSyncEntry> {
@@ -1296,7 +1302,8 @@ pub(super) fn render_global_status(
     color: bool,
 ) -> Result<String, JjError> {
     let groups = global_status_groups(entries, total_repositories);
-    render_linked_output(current_dir, color, |formatter| {
+    let _ = (current_dir, color);
+    Ok(render_plain_output(|formatter| {
         writeln!(
             formatter,
             "Remote status: {} checked, {}",
@@ -1339,7 +1346,7 @@ pub(super) fn render_global_status(
             )?;
         }
         Ok(())
-    })
+    }))
 }
 
 #[derive(Debug, Default)]

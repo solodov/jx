@@ -1583,9 +1583,9 @@ path = "{repo}"
     assert_eq!(
         progress.messages(),
         [
-            "Checking remote status… 0%",
-            "Checking remote status… 50%",
-            "Checking remote status… 100%"
+            "  0% Checking remote status…",
+            " 50% Checking remote status…",
+            "100% Checking remote status…"
         ]
     );
     assert!(progress.finished.get());
@@ -2016,10 +2016,10 @@ path = "{repo}"
     assert_eq!(
         progress.messages(),
         [
-            "Fetching local-work… 0%",
-            "Fetching local-work… 50%",
-            "Fetching ready… 50%",
-            "Fetching ready… 100%",
+            "  0% Fetching local-work…",
+            " 50% Fetching local-work…",
+            " 50% Fetching ready…",
+            "100% Fetching ready…",
         ]
     );
     assert!(progress.finished.get());
@@ -2107,16 +2107,16 @@ path = "{repo}"
     assert_eq!(
         progress.messages(),
         [
-            "Syncing local-work… 0%",
-            "Syncing local-work… 20%",
-            "Syncing missing-origin… 20%",
-            "Syncing missing-origin… 40%",
-            "Syncing pull-needed… 40%",
-            "Syncing pull-needed… 60%",
-            "Syncing read-only… 60%",
-            "Syncing read-only… 80%",
-            "Syncing writable… 80%",
-            "Syncing writable… 100%",
+            "  0% Syncing local-work…",
+            " 20% Syncing local-work…",
+            " 20% Syncing missing-origin…",
+            " 40% Syncing missing-origin…",
+            " 40% Syncing pull-needed…",
+            " 60% Syncing pull-needed…",
+            " 60% Syncing read-only…",
+            " 80% Syncing read-only…",
+            " 80% Syncing writable…",
+            "100% Syncing writable…",
         ]
     );
     assert!(progress.finished.get());
