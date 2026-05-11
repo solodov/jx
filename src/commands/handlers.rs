@@ -898,7 +898,6 @@ fn fetch_outcome_changed(fetch: &FetchOutcome) -> bool {
         || fetch.abandoned_commits > 0
         || fetch.rebased_trunk_children > 0
         || fetch.rebased_descendants > 0
-        || fetch.skipped_trunk_children > 0
         || fetch.current_repaired
         || !fetch.rebased_commits.is_empty()
 }
