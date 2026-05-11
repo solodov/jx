@@ -182,6 +182,7 @@ pub(super) enum GlobalSyncOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum GlobalSyncSkipReason {
+    UpToDate,
     PullNeeded { commits: i64 },
     Diverged { pull: i64, push: i64 },
     ReadOnlyOrigin,
@@ -208,6 +209,23 @@ pub(super) fn render_global_sync(
                     label: entry.display_root.as_str(),
                 })
             }),
+        )?;
+
+        write_global_sync_path_section(
+            formatter,
+            &mut wrote_any,
+            "Skipped: up to date",
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::UpToDate) => {
+                        Some(GlobalSyncPathRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                        })
+                    }
+                    _ => None,
+                }),
         )?;
 
         write_global_sync_section(

@@ -830,8 +830,7 @@ fn try_global_sync_for_repository(
         (false, _) => {}
     }
 
-    global_sync_existing_origin(context, services)?;
-    Ok(GlobalSyncOutcome::Synced)
+    global_sync_existing_origin(context, services)
 }
 
 fn origin_remote_status(
@@ -871,18 +870,45 @@ fn origin_only_status_context(context: &RepositoryContext) -> RepositoryContext 
 fn global_sync_existing_origin(
     context: RepositoryContext,
     services: &dyn CommandServices,
-) -> Result<(), CommandError> {
+) -> Result<GlobalSyncOutcome, CommandError> {
     let fetch = services.fetch_origin(&context)?;
     domain::ensure_fetch_is_pushable(&fetch)?;
+    let mut changed = fetch_outcome_changed(&fetch);
     if context
         .config
         .repo
         .advance_trunk_enabled_for(&context.origin.github)
     {
-        services.advance_trunk_for_sync(&context)?;
+        let advance = services.advance_trunk_for_sync(&context)?;
+        changed |= advance_trunk_changed(&advance);
     }
-    services.push_tracked(&context)?;
-    Ok(())
+    let push = services.push_tracked(&context)?;
+    changed |= tracked_push_changed(&push);
+
+    if changed {
+        Ok(GlobalSyncOutcome::Synced)
+    } else {
+        Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::UpToDate))
+    }
+}
+
+fn fetch_outcome_changed(fetch: &FetchOutcome) -> bool {
+    fetch.changed_remote_bookmarks > 0
+        || fetch.changed_remote_tags > 0
+        || fetch.abandoned_commits > 0
+        || fetch.rebased_trunk_children > 0
+        || fetch.rebased_descendants > 0
+        || fetch.skipped_trunk_children > 0
+        || fetch.current_repaired
+        || !fetch.rebased_commits.is_empty()
+}
+
+fn advance_trunk_changed(advance: &AdvanceTrunkOutcome) -> bool {
+    advance.old_short_commit_id != advance.new_short_commit_id || advance.current_updated
+}
+
+fn tracked_push_changed(push: &TrackedPushOutcome) -> bool {
+    push.pushed_refs > 0 || !push.bookmarks.is_empty() || !push.pushed_commits.is_empty()
 }
 
 fn sync_current_repository(

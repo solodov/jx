@@ -2060,11 +2060,13 @@ path = "{repo}"
     let _missing_origin = workspace.create_jj_workspace("projects/missing-origin");
     let pull_needed = workspace.create_jj_workspace("projects/pull-needed");
     let read_only = workspace.create_jj_workspace("projects/read-only");
+    let up_to_date = workspace.create_jj_workspace("projects/up-to-date");
     let writable = workspace.create_jj_workspace("projects/writable");
     for (root, name) in [
         (&local_work, "local-work"),
         (&pull_needed, "pull-needed"),
         (&read_only, "read-only"),
+        (&up_to_date, "up-to-date"),
         (&writable, "writable"),
     ] {
         TestWorkspace::write_git_config_at(
@@ -2083,9 +2085,15 @@ path = "{repo}"
         origin_push_access_roots: Some(BTreeSet::from([
             local_work.clone(),
             pull_needed.clone(),
+            up_to_date.clone(),
             writable.clone(),
         ])),
-        clean_status_repos: vec!["local-work".to_owned(), "writable".to_owned()],
+        up_to_date_sync_roots: BTreeSet::from([up_to_date.clone()]),
+        clean_status_repos: vec![
+            "local-work".to_owned(),
+            "up-to-date".to_owned(),
+            "writable".to_owned(),
+        ],
         fetch: FetchOutcome {
             branch: "main".to_owned(),
             changed_remote_bookmarks: 0,
@@ -2123,29 +2131,31 @@ path = "{repo}"
         progress.messages(),
         [
             "  0% Syncing local-work…",
-            " 20% Syncing local-work…",
-            " 20% Syncing missing-origin…",
-            " 40% Syncing missing-origin…",
-            " 40% Syncing pull-needed…",
-            " 60% Syncing pull-needed…",
-            " 60% Syncing read-only…",
-            " 80% Syncing read-only…",
-            " 80% Syncing writable…",
+            " 16% Syncing local-work…",
+            " 16% Syncing missing-origin…",
+            " 33% Syncing missing-origin…",
+            " 33% Syncing pull-needed…",
+            " 50% Syncing pull-needed…",
+            " 50% Syncing read-only…",
+            " 66% Syncing read-only…",
+            " 66% Syncing up-to-date…",
+            " 83% Syncing up-to-date…",
+            " 83% Syncing writable…",
             "100% Syncing writable…",
         ]
     );
     assert!(progress.finished.get());
     assert_eq!(
         services.fetch_origin_roots.borrow().as_slice(),
-        [local_work.clone(), writable.clone()]
+        [local_work.clone(), up_to_date.clone(), writable.clone()]
     );
     assert_eq!(
         services.push_tracked_roots.borrow().as_slice(),
-        [local_work.clone(), writable]
+        [local_work.clone(), up_to_date, writable]
     );
     assert_eq!(
         result.stdout,
-        "Synced:\n  ~/projects/local-work\n  ~/projects/writable\n\nSkipped: pull needed\n  ~/projects/pull-needed  GitHub has 3 new commits\n\nSkipped: read-only origin\n  ~/projects/read-only\n\nSetup needed:\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
+        "Synced:\n  ~/projects/local-work\n  ~/projects/writable\n\nSkipped: up to date\n  ~/projects/up-to-date\n\nSkipped: pull needed\n  ~/projects/pull-needed  GitHub has 3 new commits\n\nSkipped: read-only origin\n  ~/projects/read-only\n\nSetup needed:\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
     );
 }
 
@@ -3776,6 +3786,7 @@ struct FakeServices {
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
+    up_to_date_sync_roots: BTreeSet<PathBuf>,
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     fetch: FetchOutcome,
@@ -3868,6 +3879,7 @@ impl Default for FakeServices {
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             origin_push_access_roots: None,
+            up_to_date_sync_roots: BTreeSet::new(),
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
@@ -4291,6 +4303,13 @@ impl CommandServices for FakeServices {
         self.push_tracked_roots
             .borrow_mut()
             .push(context.workspace_root.clone());
+        if self.up_to_date_sync_roots.contains(&context.workspace_root) {
+            return Ok(TrackedPushOutcome {
+                pushed_refs: 0,
+                bookmarks: Vec::new(),
+                pushed_commits: Vec::new(),
+            });
+        }
         Ok(self.tracked_push.clone())
     }
 
