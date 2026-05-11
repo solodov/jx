@@ -75,6 +75,8 @@ use services::*;
 use shell::*;
 use work::*;
 
+const SHELL_CD_TARGET_PREFIX: &str = "__jx_cd_target=";
+
 /// Structured output returned by command orchestration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {

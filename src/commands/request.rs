@@ -75,7 +75,8 @@ pub(super) struct WorkRootRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkRemoveRequest {
-    pub(super) name: String,
+    pub(super) name: Option<String>,
+    pub(super) shell_cd_target: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,7 +241,8 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
             key: required_arg(matches, "key"),
         })),
         Some(("remove", matches)) => Ok(WorkRequest::Remove(WorkRemoveRequest {
-            name: required_arg(matches, "name"),
+            name: string_arg(matches, "name"),
+            shell_cd_target: matches.get_flag("shell-cd-target"),
         })),
         _ => Err(clap::Error::raw(
             ErrorKind::MissingSubcommand,
@@ -547,7 +549,8 @@ pub(super) fn cli() -> ClapCommand {
                 .subcommand(
                     ClapCommand::new("remove")
                         .about("Forget and delete a managed workspace")
-                        .arg(workspace_name_arg()),
+                        .arg(workspace_name_arg().required(false))
+                        .arg(work_remove_shell_cd_target_arg()),
                 ),
         )
         .subcommand(
@@ -668,6 +671,13 @@ fn workspace_name_arg() -> Arg {
         .value_name("NAME")
         .required(true)
         .help("Workspace name to manage")
+}
+
+fn work_remove_shell_cd_target_arg() -> Arg {
+    Arg::new("shell-cd-target")
+        .long("shell-cd-target")
+        .hide(true)
+        .action(ArgAction::SetTrue)
 }
 
 fn workspace_revision_arg() -> Arg {

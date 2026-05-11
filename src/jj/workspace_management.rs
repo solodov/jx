@@ -108,6 +108,13 @@ pub fn remove_jj_workspace(
     current_dir: &Path,
     options: &WorkspaceRemoveOptions,
 ) -> Result<(), JjError> {
+    // Move the process itself to the safe operation directory before deleting so
+    // removing the current workspace cannot leave the `jx` process inside it.
+    std::env::set_current_dir(current_dir).map_err(|source| JjError::WorkspaceIo {
+        action: "enter workspace removal directory",
+        path: current_dir.to_path_buf(),
+        source,
+    })?;
     let tombstone = unique_tombstone_path(&options.root)?;
     fs::rename(&options.root, &tombstone).map_err(|source| JjError::WorkspaceIo {
         action: "move workspace aside",

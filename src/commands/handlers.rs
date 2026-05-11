@@ -638,25 +638,32 @@ fn handle_work(
         }
         WorkRequest::Remove(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
-            validate_workspace_name(&request.name)?;
+            if let Some(name) = &request.name {
+                validate_workspace_name(name)?;
+            }
             let identity = workspace_identity(&context, environment)?;
             let workspaces = services.workspace_entries(environment.current_dir())?;
-            let workspace =
-                removable_workspace(&context, &identity, &workspaces, &request.name, environment)?;
+            let removal = removable_workspace(
+                &context,
+                &identity,
+                &workspaces,
+                request.name.as_deref(),
+                environment,
+            )?;
 
             if !prompts
                 .workspace_remove_confirmer
-                .confirm_workspace_remove(&workspace)?
+                .confirm_workspace_remove(&removal.workspace)?
             {
                 return Ok("cancelled\n".to_owned());
             }
 
             progress.status("Removing workspace…");
             services.remove_workspace(
-                environment.current_dir(),
+                &removal.operation_dir,
                 &WorkspaceRemoveOptions {
-                    name: workspace.name.clone(),
-                    root: workspace.root.clone(),
+                    name: removal.workspace.name.clone(),
+                    root: removal.workspace.root.clone(),
                     cleanup_root: context
                         .config
                         .layout
@@ -664,7 +671,15 @@ fn handle_work(
                 },
             )?;
             progress.finish();
-            Ok(render_work_remove(&workspace))
+            let mut output = render_work_remove(&removal.workspace);
+            if request.shell_cd_target {
+                if let Some(target) = removal.cd_target {
+                    output.push_str(SHELL_CD_TARGET_PREFIX);
+                    output.push_str(&target.display().to_string());
+                    output.push('\n');
+                }
+            }
+            Ok(output)
         }
     }
 }
@@ -701,26 +716,34 @@ fn workspace_identity(
         .identity_for_workspace_root(&context.workspace_root, environment)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemovableWorkspace {
+    workspace: WorkspaceEntry,
+    operation_dir: PathBuf,
+    cd_target: Option<PathBuf>,
+}
+
 fn removable_workspace(
     context: &LocalRepositoryContext,
     identity: &RepositoryIdentity,
     workspaces: &[WorkspaceEntry],
-    name: &str,
+    name: Option<&str>,
     environment: &RuntimeEnvironment,
-) -> Result<WorkspaceEntry, RepositoryError> {
-    let workspace = workspaces
-        .iter()
-        .find(|workspace| workspace.name == name)
-        .cloned()
-        .ok_or_else(|| RepositoryError::WorkspaceNameNotFound {
-            name: name.to_owned(),
-        })?;
-
-    if workspace.is_current {
-        return Err(RepositoryError::RefuseRemoveCurrentWorkspace {
-            name: workspace.name,
-        });
-    }
+) -> Result<RemovableWorkspace, RepositoryError> {
+    let workspace = match name {
+        Some(name) => workspaces
+            .iter()
+            .find(|workspace| workspace.name == name)
+            .cloned()
+            .ok_or_else(|| RepositoryError::WorkspaceNameNotFound {
+                name: name.to_owned(),
+            })?,
+        None => workspaces
+            .iter()
+            .find(|workspace| workspace.is_current)
+            .cloned()
+            .ok_or(RepositoryError::CurrentWorkspaceNotFound)?,
+    };
 
     let primary = context
         .config
@@ -746,7 +769,15 @@ fn removable_workspace(
         });
     }
 
-    Ok(workspace)
+    let cd_target = workspace.is_current.then_some(primary.clone());
+    Ok(RemovableWorkspace {
+        workspace,
+        operation_dir: cd_target
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| environment.current_dir().to_path_buf()),
+        cd_target,
+    })
 }
 
 fn handle_sync(

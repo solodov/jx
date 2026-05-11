@@ -221,6 +221,8 @@ pub enum RepositoryError {
     WorkspacePathExists { path: PathBuf },
     #[error("Workspace `{name}` is not registered in this jj repository")]
     WorkspaceNameNotFound { name: String },
+    #[error("Current workspace is not registered in this jj repository")]
+    CurrentWorkspaceNotFound,
     #[error("Refusing to remove current workspace `{name}`")]
     RefuseRemoveCurrentWorkspace { name: String },
     #[error("Refusing to remove primary workspace `{name}` at {path}")]

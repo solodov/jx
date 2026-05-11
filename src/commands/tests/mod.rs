@@ -773,6 +773,8 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
     assert!(result.stdout.contains("complete -F _jx"));
     assert!(result.stdout.contains("remote-status"));
     assert!(result.stdout.contains("open"));
+    assert!(result.stdout.contains("--shell-cd-target"));
+    assert!(result.stdout.contains("pushd \"$cd_target\""));
     assert!(!result.stdout.contains("u() {"));
 }
 
@@ -874,22 +876,81 @@ path = "{repo}"
 }
 
 #[test]
-fn work_remove_refuses_current_primary_and_unmanaged_paths() {
-    // Verifies: Remove only targets non-current workspaces inside the managed `.work` layout.
+fn work_remove_current_managed_workspace_returns_shell_cd_target() {
+    // Verifies: Removing the active managed workspace runs from the primary repo and tells shell integration where to land.
+    let workspace = TestWorkspace::new_under("projects/.work/tool/fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let primary = workspace.home.join("projects/tool");
+    let managed = workspace.home.join("projects/.work/tool/fix");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: primary.clone(),
+                is_current: false,
+            },
+            WorkspaceEntry {
+                name: "fix".to_owned(),
+                root: managed.clone(),
+                is_current: true,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "remove", "--shell-cd-target"],
+        &environment,
+        &services,
+    )
+    .expect("current managed workspace removal succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Removed workspace: fix\n{}{}\n",
+            SHELL_CD_TARGET_PREFIX,
+            primary.display()
+        )
+    );
+    assert_eq!(
+        services.workspace_remove_current_dirs.borrow().as_slice(),
+        [primary]
+    );
+    assert_eq!(
+        services.workspace_removes.borrow().as_slice(),
+        [WorkspaceRemoveOptions {
+            name: "fix".to_owned(),
+            root: managed,
+            cleanup_root: workspace.home.join("projects/.work"),
+        }]
+    );
+}
+
+#[test]
+fn work_remove_refuses_primary_and_unmanaged_paths() {
+    // Verifies: Remove only targets workspaces inside the managed `.work` layout.
     enum RootKind {
-        Managed,
         Primary,
         Unmanaged,
     }
 
     enum ExpectedError {
-        Current,
         Primary,
         Unmanaged,
     }
 
     let cases = [
-        ("fix", RootKind::Managed, true, ExpectedError::Current),
         ("default", RootKind::Primary, false, ExpectedError::Primary),
         ("fix", RootKind::Unmanaged, false, ExpectedError::Unmanaged),
     ];
@@ -909,7 +970,6 @@ path = "{repo}"
         let target = WorkspaceEntry {
             name: name.to_owned(),
             root: match root {
-                RootKind::Managed => workspace.home.join("projects/.work/jx/fix"),
                 RootKind::Primary => workspace.home.join("projects/jx"),
                 RootKind::Unmanaged => PathBuf::from("/tmp/jx/fix"),
             },
@@ -929,10 +989,6 @@ path = "{repo}"
         .expect_err("unsafe workspace removal is rejected");
 
         match expected_error {
-            ExpectedError::Current => assert!(matches!(
-                error,
-                CommandError::Repository(RepositoryError::RefuseRemoveCurrentWorkspace { .. })
-            )),
             ExpectedError::Primary => assert!(matches!(
                 error,
                 CommandError::Repository(RepositoryError::RefuseRemovePrimaryWorkspace { .. })
@@ -3889,6 +3945,7 @@ struct FakeServices {
     init_repository_calls: std::cell::Cell<usize>,
     expected_workspace_add: Option<WorkspaceAddOptions>,
     workspaces: Vec<WorkspaceEntry>,
+    workspace_remove_current_dirs: std::cell::RefCell<Vec<PathBuf>>,
     workspace_removes: std::cell::RefCell<Vec<WorkspaceRemoveOptions>>,
     initial_publish_target: InitialPublishTarget,
     prepared_initial_publish_target: Option<InitialPublishTarget>,
@@ -4074,6 +4131,7 @@ impl Default for FakeServices {
                 root: PathBuf::from("/workspace"),
                 is_current: true,
             }],
+            workspace_remove_current_dirs: std::cell::RefCell::new(Vec::new()),
             workspace_removes: std::cell::RefCell::new(Vec::new()),
             initial_publish_target: InitialPublishTarget {
                 commit_id: "a1b2c3d4e5f6".to_owned(),
@@ -4192,9 +4250,12 @@ impl CommandServices for FakeServices {
 
     fn remove_workspace(
         &self,
-        _current_dir: &Path,
+        current_dir: &Path,
         options: &WorkspaceRemoveOptions,
     ) -> Result<(), JjError> {
+        self.workspace_remove_current_dirs
+            .borrow_mut()
+            .push(current_dir.to_path_buf());
         self.workspace_removes.borrow_mut().push(options.clone());
         Ok(())
     }
