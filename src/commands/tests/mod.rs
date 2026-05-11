@@ -2230,7 +2230,7 @@ path = "{repo}"
             abandoned_commits: 0,
             rebased_trunk_children: 0,
             rebased_descendants: 0,
-            skipped_trunk_children: 0,
+            skipped_trunk_children: 1,
             current_repaired: false,
             rebased_commits: Vec::new(),
         },
