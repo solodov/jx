@@ -1948,6 +1948,21 @@ fn global_sync_renderer_sorts_each_section_by_directory() {
 }
 
 #[test]
+fn global_sync_renderer_does_not_require_current_workspace_for_color_output() {
+    // Verifies: All-repository output can render after running from a non-repository directory.
+    let entries = vec![GlobalSyncEntry {
+        root: PathBuf::from("/workspace/projects/alpha"),
+        display_root: "alpha".to_owned(),
+        outcome: GlobalSyncOutcome::Synced,
+    }];
+
+    let output = render_global_sync(&entries, Path::new("/not-a-workspace"), true)
+        .expect("global sync renders without current workspace");
+
+    assert_eq!(output, "Synced:\n  alpha\n");
+}
+
+#[test]
 fn fetch_all_only_fetches_global_ready_repositories() {
     // Verifies: Global fetch mutates only repos whose working copy is safe to auto-fetch.
     let workspace = TestWorkspace::new();
