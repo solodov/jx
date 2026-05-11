@@ -1888,6 +1888,66 @@ fn f_alias_runs_fetch() {
 }
 
 #[test]
+fn global_fetch_renderer_sorts_entries_by_directory() {
+    // Verifies: Global fetch output follows filesystem order rather than discovery order.
+    let entries = vec![
+        GlobalFetchEntry {
+            root: PathBuf::from("/workspace/src/beta"),
+            display_root: "beta".to_owned(),
+            result: Ok(()),
+        },
+        GlobalFetchEntry {
+            root: PathBuf::from("/workspace/projects/alpha"),
+            display_root: "alpha".to_owned(),
+            result: Err("alpha failed".to_owned()),
+        },
+    ];
+
+    let output = render_global_fetch(&entries, Path::new("/workspace"), false)
+        .expect("global fetch renders");
+
+    assert_eq!(
+        output,
+        "Fetched:\n  beta\n\nErrors:\n  alpha  alpha failed\n"
+    );
+}
+
+#[test]
+fn global_sync_renderer_sorts_each_section_by_directory() {
+    // Verifies: Global sync output keeps each status section in stable filesystem order.
+    let entries = vec![
+        GlobalSyncEntry {
+            root: PathBuf::from("/workspace/src/zeta"),
+            display_root: "zeta".to_owned(),
+            outcome: GlobalSyncOutcome::Synced,
+        },
+        GlobalSyncEntry {
+            root: PathBuf::from("/workspace/src/read-only"),
+            display_root: "read-only".to_owned(),
+            outcome: GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin),
+        },
+        GlobalSyncEntry {
+            root: PathBuf::from("/workspace/projects/alpha"),
+            display_root: "alpha".to_owned(),
+            outcome: GlobalSyncOutcome::Synced,
+        },
+        GlobalSyncEntry {
+            root: PathBuf::from("/workspace/projects/read-only"),
+            display_root: "projects-read-only".to_owned(),
+            outcome: GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin),
+        },
+    ];
+
+    let output =
+        render_global_sync(&entries, Path::new("/workspace"), false).expect("global sync renders");
+
+    assert_eq!(
+        output,
+        "Synced:\n  alpha\n  zeta\n\nSkipped: read-only origin\n  projects-read-only\n  read-only\n"
+    );
+}
+
+#[test]
 fn fetch_all_only_fetches_global_ready_repositories() {
     // Verifies: Global fetch mutates only repos whose working copy is safe to auto-fetch.
     let workspace = TestWorkspace::new();
@@ -1934,10 +1994,36 @@ path = "{repo}"
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "fetch", "--all"], &environment, &services)
-        .expect("global fetch succeeds");
+    let progress = RecordingProgress::default();
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+    let result = run_with_args_and_progress(
+        ["jx", "fetch", "--all"],
+        &environment,
+        &services,
+        &progress,
+        prompts,
+        OutputMode::plain(),
+    )
+    .expect("global fetch succeeds");
 
-    assert_eq!(result.stdout, "~/projects/ready\n");
+    assert_eq!(
+        progress.messages(),
+        [
+            "Fetching local-work… 0%",
+            "Fetching local-work… 50%",
+            "Fetching ready… 50%",
+            "Fetching ready… 100%",
+        ]
+    );
+    assert!(progress.finished.get());
+    assert_eq!(result.stdout, "Fetched:\n  ~/projects/ready\n");
     assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [ready]);
 }
 
@@ -2137,7 +2223,7 @@ path = "{repo}"
     let result = run_with_args_and_services(["jx", "f", "-a"], &environment, &services)
         .expect("global fetch alias succeeds");
 
-    assert_eq!(result.stdout, "~/projects/ready\n");
+    assert_eq!(result.stdout, "Fetched:\n  ~/projects/ready\n");
 }
 
 #[test]

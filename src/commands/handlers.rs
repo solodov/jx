@@ -196,21 +196,25 @@ fn handle_global_fetch(
 ) -> Result<String, CommandError> {
     let config = WorkflowConfig::discover_global(environment)?;
     let repositories = global_work_repositories(&config, environment)?;
+    let total = repositories.len();
     let mut entries = Vec::new();
 
-    for repository in repositories {
-        progress.status(&format!("Fetching {}…", repository.key));
+    for (index, repository) in repositories.into_iter().enumerate() {
+        progress.percentage(&format!("Fetching {}", repository.key), index, total);
         match global_fetch_for_repository(&repository.root, environment, services) {
             Ok(true) => entries.push(GlobalFetchEntry {
+                root: repository.root.clone(),
                 display_root: display_path(&repository.root, environment),
                 result: Ok(()),
             }),
             Ok(false) => {}
             Err(error) => entries.push(GlobalFetchEntry {
+                root: repository.root.clone(),
                 display_root: display_path(&repository.root, environment),
                 result: Err(error.to_string()),
             }),
         }
+        progress.percentage(&format!("Fetching {}", repository.key), index + 1, total);
     }
 
     progress.finish();
@@ -756,6 +760,7 @@ fn handle_global_sync(
     for (index, repository) in repositories.into_iter().enumerate() {
         progress.percentage(&format!("Syncing {}", repository.key), index, total);
         entries.push(GlobalSyncEntry {
+            root: repository.root.clone(),
             display_root: display_path(&repository.root, environment),
             outcome: global_sync_for_repository(&repository.root, environment, services),
         });

@@ -65,6 +65,7 @@ pub(super) fn write_check(formatter: &mut dyn Formatter, report: &CheckReport) -
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GlobalFetchEntry {
+    pub(super) root: PathBuf,
     pub(super) display_root: String,
     pub(super) result: Result<(), String>,
 }
@@ -84,19 +85,85 @@ pub(super) fn render_global_fetch(
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
+    let sorted_entries = sorted_global_fetch_entries(entries);
     render_linked_output(current_dir, color, |formatter| {
-        for entry in entries {
-            match &entry.result {
-                Ok(()) => writeln!(formatter, "{}", entry.display_root)?,
-                Err(message) => writeln!(formatter, "{} error: {message}", entry.display_root)?,
-            }
-        }
-        Ok(())
+        let fetched = sorted_entries
+            .iter()
+            .filter(|entry| entry.result.is_ok())
+            .map(|entry| entry.display_root.as_str());
+        write_fetch_path_section(formatter, "Fetched:", fetched)?;
+
+        let errors = sorted_entries
+            .iter()
+            .filter_map(|entry| match &entry.result {
+                Ok(()) => None,
+                Err(message) => Some(GlobalFetchErrorRow {
+                    root: &entry.root,
+                    label: entry.display_root.as_str(),
+                    detail: message.clone(),
+                }),
+            });
+        write_fetch_error_section(formatter, "Errors:", errors)
     })
+}
+
+struct GlobalFetchErrorRow<'a> {
+    root: &'a Path,
+    label: &'a str,
+    detail: String,
+}
+
+fn write_fetch_path_section<'a>(
+    formatter: &mut dyn Formatter,
+    title: &str,
+    rows: impl Iterator<Item = &'a str>,
+) -> io::Result<()> {
+    let rows = rows.collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(formatter, "{title}")?;
+    for row in rows {
+        writeln!(formatter, "  {row}")?;
+    }
+    Ok(())
+}
+
+fn write_fetch_error_section<'a>(
+    formatter: &mut dyn Formatter,
+    title: &str,
+    rows: impl Iterator<Item = GlobalFetchErrorRow<'a>>,
+) -> io::Result<()> {
+    let mut rows = rows.collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    rows.sort_by(|left, right| left.root.cmp(right.root));
+
+    writeln!(formatter)?;
+    writeln!(formatter, "{title}")?;
+    let label_width = rows.iter().map(|row| row.label.len()).max().unwrap_or(0);
+    for row in rows {
+        writeln!(
+            formatter,
+            "  {label:<label_width$}  {detail}",
+            label = row.label,
+            detail = row.detail
+        )?;
+    }
+    Ok(())
+}
+
+fn sorted_global_fetch_entries(entries: &[GlobalFetchEntry]) -> Vec<&GlobalFetchEntry> {
+    let mut sorted = entries.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|entry| entry.root.clone());
+    sorted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GlobalSyncEntry {
+    pub(super) root: PathBuf,
     pub(super) display_root: String,
     pub(super) outcome: GlobalSyncOutcome,
 }
@@ -122,14 +189,18 @@ pub(super) fn render_global_sync(
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
+    let sorted_entries = sorted_global_sync_entries(entries);
     render_linked_output(current_dir, color, |formatter| {
         let mut wrote_any = false;
         write_global_sync_path_section(
             formatter,
             &mut wrote_any,
             "Synced:",
-            entries.iter().filter_map(|entry| {
-                (entry.outcome == GlobalSyncOutcome::Synced).then_some(entry.display_root.as_str())
+            sorted_entries.iter().filter_map(|entry| {
+                (entry.outcome == GlobalSyncOutcome::Synced).then_some(GlobalSyncPathRow {
+                    root: &entry.root,
+                    label: entry.display_root.as_str(),
+                })
             }),
         )?;
 
@@ -137,89 +208,121 @@ pub(super) fn render_global_sync(
             formatter,
             &mut wrote_any,
             "Skipped: pull needed",
-            entries.iter().filter_map(|entry| match &entry.outcome {
-                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::PullNeeded { commits }) => {
-                    Some(GlobalSyncSectionRow {
-                        label: entry.display_root.as_str(),
-                        detail: format!("GitHub has {}", new_commit_count(*commits)),
-                    })
-                }
-                _ => None,
-            }),
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::PullNeeded { commits }) => {
+                        Some(GlobalSyncSectionRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                            detail: format!("GitHub has {}", new_commit_count(*commits)),
+                        })
+                    }
+                    _ => None,
+                }),
         )?;
         write_global_sync_section(
             formatter,
             &mut wrote_any,
             "Skipped: diverged",
-            entries.iter().filter_map(|entry| match &entry.outcome {
-                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::Diverged { pull, push }) => {
-                    Some(GlobalSyncSectionRow {
-                        label: entry.display_root.as_str(),
-                        detail: format!(
-                            "pull {}, push {}",
-                            commit_count_i64(*pull),
-                            commit_count_i64(*push)
-                        ),
-                    })
-                }
-                _ => None,
-            }),
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::Diverged { pull, push }) => {
+                        Some(GlobalSyncSectionRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                            detail: format!(
+                                "pull {}, push {}",
+                                commit_count_i64(*pull),
+                                commit_count_i64(*push)
+                            ),
+                        })
+                    }
+                    _ => None,
+                }),
         )?;
         write_global_sync_path_section(
             formatter,
             &mut wrote_any,
             "Skipped: read-only origin",
-            entries.iter().filter_map(|entry| match &entry.outcome {
-                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin) => {
-                    Some(entry.display_root.as_str())
-                }
-                _ => None,
-            }),
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin) => {
+                        Some(GlobalSyncPathRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                        })
+                    }
+                    _ => None,
+                }),
         )?;
         write_global_sync_section(
             formatter,
             &mut wrote_any,
             "Skipped: push access unavailable",
-            entries.iter().filter_map(|entry| match &entry.outcome {
-                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::PushAccessUnavailable(
-                    message,
-                )) => Some(GlobalSyncSectionRow {
-                    label: entry.display_root.as_str(),
-                    detail: message.clone(),
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::PushAccessUnavailable(
+                        message,
+                    )) => Some(GlobalSyncSectionRow {
+                        root: &entry.root,
+                        label: entry.display_root.as_str(),
+                        detail: message.clone(),
+                    }),
+                    _ => None,
                 }),
-                _ => None,
-            }),
         )?;
         write_global_sync_section(
             formatter,
             &mut wrote_any,
             "Setup needed:",
-            entries.iter().filter_map(|entry| match &entry.outcome {
-                GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::SetupNeeded(message)) => {
-                    Some(GlobalSyncSectionRow {
-                        label: entry.display_root.as_str(),
-                        detail: message.clone(),
-                    })
-                }
-                _ => None,
-            }),
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::SetupNeeded(message)) => {
+                        Some(GlobalSyncSectionRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                            detail: message.clone(),
+                        })
+                    }
+                    _ => None,
+                }),
         )?;
         write_global_sync_section(
             formatter,
             &mut wrote_any,
             "Errors",
-            entries.iter().filter_map(|entry| match &entry.outcome {
-                GlobalSyncOutcome::Error(message) => Some(GlobalSyncSectionRow {
-                    label: entry.display_root.as_str(),
-                    detail: message.clone(),
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Error(message) => Some(GlobalSyncSectionRow {
+                        root: &entry.root,
+                        label: entry.display_root.as_str(),
+                        detail: message.clone(),
+                    }),
+                    _ => None,
                 }),
-                _ => None,
-            }),
         )
     })
 }
 
+fn sorted_global_sync_entries(entries: &[GlobalSyncEntry]) -> Vec<&GlobalSyncEntry> {
+    let mut sorted = entries.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|entry| entry.root.clone());
+    sorted
+}
+
+struct GlobalSyncPathRow<'a> {
+    root: &'a Path,
+    label: &'a str,
+}
+
 struct GlobalSyncSectionRow<'a> {
+    root: &'a Path,
     label: &'a str,
     detail: String,
 }
@@ -228,12 +331,13 @@ fn write_global_sync_path_section<'a>(
     formatter: &mut dyn Formatter,
     wrote_any: &mut bool,
     title: &str,
-    rows: impl Iterator<Item = &'a str>,
+    rows: impl Iterator<Item = GlobalSyncPathRow<'a>>,
 ) -> io::Result<()> {
-    let rows = rows.collect::<Vec<_>>();
+    let mut rows = rows.collect::<Vec<_>>();
     if rows.is_empty() {
         return Ok(());
     }
+    rows.sort_by(|left, right| left.root.cmp(right.root));
 
     if *wrote_any {
         writeln!(formatter)?;
@@ -241,7 +345,7 @@ fn write_global_sync_path_section<'a>(
     writeln!(formatter, "{title}")?;
     *wrote_any = true;
     for row in rows {
-        writeln!(formatter, "  {row}")?;
+        writeln!(formatter, "  {}", row.label)?;
     }
     Ok(())
 }
@@ -252,10 +356,11 @@ fn write_global_sync_section<'a>(
     title: &str,
     rows: impl Iterator<Item = GlobalSyncSectionRow<'a>>,
 ) -> io::Result<()> {
-    let rows = rows.collect::<Vec<_>>();
+    let mut rows = rows.collect::<Vec<_>>();
     if rows.is_empty() {
         return Ok(());
     }
+    rows.sort_by(|left, right| left.root.cmp(right.root));
 
     let label_width = rows.iter().map(|row| row.label.len()).max().unwrap_or(0);
     if *wrote_any {

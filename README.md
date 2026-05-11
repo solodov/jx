@@ -11,7 +11,9 @@ The core idea is that your code is not just one current checkout. Once `jx` know
 your layout, it can treat your primary repositories and managed workspaces as one
 indexed working set: clone into predictable paths, jump to projects by key, check
 remote state across repos, safely fetch or sync eligible checkouts, and keep task
-identity attached from workspace creation through PR publishing.
+identity attached from workspace creation through PR publishing. That makes it a
+fit for day-to-day work across many repositories, not only for one-off commands
+inside the directory you already happen to be in.
 
 ## What it helps with
 
@@ -77,20 +79,26 @@ jx fetch --all                    # fetches safe primary checkouts
 jx sync --all                     # syncs eligible writable primary checkouts
 ```
 
-Shell integration makes those layout keys interactive. `jx shell init bash`
-installs completion for project arguments and can define a navigation helper,
-so jumping between primary repositories and managed workspaces becomes a
-completion-driven workflow rather than a path-memory exercise.
+Shell integration makes those layout keys interactive. Add the output of
+`jx shell init bash` to your Bash startup file to get completion for project
+arguments and, when configured, a navigation helper. Jumping between primary
+repositories and managed workspaces becomes a completion-driven workflow rather
+than a path-memory exercise.
 
 ## Task-aware work
 
 For work repositories, task ids are part of the workflow rather than just branch
 text. A task workspace can be named with the task id for completion and visual
-scanning, while `jx` stores the task id as workspace-local metadata. Later, PR
-publishing can use that metadata when planning generated bookmark names, so the
-operator does not have to repeat the task id on every command.
+scanning, while `jx` stores the task id as workspace-local metadata:
 
-Use command help for exact task-id flags and validation. The metadata format and
+```sh
+jx work add fix-auth --task-id ABC-123
+jx pr
+```
+
+Later, PR publishing can use that metadata when planning generated bookmark
+names, so the operator does not have to repeat the task id on every command. Use
+command help for exact task-id flags and validation. The metadata format and
 workspace naming behavior are documented in [code layout](docs/code-layout.md).
 
 ## Workflow at a glance
@@ -141,7 +149,7 @@ Choose alias names that fit your existing jj config; the important part is that
 `jj util exec -- jx ...` keeps the workflow reachable from the jj command
 surface.
 
-## Assumptions
+## Scope
 
 `jx` is intentionally narrow:
 
