@@ -30,6 +30,9 @@ pub(super) trait CommandServices {
     /// Lists jj workspaces with root paths and current-workspace state.
     fn workspace_entries(&self, current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError>;
 
+    /// Returns the current workspace without resolving sibling workspace paths.
+    fn current_workspace_entry(&self, current_dir: &Path) -> Result<WorkspaceEntry, JjError>;
+
     /// Forgets a jj workspace and deletes its managed directory.
     fn remove_workspace(
         &self,
@@ -287,6 +290,10 @@ impl CommandServices for ProductionServices<'_> {
 
     fn workspace_entries(&self, current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError> {
         jj_workspace_entries(current_dir)
+    }
+
+    fn current_workspace_entry(&self, current_dir: &Path) -> Result<WorkspaceEntry, JjError> {
+        current_workspace_entry(current_dir)
     }
 
     fn remove_workspace(

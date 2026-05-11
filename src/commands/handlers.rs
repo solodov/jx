@@ -638,18 +638,15 @@ fn handle_work(
         }
         WorkRequest::Remove(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
-            if let Some(name) = &request.name {
-                validate_workspace_name(name)?;
-            }
             let identity = workspace_identity(&context, environment)?;
-            let workspaces = services.workspace_entries(environment.current_dir())?;
-            let removal = removable_workspace(
-                &context,
-                &identity,
-                &workspaces,
-                request.name.as_deref(),
-                environment,
-            )?;
+            let removal = if let Some(name) = &request.name {
+                validate_workspace_name(name)?;
+                let workspaces = services.workspace_entries(environment.current_dir())?;
+                removable_workspace(&context, &identity, &workspaces, Some(name), environment)?
+            } else {
+                let workspace = services.current_workspace_entry(environment.current_dir())?;
+                removable_workspace(&context, &identity, &[workspace], None, environment)?
+            };
 
             if !prompts
                 .workspace_remove_confirmer

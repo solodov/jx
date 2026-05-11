@@ -4248,6 +4248,16 @@ impl CommandServices for FakeServices {
         Ok(self.workspaces.clone())
     }
 
+    fn current_workspace_entry(&self, _current_dir: &Path) -> Result<WorkspaceEntry, JjError> {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.is_current)
+            .cloned()
+            .ok_or_else(|| JjError::WorkspaceLoad {
+                message: "test current workspace missing".to_owned(),
+            })
+    }
+
     fn remove_workspace(
         &self,
         current_dir: &Path,

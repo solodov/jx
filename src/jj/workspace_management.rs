@@ -66,10 +66,22 @@ pub fn run_jj_workspace_add(
     }
 }
 
+/// Returns the active jj workspace without resolving any other workspace paths.
+pub fn current_workspace_entry(current_dir: &Path) -> Result<WorkspaceEntry, JjError> {
+    let workspace_root = find_jj_workspace_root(current_dir)?;
+    let name = JjWorkspace::load(&workspace_root)?.workspace_name();
+    Ok(WorkspaceEntry {
+        name,
+        root: workspace_root,
+        is_current: true,
+    })
+}
+
 /// Lists jj workspaces with their root paths and current-workspace marker.
 pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError> {
-    let workspace_root = find_jj_workspace_root(current_dir)?;
-    let current_workspace = JjWorkspace::load(&workspace_root)?.workspace_name();
+    let current_entry = current_workspace_entry(current_dir)?;
+    let workspace_root = current_entry.root.clone();
+    let current_workspace = current_entry.name.clone();
     let output = Command::new("jj")
         .arg("--no-pager")
         .arg("--color=never")

@@ -107,7 +107,8 @@ use status::*;
 pub use types::*;
 pub use workspace::JjWorkspace;
 pub use workspace_management::{
-    jj_workspace_entries, remove_jj_workspace, run_jj_git_init, run_jj_workspace_add,
+    current_workspace_entry, jj_workspace_entries, remove_jj_workspace, run_jj_git_init,
+    run_jj_workspace_add,
 };
 #[cfg(test)]
 use workspace_management::{remove_empty_workspace_dirs, workspace_names_from_jj_list};
