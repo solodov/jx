@@ -423,6 +423,49 @@ path = "{repo}"
 }
 
 #[test]
+fn work_add_shell_cd_target_prints_new_workspace_path() {
+    // Verifies: Shell integration can enter a newly added managed workspace after creation.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "add", "--shell-cd-target", "fix"],
+        &environment,
+        &services,
+    )
+    .expect("workspace add succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Added workspace: {}\n{}{}\n",
+            expected_destination.display(),
+            SHELL_CD_TARGET_PREFIX,
+            expected_destination.display()
+        )
+    );
+}
+
+#[test]
 fn work_add_task_id_prefixes_workspace_name_and_writes_metadata() {
     // Verifies: Task workspaces use task-visible names while metadata remains the source of truth.
     let workspace = TestWorkspace::new_under("projects/jx");
@@ -774,6 +817,7 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
     assert!(result.stdout.contains("remote-status"));
     assert!(result.stdout.contains("open"));
     assert!(result.stdout.contains("--shell-cd-target"));
+    assert!(result.stdout.contains("\"$2\" == \"add\""));
     assert!(result.stdout.contains("pushd \"$cd_target\""));
     assert!(!result.stdout.contains("u() {"));
 }

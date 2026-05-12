@@ -604,7 +604,13 @@ fn handle_work(
                 )?;
             }
             progress.finish();
-            Ok(render_work_add(&options))
+            let mut output = render_work_add(&options);
+            if request.shell_cd_target {
+                output.push_str(SHELL_CD_TARGET_PREFIX);
+                output.push_str(&options.destination.display().to_string());
+                output.push('\n');
+            }
+            Ok(output)
         }
         WorkRequest::List(request) => {
             if request.all || !request.prefix.is_empty() {

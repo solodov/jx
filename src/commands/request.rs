@@ -54,6 +54,7 @@ pub(super) struct WorkAddRequest {
     pub(super) name: String,
     pub(super) revision: Option<String>,
     pub(super) task_id: Option<String>,
+    pub(super) shell_cd_target: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +229,7 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
             name: required_arg(matches, "name"),
             revision: revision(matches),
             task_id: task_id(matches),
+            shell_cd_target: matches.get_flag("shell-cd-target"),
         })),
         Some(("list", matches)) => Ok(WorkRequest::List(WorkListRequest {
             all: matches.get_flag("all"),
@@ -527,7 +529,8 @@ pub(super) fn cli() -> ClapCommand {
                         .about("Add a workspace under the configured hidden layout")
                         .arg(workspace_name_arg())
                         .arg(workspace_revision_arg())
-                        .arg(task_id_arg()),
+                        .arg(task_id_arg())
+                        .arg(work_shell_cd_target_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("list")
@@ -550,7 +553,7 @@ pub(super) fn cli() -> ClapCommand {
                     ClapCommand::new("remove")
                         .about("Forget and delete a managed workspace")
                         .arg(workspace_name_arg().required(false))
-                        .arg(work_remove_shell_cd_target_arg()),
+                        .arg(work_shell_cd_target_arg()),
                 ),
         )
         .subcommand(
@@ -673,7 +676,7 @@ fn workspace_name_arg() -> Arg {
         .help("Workspace name to manage")
 }
 
-fn work_remove_shell_cd_target_arg() -> Arg {
+fn work_shell_cd_target_arg() -> Arg {
     Arg::new("shell-cd-target")
         .long("shell-cd-target")
         .hide(true)
