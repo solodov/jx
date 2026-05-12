@@ -49,19 +49,20 @@ pub fn run_jj_workspace_add(
     }
     command.arg(&options.destination);
 
-    let status = command
+    let output = command
         .current_dir(current_dir)
         .stdin(Stdio::inherit())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .status()
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|child| child.wait_with_output())
         .map_err(|source| JjError::WorkspaceAddStart { source })?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
         Err(JjError::WorkspaceAddFailed {
-            status: exit_status_summary(status),
+            status: process_failure_summary(output.status, &output.stderr),
         })
     }
 }
@@ -224,6 +225,17 @@ fn directory_is_empty(path: &Path) -> Result<bool, JjError> {
             source,
         }),
         None => Ok(true),
+    }
+}
+
+fn process_failure_summary(status: std::process::ExitStatus, stderr: &[u8]) -> String {
+    let status = exit_status_summary(status);
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        status
+    } else {
+        format!("{status}: {stderr}")
     }
 }
 
