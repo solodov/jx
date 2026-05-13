@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     domain::{
-        BookmarkAction, BookmarkPlan, CheckWorkspaceSummary, GitHubReadiness, PullRequestAction,
-        RepositorySummary, StatusComparison, StatusState,
+        BookmarkAction, BookmarkPlan, CheckWorkspaceSummary, ForkStatusComparison, GitHubReadiness,
+        PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
     github::{PullRequestHead, PullRequestRecord, ReviewerSelection},
     jj::{
@@ -52,6 +52,30 @@ fn example_pull_request_link(number: u64) -> String {
         &format!("https://github.com/example-owner/example-repo/pull/{number}"),
         &format!("#{number}"),
     )
+}
+
+fn fork_status(
+    state: ForkStatusState,
+    source_ahead_by: i64,
+    fork_ahead_by: i64,
+) -> ForkStatusReport {
+    ForkStatusReport {
+        fork: GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "example-repo".to_owned(),
+        },
+        fork_branch: "main".to_owned(),
+        source: GitHubRepository {
+            owner: "source-owner".to_owned(),
+            name: "example-repo".to_owned(),
+        },
+        source_branch: "main".to_owned(),
+        comparison: ForkStatusComparison {
+            state,
+            source_ahead_by,
+            fork_ahead_by,
+        },
+    }
 }
 
 #[derive(Default)]
@@ -1598,6 +1622,7 @@ fn remote_status_shows_local_commits_as_remote_behind() {
                     github_behind_by: 0,
                 },
             }],
+            fork: None,
         },
         ..FakeServices::default()
     };
@@ -1656,6 +1681,7 @@ fn remote_status_renders_one_line_per_github_remote() {
                     },
                 },
             ],
+            fork: None,
         },
         ..FakeServices::default()
     };
@@ -1667,6 +1693,98 @@ fn remote_status_renders_one_line_per_github_remote() {
             result.stdout,
             "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), diverged: pull 1 commit, push 2 commits\nremote: upstream (\x1b]8;;https://github.com/upstream-owner/example-repo/tree/main\x1b\\https://github.com/upstream-owner/example-repo.git\x1b]8;;\x1b\\), push needed: local has 3 unpublished commits\n"
         );
+}
+
+#[test]
+fn remote_status_renders_fork_freshness_after_remotes() {
+    // Verifies: Single-repo remote status shows the fork's source relationship explicitly.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let mut status = FakeServices::default().status;
+    status.fork = Some(fork_status(ForkStatusState::SourceAhead, 7, 0));
+    let services = FakeServices {
+        status,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "remote-status"], &environment, &services)
+        .expect("remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "remote: origin (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\https://github.com/example-owner/example-repo.git\x1b]8;;\x1b\\), pull needed: GitHub has 3 new commits\nfork: {} vs source {}, source has 7 new commits\n",
+            osc8_link(
+                "https://github.com/example-owner/example-repo/tree/main",
+                "example-owner/example-repo/main"
+            ),
+            osc8_link(
+                "https://github.com/source-owner/example-repo/tree/main",
+                "source-owner/example-repo/main"
+            )
+        )
+    );
+}
+
+#[test]
+fn remote_status_all_groups_fork_freshness() {
+    // Verifies: Global remote status groups fork/source deltas separately from local remotes.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let forked = workspace.create_jj_workspace("projects/forked");
+    TestWorkspace::write_git_config_at(
+        &forked,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/forked.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        status: StatusReport {
+            remotes: vec![domain::RemoteStatusReport {
+                name: "origin".to_owned(),
+                url: "https://github.com/example-owner/example-repo.git".to_owned(),
+                github_url: "https://github.com/example-owner/example-repo".to_owned(),
+                branch: "main".to_owned(),
+                local_trunk_sha: "1111222233334444".to_owned(),
+                local_trunk_short_sha: "11112222".to_owned(),
+                local_ahead_by: 0,
+                comparison: StatusComparison {
+                    state: StatusState::UpToDate,
+                    github_ahead_by: 0,
+                    github_behind_by: 0,
+                },
+            }],
+            fork: Some(fork_status(ForkStatusState::SourceAhead, 7, 0)),
+        },
+        ..FakeServices::default()
+    };
+
+    let result =
+        run_with_args_and_services(["jx", "remote-status", "--all"], &environment, &services)
+            .expect("global remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Remote status: 1 repository checked, 1 needs attention\n\nFork behind source:\n  ~/projects/forked  source-owner/example-repo/main has 7 new commits\n"
+    );
 }
 
 #[test]
@@ -4105,6 +4223,7 @@ impl Default for FakeServices {
                         github_behind_by: 0,
                     },
                 }],
+                fork: None,
             },
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
@@ -4480,6 +4599,13 @@ impl CommandServices for FakeServices {
                     state: StatusState::UpToDate,
                     github_ahead_by: 0,
                     github_behind_by: 0,
+                };
+            }
+            if let Some(fork) = &mut status.fork {
+                fork.comparison = ForkStatusComparison {
+                    state: ForkStatusState::Synced,
+                    source_ahead_by: 0,
+                    fork_ahead_by: 0,
                 };
             }
         }

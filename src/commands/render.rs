@@ -1255,6 +1255,8 @@ struct RemoteStatusRepositoryJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     remotes: Vec<RemoteStatusRemoteJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    fork: Option<RemoteStatusForkJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -1276,7 +1278,43 @@ impl From<&GlobalStatusEntry> for RemoteStatusRepositoryJson {
             repository: entry.repository.as_ref().map(GitHubRepository::slug),
             url: entry.repository.as_ref().map(GitHubRepository::https_url),
             remotes,
+            fork: entry
+                .result
+                .as_ref()
+                .ok()
+                .and_then(|report| report.fork.as_ref())
+                .map(RemoteStatusForkJson::from),
             error: entry.result.as_ref().err().cloned(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteStatusForkJson {
+    source_repository: String,
+    source_url: String,
+    source_branch: String,
+    fork_repository: String,
+    fork_url: String,
+    fork_branch: String,
+    state: &'static str,
+    source_ahead_by: i64,
+    fork_ahead_by: i64,
+}
+
+impl From<&ForkStatusReport> for RemoteStatusForkJson {
+    fn from(fork: &ForkStatusReport) -> Self {
+        Self {
+            source_repository: fork.source.slug(),
+            source_url: fork.source.https_url(),
+            source_branch: fork.source_branch.clone(),
+            fork_repository: fork.fork.slug(),
+            fork_url: fork.fork.https_url(),
+            fork_branch: fork.fork_branch.clone(),
+            state: fork.comparison.label(),
+            source_ahead_by: fork.comparison.source_ahead_by,
+            fork_ahead_by: fork.comparison.fork_ahead_by,
         }
     }
 }
@@ -1350,6 +1388,24 @@ pub(super) fn render_global_status(
         )?;
         write_global_status_section(
             formatter,
+            "Fork behind source:",
+            &groups.fork_behind,
+            label_width,
+        )?;
+        write_global_status_section(
+            formatter,
+            "Fork ahead of source:",
+            &groups.fork_ahead,
+            label_width,
+        )?;
+        write_global_status_section(
+            formatter,
+            "Fork diverged from source:",
+            &groups.fork_diverged,
+            label_width,
+        )?;
+        write_global_status_section(
+            formatter,
             "Setup needed:",
             &groups.setup_needed,
             label_width,
@@ -1372,6 +1428,9 @@ struct GlobalStatusGroups {
     pull_needed: Vec<GlobalStatusRow>,
     push_needed: Vec<GlobalStatusRow>,
     diverged: Vec<GlobalStatusRow>,
+    fork_behind: Vec<GlobalStatusRow>,
+    fork_ahead: Vec<GlobalStatusRow>,
+    fork_diverged: Vec<GlobalStatusRow>,
     setup_needed: Vec<GlobalStatusRow>,
     attention_repositories: usize,
     synced_repositories: usize,
@@ -1383,6 +1442,9 @@ impl GlobalStatusGroups {
             .iter()
             .chain(&self.push_needed)
             .chain(&self.diverged)
+            .chain(&self.fork_behind)
+            .chain(&self.fork_ahead)
+            .chain(&self.fork_diverged)
             .chain(&self.setup_needed)
             .map(|row| row.label.len())
             .max()
@@ -1427,7 +1489,12 @@ fn global_status_groups(
 
 impl GlobalStatusGroups {
     fn changed_row_count(&self) -> usize {
-        self.pull_needed.len() + self.push_needed.len() + self.diverged.len()
+        self.pull_needed.len()
+            + self.push_needed.len()
+            + self.diverged.len()
+            + self.fork_behind.len()
+            + self.fork_ahead.len()
+            + self.fork_diverged.len()
     }
 }
 
@@ -1460,6 +1527,46 @@ fn push_global_status_rows(
             }),
             (false, false) => {}
         }
+    }
+
+    if let Some(fork) = &report.fork {
+        push_global_fork_status_row(groups, entry, fork);
+    }
+}
+
+fn push_global_fork_status_row(
+    groups: &mut GlobalStatusGroups,
+    entry: &GlobalStatusEntry,
+    fork: &ForkStatusReport,
+) {
+    let label = entry.display_root.clone();
+    match fork.comparison.state {
+        ForkStatusState::SourceAhead => groups.fork_behind.push(GlobalStatusRow {
+            label,
+            detail: format!(
+                "{} has {}",
+                source_branch_label(fork),
+                new_commit_count(fork.comparison.source_ahead_by)
+            ),
+        }),
+        ForkStatusState::ForkAhead => groups.fork_ahead.push(GlobalStatusRow {
+            label,
+            detail: format!(
+                "fork has {} not in {}",
+                commit_count_i64(fork.comparison.fork_ahead_by),
+                source_branch_label(fork)
+            ),
+        }),
+        ForkStatusState::Diverged => groups.fork_diverged.push(GlobalStatusRow {
+            label,
+            detail: format!(
+                "{} has {}, fork has {}",
+                source_branch_label(fork),
+                new_commit_count(fork.comparison.source_ahead_by),
+                commit_count_i64(fork.comparison.fork_ahead_by)
+            ),
+        }),
+        ForkStatusState::Synced => {}
     }
 }
 
@@ -1538,6 +1645,9 @@ pub(super) fn write_status(formatter: &mut dyn Formatter, report: &StatusReport)
     for remote in sorted_remote_statuses(report) {
         write_remote_status(formatter, remote)?;
     }
+    if let Some(fork) = &report.fork {
+        write_fork_status(formatter, fork)?;
+    }
     Ok(())
 }
 
@@ -1603,6 +1713,52 @@ pub(super) fn render_status_delta(remote: &domain::RemoteStatusReport) -> String
         ),
         (false, false) => "synced".to_owned(),
     }
+}
+
+pub(super) fn write_fork_status(
+    formatter: &mut dyn Formatter,
+    fork: &domain::ForkStatusReport,
+) -> io::Result<()> {
+    write!(formatter, "fork: ")?;
+    write_osc8_link(
+        formatter,
+        &branch_url(&fork.fork.https_url(), &fork.fork_branch),
+        &fork_branch_label(fork),
+    )?;
+    write!(formatter, " vs source ")?;
+    write_osc8_link(
+        formatter,
+        &branch_url(&fork.source.https_url(), &fork.source_branch),
+        &source_branch_label(fork),
+    )?;
+    writeln!(formatter, ", {}", render_fork_status_delta(fork))
+}
+
+pub(super) fn render_fork_status_delta(fork: &domain::ForkStatusReport) -> String {
+    match fork.comparison.state {
+        ForkStatusState::SourceAhead => format!(
+            "source has {}",
+            new_commit_count(fork.comparison.source_ahead_by)
+        ),
+        ForkStatusState::ForkAhead => format!(
+            "fork has {} not in source",
+            commit_count_i64(fork.comparison.fork_ahead_by)
+        ),
+        ForkStatusState::Diverged => format!(
+            "diverged: source has {}, fork has {}",
+            new_commit_count(fork.comparison.source_ahead_by),
+            commit_count_i64(fork.comparison.fork_ahead_by)
+        ),
+        ForkStatusState::Synced => "synced with source".to_owned(),
+    }
+}
+
+fn fork_branch_label(fork: &domain::ForkStatusReport) -> String {
+    format!("{}/{}", fork.fork.slug(), fork.fork_branch)
+}
+
+fn source_branch_label(fork: &domain::ForkStatusReport) -> String {
+    format!("{}/{}", fork.source.slug(), fork.source_branch)
 }
 
 #[derive(Debug, Clone, Copy)]

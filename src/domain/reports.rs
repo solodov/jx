@@ -190,6 +190,7 @@ pub struct BookmarkPlanRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusReport {
     pub remotes: Vec<RemoteStatusReport>,
+    pub fork: Option<ForkStatusReport>,
 }
 
 /// Freshness result for one configured GitHub remote.
@@ -231,6 +232,45 @@ pub enum StatusState {
     UpToDate,
     GithubAhead,
     LocalAhead,
+    Diverged,
+}
+
+/// GitHub fork freshness relative to its source repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkStatusReport {
+    pub fork: GitHubRepository,
+    pub fork_branch: String,
+    pub source: GitHubRepository,
+    pub source_branch: String,
+    pub comparison: ForkStatusComparison,
+}
+
+/// Commit counts for fork/source freshness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkStatusComparison {
+    pub state: ForkStatusState,
+    pub source_ahead_by: i64,
+    pub fork_ahead_by: i64,
+}
+
+impl ForkStatusComparison {
+    /// Stable lowercase label for this fork freshness state.
+    pub fn label(&self) -> &'static str {
+        match self.state {
+            ForkStatusState::Synced => "synced",
+            ForkStatusState::SourceAhead => "source-ahead",
+            ForkStatusState::ForkAhead => "fork-ahead",
+            ForkStatusState::Diverged => "diverged",
+        }
+    }
+}
+
+/// Operational source/fork relationship reported by `jx remote-status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkStatusState {
+    Synced,
+    SourceAhead,
+    ForkAhead,
     Diverged,
 }
 

@@ -476,7 +476,7 @@ fn remote_status_current_repository(
     progress.status("Checking GitHub remotes…");
     let repository = context.origin.github.clone();
     let root = context.workspace_root.clone();
-    let report = services.status_report(&context, workspace)?;
+    let report = services.remote_status_report(&context, workspace)?;
     progress.finish();
     if request.changed && !status_report_has_changes(&report) {
         return if request.format == RemoteStatusFormat::Json {
@@ -532,7 +532,10 @@ fn handle_global_remote_status(
 pub(super) fn status_report_has_changes(report: &StatusReport) -> bool {
     report.remotes.iter().any(|remote| {
         remote.comparison.state != domain::StatusState::UpToDate || remote.local_ahead_by > 0
-    })
+    }) || report
+        .fork
+        .as_ref()
+        .is_some_and(|fork| fork.comparison.state != domain::ForkStatusState::Synced)
 }
 
 fn repository_environment(

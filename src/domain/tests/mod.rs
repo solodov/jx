@@ -1,9 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     github::{
         AuthenticatedUser, PullRequestCreate, PullRequestHead, PullRequestRecord,
-        PullRequestUpdate, ReviewerSelection, ReviewerSyncResult,
+        PullRequestUpdate, RepositoryFork, ReviewerSelection, ReviewerSyncResult,
     },
     jj::{ChangeSummary, StatusRemoteFacts, StatusWorkspaceFacts, TrunkSummary},
     repository::{
@@ -351,6 +354,61 @@ fn status_reports_configured_github_remotes_in_context_order() {
         vec![
             ("1111222233334444".to_owned(), "main".to_owned()),
             ("aaaabbbbccccdddd".to_owned(), "main".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn remote_status_report_compares_origin_fork_with_source() {
+    // Verifies: Remote-status adds fork/source freshness without changing remote freshness.
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut comparisons = BTreeMap::new();
+    comparisons.insert(
+        ("1111222233334444".to_owned(), "main".to_owned()),
+        CommitComparison {
+            status: ComparisonStatus::Identical,
+            ahead_by: 0,
+            behind_by: 0,
+        },
+    );
+    comparisons.insert(
+        ("main".to_owned(), "example-owner:main".to_owned()),
+        CommitComparison {
+            status: ComparisonStatus::Behind,
+            ahead_by: 0,
+            behind_by: 7,
+        },
+    );
+    let github = FakeGitHub {
+        repository_fork: Some(RepositoryFork {
+            source: GitHubRepository {
+                owner: "source-owner".to_owned(),
+                name: "example-repo".to_owned(),
+            },
+            source_default_branch: Some("main".to_owned()),
+        }),
+        comparisons,
+        compare_calls: calls.clone(),
+        ..FakeGitHub::default()
+    };
+
+    let report = pollster::block_on(remote_status_report(
+        &context(),
+        status_workspace_facts(),
+        &github,
+    ))
+    .expect("remote status succeeds");
+    let fork = report.fork.expect("fork status is present");
+
+    assert_eq!(fork.source.slug(), "source-owner/example-repo");
+    assert_eq!(fork.comparison.state, ForkStatusState::SourceAhead);
+    assert_eq!(fork.comparison.source_ahead_by, 7);
+    assert_eq!(fork.comparison.fork_ahead_by, 0);
+    assert_eq!(
+        *calls.lock().expect("compare calls"),
+        vec![
+            ("1111222233334444".to_owned(), "main".to_owned()),
+            ("main".to_owned(), "example-owner:main".to_owned()),
         ]
     );
 }
@@ -854,8 +912,10 @@ struct FakeGitHub {
     user: AuthenticatedUser,
     access: RepositoryAccess,
     comparison: CommitComparison,
+    comparisons: BTreeMap<(String, String), CommitComparison>,
     compare_failure: Option<FakeCompareFailure>,
     compare_calls: CompareCalls,
+    repository_fork: Option<RepositoryFork>,
     open_pull_request: Option<PullRequestRecord>,
     create_calls: CreateCalls,
     update_calls: UpdateCalls,
@@ -886,8 +946,10 @@ impl Default for FakeGitHub {
                 ahead_by: 0,
                 behind_by: 0,
             },
+            comparisons: BTreeMap::new(),
             compare_failure: None,
             compare_calls: Arc::new(Mutex::new(Vec::new())),
+            repository_fork: None,
             open_pull_request: None,
             create_calls: Arc::new(Mutex::new(Vec::new())),
             update_calls: Arc::new(Mutex::new(Vec::new())),
@@ -910,6 +972,13 @@ impl GitHubClient for FakeGitHub {
         _repository: &GitHubRepository,
     ) -> Result<RepositoryAccess, GitHubError> {
         Ok(self.access.clone())
+    }
+
+    async fn repository_fork(
+        &self,
+        _repository: &GitHubRepository,
+    ) -> Result<Option<RepositoryFork>, GitHubError> {
+        Ok(self.repository_fork.clone())
     }
 
     async fn create_repository(
@@ -939,7 +1008,11 @@ impl GitHubClient for FakeGitHub {
             return Err(failure.to_error(base, head));
         }
 
-        Ok(self.comparison.clone())
+        Ok(self
+            .comparisons
+            .get(&(base.to_owned(), head.to_owned()))
+            .cloned()
+            .unwrap_or_else(|| self.comparison.clone()))
     }
 
     async fn find_open_pull_request(

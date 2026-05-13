@@ -29,9 +29,10 @@ use thiserror::Error;
 
 use crate::{
     domain::{
-        self, BookmarkAction, CheckReport, FetchReport, PullRequestAction, PullRequestPlan,
-        PullRequestReport, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
-        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
+        self, BookmarkAction, CheckReport, FetchReport, ForkStatusReport, ForkStatusState,
+        PullRequestAction, PullRequestPlan, PullRequestReport, PushPlan, PushReport,
+        RebaseOnTrunkReport, RemoteStatusReport, StatusReport, SyncReport, TrackedPushReport,
+        WorkflowCommand, WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,

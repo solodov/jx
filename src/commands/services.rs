@@ -106,6 +106,15 @@ pub(super) trait CommandServices {
         workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError>;
 
+    /// Builds the full `remote-status` report, including source/fork freshness.
+    fn remote_status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<StatusReport, WorkflowError> {
+        self.status_report(context, workspace)
+    }
+
     /// Returns whether the current token can push to the fixed origin repository.
     fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError>;
 
@@ -145,7 +154,7 @@ pub(super) trait CommandServices {
                 let context = RepositoryContext::discover(&environment)?;
                 let origin = context.origin.github.clone();
                 let workspace = self.status_workspace_facts(&context)?;
-                Ok((origin, self.status_report(&context, workspace)?))
+                Ok((origin, self.remote_status_report(&context, workspace)?))
             })();
             let (repository_identity, result) = match resolved {
                 Ok((repository, report)) => (Some(repository), Ok(report)),
@@ -402,6 +411,19 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn remote_status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<StatusReport, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+
+            domain::remote_status_report(context, workspace, &github).await
+        })
+    }
+
     fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError> {
         self.github_runtime.block_on(async {
             let github =
@@ -638,7 +660,7 @@ async fn production_global_remote_status_entry(
             .map_err(CommandError::from)
             .map_err(|error| error.to_string())
             {
-                Ok(github) => domain::status_report(&context, workspace, &github)
+                Ok(github) => domain::remote_status_report(&context, workspace, &github)
                     .await
                     .map_err(CommandError::from)
                     .map_err(|error| error.to_string()),

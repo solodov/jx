@@ -47,6 +47,15 @@ pub enum WorkflowError {
         "GitHub could not compare `{branch}` with local trunk `{local_sha}`; status is unavailable"
     )]
     UnavailableComparison { branch: String, local_sha: String },
+    #[error(
+        "GitHub could not compare fork `{fork}` branch `{fork_branch}` with source `{source_repo}` branch `{source_branch}`; fork status is unavailable"
+    )]
+    UnavailableForkComparison {
+        source_repo: String,
+        source_branch: String,
+        fork: String,
+        fork_branch: String,
+    },
     #[error("Local status facts did not include configured remote `{remote}`")]
     MissingStatusRemote { remote: String },
 }

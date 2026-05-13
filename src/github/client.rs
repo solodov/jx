@@ -12,6 +12,12 @@ pub trait GitHubClient: Send + Sync {
         repository: &GitHubRepository,
     ) -> Result<RepositoryAccess, GitHubError>;
 
+    /// Returns source repository metadata when the repository is a GitHub fork.
+    async fn repository_fork(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Result<Option<RepositoryFork>, GitHubError>;
+
     /// Creates a private or public GitHub repository without initializing contents.
     async fn create_repository(
         &self,
@@ -169,6 +175,33 @@ impl GitHubClient for OctocrabGitHubClient {
             can_push,
             can_admin,
         })
+    }
+
+    async fn repository_fork(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Result<Option<RepositoryFork>, GitHubError> {
+        let route = format!(
+            "/repos/{owner}/{repo}",
+            owner = repository.owner,
+            repo = repository.name,
+        );
+        let response: RepositoryForkResponse = self
+            .crab
+            .get(route, Option::<&()>::None)
+            .await
+            .map_err(|source| api_error("load repository fork source", source))?;
+        let Some(source) = response.source.filter(|_| response.fork) else {
+            return Ok(None);
+        };
+
+        Ok(Some(RepositoryFork {
+            source: GitHubRepository {
+                owner: source.owner.login,
+                name: source.name,
+            },
+            source_default_branch: source.default_branch,
+        }))
     }
 
     async fn create_repository(
@@ -386,6 +419,25 @@ struct CreateRepositoryRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct CreateRepositoryResponse {
     html_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryForkResponse {
+    #[serde(default)]
+    fork: bool,
+    source: Option<RepositoryForkSourceResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryForkSourceResponse {
+    name: String,
+    owner: RepositoryForkOwnerResponse,
+    default_branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryForkOwnerResponse {
+    login: String,
 }
 
 #[derive(Debug, serde::Deserialize)]

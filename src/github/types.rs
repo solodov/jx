@@ -75,6 +75,13 @@ pub struct RepositoryAccess {
     pub can_admin: bool,
 }
 
+/// Source repository metadata for a GitHub fork.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryFork {
+    pub source: GitHubRepository,
+    pub source_default_branch: Option<String>,
+}
+
 /// Repository created by the GitHub boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryCreation {
