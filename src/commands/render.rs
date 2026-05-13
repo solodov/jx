@@ -185,6 +185,7 @@ pub(super) enum GlobalSyncSkipReason {
     UpToDate,
     PullNeeded { commits: i64 },
     Diverged { pull: i64, push: i64 },
+    LocalWork { changes: i64 },
     ReadOnlyOrigin,
     PushAccessUnavailable(String),
     SetupNeeded(String),
@@ -260,6 +261,26 @@ pub(super) fn render_global_sync(
                                 "pull {}, push {}",
                                 commit_count_i64(*pull),
                                 commit_count_i64(*push)
+                            ),
+                        })
+                    }
+                    _ => None,
+                }),
+        )?;
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Skipped: local work",
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::LocalWork { changes }) => {
+                        Some(GlobalSyncSectionRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                            detail: format!(
+                                "working copy has {}",
+                                local_change_count_i64(*changes)
                             ),
                         })
                     }
@@ -1776,6 +1797,15 @@ fn remote_status_counts(remote: &domain::RemoteStatusReport) -> RemoteStatusCoun
 
 fn commit_count_i64(count: i64) -> String {
     let noun = if count == 1 { "commit" } else { "commits" };
+    format!("{count} {noun}")
+}
+
+fn local_change_count_i64(count: i64) -> String {
+    let noun = if count == 1 {
+        "local change"
+    } else {
+        "local changes"
+    };
     format!("{count} {noun}")
 }
 

@@ -898,7 +898,7 @@ fn try_global_sync_for_repository(
         (false, _) => {}
     }
 
-    global_sync_existing_origin(context, services)
+    global_sync_existing_origin(context, services, origin_status.local_ahead_by)
 }
 
 fn origin_remote_status(
@@ -938,6 +938,7 @@ fn origin_only_status_context(context: &RepositoryContext) -> RepositoryContext 
 fn global_sync_existing_origin(
     context: RepositoryContext,
     services: &dyn CommandServices,
+    local_ahead_by: i64,
 ) -> Result<GlobalSyncOutcome, CommandError> {
     let fetch = services.fetch_origin(&context)?;
     domain::ensure_fetch_is_pushable(&fetch)?;
@@ -955,6 +956,12 @@ fn global_sync_existing_origin(
 
     if changed {
         Ok(GlobalSyncOutcome::Synced)
+    } else if local_ahead_by > 0 {
+        Ok(GlobalSyncOutcome::Skipped(
+            GlobalSyncSkipReason::LocalWork {
+                changes: local_ahead_by,
+            },
+        ))
     } else {
         Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::UpToDate))
     }

@@ -2451,6 +2451,80 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_all_reports_local_work_when_tracked_push_has_nothing_to_sync() {
+    // Verifies: Global sync does not call a repo up to date when unpushed jj work remains.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let local_work = workspace.create_jj_workspace("projects/local-work");
+    TestWorkspace::write_git_config_at(
+        &local_work,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/local-work.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        origin_push_access_roots: Some(BTreeSet::from([local_work.clone()])),
+        up_to_date_sync_roots: BTreeSet::from([local_work.clone()]),
+        status: StatusReport {
+            remotes: vec![domain::RemoteStatusReport {
+                name: "origin".to_owned(),
+                url: "https://github.com/example-owner/local-work.git".to_owned(),
+                github_url: "https://github.com/example-owner/local-work".to_owned(),
+                branch: "main".to_owned(),
+                local_trunk_sha: "1111222233334444".to_owned(),
+                local_trunk_short_sha: "11112222".to_owned(),
+                local_ahead_by: 1,
+                comparison: StatusComparison {
+                    state: StatusState::UpToDate,
+                    github_ahead_by: 0,
+                    github_behind_by: 0,
+                },
+            }],
+            fork: None,
+        },
+        fetch: FetchOutcome {
+            branch: "main".to_owned(),
+            changed_remote_bookmarks: 0,
+            changed_remote_tags: 0,
+            abandoned_commits: 0,
+            rebased_trunk_children: 0,
+            rebased_descendants: 0,
+            skipped_trunk_children: 0,
+            current_repaired: false,
+            rebased_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync succeeds");
+
+    assert_eq!(
+        services.fetch_origin_roots.borrow().as_slice(),
+        std::slice::from_ref(&local_work)
+    );
+    assert_eq!(
+        services.push_tracked_roots.borrow().as_slice(),
+        [local_work]
+    );
+    assert_eq!(
+        result.stdout,
+        "Skipped: local work\n  ~/projects/local-work  working copy has 1 local change\n"
+    );
+}
+
+#[test]
 fn sync_all_fetches_pull_needed_repo_when_only_empty_working_copy_is_local() {
     // Verifies: Global sync may pull when jj has only its empty working-copy child locally.
     let workspace = TestWorkspace::new();
