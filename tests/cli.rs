@@ -77,6 +77,7 @@ fn work_help_documents_workspace_group_without_loading_repo() {
     assert!(stdout.contains("Manage layout workspaces"));
     assert!(stdout.contains("add"));
     assert!(stdout.contains("list"));
+    assert!(stdout.contains("trunk"));
     assert!(stdout.contains("remove"));
     assert!(output.stderr.is_empty());
 }

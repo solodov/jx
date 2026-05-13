@@ -46,6 +46,7 @@ pub(super) enum WorkRequest {
     List(WorkListRequest),
     Complete(WorkCompleteRequest),
     Root(WorkRootRequest),
+    Trunk(WorkTrunkRequest),
     Remove(WorkRemoveRequest),
 }
 
@@ -72,6 +73,11 @@ pub(super) struct WorkCompleteRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkRootRequest {
     pub(super) key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkTrunkRequest {
+    pub(super) shell_cd_target: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,13 +248,16 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
         Some(("root", matches)) => Ok(WorkRequest::Root(WorkRootRequest {
             key: required_arg(matches, "key"),
         })),
+        Some(("trunk", matches)) => Ok(WorkRequest::Trunk(WorkTrunkRequest {
+            shell_cd_target: matches.get_flag("shell-cd-target"),
+        })),
         Some(("remove", matches)) => Ok(WorkRequest::Remove(WorkRemoveRequest {
             name: string_arg(matches, "name"),
             shell_cd_target: matches.get_flag("shell-cd-target"),
         })),
         _ => Err(clap::Error::raw(
             ErrorKind::MissingSubcommand,
-            "`jx work` requires `add`, `list`, `complete`, `root`, or `remove`",
+            "`jx work` requires `add`, `list`, `complete`, `root`, `trunk`, or `remove`",
         )),
     }
 }
@@ -548,6 +557,11 @@ pub(super) fn cli() -> ClapCommand {
                     ClapCommand::new("root")
                         .about("Resolve a global work-location key to its root path")
                         .arg(work_key_arg()),
+                )
+                .subcommand(
+                    ClapCommand::new("trunk")
+                        .about("Print or enter the trunk checkout for the current workspace")
+                        .arg(work_shell_cd_target_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("remove")

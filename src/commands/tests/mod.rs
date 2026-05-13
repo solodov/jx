@@ -686,6 +686,61 @@ path = "{repo}"
 }
 
 #[test]
+fn work_trunk_resolves_primary_checkout_from_current_workspace() {
+    // Verifies: A managed workspace can resolve the trunk checkout for quick navigation back.
+    let workspace = TestWorkspace::new_under("projects/.work/tool/fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let trunk = workspace.home.join("projects/tool");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "work", "trunk"], &environment, &services)
+        .expect("work trunk succeeds");
+
+    assert_eq!(result.stdout, format!("{}\n", trunk.display()));
+}
+
+#[test]
+fn work_trunk_shell_cd_target_prints_only_trunk_checkout_target() {
+    // Verifies: Shell integration can jump to the trunk checkout without printing an extra path row.
+    let workspace = TestWorkspace::new_under("projects/.work/tool/fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let trunk = workspace.home.join("projects/tool");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "trunk", "--shell-cd-target"],
+        &environment,
+        &services,
+    )
+    .expect("work trunk shell target succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("{}{}\n", SHELL_CD_TARGET_PREFIX, trunk.display())
+    );
+}
+
+#[test]
 fn work_complete_qualifies_colliding_repository_names() {
     // Verifies: Global keys stay deterministic when two configured repos share a basename.
     let workspace = TestWorkspace::new();
@@ -793,6 +848,7 @@ zoxide = "auto"
         .contains("command jx work complete --repositories --prefix \"$cur\""));
     assert!(result.stdout.contains("u() {"));
     assert!(result.stdout.contains("command jx work root \"$1\""));
+    assert!(result.stdout.contains("\"$2\" == \"trunk\""));
     assert!(result
         .stdout
         .contains("command jx work complete --prefix \"$cur\""));
@@ -842,6 +898,7 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
     assert!(result.stdout.contains("open"));
     assert!(result.stdout.contains("--shell-cd-target"));
     assert!(result.stdout.contains("\"$2\" == \"add\""));
+    assert!(result.stdout.contains("\"$2\" == \"trunk\""));
     assert!(result.stdout.contains("pushd \"$cd_target\""));
     assert!(!result.stdout.contains("u() {"));
 }

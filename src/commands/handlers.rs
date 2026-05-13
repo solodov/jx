@@ -645,6 +645,19 @@ fn handle_work(
             let root = resolve_work_location(&locations, &request.key)?;
             Ok(render_work_root(&root))
         }
+        WorkRequest::Trunk(request) => {
+            let context = LocalRepositoryContext::discover(environment)?;
+            let identity = workspace_identity(&context, environment)?;
+            let trunk = context
+                .config
+                .layout
+                .project_destination(&identity, environment)?;
+            if request.shell_cd_target {
+                Ok(shell_cd_target(&trunk))
+            } else {
+                Ok(render_work_root(&trunk))
+            }
+        }
         WorkRequest::Remove(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
             let identity = workspace_identity(&context, environment)?;
@@ -688,6 +701,10 @@ fn handle_work(
             Ok(output)
         }
     }
+}
+
+fn shell_cd_target(path: &Path) -> String {
+    format!("{SHELL_CD_TARGET_PREFIX}{}\n", path.display())
 }
 
 fn handle_shell(
