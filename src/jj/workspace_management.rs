@@ -129,7 +129,7 @@ pub fn remove_jj_workspace(
     // Move the process itself to the safe operation directory before deleting so
     // removing the current workspace cannot leave the `jx` process inside it.
     std::env::set_current_dir(current_dir).map_err(|source| JjError::WorkspaceIo {
-        action: "enter workspace removal directory",
+        action: "enter workspace deletion directory",
         path: current_dir.to_path_buf(),
         source,
     })?;
@@ -189,7 +189,7 @@ pub(super) fn remove_empty_workspace_dirs(
             Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => break,
             Err(source) => {
                 return Err(JjError::WorkspaceIo {
-                    action: "remove empty workspace directory",
+                    action: "delete empty workspace directory",
                     path: path.to_path_buf(),
                     source,
                 });
@@ -321,7 +321,7 @@ fn unique_tombstone_path(root: &Path) -> Result<PathBuf, JjError> {
 
     for attempt in 0..100 {
         let candidate = parent.join(format!(
-            ".jx-removing-{name}-{}-{attempt}",
+            ".jx-deleting-{name}-{}-{attempt}",
             std::process::id()
         ));
         if !candidate.exists() {
@@ -331,6 +331,6 @@ fn unique_tombstone_path(root: &Path) -> Result<PathBuf, JjError> {
 
     Err(JjError::WorkspaceRemove {
         name: name.to_owned(),
-        message: "could not allocate a temporary removal path".to_owned(),
+        message: "could not allocate a temporary deletion path".to_owned(),
     })
 }

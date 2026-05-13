@@ -223,11 +223,11 @@ pub enum RepositoryError {
     WorkspaceNameNotFound { name: String },
     #[error("Current workspace is not registered in this jj repository")]
     CurrentWorkspaceNotFound,
-    #[error("Refusing to remove current workspace `{name}`")]
+    #[error("Refusing to delete current workspace `{name}`")]
     RefuseRemoveCurrentWorkspace { name: String },
-    #[error("Refusing to remove primary workspace `{name}` at {path}")]
+    #[error("Refusing to delete primary workspace `{name}` at {path}")]
     RefuseRemovePrimaryWorkspace { name: String, path: PathBuf },
-    #[error("Refusing to remove workspace `{name}` at {path} because it is outside the configured `{workspace_dir}` layout")]
+    #[error("Refusing to delete workspace `{name}` at {path} because it is outside the configured `{workspace_dir}` layout")]
     RefuseRemoveUnmanagedWorkspace {
         name: String,
         path: PathBuf,

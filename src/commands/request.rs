@@ -47,7 +47,7 @@ pub(super) enum WorkRequest {
     Complete(WorkCompleteRequest),
     Root(WorkRootRequest),
     Trunk(WorkTrunkRequest),
-    Remove(WorkRemoveRequest),
+    Delete(WorkDeleteRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub(super) struct WorkTrunkRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WorkRemoveRequest {
+pub(super) struct WorkDeleteRequest {
     pub(super) name: Option<String>,
     pub(super) shell_cd_target: bool,
 }
@@ -251,13 +251,13 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
         Some(("trunk", matches)) => Ok(WorkRequest::Trunk(WorkTrunkRequest {
             shell_cd_target: matches.get_flag("shell-cd-target"),
         })),
-        Some(("remove", matches)) => Ok(WorkRequest::Remove(WorkRemoveRequest {
+        Some(("delete", matches)) => Ok(WorkRequest::Delete(WorkDeleteRequest {
             name: string_arg(matches, "name"),
             shell_cd_target: matches.get_flag("shell-cd-target"),
         })),
         _ => Err(clap::Error::raw(
             ErrorKind::MissingSubcommand,
-            "`jx work` requires `add`, `list`, `complete`, `root`, `trunk`, or `remove`",
+            "`jx work` requires `add`, `list`, `complete`, `root`, `trunk`, or `delete`",
         )),
     }
 }
@@ -564,8 +564,8 @@ pub(super) fn cli() -> ClapCommand {
                         .arg(work_shell_cd_target_arg()),
                 )
                 .subcommand(
-                    ClapCommand::new("remove")
-                        .about("Forget and delete a managed workspace")
+                    ClapCommand::new("delete")
+                        .about("Delete a managed workspace")
                         .arg(workspace_name_arg().required(false))
                         .arg(work_shell_cd_target_arg()),
                 ),

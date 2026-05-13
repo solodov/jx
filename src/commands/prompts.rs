@@ -271,9 +271,9 @@ pub(super) trait WorkspaceRemoveConfirmer {
 
 #[derive(Debug, Error)]
 pub enum WorkspaceRemoveConfirmationError {
-    #[error("Cannot confirm workspace removal without an interactive terminal")]
+    #[error("Cannot confirm workspace deletion without an interactive terminal")]
     NonInteractive,
-    #[error("Could not read workspace removal confirmation: {source}")]
+    #[error("Could not read workspace deletion confirmation: {source}")]
     Read { source: dialoguer::Error },
 }
 

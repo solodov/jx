@@ -658,7 +658,7 @@ fn handle_work(
                 Ok(render_work_root(&trunk))
             }
         }
-        WorkRequest::Remove(request) => {
+        WorkRequest::Delete(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
             let identity = workspace_identity(&context, environment)?;
             let removal = if let Some(name) = &request.name {
@@ -677,7 +677,7 @@ fn handle_work(
                 return Ok("cancelled\n".to_owned());
             }
 
-            progress.status("Removing workspace…");
+            progress.status("Deleting workspace…");
             services.remove_workspace(
                 &removal.operation_dir,
                 &WorkspaceRemoveOptions {
@@ -690,7 +690,7 @@ fn handle_work(
                 },
             )?;
             progress.finish();
-            let mut output = render_work_remove(&removal.workspace);
+            let mut output = render_work_delete(&removal.workspace);
             if request.shell_cd_target {
                 if let Some(target) = removal.cd_target {
                     output.push_str(SHELL_CD_TARGET_PREFIX);

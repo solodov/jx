@@ -849,6 +849,7 @@ zoxide = "auto"
     assert!(result.stdout.contains("u() {"));
     assert!(result.stdout.contains("command jx work root \"$1\""));
     assert!(result.stdout.contains("\"$2\" == \"trunk\""));
+    assert!(result.stdout.contains("\"$2\" == \"delete\""));
     assert!(result
         .stdout
         .contains("command jx work complete --prefix \"$cur\""));
@@ -899,7 +900,9 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
     assert!(result.stdout.contains("--shell-cd-target"));
     assert!(result.stdout.contains("\"$2\" == \"add\""));
     assert!(result.stdout.contains("\"$2\" == \"trunk\""));
+    assert!(result.stdout.contains("\"$2\" == \"delete\""));
     assert!(result.stdout.contains("pushd \"$cd_target\""));
+    assert!(result.stdout.contains("cd \"$cd_target\""));
     assert!(!result.stdout.contains("u() {"));
 }
 
@@ -928,8 +931,8 @@ navigation = "bad-name"
 }
 
 #[test]
-fn work_remove_can_be_cancelled() {
-    // Verifies: Declining removal stops before jj forget or filesystem deletion.
+fn work_delete_can_be_cancelled() {
+    // Verifies: Declining deletion stops before jj forget or filesystem deletion.
     let workspace = TestWorkspace::new_under("projects/jx");
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -949,20 +952,20 @@ path = "{repo}"
     let confirmer = FixedWorkspaceRemoveConfirmer { confirmed: false };
 
     let result = run_with_args_and_workspace_remove_confirmer(
-        ["jx", "work", "remove", "fix"],
+        ["jx", "work", "delete", "fix"],
         &environment,
         &services,
         &confirmer,
     )
-    .expect("workspace removal cancellation succeeds");
+    .expect("workspace deletion cancellation succeeds");
 
     assert_eq!(result.stdout, "cancelled\n");
     assert!(services.workspace_removes.borrow().is_empty());
 }
 
 #[test]
-fn work_remove_forgets_and_deletes_managed_workspace_after_confirmation() {
-    // Verifies: Removal delegates one confirmed forget/delete operation for managed workspaces.
+fn work_delete_forgets_and_deletes_managed_workspace_after_confirmation() {
+    // Verifies: Deletion delegates one confirmed forget/delete operation for managed workspaces.
     let workspace = TestWorkspace::new_under("projects/jx");
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -982,14 +985,14 @@ path = "{repo}"
     let confirmer = FixedWorkspaceRemoveConfirmer { confirmed: true };
 
     let result = run_with_args_and_workspace_remove_confirmer(
-        ["jx", "work", "remove", "fix"],
+        ["jx", "work", "delete", "fix"],
         &environment,
         &services,
         &confirmer,
     )
-    .expect("workspace removal succeeds");
+    .expect("workspace deletion succeeds");
 
-    assert_eq!(result.stdout, "Removed workspace: fix\n");
+    assert_eq!(result.stdout, "Deleted workspace: fix\n");
     assert_eq!(
         services.workspace_removes.borrow().as_slice(),
         [WorkspaceRemoveOptions {
@@ -1001,8 +1004,8 @@ path = "{repo}"
 }
 
 #[test]
-fn work_remove_current_managed_workspace_returns_shell_cd_target() {
-    // Verifies: Removing the active managed workspace runs from the primary repo and tells shell integration where to land.
+fn work_delete_current_managed_workspace_returns_shell_cd_target() {
+    // Verifies: Deleting the active managed workspace runs from the trunk checkout and tells shell integration where to land.
     let workspace = TestWorkspace::new_under("projects/.work/tool/fix");
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -1034,16 +1037,16 @@ path = "{repo}"
     };
 
     let result = run_with_args_and_services(
-        ["jx", "work", "remove", "--shell-cd-target"],
+        ["jx", "work", "delete", "--shell-cd-target"],
         &environment,
         &services,
     )
-    .expect("current managed workspace removal succeeds");
+    .expect("current managed workspace deletion succeeds");
 
     assert_eq!(
         result.stdout,
         format!(
-            "Removed workspace: fix\n{}{}\n",
+            "Deleted workspace: fix\n{}{}\n",
             SHELL_CD_TARGET_PREFIX,
             primary.display()
         )
@@ -1063,8 +1066,8 @@ path = "{repo}"
 }
 
 #[test]
-fn work_remove_refuses_primary_and_unmanaged_paths() {
-    // Verifies: Remove only targets workspaces inside the managed `.work` layout.
+fn work_delete_refuses_primary_and_unmanaged_paths() {
+    // Verifies: Delete only targets workspaces inside the managed `.work` layout.
     enum RootKind {
         Primary,
         Unmanaged,
@@ -1107,11 +1110,11 @@ path = "{repo}"
         };
 
         let error = run_with_args_and_services(
-            ["jx", "work", "remove", target.name.as_str()],
+            ["jx", "work", "delete", target.name.as_str()],
             &environment,
             &services,
         )
-        .expect_err("unsafe workspace removal is rejected");
+        .expect_err("unsafe workspace deletion is rejected");
 
         match expected_error {
             ExpectedError::Primary => assert!(matches!(

@@ -546,8 +546,8 @@ pub(super) fn render_work_root(root: &Path) -> String {
     format!("{}\n", root.display())
 }
 
-pub(super) fn render_work_remove(workspace: &WorkspaceEntry) -> String {
-    format!("Removed workspace: {}\n", workspace.name)
+pub(super) fn render_work_delete(workspace: &WorkspaceEntry) -> String {
+    format!("Deleted workspace: {}\n", workspace.name)
 }
 
 fn render_keyed_paths<'a>(rows: impl IntoIterator<Item = (String, &'a PathBuf)>) -> String {
@@ -1216,7 +1216,7 @@ pub(super) fn push_confirmation_prompt(plan: &PushPlan) -> String {
 /// Builds the confirmation prompt before forgetting and deleting a managed workspace.
 pub(super) fn workspace_remove_confirmation_prompt(workspace: &WorkspaceEntry) -> String {
     format!(
-        "Remove workspace `{}` at {}?",
+        "Delete workspace `{}` at {}?",
         workspace.name,
         workspace.root.display()
     )

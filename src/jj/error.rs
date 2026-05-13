@@ -86,7 +86,7 @@ pub enum JjError {
         path: PathBuf,
         source: io::Error,
     },
-    #[error("Could not remove workspace `{name}`: {message}")]
+    #[error("Could not delete workspace `{name}`: {message}")]
     WorkspaceRemove { name: String, message: String },
     #[error("No publishable commit found for repository creation: {message}")]
     NoPublishableCommit { message: String },

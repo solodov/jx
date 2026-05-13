@@ -1,7 +1,7 @@
 ---
 id: 20260513-184704-add-repo-policy-support-workspace
 title: Add repo-policy support for `workspace_shared_paths`, starting with `.pi`, so managed `jx work`
-status: ready
+status: implementing
 created: 2026-05-13
 updated: 2026-05-13
 currentPhase: 1
