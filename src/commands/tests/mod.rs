@@ -2333,6 +2333,58 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_all_fetches_pull_needed_repo_when_only_empty_working_copy_is_local() {
+    // Verifies: Global sync may pull when jj has only its empty working-copy child locally.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let pull_only = workspace.create_jj_workspace("projects/pull-only");
+    TestWorkspace::write_git_config_at(
+        &pull_only,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/pull-only.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        global_fetch_ready_roots: Some(BTreeSet::from([pull_only.clone()])),
+        origin_push_access_roots: Some(BTreeSet::from([pull_only.clone()])),
+        up_to_date_sync_roots: BTreeSet::from([pull_only.clone()]),
+        fetch: FetchOutcome {
+            branch: "main".to_owned(),
+            changed_remote_bookmarks: 1,
+            changed_remote_tags: 0,
+            abandoned_commits: 0,
+            rebased_trunk_children: 0,
+            rebased_descendants: 0,
+            skipped_trunk_children: 0,
+            current_repaired: true,
+            rebased_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync succeeds");
+
+    assert_eq!(
+        services.fetch_origin_roots.borrow().as_slice(),
+        std::slice::from_ref(&pull_only)
+    );
+    assert_eq!(services.push_tracked_roots.borrow().as_slice(), [pull_only]);
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/pull-only\n");
+}
+
+#[test]
 fn fetch_accepts_specific_repository_argument() {
     // Verifies: A positional project key fetches that repository with normal single-repo behavior.
     let workspace = TestWorkspace::new();

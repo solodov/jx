@@ -638,7 +638,7 @@ pub(super) fn cli() -> ClapCommand {
                     "Fetch origin, or initialize/create the configured repository, then push bookmark state",
                 )
                 .long_about(
-                    "Fetch origin, or initialize/create the configured repository, then push bookmark state.\n\nWith --all, sync every eligible primary repository from configured layout roots without prompting. A repository is eligible only when it already has a GitHub origin, GitHub origin is not ahead or diverged, and the token has origin push access. Repositories that need a pull or lack push access are skipped.",
+                    "Fetch origin, or initialize/create the configured repository, then push bookmark state.\n\nWith --all, sync every eligible primary repository from configured layout roots without prompting. A repository is eligible when it already has a GitHub origin, the token has origin push access, and the origin is not diverged. Pull-only repositories are synced only when the working copy is the empty jj child of origin trunk; repositories with local work that need a pull are skipped.",
                 )
                 .arg(sync_all_arg())
                 .arg(repository_arg_definition()),

@@ -886,9 +886,11 @@ fn try_global_sync_for_repository(
             }));
         }
         (true, false) => {
-            return Ok(GlobalSyncOutcome::Skipped(
-                GlobalSyncSkipReason::PullNeeded { commits: pull },
-            ));
+            if !services.global_fetch_ready(&context)? {
+                return Ok(GlobalSyncOutcome::Skipped(
+                    GlobalSyncSkipReason::PullNeeded { commits: pull },
+                ));
+            }
         }
         (false, _) => {}
     }

@@ -165,9 +165,10 @@ fn sync_help_explains_fetch_then_push_without_loading_repo() {
     ));
     assert!(stdout.contains("--all"));
     assert!(stdout.contains("sync every eligible primary repository"));
-    assert!(stdout.contains("GitHub origin is not ahead or"));
-    assert!(stdout.contains("diverged"));
     assert!(stdout.contains("token has origin push access"));
+    assert!(stdout.contains("origin is not diverged"));
+    assert!(stdout.contains("Pull-only repositories are synced only when"));
+    assert!(stdout.contains("empty jj child of origin trunk"));
     assert!(!stdout.contains("current workspace is safe for global mutation"));
     assert!(output.stderr.is_empty());
 }
