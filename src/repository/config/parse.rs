@@ -490,7 +490,7 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
     for key in table.keys() {
         if !matches!(
             key.as_str(),
-            "advance_trunk" | "reviewers" | "reviewer_rules" | "rules"
+            "advance_trunk" | "reviewers" | "reviewer_rules" | "workspace_shared_paths" | "rules"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -542,7 +542,7 @@ fn parse_repo_rule(
     for key in table.keys() {
         if !matches!(
             key.as_str(),
-            "repo" | "advance_trunk" | "reviewers" | "reviewer_rules"
+            "repo" | "advance_trunk" | "reviewers" | "reviewer_rules" | "workspace_shared_paths"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -579,12 +579,54 @@ fn parse_repo_policy(
         })
         .transpose()?
         .unwrap_or_default();
+    let workspace_shared_paths = table
+        .get("workspace_shared_paths")
+        .map(|value| {
+            parse_workspace_shared_paths(
+                file,
+                &format!("{key_prefix}.workspace_shared_paths"),
+                value,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(RepoPolicyConfig {
         advance_trunk,
         reviewers,
         reviewer_rules,
+        workspace_shared_paths,
     })
+}
+
+fn parse_workspace_shared_paths(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<String>, RepositoryError> {
+    let Some(paths) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of path strings"),
+        });
+    };
+
+    let mut normalized = Vec::new();
+    let mut seen = BTreeSet::new();
+    for path in paths {
+        let Some(path) = path.as_str() else {
+            return Err(RepositoryError::InvalidConfig {
+                file: file.to_owned(),
+                message: format!("`{key}` must contain only strings"),
+            });
+        };
+        let path = normalize_workspace_shared_path(file, key, path)?;
+        if seen.insert(path.clone()) {
+            normalized.push(path);
+        }
+    }
+
+    Ok(normalized)
 }
 
 fn validate_repo_rule_pattern(file: &str, key: &str, pattern: &str) -> Result<(), RepositoryError> {

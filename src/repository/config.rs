@@ -138,6 +138,7 @@ impl WorkflowConfig {
 
     fn validate(&self) -> Result<(), RepositoryError> {
         self.layout.validate()?;
+        self.repo.validate()?;
         self.shell.validate()?;
 
         if let Some(default_tool) = &self.diff.default_tool {
@@ -208,7 +209,7 @@ pub enum RepositoryError {
         source: toml::de::Error,
     },
     #[error(
-        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[[repo.rules]]`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes and hooks are not configurable."
+        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes and hooks are not configurable."
     )]
     UnsupportedConfigKey { file: String, key: String },
     #[error("Invalid workflow config `{file}`: {message}")]

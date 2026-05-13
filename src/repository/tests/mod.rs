@@ -551,6 +551,152 @@ fn reviewer_rules_ignore_other_repos_and_unmatched_files() {
 }
 
 #[test]
+fn workspace_shared_paths_compose_normalize_and_deduplicate_for_matching_repo() {
+    // Verifies: Effective shared workspace paths preserve policy order after normalization and dedupe.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".config/jx/00-base.toml",
+        r#"
+[repo]
+workspace_shared_paths = [" .pi ", "./tools//state", ".pi"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+workspace_shared_paths = [" .agent/state "]
+
+[[repo.rules]]
+repo = "other-owner/*"
+workspace_shared_paths = ["ignored"]
+"#,
+    );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[repo]
+workspace_shared_paths = ["./.cache/jx", "tools/state"]
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+workspace_shared_paths = [".local", ".cache/jx"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+
+    assert_eq!(
+        context
+            .config
+            .repo
+            .workspace_shared_paths_for(&context.origin.github)
+            .expect("shared paths resolve"),
+        vec![".pi", "tools/state", ".cache/jx", ".agent/state", ".local"]
+    );
+}
+
+#[test]
+fn workspace_shared_paths_reject_invalid_path_shapes() {
+    // Verifies: Shared workspace path config accepts only normalized repo-relative paths.
+    let cases = [
+        ("[repo]\nworkspace_shared_paths = [\"\"]", "empty paths"),
+        (
+            "[repo]\nworkspace_shared_paths = [\"/absolute\"]",
+            "repo-relative",
+        ),
+        (
+            "[repo]\nworkspace_shared_paths = [\"../outside\"]",
+            "must not contain `..`",
+        ),
+        (
+            "[repo]\nworkspace_shared_paths = [\"foo/../bar\"]",
+            "must not contain `..`",
+        ),
+        ("[repo]\nworkspace_shared_paths = [\".\"]", "empty paths"),
+        (
+            "[repo]\nworkspace_shared_paths = [\"foo\\\\bar\"]",
+            "forward slash",
+        ),
+        (
+            "[repo]\nworkspace_shared_paths = [\"C:/absolute\"]",
+            "repo-relative",
+        ),
+    ];
+
+    for (contents, expected_message) in cases {
+        let workspace = TestWorkspace::new();
+        workspace.write_git_config(origin_config());
+        workspace.write_file(".jx.toml", contents);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+        let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
+
+        assert!(matches!(error, RepositoryError::InvalidConfig { .. }));
+        assert!(
+            error.to_string().contains(expected_message),
+            "{expected_message}: {error}"
+        );
+    }
+}
+
+#[test]
+fn workspace_shared_paths_reject_parent_child_overlaps() {
+    // Verifies: Shared workspace paths reject ambiguous parent/child ownership after dedupe.
+    let cases = [
+        "[repo]\nworkspace_shared_paths = [\"foo\", \"foo/bar\"]",
+        r#"
+[[repo.rules]]
+repo = "example-owner/*"
+workspace_shared_paths = ["foo", "foo/bar"]
+"#,
+    ];
+
+    for contents in cases {
+        let workspace = TestWorkspace::new();
+        workspace.write_git_config(origin_config());
+        workspace.write_file(".jx.toml", contents);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+        let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
+
+        assert!(matches!(error, RepositoryError::InvalidConfig { .. }));
+        assert!(
+            error.to_string().contains("overlapping paths"),
+            "overlap should be rejected: {error}"
+        );
+    }
+}
+
+#[test]
+fn workspace_shared_paths_reject_effective_parent_child_overlaps() {
+    // Verifies: Matching repo policy rejects overlaps across base and matching rule layers.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[repo]
+workspace_shared_paths = [".pi"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+workspace_shared_paths = [".pi/cache"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let error = context
+        .config
+        .repo
+        .workspace_shared_paths_for(&context.origin.github)
+        .expect_err("effective policy is rejected");
+
+    assert!(matches!(error, RepositoryError::InvalidConfig { .. }));
+    assert!(error.to_string().contains("overlapping paths"));
+}
+
+#[test]
 fn loads_global_config_file_symlinks() {
     // Verifies: Global config composition accepts symlinked top-level TOML files.
     let workspace = TestWorkspace::new();
