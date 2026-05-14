@@ -549,10 +549,6 @@ fn repository_environment(
     Ok(environment.with_current_dir(repository.root))
 }
 
-fn workspace_name_for_task(name: &str, task_id: Option<&str>) -> String {
-    task_id.map_or_else(|| name.to_owned(), |task_id| format!("{task_id}-{name}"))
-}
-
 pub(super) fn display_path(path: &Path, environment: &RuntimeEnvironment) -> String {
     if let Some(home) = environment.home_dir() {
         if path == home {
@@ -576,41 +572,30 @@ fn handle_work(
     match request {
         WorkRequest::Add(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
-            let task_id = domain::normalize_task_id(request.task_id.as_deref())?;
-            let workspace_name = workspace_name_for_task(&request.name, task_id.as_deref());
-            validate_workspace_name(&workspace_name)?;
-            let identity = workspace_identity(&context, environment)?;
-            let options = WorkspaceAddOptions {
-                destination: context.config.layout.workspace_destination(
-                    &identity,
-                    &workspace_name,
-                    environment,
-                )?,
-                name: workspace_name,
-                revision: request.revision,
-            };
-            if options.destination.exists() {
+            let plan = plan_work_add(&request, &context, environment)?;
+            if plan.destination.exists() {
                 return Err(RepositoryError::WorkspacePathExists {
-                    path: options.destination,
+                    path: plan.destination.clone(),
                 }
                 .into());
             }
 
+            let options = plan.workspace_options();
             progress.status("Adding workspace…");
-            services.add_workspace(environment.current_dir(), &options)?;
-            if task_id.is_some() {
+            services.add_workspace(&plan.primary_checkout_root, &options)?;
+            if let Some(task_id) = &plan.task_id {
                 write_workspace_metadata(
-                    &options.destination,
+                    &plan.destination,
                     &WorkspaceMetadata {
-                        task_id: task_id.clone(),
+                        task_id: Some(task_id.clone()),
                     },
                 )?;
             }
             progress.finish();
-            let mut output = render_work_add(&options);
+            let mut output = render_work_add(&plan);
             if request.shell_cd_target {
                 output.push_str(SHELL_CD_TARGET_PREFIX);
-                output.push_str(&options.destination.display().to_string());
+                output.push_str(&plan.destination.display().to_string());
                 output.push('\n');
             }
             Ok(output)
@@ -717,26 +702,6 @@ fn handle_shell(
             Ok(shell_init_script(request.shell, &config.shell))
         }
     }
-}
-
-fn workspace_identity(
-    context: &LocalRepositoryContext,
-    environment: &RuntimeEnvironment,
-) -> Result<RepositoryIdentity, RepositoryError> {
-    if let Some(remote) = context
-        .remotes
-        .iter()
-        .find(|remote| remote.name == crate::repository::ORIGIN_REMOTE_NAME)
-    {
-        if let Ok(identity) = context.config.layout.identity_for_remote_url(&remote.url) {
-            return Ok(identity);
-        }
-    }
-
-    context
-        .config
-        .layout
-        .identity_for_workspace_root(&context.workspace_root, environment)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

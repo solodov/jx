@@ -507,8 +507,8 @@ fn clone_web_url(plan: &ClonePlan) -> String {
     )
 }
 
-pub(super) fn render_work_add(options: &WorkspaceAddOptions) -> String {
-    format!("Added workspace: {}\n", options.destination.display())
+pub(super) fn render_work_add(plan: &WorkAddPlan) -> String {
+    format!("Added workspace: {}\n", plan.destination.display())
 }
 
 pub(super) fn render_work_list(workspaces: &[WorkspaceEntry]) -> String {

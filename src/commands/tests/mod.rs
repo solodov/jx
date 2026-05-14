@@ -447,6 +447,116 @@ path = "{repo}"
 }
 
 #[test]
+fn work_add_from_managed_workspace_invokes_jj_from_primary_checkout() {
+    // Verifies: Workspace add planning runs jj from the primary checkout, not the current managed workspace.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/current");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let primary = workspace.home.join("projects/jx");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let services = FakeServices {
+        expected_workspace_add_current_dir: Some(primary),
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "work", "add", "fix"], &environment, &services)
+        .expect("workspace add succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("Added workspace: {}\n", expected_destination.display())
+    );
+}
+
+#[test]
+fn work_add_plan_splits_shared_path_sources_from_primary_checkout() {
+    // Verifies: Existing shared paths are linked from the primary checkout and missing paths are skipped.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/current");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[repo]
+workspace_shared_paths = [".pi", "nested/state", "missing/state"]
+"#,
+    );
+    workspace.write_home_file("projects/jx/.pi/config.toml", "pi state");
+    workspace.write_home_file("projects/jx/nested/state", "nested state");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let context = LocalRepositoryContext::discover(&environment).expect("context discovers");
+    let request = WorkAddRequest {
+        name: "fix".to_owned(),
+        revision: Some("main".to_owned()),
+        task_id: Some("ABC-123".to_owned()),
+        shell_cd_target: false,
+    };
+    let primary = workspace.home.join("projects/jx");
+    let destination = workspace.home.join("projects/.work/jx/ABC-123-fix");
+
+    let plan = plan_work_add(&request, &context, &environment).expect("plan builds");
+
+    assert_eq!(
+        plan.identity,
+        RepositoryIdentity {
+            source: "github".to_owned(),
+            host: "github.com".to_owned(),
+            owner: "example-owner".to_owned(),
+            repo: "jx".to_owned(),
+        }
+    );
+    assert_eq!(plan.primary_checkout_root, primary);
+    assert_eq!(plan.destination, destination);
+    assert_eq!(plan.workspace_name, "ABC-123-fix");
+    assert_eq!(plan.revision.as_deref(), Some("main"));
+    assert_eq!(plan.task_id.as_deref(), Some("ABC-123"));
+    assert_eq!(
+        plan.shared_paths.effective_paths,
+        vec![".pi", "nested/state", "missing/state"]
+    );
+    assert_eq!(
+        plan.shared_paths.link_candidates,
+        vec![
+            SharedWorkspacePathCandidate {
+                relative_path: ".pi".to_owned(),
+                source: primary.join(".pi"),
+                destination: destination.join(".pi"),
+            },
+            SharedWorkspacePathCandidate {
+                relative_path: "nested/state".to_owned(),
+                source: primary.join("nested/state"),
+                destination: destination.join("nested/state"),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.shared_paths.missing_sources,
+        vec![MissingSharedWorkspacePath {
+            relative_path: "missing/state".to_owned(),
+            source: primary.join("missing/state"),
+        }]
+    );
+}
+
+#[test]
 fn work_add_shell_cd_target_prints_new_workspace_path() {
     // Verifies: Shell integration can enter a newly added managed workspace after creation.
     let workspace = TestWorkspace::new_under("projects/jx");
@@ -4291,6 +4401,7 @@ struct FakeServices {
     expected_clone: Option<(String, PathBuf)>,
     expected_init_repository: Option<PathBuf>,
     init_repository_calls: std::cell::Cell<usize>,
+    expected_workspace_add_current_dir: Option<PathBuf>,
     expected_workspace_add: Option<WorkspaceAddOptions>,
     workspaces: Vec<WorkspaceEntry>,
     workspace_remove_current_dirs: std::cell::RefCell<Vec<PathBuf>>,
@@ -4474,6 +4585,7 @@ impl Default for FakeServices {
             expected_clone: None,
             expected_init_repository: None,
             init_repository_calls: std::cell::Cell::new(0),
+            expected_workspace_add_current_dir: None,
             expected_workspace_add: None,
             workspaces: vec![WorkspaceEntry {
                 name: "default".to_owned(),
@@ -4584,9 +4696,12 @@ impl CommandServices for FakeServices {
 
     fn add_workspace(
         &self,
-        _current_dir: &Path,
+        current_dir: &Path,
         options: &WorkspaceAddOptions,
     ) -> Result<(), JjError> {
+        if let Some(expected) = &self.expected_workspace_add_current_dir {
+            assert_eq!(current_dir, expected);
+        }
         if let Some(expected) = &self.expected_workspace_add {
             assert_eq!(options, expected);
         }

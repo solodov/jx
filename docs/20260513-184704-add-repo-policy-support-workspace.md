@@ -3,8 +3,8 @@ id: 20260513-184704-add-repo-policy-support-workspace
 title: Add repo-policy support for `workspace_shared_paths`, starting with `.pi`, so managed `jx work`
 status: implementing
 created: 2026-05-13
-updated: 2026-05-13
-currentPhase: 1
+updated: 2026-05-14
+currentPhase: 2
 externalRef: 
 origin: 
 ---
@@ -23,7 +23,7 @@ Post-create symlink failures do not trigger rollback. Once `jj workspace add` su
 
 ## Phases
 
-- [ ] 1. Repo-policy config surface and validation
+- [x] 1. Repo-policy config surface and validation
 - [ ] 2. Work-add planning from the primary checkout
 - [ ] 3. Tracked-path preflight at the jj boundary
 - [ ] 4. Workspace creation and post-create setup boundary

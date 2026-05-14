@@ -16,11 +16,160 @@ pub(super) struct WorkRepository {
     pub(super) root: PathBuf,
 }
 
+/// Complete command plan for adding a managed jj workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkAddPlan {
+    pub(super) identity: RepositoryIdentity,
+    pub(super) primary_checkout_root: PathBuf,
+    pub(super) destination: PathBuf,
+    pub(super) workspace_name: String,
+    pub(super) revision: Option<String>,
+    pub(super) task_id: Option<String>,
+    pub(super) shared_paths: PlannedSharedWorkspacePaths,
+}
+
+impl WorkAddPlan {
+    pub(super) fn workspace_options(&self) -> WorkspaceAddOptions {
+        WorkspaceAddOptions {
+            name: self.workspace_name.clone(),
+            destination: self.destination.clone(),
+            revision: self.revision.clone(),
+        }
+    }
+}
+
+/// Effective shared-path policy split by source existence in the primary checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlannedSharedWorkspacePaths {
+    pub(super) effective_paths: Vec<String>,
+    pub(super) link_candidates: Vec<SharedWorkspacePathCandidate>,
+    pub(super) missing_sources: Vec<MissingSharedWorkspacePath>,
+}
+
+/// One configured shared path that exists in the primary checkout and can be linked later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SharedWorkspacePathCandidate {
+    pub(super) relative_path: String,
+    pub(super) source: PathBuf,
+    pub(super) destination: PathBuf,
+}
+
+/// One configured shared path skipped because the primary checkout has no source entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MissingSharedWorkspacePath {
+    pub(super) relative_path: String,
+    pub(super) source: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DiscoveredWorkLocation {
     identity: RepositoryIdentity,
     workspace: Option<String>,
     root: PathBuf,
+}
+
+/// Builds the full work-add plan before crossing jj or filesystem mutation boundaries.
+pub(super) fn plan_work_add(
+    request: &WorkAddRequest,
+    context: &LocalRepositoryContext,
+    environment: &RuntimeEnvironment,
+) -> Result<WorkAddPlan, CommandError> {
+    let task_id = domain::normalize_task_id(request.task_id.as_deref())?;
+    let workspace_name = workspace_name_for_task(&request.name, task_id.as_deref());
+    validate_workspace_name(&workspace_name)?;
+    let identity = workspace_identity(context, environment)?;
+    let primary_checkout_root = context
+        .config
+        .layout
+        .project_destination(&identity, environment)?;
+    let destination =
+        context
+            .config
+            .layout
+            .workspace_destination(&identity, &workspace_name, environment)?;
+    let effective_paths = context
+        .config
+        .repo
+        .workspace_shared_paths_for(&identity.github_repository())?;
+    let shared_paths =
+        plan_shared_workspace_paths(&primary_checkout_root, &destination, effective_paths);
+
+    Ok(WorkAddPlan {
+        identity,
+        primary_checkout_root,
+        destination,
+        workspace_name,
+        revision: request.revision.clone(),
+        task_id,
+        shared_paths,
+    })
+}
+
+fn workspace_name_for_task(name: &str, task_id: Option<&str>) -> String {
+    task_id.map_or_else(|| name.to_owned(), |task_id| format!("{task_id}-{name}"))
+}
+
+pub(super) fn workspace_identity(
+    context: &LocalRepositoryContext,
+    environment: &RuntimeEnvironment,
+) -> Result<RepositoryIdentity, RepositoryError> {
+    if let Some(remote) = context
+        .remotes
+        .iter()
+        .find(|remote| remote.name == crate::repository::ORIGIN_REMOTE_NAME)
+    {
+        if let Ok(identity) = context.config.layout.identity_for_remote_url(&remote.url) {
+            return Ok(identity);
+        }
+    }
+
+    context
+        .config
+        .layout
+        .identity_for_workspace_root(&context.workspace_root, environment)
+}
+
+fn plan_shared_workspace_paths(
+    primary_checkout_root: &Path,
+    destination_root: &Path,
+    effective_paths: Vec<String>,
+) -> PlannedSharedWorkspacePaths {
+    let mut link_candidates = Vec::new();
+    let mut missing_sources = Vec::new();
+
+    for relative_path in &effective_paths {
+        let relative = repo_relative_path(relative_path);
+        let source = primary_checkout_root.join(&relative);
+        if shared_path_source_exists(&source) {
+            link_candidates.push(SharedWorkspacePathCandidate {
+                relative_path: relative_path.clone(),
+                source,
+                destination: destination_root.join(relative),
+            });
+        } else {
+            missing_sources.push(MissingSharedWorkspacePath {
+                relative_path: relative_path.clone(),
+                source,
+            });
+        }
+    }
+
+    PlannedSharedWorkspacePaths {
+        effective_paths,
+        link_candidates,
+        missing_sources,
+    }
+}
+
+fn shared_path_source_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn repo_relative_path(path: &str) -> PathBuf {
+    path.split('/').fold(PathBuf::new(), |mut relative, part| {
+        relative.push(part);
+        relative
+    })
 }
 
 /// Builds the global work-location index used by shell completion and path resolution.
