@@ -44,6 +44,40 @@ impl WorkAddPlan {
     }
 }
 
+/// Post-create setup failure for an already-created managed workspace.
+#[derive(Debug, Error)]
+#[error("{source}")]
+pub(super) struct WorkAddSetupError {
+    workspace: String,
+    destination: PathBuf,
+    #[source]
+    source: Box<WorkAddSetupErrorSource>,
+}
+
+impl WorkAddSetupError {
+    fn new(plan: &WorkAddPlan, source: impl Into<WorkAddSetupErrorSource>) -> Self {
+        Self {
+            workspace: plan.workspace_name.clone(),
+            destination: plan.destination.clone(),
+            source: Box::new(source.into()),
+        }
+    }
+
+    pub(super) fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    pub(super) fn destination(&self) -> &Path {
+        &self.destination
+    }
+}
+
+#[derive(Debug, Error)]
+enum WorkAddSetupErrorSource {
+    #[error(transparent)]
+    Repository(#[from] RepositoryError),
+}
+
 /// Effective shared-path policy split by source existence in the primary checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PlannedSharedWorkspacePaths {
@@ -109,6 +143,31 @@ pub(super) fn plan_work_add(
         task_id,
         shared_paths,
     })
+}
+
+/// Applies setup steps that happen only after jj has created the workspace.
+pub(super) fn apply_work_add_setup(plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> {
+    write_work_add_metadata(plan)?;
+    apply_shared_workspace_paths(plan)?;
+    Ok(())
+}
+
+fn write_work_add_metadata(plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> {
+    let Some(task_id) = &plan.task_id else {
+        return Ok(());
+    };
+
+    write_workspace_metadata(
+        &plan.destination,
+        &WorkspaceMetadata {
+            task_id: Some(task_id.clone()),
+        },
+    )
+    .map_err(|source| WorkAddSetupError::new(plan, source))
+}
+
+fn apply_shared_workspace_paths(_plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> {
+    Ok(())
 }
 
 fn workspace_name_for_task(name: &str, task_id: Option<&str>) -> String {

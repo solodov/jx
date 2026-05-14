@@ -107,6 +107,22 @@ pub enum CommandError {
     RepositoryCreationConfirmation(#[from] RepositoryCreationConfirmationError),
     #[error(transparent)]
     WorkspaceRemoveConfirmation(#[from] WorkspaceRemoveConfirmationError),
+    #[error("Workspace `{workspace}` was created at {destination}, but post-create setup failed: {message}. The workspace was not rolled back; repair or delete it manually.")]
+    WorkAddSetup {
+        workspace: String,
+        destination: PathBuf,
+        message: String,
+    },
+}
+
+impl From<WorkAddSetupError> for CommandError {
+    fn from(error: WorkAddSetupError) -> Self {
+        Self::WorkAddSetup {
+            workspace: error.workspace().to_owned(),
+            destination: error.destination().to_path_buf(),
+            message: error.to_string(),
+        }
+    }
 }
 
 /// Runs command orchestration using process arguments and environment.

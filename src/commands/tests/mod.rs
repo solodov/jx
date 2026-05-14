@@ -607,6 +607,92 @@ path = "{repo}"
 }
 
 #[test]
+fn work_add_creation_failure_stops_before_metadata_setup() {
+    // Verifies: If jj workspace creation fails, post-create setup is not attempted.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/ABC-123-fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "ABC-123-fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: Vec::new(),
+        }),
+        workspace_add_error: Some("simulated creation failure".to_owned()),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "add", "fix", "--task-id", "ABC-123"],
+        &environment,
+        &services,
+    )
+    .expect_err("workspace add fails");
+
+    assert!(matches!(
+        error,
+        CommandError::Jj(JjError::WorkspaceAddFailed { status }) if status == "simulated creation failure"
+    ));
+    assert!(!expected_destination.join(".jx/workspace.toml").exists());
+}
+
+#[test]
+fn work_add_post_create_setup_failure_reports_without_rollback() {
+    // Verifies: Setup failures after jj creation surface an error and leave the created workspace in place.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/ABC-123-fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "ABC-123-fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: Vec::new(),
+        }),
+        workspace_add_metadata_blocker: Some(expected_destination.clone()),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "add", "fix", "--task-id", "ABC-123"],
+        &environment,
+        &services,
+    )
+    .expect_err("post-create setup fails");
+
+    assert!(matches!(
+        error,
+        CommandError::WorkAddSetup { ref workspace, ref destination, ref message }
+            if workspace == "ABC-123-fix"
+                && destination == &expected_destination
+                && message.contains("Could not write workspace metadata")
+    ));
+    assert!(expected_destination.is_dir());
+    assert!(expected_destination.join(".jx").is_file());
+}
+
+#[test]
 fn work_add_task_id_prefixes_workspace_name_and_writes_metadata() {
     // Verifies: Task workspaces use task-visible names while metadata remains the source of truth.
     let workspace = TestWorkspace::new_under("projects/jx");
@@ -4411,6 +4497,8 @@ struct FakeServices {
     init_repository_calls: std::cell::Cell<usize>,
     expected_workspace_add_current_dir: Option<PathBuf>,
     expected_workspace_add: Option<WorkspaceAddOptions>,
+    workspace_add_error: Option<String>,
+    workspace_add_metadata_blocker: Option<PathBuf>,
     workspaces: Vec<WorkspaceEntry>,
     workspace_remove_current_dirs: std::cell::RefCell<Vec<PathBuf>>,
     workspace_removes: std::cell::RefCell<Vec<WorkspaceRemoveOptions>>,
@@ -4595,6 +4683,8 @@ impl Default for FakeServices {
             init_repository_calls: std::cell::Cell::new(0),
             expected_workspace_add_current_dir: None,
             expected_workspace_add: None,
+            workspace_add_error: None,
+            workspace_add_metadata_blocker: None,
             workspaces: vec![WorkspaceEntry {
                 name: "default".to_owned(),
                 root: PathBuf::from("/workspace"),
@@ -4712,6 +4802,15 @@ impl CommandServices for FakeServices {
         }
         if let Some(expected) = &self.expected_workspace_add {
             assert_eq!(options, expected);
+        }
+        if let Some(status) = &self.workspace_add_error {
+            return Err(JjError::WorkspaceAddFailed {
+                status: status.clone(),
+            });
+        }
+        if let Some(destination) = &self.workspace_add_metadata_blocker {
+            fs::create_dir_all(destination).expect("create simulated workspace destination");
+            fs::write(destination.join(".jx"), "not a directory").expect("create metadata blocker");
         }
         Ok(())
     }

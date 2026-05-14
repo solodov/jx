@@ -9,10 +9,10 @@ This file tracks plans managed in the markdown-backed layout.
 ### [20260513-184704-add-repo-policy-support-workspace](./20260513-184704-add-repo-policy-support-workspace.md)
 - title: Add repo-policy support for `workspace_shared_paths`, starting with `.pi`, so managed `jx work`
 - status: implementing
-- currentPhase: 3
-- currentPhaseTitle: Tracked-path preflight at the jj boundary
-- nextPhase: 4
-- nextPhaseTitle: Workspace creation and post-create setup boundary
+- currentPhase: 4
+- currentPhaseTitle: Workspace creation and post-create setup boundary
+- nextPhase: 5
+- nextPhaseTitle: Shared-path symlink application
 - totalPhases: 6
 - updated: 2026-05-14
 

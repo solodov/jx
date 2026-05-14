@@ -576,14 +576,7 @@ fn handle_work(
             let options = plan.workspace_options();
             progress.status("Adding workspace…");
             services.add_workspace(&plan.primary_checkout_root, &options)?;
-            if let Some(task_id) = &plan.task_id {
-                write_workspace_metadata(
-                    &plan.destination,
-                    &WorkspaceMetadata {
-                        task_id: Some(task_id.clone()),
-                    },
-                )?;
-            }
+            apply_work_add_setup(&plan)?;
             progress.finish();
             let mut output = render_work_add(&plan);
             if request.shell_cd_target {
