@@ -88,17 +88,30 @@ match `owner/repo` globs:
 ```toml
 [repo]
 reviewers = ["example-reviewer", "ExampleOrg/platform"]
+workspace_shared_paths = [".pi"]
 
 [[repo.rules]]
 repo = "example-owner/*"
 advance_trunk = true
 reviewers = ["owner-reviewer"]
+workspace_shared_paths = [".local-tool-state"]
 ```
 
 `advance_trunk` makes `jx sync` move the local trunk bookmark to the newest
 contiguous stack commit with both changes and a non-empty description before
 pushing tracked bookmarks, then leaves an empty working-copy change on top when
 needed.
+
+`workspace_shared_paths` lists repo-relative local-only paths that managed
+`jx work add` workspaces should symlink from the primary checkout after jj
+creates the workspace. This is intended for ignored checkout state such as `.pi`.
+Paths compose through base repo policy and matching repo rules, normalize in
+config order, and dedupe exact duplicates. Empty, absolute, escaping, and
+parent/child-overlapping paths are rejected. Missing sources in the primary
+checkout are skipped. Existing sources must be untracked in the selected checkout
+at the exact configured path; tracked parent directories are allowed for nested
+paths. If post-create setup fails, `jx` reports the failure without rolling back
+the created jj workspace, and shell integration does not enter it.
 
 Reviewers may be GitHub users or teams written as `org/team`.
 

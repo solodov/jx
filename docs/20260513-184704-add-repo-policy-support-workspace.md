@@ -4,7 +4,7 @@ title: Add repo-policy support for `workspace_shared_paths`, starting with `.pi`
 status: implementing
 created: 2026-05-13
 updated: 2026-05-14
-currentPhase: 5
+currentPhase: 6
 externalRef: 
 origin: 
 ---
@@ -27,7 +27,7 @@ Post-create symlink failures do not trigger rollback. Once `jj workspace add` su
 - [x] 2. Work-add planning from the primary checkout
 - [x] 3. Tracked-path preflight at the jj boundary
 - [x] 4. Workspace creation and post-create setup boundary
-- [ ] 5. Shared-path symlink application
+- [x] 5. Shared-path symlink application
 - [ ] 6. Shell integration, docs, and tests
 
 ## Phase Details

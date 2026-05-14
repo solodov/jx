@@ -194,10 +194,12 @@ path = "{repo}"
 
 [repo]
 reviewers = ["example-reviewer", "ExampleOrg/platform"]
+workspace_shared_paths = [".pi"]
 
 [[repo.rules]]
 repo = "example-owner/*"
 advance_trunk = true
+workspace_shared_paths = [".local-tool-state"]
 
 [[repo.rules.reviewer_rules]]
 paths = ["foo/bar/**", "bar/bux/*.py"]
@@ -227,6 +229,10 @@ Notes:
 - Layout rules place clones and managed workspaces by normalized source, owner,
   and repo identity.
 - Repo rules match the fixed `origin` GitHub repo with `owner/repo` globs.
+- `workspace_shared_paths` symlink existing local-only paths such as `.pi` from
+  the primary checkout into managed `jx work add` workspaces; missing sources
+  are skipped, and configured paths must be untracked at the exact selected
+  checkout path.
 - Reviewers may be GitHub users or teams written as `org/team`.
 - Reviewer rules match changed-file globs within their repo policy.
 - Diff tools are selected by name; `external` tools compare jj's generated

@@ -856,6 +856,53 @@ workspace_shared_paths = [".pi"]
 }
 
 #[test]
+fn work_add_shell_cd_target_setup_failure_returns_error_without_cd_target() {
+    // Verifies: Shell integration receives no hidden cd target when post-create setup fails.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[repo]
+workspace_shared_paths = [".pi"]
+"#,
+    );
+    workspace.write_file(".pi/settings.toml", "pi state");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let existing_shared_path = expected_destination.join(".pi");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: vec![".pi".to_owned()],
+        }),
+        workspace_add_existing_shared_path: Some(existing_shared_path),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "add", "--shell-cd-target", "fix"],
+        &environment,
+        &services,
+    )
+    .expect_err("shared path setup fails");
+
+    assert!(matches!(
+        error,
+        CommandError::WorkAddSetup { ref workspace, ref destination, .. }
+            if workspace == "fix" && destination == &expected_destination
+    ));
+    assert!(!error.to_string().contains(SHELL_CD_TARGET_PREFIX));
+}
+
+#[test]
 fn work_add_task_id_prefixes_workspace_name_and_writes_metadata() {
     // Verifies: Task workspaces use task-visible names while metadata remains the source of truth.
     let workspace = TestWorkspace::new_under("projects/jx");
@@ -1217,6 +1264,9 @@ zoxide = "auto"
     assert!(result.stdout.contains("command jx work root \"$1\""));
     assert!(result.stdout.contains("\"$2\" == \"trunk\""));
     assert!(result.stdout.contains("\"$2\" == \"delete\""));
+    assert!(result
+        .stdout
+        .contains("if (( status == 0 )) && [[ -n \"$cd_target\" ]]"));
     assert!(result
         .stdout
         .contains("command jx work complete --prefix \"$cur\""));
