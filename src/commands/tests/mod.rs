@@ -692,6 +692,169 @@ path = "{repo}"
     assert!(expected_destination.join(".jx").is_file());
 }
 
+#[cfg(unix)]
+#[test]
+fn work_add_links_shared_paths_and_creates_nested_parents() {
+    // Verifies: Existing shared-path candidates are symlinked into the created workspace.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[repo]
+workspace_shared_paths = [".pi", "nested/state", ".local-link", "missing/state"]
+"#,
+    );
+    workspace.write_file(".pi/settings.toml", "pi state");
+    workspace.write_file("nested/state", "nested state");
+    workspace.write_file("real-target", "real state");
+    std::os::unix::fs::symlink(
+        workspace.path().join("real-target"),
+        workspace.path().join(".local-link"),
+    )
+    .expect("create source symlink");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: vec![
+                ".pi".to_owned(),
+                "nested/state".to_owned(),
+                ".local-link".to_owned(),
+            ],
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "work", "add", "fix"], &environment, &services)
+        .expect("workspace add succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("Added workspace: {}\n", expected_destination.display())
+    );
+    assert_eq!(
+        fs::read_link(expected_destination.join(".pi")).expect(".pi symlink"),
+        workspace.path().join(".pi")
+    );
+    assert_eq!(
+        fs::read_link(expected_destination.join("nested/state")).expect("nested symlink"),
+        workspace.path().join("nested/state")
+    );
+    assert_eq!(
+        fs::read_link(expected_destination.join(".local-link")).expect("source symlink linked"),
+        workspace.path().join(".local-link")
+    );
+    assert!(expected_destination.join("nested").is_dir());
+    assert!(!expected_destination.join("missing/state").exists());
+}
+
+#[test]
+fn work_add_shared_path_setup_reports_blocked_nested_parent() {
+    // Verifies: Nested shared-path parent creation reports filesystem blockers clearly.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[repo]
+workspace_shared_paths = ["nested/state"]
+"#,
+    );
+    workspace.write_file("nested/state", "nested state");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let parent_blocker = expected_destination.join("nested");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: vec!["nested/state".to_owned()],
+        }),
+        workspace_add_existing_shared_path: Some(parent_blocker.clone()),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(["jx", "work", "add", "fix"], &environment, &services)
+        .expect_err("shared path setup fails");
+
+    assert!(matches!(
+        error,
+        CommandError::WorkAddSetup { ref workspace, ref destination, ref message }
+            if workspace == "fix"
+                && destination == &expected_destination
+                && message.contains("create parent directories")
+                && message.contains("nested/state")
+    ));
+    assert_eq!(
+        fs::read_to_string(&parent_blocker).expect("parent blocker remains"),
+        "existing content"
+    );
+}
+
+#[test]
+fn work_add_shared_path_setup_failure_keeps_workspace_and_existing_content() {
+    // Verifies: Shared-path setup fails conservatively without rollback or overwrite.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[repo]
+workspace_shared_paths = [".pi"]
+"#,
+    );
+    workspace.write_file(".pi/settings.toml", "pi state");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let existing_shared_path = expected_destination.join(".pi");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: vec![".pi".to_owned()],
+        }),
+        workspace_add_existing_shared_path: Some(existing_shared_path.clone()),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(["jx", "work", "add", "fix"], &environment, &services)
+        .expect_err("shared path setup fails");
+
+    assert!(matches!(
+        error,
+        CommandError::WorkAddSetup { ref workspace, ref destination, ref message }
+            if workspace == "fix"
+                && destination == &expected_destination
+                && message.contains("destination already exists")
+    ));
+    assert!(expected_destination.is_dir());
+    assert_eq!(
+        fs::read_to_string(&existing_shared_path).expect("existing content remains"),
+        "existing content"
+    );
+}
+
 #[test]
 fn work_add_task_id_prefixes_workspace_name_and_writes_metadata() {
     // Verifies: Task workspaces use task-visible names while metadata remains the source of truth.
@@ -4499,6 +4662,7 @@ struct FakeServices {
     expected_workspace_add: Option<WorkspaceAddOptions>,
     workspace_add_error: Option<String>,
     workspace_add_metadata_blocker: Option<PathBuf>,
+    workspace_add_existing_shared_path: Option<PathBuf>,
     workspaces: Vec<WorkspaceEntry>,
     workspace_remove_current_dirs: std::cell::RefCell<Vec<PathBuf>>,
     workspace_removes: std::cell::RefCell<Vec<WorkspaceRemoveOptions>>,
@@ -4685,6 +4849,7 @@ impl Default for FakeServices {
             expected_workspace_add: None,
             workspace_add_error: None,
             workspace_add_metadata_blocker: None,
+            workspace_add_existing_shared_path: None,
             workspaces: vec![WorkspaceEntry {
                 name: "default".to_owned(),
                 root: PathBuf::from("/workspace"),
@@ -4811,6 +4976,12 @@ impl CommandServices for FakeServices {
         if let Some(destination) = &self.workspace_add_metadata_blocker {
             fs::create_dir_all(destination).expect("create simulated workspace destination");
             fs::write(destination.join(".jx"), "not a directory").expect("create metadata blocker");
+        }
+        if let Some(path) = &self.workspace_add_existing_shared_path {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create existing shared-path parent");
+            }
+            fs::write(path, "existing content").expect("create existing shared path");
         }
         Ok(())
     }

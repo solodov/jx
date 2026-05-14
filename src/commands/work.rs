@@ -76,6 +76,14 @@ impl WorkAddSetupError {
 enum WorkAddSetupErrorSource {
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+    #[error("could not {action} shared workspace path `{relative_path}` at {path}: {source}")]
+    SharedPathIo {
+        action: &'static str,
+        relative_path: String,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Effective shared-path policy split by source existence in the primary checkout.
@@ -166,8 +174,97 @@ fn write_work_add_metadata(plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> 
     .map_err(|source| WorkAddSetupError::new(plan, source))
 }
 
-fn apply_shared_workspace_paths(_plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> {
+fn apply_shared_workspace_paths(plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> {
+    for candidate in &plan.shared_paths.link_candidates {
+        apply_shared_workspace_path(plan, candidate)?;
+    }
     Ok(())
+}
+
+fn apply_shared_workspace_path(
+    plan: &WorkAddPlan,
+    candidate: &SharedWorkspacePathCandidate,
+) -> Result<(), WorkAddSetupError> {
+    if let Some(parent) = candidate.destination.parent() {
+        fs::create_dir_all(parent).map_err(|source| {
+            shared_path_setup_error(
+                plan,
+                candidate,
+                "create parent directories for",
+                parent.to_path_buf(),
+                source,
+            )
+        })?;
+    }
+
+    match fs::symlink_metadata(&candidate.destination) {
+        Ok(_) => {
+            return Err(shared_path_setup_error(
+                plan,
+                candidate,
+                "create symlink for",
+                candidate.destination.clone(),
+                io::Error::new(io::ErrorKind::AlreadyExists, "destination already exists"),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(shared_path_setup_error(
+                plan,
+                candidate,
+                "inspect destination for",
+                candidate.destination.clone(),
+                source,
+            ));
+        }
+    }
+
+    symlink_shared_workspace_path(&candidate.source, &candidate.destination).map_err(|source| {
+        shared_path_setup_error(
+            plan,
+            candidate,
+            "create symlink for",
+            candidate.destination.clone(),
+            source,
+        )
+    })
+}
+
+fn shared_path_setup_error(
+    plan: &WorkAddPlan,
+    candidate: &SharedWorkspacePathCandidate,
+    action: &'static str,
+    path: PathBuf,
+    source: io::Error,
+) -> WorkAddSetupError {
+    WorkAddSetupError::new(
+        plan,
+        WorkAddSetupErrorSource::SharedPathIo {
+            action,
+            relative_path: candidate.relative_path.clone(),
+            path,
+            source,
+        },
+    )
+}
+
+fn symlink_shared_workspace_path(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, destination)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(source, destination)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "symlink creation is unsupported on this platform",
+        ))
+    }
 }
 
 fn workspace_name_for_task(name: &str, task_id: Option<&str>) -> String {
