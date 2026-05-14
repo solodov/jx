@@ -28,6 +28,8 @@ pub fn run_jj_workspace_add(
     current_dir: &Path,
     options: &WorkspaceAddOptions,
 ) -> Result<(), JjError> {
+    preflight_workspace_add(current_dir, options)?;
+
     if let Some(parent) = options.destination.parent() {
         fs::create_dir_all(parent).map_err(|source| JjError::WorkspaceIo {
             action: "create workspace parent",
@@ -65,6 +67,90 @@ pub fn run_jj_workspace_add(
             status: process_failure_summary(output.status, &output.stderr),
         })
     }
+}
+
+fn preflight_workspace_add(
+    current_dir: &Path,
+    options: &WorkspaceAddOptions,
+) -> Result<(), JjError> {
+    match fs::symlink_metadata(&options.destination) {
+        Ok(_) => {
+            return Err(JjError::WorkspacePathExists {
+                path: options.destination.clone(),
+            });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(JjError::WorkspaceIo {
+                action: "inspect workspace path",
+                path: options.destination.clone(),
+                source,
+            });
+        }
+    }
+
+    validate_workspace_shared_paths_untracked(
+        current_dir,
+        options.revision.as_deref(),
+        &options.shared_paths,
+    )
+}
+
+pub(super) fn validate_workspace_shared_paths_untracked(
+    current_dir: &Path,
+    revision: Option<&str>,
+    shared_paths: &[String],
+) -> Result<(), JjError> {
+    if shared_paths.is_empty() {
+        return Ok(());
+    }
+
+    let workspace_root = find_jj_workspace_root(current_dir)?;
+    let workspace = JjWorkspace::load(workspace_root)?;
+    let target = match revision {
+        Some(revision) => workspace.resolve_single_revision(revision, "jx work add")?,
+        None => workspace.current_commit()?,
+    };
+    let tracked_paths = tracked_workspace_shared_paths(&target, shared_paths)?;
+
+    if tracked_paths.is_empty() {
+        Ok(())
+    } else {
+        Err(JjError::WorkspaceSharedPathsTracked {
+            paths: tracked_paths,
+        })
+    }
+}
+
+fn tracked_workspace_shared_paths(
+    target: &Commit,
+    shared_paths: &[String],
+) -> Result<Vec<String>, JjError> {
+    pollster::block_on(async {
+        let target_tree = target.tree();
+        let mut tracked_paths = Vec::new();
+
+        for path in shared_paths {
+            let repo_path = RepoPath::from_internal_string(path).map_err(|source| {
+                JjError::WorkspaceSharedPathInvalid {
+                    path: path.clone(),
+                    message: source.to_string(),
+                }
+            })?;
+            let value =
+                target_tree
+                    .path_value(repo_path)
+                    .await
+                    .map_err(|source| JjError::Backend {
+                        message: source.to_string(),
+                    })?;
+            if value.is_present() {
+                tracked_paths.push(path.clone());
+            }
+        }
+
+        Ok(tracked_paths)
+    })
 }
 
 /// Returns the active jj workspace without resolving any other workspace paths.

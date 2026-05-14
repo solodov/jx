@@ -573,13 +573,6 @@ fn handle_work(
         WorkRequest::Add(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
             let plan = plan_work_add(&request, &context, environment)?;
-            if plan.destination.exists() {
-                return Err(RepositoryError::WorkspacePathExists {
-                    path: plan.destination.clone(),
-                }
-                .into());
-            }
-
             let options = plan.workspace_options();
             progress.status("Adding workspace…");
             services.add_workspace(&plan.primary_checkout_root, &options)?;

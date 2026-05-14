@@ -429,6 +429,7 @@ path = "{repo}"
             name: "fix".to_owned(),
             destination: expected_destination.clone(),
             revision: Some("main".to_owned()),
+            shared_paths: Vec::new(),
         }),
         ..FakeServices::default()
     };
@@ -469,6 +470,7 @@ path = "{repo}"
             name: "fix".to_owned(),
             destination: expected_destination.clone(),
             revision: None,
+            shared_paths: Vec::new(),
         }),
         ..FakeServices::default()
     };
@@ -554,6 +556,10 @@ workspace_shared_paths = [".pi", "nested/state", "missing/state"]
             source: primary.join("missing/state"),
         }]
     );
+    assert_eq!(
+        plan.workspace_options().shared_paths,
+        vec![".pi".to_owned(), "nested/state".to_owned()]
+    );
 }
 
 #[test]
@@ -577,6 +583,7 @@ path = "{repo}"
             name: "fix".to_owned(),
             destination: expected_destination.clone(),
             revision: None,
+            shared_paths: Vec::new(),
         }),
         ..FakeServices::default()
     };
@@ -620,6 +627,7 @@ path = "{repo}"
             name: "ABC-123-fix".to_owned(),
             destination: expected_destination.clone(),
             revision: None,
+            shared_paths: Vec::new(),
         }),
         ..FakeServices::default()
     };

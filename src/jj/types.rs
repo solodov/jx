@@ -21,6 +21,7 @@ pub struct WorkspaceAddOptions {
     pub name: String,
     pub destination: PathBuf,
     pub revision: Option<String>,
+    pub shared_paths: Vec<String>,
 }
 
 /// Request to forget a jj workspace, delete it, and prune empty managed parents.

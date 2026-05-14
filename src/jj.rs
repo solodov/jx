@@ -53,7 +53,7 @@ use jj_lib::{
     ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf},
     refs::{classify_ref_push_action, LocalAndRemoteRef, RefPushAction},
     repo::{MutableRepo, ReadonlyRepo, Repo as _, StoreFactories},
-    repo_path::RepoPathUiConverter,
+    repo_path::{RepoPath, RepoPathUiConverter},
     revset::{
         self, ResolvedRevsetExpression, RevsetDiagnostics, RevsetExpression, RevsetExtensions,
         RevsetParseContext, RevsetWorkspaceContext,
@@ -111,7 +111,10 @@ pub use workspace_management::{
     run_jj_workspace_add,
 };
 #[cfg(test)]
-use workspace_management::{remove_empty_workspace_dirs, workspace_names_from_jj_list};
+use workspace_management::{
+    remove_empty_workspace_dirs, validate_workspace_shared_paths_untracked,
+    workspace_names_from_jj_list,
+};
 
 const SHORT_COMMIT_ID_LEN: usize = 8;
 const GIT_BACKEND_NAME: &str = "git";

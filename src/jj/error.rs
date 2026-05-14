@@ -61,6 +61,12 @@ pub enum JjError {
     WorkspaceAddStart { source: io::Error },
     #[error("`jj workspace add` failed with {status}")]
     WorkspaceAddFailed { status: String },
+    #[error("Workspace path already exists: {path}")]
+    WorkspacePathExists { path: PathBuf },
+    #[error("Refusing to share tracked workspace paths in the selected checkout: {paths:?}")]
+    WorkspaceSharedPathsTracked { paths: Vec<String> },
+    #[error("Invalid shared workspace path `{path}`: {message}")]
+    WorkspaceSharedPathInvalid { path: String, message: String },
     #[error("Could not run `jj workspace list`: {source}")]
     WorkspaceListStart { source: io::Error },
     #[error("`jj workspace list` returned output that is not UTF-8: {source}")]

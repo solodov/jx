@@ -34,6 +34,12 @@ impl WorkAddPlan {
             name: self.workspace_name.clone(),
             destination: self.destination.clone(),
             revision: self.revision.clone(),
+            shared_paths: self
+                .shared_paths
+                .link_candidates
+                .iter()
+                .map(|candidate| candidate.relative_path.clone())
+                .collect(),
         }
     }
 }
