@@ -8,9 +8,9 @@ This file tracks plans managed in the markdown-backed layout.
 
 ### [20260513-184704-add-repo-policy-support-workspace](./20260513-184704-add-repo-policy-support-workspace.md)
 - title: Add repo-policy support for `workspace_shared_paths`, starting with `.pi`, so managed `jx work`
-- status: implementing
-- currentPhase: 6
-- currentPhaseTitle: Shell integration, docs, and tests
+- status: done
+- currentPhase: none
+- currentPhaseTitle: none
 - nextPhase: none
 - nextPhaseTitle: none
 - totalPhases: 6
