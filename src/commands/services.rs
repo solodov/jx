@@ -121,12 +121,23 @@ pub(super) trait CommandServices {
     /// Returns the authenticated GitHub login used for authored PR filters.
     fn authenticated_login(&self, token_source: &TokenSource) -> Result<String, WorkflowError>;
 
-    /// Lists local bookmark heads on the selected change or linear descendants, nearest first.
+    /// Lists local bookmark heads that can have associated pull requests.
+    fn pull_request_bookmarks(&self, context: &RepositoryContext) -> Result<Vec<String>, JjError>;
+
+    /// Lists PR bookmark heads for the selected change, commit selector, or exact local bookmark.
     fn pull_request_candidate_bookmarks(
         &self,
         context: &RepositoryContext,
-        revision: Option<&str>,
+        selector: Option<&str>,
     ) -> Result<Vec<String>, JjError>;
+
+    /// Finds an open pull request by same-repository bookmark head and author.
+    fn find_authored_open_pull_request_for_head(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+        author: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError>;
 
     /// Finds the most recent GitHub pull request for a same-repository bookmark head.
     fn find_pull_request_for_head(
@@ -451,13 +462,34 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn pull_request_bookmarks(&self, context: &RepositoryContext) -> Result<Vec<String>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.pull_request_bookmarks()
+    }
+
     fn pull_request_candidate_bookmarks(
         &self,
         context: &RepositoryContext,
-        revision: Option<&str>,
+        selector: Option<&str>,
     ) -> Result<Vec<String>, JjError> {
         JjWorkspace::load(context.workspace_root.clone())?
-            .pull_request_candidate_bookmarks(revision)
+            .pull_request_candidate_bookmarks(selector)
+    }
+
+    fn find_authored_open_pull_request_for_head(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+        author: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+            let head = PullRequestHead::same_repository(&context.origin.github.owner, branch);
+
+            Ok(github
+                .find_authored_open_pull_request_for_head(&context.origin.github, &head, author)
+                .await?)
+        })
     }
 
     fn find_pull_request_for_head(

@@ -67,8 +67,8 @@ use handlers::*;
 use progress::*;
 use prompts::*;
 pub use prompts::{
-    PullRequestConfirmationError, PushConfirmationError, RepositoryCreationConfirmationError,
-    ReviewerSelectionError, WorkspaceRemoveConfirmationError,
+    PullRequestConfirmationError, PullRequestSelectionError, PushConfirmationError,
+    RepositoryCreationConfirmationError, ReviewerSelectionError, WorkspaceRemoveConfirmationError,
 };
 use render::*;
 use request::*;
@@ -97,6 +97,8 @@ pub enum CommandError {
     Jj(#[from] JjError),
     #[error(transparent)]
     Workflow(#[from] WorkflowError),
+    #[error(transparent)]
+    PullRequestSelection(#[from] PullRequestSelectionError),
     #[error(transparent)]
     ReviewerSelection(#[from] ReviewerSelectionError),
     #[error(transparent)]
@@ -144,6 +146,7 @@ where
     let services = ProductionServices::new(environment)?;
     let progress = SpinnerProgress::new();
     let previewer = TerminalPullRequestPreviewer;
+    let pull_request_selector = TerminalPullRequestSelector;
     let reviewer_selector = TerminalReviewerSelector;
     let pull_request_confirmer = TerminalPullRequestConfirmer;
     let push_confirmer = TerminalPushConfirmer;
@@ -151,6 +154,7 @@ where
     let workspace_remove_confirmer = TerminalWorkspaceRemoveConfirmer;
     let prompts = PromptHandlers {
         pull_request_previewer: &previewer,
+        pull_request_selector: &pull_request_selector,
         reviewer_selector: &reviewer_selector,
         pull_request_confirmer: &pull_request_confirmer,
         push_confirmer: &push_confirmer,
@@ -183,6 +187,36 @@ where
         services,
         &SelectAllReviewers,
         &AlwaysConfirmPullRequest,
+    )
+}
+
+#[cfg(test)]
+fn run_with_args_and_pull_request_selector<I, T>(
+    args: I,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    pull_request_selector: &dyn PullRequestSelector,
+) -> Result<CommandResult, CommandError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+    run_with_args_and_progress(
+        args,
+        environment,
+        services,
+        &NoProgress,
+        prompts,
+        OutputMode::plain(),
     )
 }
 
@@ -220,6 +254,7 @@ where
 {
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector,
         pull_request_confirmer,
         push_confirmer: &AlwaysConfirmPush,
@@ -249,6 +284,7 @@ where
 {
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer,
@@ -278,6 +314,7 @@ where
 {
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
@@ -307,6 +344,7 @@ where
 {
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,

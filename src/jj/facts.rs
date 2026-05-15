@@ -80,13 +80,48 @@ impl JjWorkspace {
         self.facts_for_commit(self.target_for_revision(revision)?)
     }
 
-    /// Returns local bookmark heads on the selected revision or linear descendants, nearest first.
+    /// Returns local bookmark heads that can have associated pull requests.
+    pub fn pull_request_bookmarks(&self) -> Result<Vec<String>, JjError> {
+        self.ensure_git_backed()?;
+        let mut bookmarks = self
+            .repo
+            .view()
+            .local_bookmarks()
+            .filter(|(_, target)| target.as_normal().is_some())
+            .map(|(bookmark, _)| bookmark.as_str().to_owned())
+            .collect::<Vec<_>>();
+        bookmarks.sort();
+        bookmarks.dedup();
+        Ok(bookmarks)
+    }
+
+    /// Returns PR bookmark heads for the selected revision, commit prefix, or exact bookmark.
     pub fn pull_request_candidate_bookmarks(
         &self,
-        revision: Option<&str>,
+        selector: Option<&str>,
     ) -> Result<Vec<String>, JjError> {
         self.ensure_git_backed()?;
-        let target = self.target_for_revision(revision)?;
+        let Some(selector) = selector else {
+            return self.pull_request_candidate_bookmarks_for_commit(self.current_commit()?);
+        };
+
+        match self.resolve_single_revision(selector, "In selected jj revision") {
+            Ok(target) => self.pull_request_candidate_bookmarks_for_commit(target),
+            Err(error) if can_try_pull_request_bookmark_selector(&error) => {
+                if self.has_normal_local_bookmark(selector.trim()) {
+                    Ok(vec![selector.trim().to_owned()])
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn pull_request_candidate_bookmarks_for_commit(
+        &self,
+        target: Commit,
+    ) -> Result<Vec<String>, JjError> {
         let mut candidates = Vec::new();
 
         for (bookmark, ref_target) in self.repo.view().local_bookmarks() {
@@ -112,6 +147,13 @@ impl JjWorkspace {
             .into_iter()
             .map(|(_, bookmark)| bookmark)
             .collect())
+    }
+
+    fn has_normal_local_bookmark(&self, selector: &str) -> bool {
+        self.repo
+            .view()
+            .local_bookmarks()
+            .any(|(bookmark, target)| bookmark.as_str() == selector && target.as_normal().is_some())
     }
 
     /// Returns push planning facts, reusing local bookmarks even before an origin trunk is known.
@@ -194,6 +236,13 @@ impl JjWorkspace {
             stack_index: 0,
         })
     }
+}
+
+fn can_try_pull_request_bookmark_selector(error: &JjError) -> bool {
+    matches!(
+        error,
+        JjError::Revision { .. } | JjError::RevisionNotFound { .. }
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

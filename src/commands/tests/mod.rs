@@ -1887,10 +1887,330 @@ fn open_pr_prints_first_candidate_with_pull_request() {
         "https://github.com/example-owner/example-repo/pull/24\n"
     );
     assert_eq!(
+        services.open_pull_request_selectors.borrow().as_slice(),
+        [None]
+    );
+    assert_eq!(
         services.pull_request_head_calls.borrow().as_slice(),
         ["topic/without-review", "topic/with-review"]
     );
     assert!(services.opened_urls.borrow().is_empty());
+}
+
+#[test]
+fn open_pr_accepts_positional_commit_or_bookmark_selector() {
+    // Verifies: Open PR accepts the selector UX used for commit prefixes and slash bookmarks.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        open_pull_request_candidates: vec!["solodov/00-1977d9cd".to_owned()],
+        pull_requests_by_head: BTreeMap::from([(
+            "solodov/00-1977d9cd".to_owned(),
+            PullRequestRecord {
+                number: 1977,
+                title: "Selected change".to_owned(),
+                body: None,
+                head_branch: "solodov/00-1977d9cd".to_owned(),
+                base_branch: "main".to_owned(),
+                html_url: Some(
+                    "https://github.com/example-owner/example-repo/pull/1977".to_owned(),
+                ),
+                draft: false,
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "pr", "--print", "solodov/00-1977d9cd"],
+        &environment,
+        &services,
+    )
+    .expect("open pr succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/pull/1977\n"
+    );
+    assert_eq!(
+        services.open_pull_request_selectors.borrow().as_slice(),
+        [Some("solodov/00-1977d9cd".to_owned())]
+    );
+}
+
+#[test]
+fn open_pr_accepts_commit_option_as_selector() {
+    // Verifies: The legacy --commit option keeps working while using selector resolution.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        open_pull_request_candidates: vec!["topic/with-review".to_owned()],
+        pull_requests_by_head: BTreeMap::from([(
+            "topic/with-review".to_owned(),
+            PullRequestRecord {
+                number: 25,
+                title: "Selected change".to_owned(),
+                body: None,
+                head_branch: "topic/with-review".to_owned(),
+                base_branch: "main".to_owned(),
+                html_url: Some("https://github.com/example-owner/example-repo/pull/25".to_owned()),
+                draft: false,
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "pr", "--print", "--commit", "abc123"],
+        &environment,
+        &services,
+    )
+    .expect("open pr succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/pull/25\n"
+    );
+    assert_eq!(
+        services.open_pull_request_selectors.borrow().as_slice(),
+        [Some("abc123".to_owned())]
+    );
+}
+
+#[test]
+fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
+    // Verifies: Interactive Open PR lists PRs attached to local bookmarks and opens the selected one.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "example-user/old".to_owned(),
+            "example-user/chosen".to_owned(),
+        ],
+        authored_open_pull_requests_by_head: BTreeMap::from([
+            (
+                "example-user/old".to_owned(),
+                PullRequestRecord {
+                    number: 10,
+                    title: "Older change".to_owned(),
+                    body: None,
+                    head_branch: "example-user/old".to_owned(),
+                    base_branch: "main".to_owned(),
+                    html_url: Some(
+                        "https://github.com/example-owner/example-repo/pull/10".to_owned(),
+                    ),
+                    draft: false,
+                },
+            ),
+            (
+                "example-user/chosen".to_owned(),
+                PullRequestRecord {
+                    number: 11,
+                    title: "Chosen change".to_owned(),
+                    body: None,
+                    head_branch: "example-user/chosen".to_owned(),
+                    base_branch: "main".to_owned(),
+                    html_url: Some(
+                        "https://github.com/example-owner/example-repo/pull/11".to_owned(),
+                    ),
+                    draft: true,
+                },
+            ),
+        ]),
+        ..Default::default()
+    };
+    let selector = FixedPullRequestSelector { selected: 1 };
+
+    let result = run_with_args_and_pull_request_selector(
+        ["jx", "open", "pr", "-i"],
+        &environment,
+        &services,
+        &selector,
+    )
+    .expect("interactive open pr succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Opened: https://github.com/example-owner/example-repo/pull/11\n"
+    );
+    assert_eq!(
+        services.opened_urls.borrow().as_slice(),
+        ["https://github.com/example-owner/example-repo/pull/11"]
+    );
+    assert_eq!(
+        services
+            .authored_open_pull_request_head_calls
+            .borrow()
+            .as_slice(),
+        [
+            ("example-user/old".to_owned(), "example-user".to_owned()),
+            ("example-user/chosen".to_owned(), "example-user".to_owned())
+        ]
+    );
+    assert!(services.pull_request_head_calls.borrow().is_empty());
+}
+
+#[test]
+fn open_pr_interactive_prints_selected_pull_request_url() {
+    // Verifies: --print still suppresses browser launch after interactive PR selection.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["example-user/selected".to_owned()],
+        authored_open_pull_requests_by_head: BTreeMap::from([(
+            "example-user/selected".to_owned(),
+            PullRequestRecord {
+                number: 12,
+                title: "Selected change".to_owned(),
+                body: None,
+                head_branch: "example-user/selected".to_owned(),
+                base_branch: "main".to_owned(),
+                html_url: None,
+                draft: false,
+            },
+        )]),
+        ..Default::default()
+    };
+    let selector = FixedPullRequestSelector { selected: 0 };
+
+    let result = run_with_args_and_pull_request_selector(
+        ["jx", "open", "pr", "--interactive", "--print"],
+        &environment,
+        &services,
+        &selector,
+    )
+    .expect("interactive open pr succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/pull/12\n"
+    );
+    assert!(services.opened_urls.borrow().is_empty());
+}
+
+#[test]
+fn open_pr_interactive_ignores_historical_or_unowned_pull_requests() {
+    // Verifies: Interactive Open PR only accepts open authored PRs attached to local bookmarks.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["example-user/reused".to_owned()],
+        pull_requests_by_head: BTreeMap::from([(
+            "example-user/reused".to_owned(),
+            PullRequestRecord {
+                number: 40568,
+                title: "Merged or unowned historical PR".to_owned(),
+                body: None,
+                head_branch: "example-user/reused".to_owned(),
+                base_branch: "main".to_owned(),
+                html_url: Some(
+                    "https://github.com/example-owner/example-repo/pull/40568".to_owned(),
+                ),
+                draft: false,
+            },
+        )]),
+        ..Default::default()
+    };
+    let selector = FixedPullRequestSelector { selected: 0 };
+
+    let error = run_with_args_and_pull_request_selector(
+        ["jx", "open", "pr", "-i"],
+        &environment,
+        &services,
+        &selector,
+    )
+    .expect_err("historical or unowned pull requests are ignored");
+
+    assert!(matches!(
+        error,
+        CommandError::Workflow(WorkflowError::MissingLocalBookmarkPullRequests { repository })
+            if repository == "example-owner/example-repo"
+    ));
+    assert_eq!(
+        services
+            .authored_open_pull_request_head_calls
+            .borrow()
+            .as_slice(),
+        [("example-user/reused".to_owned(), "example-user".to_owned())]
+    );
+    assert!(services.pull_request_head_calls.borrow().is_empty());
+}
+
+#[test]
+fn open_pr_interactive_reports_missing_local_bookmark_pull_requests() {
+    // Verifies: Interactive Open PR reports when local bookmarks have no PRs.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices::default();
+    let selector = FixedPullRequestSelector { selected: 0 };
+
+    let error = run_with_args_and_pull_request_selector(
+        ["jx", "open", "pr", "-i"],
+        &environment,
+        &services,
+        &selector,
+    )
+    .expect_err("missing pull requests are reported");
+
+    assert!(matches!(
+        error,
+        CommandError::Workflow(WorkflowError::MissingLocalBookmarkPullRequests { repository })
+            if repository == "example-owner/example-repo"
+    ));
 }
 
 #[test]
@@ -2332,6 +2652,7 @@ path = "{repo}"
     let progress = RecordingProgress::default();
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
@@ -2780,6 +3101,7 @@ path = "{repo}"
     let progress = RecordingProgress::default();
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
@@ -2879,6 +3201,7 @@ path = "{repo}"
     let progress = RecordingProgress::default();
     let prompts = PromptHandlers {
         pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
@@ -4369,6 +4692,39 @@ fn pull_request_uses_interactively_selected_reviewers() {
 }
 
 #[test]
+fn pull_request_selection_formats_draft_state_as_color_only() {
+    // Verifies: Draft PR choices keep text aligned and signal state with subdued color only.
+    let ready = PullRequestRecord {
+        number: 42,
+        title: "Ready change".to_owned(),
+        body: None,
+        head_branch: "topic/ready".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: None,
+        draft: false,
+    };
+    let draft = PullRequestRecord {
+        number: 43,
+        title: "Work in progress".to_owned(),
+        body: None,
+        head_branch: "topic/wip".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: None,
+        draft: true,
+    };
+
+    assert_eq!(
+        pull_request_choice_label(&ready),
+        "#42     Ready change [topic/ready -> main]"
+    );
+    assert_eq!(
+        pull_request_choice_label(&draft),
+        "\x1b[2m\x1b[38;2;150;142;132m#43     Work in progress [topic/wip -> main]\x1b[0m"
+    );
+    assert!(!pull_request_choice_label(&draft).contains("draft "));
+}
+
+#[test]
 fn reviewer_selection_formats_cli_reviewers_first_and_summarizes_reasons() {
     // Verifies: Reviewer choices show explicit reviewers first and keep ownership hints concise.
     let candidates = vec![
@@ -4679,7 +5035,12 @@ struct FakeServices {
     status_uses_context_remotes: bool,
     clean_status_repos: Vec<String>,
     github_login: String,
+    pull_request_bookmarks: Vec<String>,
+    pull_request_bookmark_calls: std::cell::Cell<usize>,
     open_pull_request_candidates: Vec<String>,
+    open_pull_request_selectors: std::cell::RefCell<Vec<Option<String>>>,
+    authored_open_pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
+    authored_open_pull_request_head_calls: std::cell::RefCell<Vec<(String, String)>>,
     pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
     pull_request_head_calls: std::cell::RefCell<Vec<String>>,
     opened_urls: std::cell::RefCell<Vec<String>>,
@@ -4783,7 +5144,12 @@ impl Default for FakeServices {
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
             github_login: "example-user".to_owned(),
+            pull_request_bookmarks: Vec::new(),
+            pull_request_bookmark_calls: std::cell::Cell::new(0),
             open_pull_request_candidates: Vec::new(),
+            open_pull_request_selectors: std::cell::RefCell::new(Vec::new()),
+            authored_open_pull_requests_by_head: BTreeMap::new(),
+            authored_open_pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             pull_requests_by_head: BTreeMap::new(),
             pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             opened_urls: std::cell::RefCell::new(Vec::new()),
@@ -5200,12 +5566,36 @@ impl CommandServices for FakeServices {
         Ok(self.github_login.clone())
     }
 
+    fn pull_request_bookmarks(&self, _context: &RepositoryContext) -> Result<Vec<String>, JjError> {
+        self.pull_request_bookmark_calls
+            .set(self.pull_request_bookmark_calls.get() + 1);
+        Ok(self.pull_request_bookmarks.clone())
+    }
+
     fn pull_request_candidate_bookmarks(
         &self,
         _context: &RepositoryContext,
-        _revision: Option<&str>,
+        selector: Option<&str>,
     ) -> Result<Vec<String>, JjError> {
+        self.open_pull_request_selectors
+            .borrow_mut()
+            .push(selector.map(str::to_owned));
         Ok(self.open_pull_request_candidates.clone())
+    }
+
+    fn find_authored_open_pull_request_for_head(
+        &self,
+        _context: &RepositoryContext,
+        branch: &str,
+        author: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.authored_open_pull_request_head_calls
+            .borrow_mut()
+            .push((branch.to_owned(), author.to_owned()));
+        Ok(self
+            .authored_open_pull_requests_by_head
+            .get(branch)
+            .cloned())
     }
 
     fn find_pull_request_for_head(

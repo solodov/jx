@@ -107,8 +107,13 @@ pub(super) struct OpenRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OpenTarget {
     Repository,
-    PullRequest { commit: Option<String> },
-    PullRequests { all: bool },
+    PullRequest {
+        selector: Option<String>,
+        interactive: bool,
+    },
+    PullRequests {
+        all: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,7 +283,8 @@ fn open_request(matches: &ArgMatches) -> OpenRequest {
     match matches.subcommand() {
         Some(("pr", matches)) => OpenRequest {
             target: OpenTarget::PullRequest {
-                commit: commit(matches),
+                selector: open_pr_selector(matches),
+                interactive: matches.get_flag("interactive"),
             },
             repository: None,
             repo_filters: Vec::new(),
@@ -317,6 +323,13 @@ fn task_id(matches: &ArgMatches) -> Option<String> {
 
 fn commit(matches: &ArgMatches) -> Option<String> {
     matches.get_one::<String>("commit").cloned()
+}
+
+fn open_pr_selector(matches: &ArgMatches) -> Option<String> {
+    matches
+        .get_one::<String>("selector")
+        .or_else(|| matches.get_one::<String>("commit"))
+        .cloned()
 }
 
 fn sources(matches: &ArgMatches) -> Vec<String> {
@@ -591,7 +604,9 @@ pub(super) fn cli() -> ClapCommand {
                 .subcommand(
                     ClapCommand::new("pr")
                         .visible_alias("pull-request")
-                        .about("Open the pull request for the selected jj change")
+                        .about("Open a pull request for the current repository")
+                        .arg(open_pr_selector_arg())
+                        .arg(open_interactive_arg())
                         .arg(open_commit_arg())
                         .arg(open_print_arg()),
                 )
@@ -760,8 +775,25 @@ fn open_commit_arg() -> Arg {
     Arg::new("commit")
         .short('c')
         .long("commit")
-        .value_name("COMMIT")
-        .help("Open the pull request for a specific jj revision instead of the working copy")
+        .value_name("COMMIT_OR_BOOKMARK")
+        .conflicts_with_all(["selector", "interactive"])
+        .help("Open the pull request for a specific jj revision or local bookmark")
+}
+
+fn open_pr_selector_arg() -> Arg {
+    Arg::new("selector")
+        .value_name("COMMIT_OR_BOOKMARK")
+        .conflicts_with_all(["commit", "interactive"])
+        .help("Open the pull request for a specific jj revision or local bookmark")
+}
+
+fn open_interactive_arg() -> Arg {
+    Arg::new("interactive")
+        .short('i')
+        .long("interactive")
+        .action(ArgAction::SetTrue)
+        .conflicts_with_all(["selector", "commit"])
+        .help("Select one of the pull requests attached to local bookmarks")
 }
 
 fn source_arg() -> Arg {

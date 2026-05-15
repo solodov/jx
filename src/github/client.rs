@@ -33,6 +33,14 @@ pub trait GitHubClient: Send + Sync {
         head: &str,
     ) -> Result<CommitComparison, GitHubError>;
 
+    /// Finds an open pull request by same-repository head branch and author.
+    async fn find_authored_open_pull_request_for_head(
+        &self,
+        repository: &GitHubRepository,
+        head: &PullRequestHead,
+        author: &str,
+    ) -> Result<Option<PullRequestRecord>, GitHubError>;
+
     /// Finds an open pull request by same-repository head branch.
     async fn find_open_pull_request(
         &self,
@@ -97,18 +105,56 @@ impl OctocrabGitHubClient {
         state: params::State,
         operation: &'static str,
     ) -> Result<Option<PullRequestRecord>, GitHubError> {
-        let pulls = self
+        self.find_pull_request_for_head_with_state_and_author(
+            repository, head, state, operation, None,
+        )
+        .await
+    }
+
+    async fn find_pull_request_for_head_with_state_and_author(
+        &self,
+        repository: &GitHubRepository,
+        head: &PullRequestHead,
+        state: params::State,
+        operation: &'static str,
+        author: Option<&str>,
+    ) -> Result<Option<PullRequestRecord>, GitHubError> {
+        let mut page = self
             .crab
             .pulls(&repository.owner, &repository.name)
             .list()
             .state(state)
             .head(head.label())
-            .per_page(1)
+            .per_page(if author.is_some() { 100 } else { 1 })
             .send()
             .await
             .map_err(|source| api_error(operation, source))?;
 
-        Ok(pulls.items.into_iter().next().map(map_pull_request))
+        loop {
+            let next = page.next.clone();
+            if let Some(pull) = page.items.into_iter().find(|pull| {
+                author.is_none_or(|author| {
+                    pull.user
+                        .as_ref()
+                        .is_some_and(|user| user.login.as_str() == author)
+                })
+            }) {
+                return Ok(Some(map_pull_request(pull)));
+            }
+            if author.is_none() {
+                return Ok(None);
+            }
+
+            let Some(next_page) = self
+                .crab
+                .get_page::<models::pulls::PullRequest>(&next)
+                .await
+                .map_err(|source| api_error(operation, source))?
+            else {
+                return Ok(None);
+            };
+            page = next_page;
+        }
     }
 
     /// Builds an authenticated octocrab client from a token value.
@@ -257,6 +303,22 @@ impl GitHubClient for OctocrabGitHubClient {
             ahead_by: comparison.ahead_by,
             behind_by: comparison.behind_by,
         })
+    }
+
+    async fn find_authored_open_pull_request_for_head(
+        &self,
+        repository: &GitHubRepository,
+        head: &PullRequestHead,
+        author: &str,
+    ) -> Result<Option<PullRequestRecord>, GitHubError> {
+        self.find_pull_request_for_head_with_state_and_author(
+            repository,
+            head,
+            params::State::Open,
+            "find authored open pull request",
+            Some(author),
+        )
+        .await
     }
 
     async fn find_open_pull_request(

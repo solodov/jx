@@ -1015,6 +1015,15 @@ impl GitHubClient for FakeGitHub {
             .unwrap_or_else(|| self.comparison.clone()))
     }
 
+    async fn find_authored_open_pull_request_for_head(
+        &self,
+        _repository: &GitHubRepository,
+        _head: &PullRequestHead,
+        _author: &str,
+    ) -> Result<Option<PullRequestRecord>, GitHubError> {
+        Ok(self.open_pull_request.clone())
+    }
+
     async fn find_open_pull_request(
         &self,
         _repository: &GitHubRepository,

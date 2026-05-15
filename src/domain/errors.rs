@@ -43,6 +43,8 @@ pub enum WorkflowError {
     MissingPullRequestDescription,
     #[error("Selected change and its descendant bookmarks do not have a pull request")]
     MissingPullRequest,
+    #[error("No local bookmarks in `{repository}` have open pull requests authored by you")]
+    MissingLocalBookmarkPullRequests { repository: String },
     #[error(
         "GitHub could not compare `{branch}` with local trunk `{local_sha}`; status is unavailable"
     )]

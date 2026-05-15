@@ -35,7 +35,7 @@ pub(super) fn handle_request(
             handle_work(request, environment, services, progress, &prompts)?
         }
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
-        CommandRequest::Open(request) => handle_open(request, environment, services)?,
+        CommandRequest::Open(request) => handle_open(request, environment, services, &prompts)?,
         CommandRequest::PreviousCommit => {
             services.previous_commit_log(environment.current_dir())?
         }
@@ -247,17 +247,21 @@ fn handle_open(
     request: OpenRequest,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
+    prompts: &PromptHandlers<'_>,
 ) -> Result<String, CommandError> {
     let urls = match &request.target {
         OpenTarget::Repository => open_targets(&request, environment)?
             .iter()
             .map(|target| target.repository.https_url())
             .collect::<Vec<_>>(),
-        OpenTarget::PullRequest { commit } => vec![selected_pull_request_url(
-            environment,
-            services,
-            commit.as_deref(),
-        )?],
+        OpenTarget::PullRequest {
+            selector,
+            interactive,
+        } => vec![if *interactive {
+            interactive_pull_request_url(environment, services, prompts.pull_request_selector)?
+        } else {
+            selected_pull_request_url(environment, services, selector.as_deref())?
+        }],
         OpenTarget::PullRequests { all } => {
             let targets = open_targets(&request, environment)?;
             vec![pull_requests_url(&targets, *all, services)?]
@@ -278,10 +282,10 @@ fn handle_open(
 fn selected_pull_request_url(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
-    revision: Option<&str>,
+    selector: Option<&str>,
 ) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
-    for branch in services.pull_request_candidate_bookmarks(&context, revision)? {
+    for branch in services.pull_request_candidate_bookmarks(&context, selector)? {
         if let Some(pull_request) = services.find_pull_request_for_head(&context, &branch)? {
             return Ok(pull_request_url(
                 &context.origin.github.https_url(),
@@ -291,6 +295,47 @@ fn selected_pull_request_url(
     }
 
     Err(WorkflowError::MissingPullRequest.into())
+}
+
+fn interactive_pull_request_url(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    selector: &dyn PullRequestSelector,
+) -> Result<String, CommandError> {
+    let context = RepositoryContext::discover(environment)?;
+    let branches = services.pull_request_bookmarks(&context)?;
+    if branches.is_empty() {
+        return Err(WorkflowError::MissingLocalBookmarkPullRequests {
+            repository: context.origin.github.slug(),
+        }
+        .into());
+    }
+
+    let author = services.authenticated_login(&context.token_source)?;
+    let mut pull_requests = Vec::new();
+    let mut seen_numbers = BTreeSet::new();
+    for branch in branches {
+        let Some(pull_request) =
+            services.find_authored_open_pull_request_for_head(&context, &branch, &author)?
+        else {
+            continue;
+        };
+        if seen_numbers.insert(pull_request.number) {
+            pull_requests.push(pull_request);
+        }
+    }
+    if pull_requests.is_empty() {
+        return Err(WorkflowError::MissingLocalBookmarkPullRequests {
+            repository: context.origin.github.slug(),
+        }
+        .into());
+    }
+
+    let selected = selector.select_pull_request(&pull_requests)?;
+    Ok(pull_request_url(
+        &context.origin.github.https_url(),
+        &selected,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

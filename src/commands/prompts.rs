@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct PromptHandlers<'a> {
     pub(super) pull_request_previewer: &'a dyn PullRequestPreviewer,
+    pub(super) pull_request_selector: &'a dyn PullRequestSelector,
     pub(super) reviewer_selector: &'a dyn ReviewerSelector,
     pub(super) pull_request_confirmer: &'a dyn PullRequestConfirmer,
     pub(super) push_confirmer: &'a dyn PushConfirmer,
@@ -28,6 +29,114 @@ pub(super) struct NoPullRequestPreview;
 #[cfg(test)]
 impl PullRequestPreviewer for NoPullRequestPreview {
     fn show_preview(&self, _plan: &PullRequestPlan, _status: &WorkspaceStatus) {}
+}
+
+/// Selects an existing pull request to open when the operator requests an interactive list.
+pub(super) trait PullRequestSelector {
+    fn select_pull_request(
+        &self,
+        pull_requests: &[PullRequestRecord],
+    ) -> Result<PullRequestRecord, PullRequestSelectionError>;
+}
+
+#[derive(Debug, Error)]
+pub enum PullRequestSelectionError {
+    #[error("Cannot select a pull request without an interactive terminal")]
+    NonInteractive,
+    #[error("No pull requests are available to select")]
+    NoPullRequests,
+    #[error("Could not read pull request selection: {source}")]
+    Read { source: dialoguer::Error },
+}
+
+pub(super) struct TerminalPullRequestSelector;
+
+impl PullRequestSelector for TerminalPullRequestSelector {
+    fn select_pull_request(
+        &self,
+        pull_requests: &[PullRequestRecord],
+    ) -> Result<PullRequestRecord, PullRequestSelectionError> {
+        if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+            return Err(PullRequestSelectionError::NonInteractive);
+        }
+        if pull_requests.is_empty() {
+            return Err(PullRequestSelectionError::NoPullRequests);
+        }
+
+        let labels = pull_requests
+            .iter()
+            .map(pull_request_choice_label)
+            .collect::<Vec<_>>();
+        let theme = PlainPromptTheme;
+        let selected = Select::with_theme(&theme)
+            .with_prompt("Open pull request:")
+            .items(&labels)
+            .default(0)
+            .report(false)
+            .interact()
+            .map_err(|source| {
+                restore_terminal_cursor();
+                PullRequestSelectionError::Read { source }
+            })?;
+
+        Ok(pull_requests[selected].clone())
+    }
+}
+
+#[cfg(test)]
+pub(super) struct SelectFirstPullRequest;
+
+#[cfg(test)]
+impl PullRequestSelector for SelectFirstPullRequest {
+    fn select_pull_request(
+        &self,
+        pull_requests: &[PullRequestRecord],
+    ) -> Result<PullRequestRecord, PullRequestSelectionError> {
+        pull_requests
+            .first()
+            .cloned()
+            .ok_or(PullRequestSelectionError::NoPullRequests)
+    }
+}
+
+#[cfg(test)]
+pub(super) struct FixedPullRequestSelector {
+    pub(super) selected: usize,
+}
+
+#[cfg(test)]
+impl PullRequestSelector for FixedPullRequestSelector {
+    fn select_pull_request(
+        &self,
+        pull_requests: &[PullRequestRecord],
+    ) -> Result<PullRequestRecord, PullRequestSelectionError> {
+        pull_requests
+            .get(self.selected)
+            .cloned()
+            .ok_or(PullRequestSelectionError::NoPullRequests)
+    }
+}
+
+const PULL_REQUEST_DRAFT_STYLE: &str = "\x1b[2m\x1b[38;2;150;142;132m";
+const RESET_STYLE: &str = "\x1b[0m";
+
+pub(super) fn pull_request_choice_label(pull_request: &PullRequestRecord) -> String {
+    let title = if pull_request.title.trim().is_empty() {
+        "(untitled)"
+    } else {
+        pull_request.title.trim()
+    };
+    let label = format!(
+        "#{number:<6} {title} [{head} -> {base}]",
+        number = pull_request.number,
+        head = pull_request.head_branch.as_str(),
+        base = pull_request.base_branch.as_str(),
+    );
+    if pull_request.draft {
+        format!("{PULL_REQUEST_DRAFT_STYLE}{label}{RESET_STYLE}")
+    } else {
+        label
+    }
 }
 
 /// Confirms whether a planned PR should proceed to bookmark, push, and GitHub mutation.
@@ -400,7 +509,6 @@ pub(super) struct ReviewerChoice {
 }
 
 const REVIEWER_HINT_STYLE: &str = "\x1b[38;5;244m";
-const RESET_STYLE: &str = "\x1b[0m";
 
 impl ReviewerChoice {
     pub(super) fn label(&self) -> String {
