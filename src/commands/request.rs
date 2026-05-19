@@ -29,6 +29,7 @@ pub(super) enum CommandRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DiffRequest {
     pub(super) revision: Option<String>,
+    pub(super) paths: Vec<String>,
     pub(super) no_tests: bool,
     pub(super) tool: Option<String>,
     pub(super) tool_args: Vec<String>,
@@ -160,6 +161,7 @@ impl CommandRequest {
         match matches.subcommand() {
             Some(("diff", matches)) => Ok(Self::Diff(DiffRequest {
                 revision: revision(matches),
+                paths: diff_paths(matches),
                 no_tests: matches.get_flag("no-tests"),
                 tool: diff_tool(matches)?,
                 tool_args: diff_tool_args(matches),
@@ -403,6 +405,15 @@ fn diff_tool(matches: &ArgMatches) -> Result<Option<String>, clap::Error> {
         .transpose()
 }
 
+fn diff_paths(matches: &ArgMatches) -> Vec<String> {
+    matches
+        .get_many::<String>("path")
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
+}
+
 fn diff_tool_args(matches: &ArgMatches) -> Vec<String> {
     matches
         .get_many::<String>("tool-args")
@@ -421,6 +432,7 @@ pub(super) fn diff_options(
         if request.tool_args.is_empty() {
             return Ok(DiffOptions {
                 revision: request.revision,
+                paths: request.paths,
                 no_tests: request.no_tests,
                 tool: DiffToolInvocation::Plain,
             });
@@ -441,6 +453,7 @@ pub(super) fn diff_options(
 
     Ok(DiffOptions {
         revision: request.revision,
+        paths: request.paths,
         no_tests: request.no_tests,
         tool: diff_tool_invocation(tool, request.tool_args),
     })
@@ -528,6 +541,7 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(diff_revision_arg())
                 .arg(no_tests_arg())
                 .arg(diff_tool_arg())
+                .arg(diff_path_arg())
                 .arg(diff_tool_args_arg()),
         )
         .subcommand(
@@ -933,6 +947,13 @@ fn diff_tool_arg() -> Arg {
         .long("tool")
         .value_name("TOOL")
         .help("Use a configured jx diff tool")
+}
+
+fn diff_path_arg() -> Arg {
+    Arg::new("path")
+        .value_name("PATH")
+        .num_args(0..)
+        .help("Limit the diff to one or more file paths")
 }
 
 fn diff_tool_args_arg() -> Arg {

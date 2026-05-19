@@ -1580,6 +1580,46 @@ args = ["--color=always", "--display=side-by-side"]
 }
 
 #[test]
+fn diff_accepts_paths_before_trailing_tool_args() {
+    // Verifies: Paths remain jj diff filters while `--` still separates renderer arguments.
+    let workspace = TestWorkspace::new();
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[diff]
+default_tool = "difft"
+
+[diff.tools.difft]
+mode = "external"
+command = "difft"
+args = ["--color=always"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "diff",
+            "src/main.rs",
+            "README.md",
+            "--",
+            "--display",
+            "inline",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("path-limited diff with tool args succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "diff: paths=src/main.rs,README.md no_tests=false tool=external command=difft args=--color=always,--display,inline\n"
+    );
+}
+
+#[test]
 fn diff_tool_flag_selects_configured_pipe_tool_and_appends_args() {
     // Verifies: Tool selection can choose a pipe renderer and append renderer args.
     let workspace = TestWorkspace::new();
@@ -1648,16 +1688,23 @@ fn diff_rejects_unknown_tool() {
 }
 
 #[test]
-fn diff_rejects_file_arguments() {
-    // Verifies: Diff intentionally does not grow a parallel `jj diff` argument surface.
+fn diff_accepts_file_arguments() {
+    // Verifies: Diff forwards any number of path filters to the jj diff boundary.
     let workspace = TestWorkspace::new();
     let environment = RuntimeEnvironment::new(workspace.path(), []);
     let services = FakeServices::default();
 
-    let error = run_with_args_and_services(["jx", "diff", "src/main.rs"], &environment, &services)
-        .expect_err("file arguments are not supported");
+    let result = run_with_args_and_services(
+        ["jx", "diff", "src/main.rs", "README.md"],
+        &environment,
+        &services,
+    )
+    .expect("path-limited diff succeeds");
 
-    assert!(matches!(error, CommandError::Usage(_)));
+    assert_eq!(
+        result.stdout,
+        "diff: paths=src/main.rs,README.md no_tests=false tool=plain\n"
+    );
 }
 
 #[test]
@@ -5337,8 +5384,13 @@ impl CommandServices for FakeServices {
             .as_ref()
             .map(|revision| format!(" revision={revision}"))
             .unwrap_or_default();
+        let paths = if options.paths.is_empty() {
+            String::new()
+        } else {
+            format!(" paths={}", options.paths.join(","))
+        };
         Ok(format!(
-            "diff:{revision} no_tests={} tool={tool}\n",
+            "diff:{revision}{paths} no_tests={} tool={tool}\n",
             options.no_tests
         ))
     }

@@ -1,9 +1,10 @@
 use super::*;
 
-/// Options for rendering the current working-copy diff.
+/// Options for rendering a jj diff with optional revision and file path filters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffOptions {
     pub revision: Option<String>,
+    pub paths: Vec<String>,
     pub no_tests: bool,
     pub tool: DiffToolInvocation,
 }
@@ -64,14 +65,15 @@ pub fn run_jj_git_clone(
 /// Runs the selected diff using the chosen renderer and optional test exclusion.
 pub fn run_current_diff(current_dir: &Path, options: &DiffOptions) -> Result<(), JjError> {
     let diff_files = if options.no_tests {
-        let changed_files = current_diff_file_paths(current_dir, options.revision.as_deref())?;
+        let changed_files =
+            current_diff_file_paths(current_dir, options.revision.as_deref(), &options.paths)?;
         let diff_files = diff_paths_without_tests(&changed_files);
         if diff_files.is_empty() {
             return Ok(());
         }
         diff_files
     } else {
-        Vec::new()
+        options.paths.clone()
     };
 
     run_jj_diff(
@@ -85,10 +87,12 @@ pub fn run_current_diff(current_dir: &Path, options: &DiffOptions) -> Result<(),
 fn current_diff_file_paths(
     current_dir: &Path,
     revision: Option<&str>,
+    files: &[String],
 ) -> Result<Vec<String>, JjError> {
     let mut command = Command::new("jj");
     command.arg("--no-pager").arg("diff").arg("--name-only");
     add_revision_arg(&mut command, revision);
+    add_file_args(&mut command, files);
     let output = command
         .current_dir(current_dir)
         .stdin(Stdio::inherit())
