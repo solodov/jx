@@ -227,7 +227,7 @@ pub(super) trait CommandServices {
     /// Pushes all tracked fixed-origin bookmarks, including deleted bookmarks.
     fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError>;
 
-    /// Loads best-effort PR metadata for tracked bookmark updates rendered by sync.
+    /// Syncs PR descriptions for tracked bookmark updates and returns PR metadata rendered by sync.
     fn sync_pull_requests(
         &self,
         context: &RepositoryContext,
@@ -614,11 +614,9 @@ impl CommandServices for ProductionServices<'_> {
                 return Ok(Vec::new());
             };
 
-            // PR rows are navigational metadata. Sync's fetch/push result should stay usable even
-            // when GitHub lookup is unavailable after the local and remote state already changed.
-            Ok(domain::sync_pull_requests(context, push, &github)
-                .await
-                .unwrap_or_default())
+            // Keep fetch/push usable when GitHub is unavailable, but surface failures once PR
+            // description updates start so stale GitHub text is not silently accepted.
+            domain::sync_pull_requests(context, push, &github).await
         })
     }
 

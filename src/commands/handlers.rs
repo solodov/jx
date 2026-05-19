@@ -966,6 +966,7 @@ fn global_sync_existing_origin(
     }
     let push = services.push_tracked(&context)?;
     changed |= tracked_push_changed(&push);
+    let _ = services.sync_pull_requests(&context, &push)?;
 
     if changed {
         Ok(GlobalSyncOutcome::Synced)
@@ -1171,7 +1172,7 @@ fn sync_existing_origin(
     }
     progress.status("Pushing tracked bookmarks…");
     let push = services.push_tracked(&context)?;
-    progress.status("Loading pull requests…");
+    progress.status("Syncing pull request descriptions…");
     let pull_requests = services.sync_pull_requests(&context, &push)?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);

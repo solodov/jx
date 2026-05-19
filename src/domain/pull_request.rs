@@ -144,7 +144,13 @@ fn pull_request_description(workspace: &WorkspaceFacts) -> Result<(String, Strin
         return Err(WorkflowError::EmptyPullRequestChange);
     }
 
-    let body = workspace.target_change.description.trim();
+    pull_request_description_from_text(&workspace.target_change.description)
+}
+
+pub(super) fn pull_request_description_from_text(
+    description: &str,
+) -> Result<(String, String), WorkflowError> {
+    let body = description.trim();
     let Some(title) = body.lines().find_map(|line| {
         let line = line.trim();
         (!line.is_empty()).then_some(line)

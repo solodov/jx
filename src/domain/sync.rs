@@ -34,7 +34,7 @@ pub fn sync_report(
     }
 }
 
-/// Loads PRs for changed tracked bookmarks so sync can show navigable PR annotations.
+/// Updates PR descriptions for pushed tracked bookmarks and returns PRs for sync annotations.
 pub async fn sync_pull_requests(
     context: &RepositoryContext,
     push: &TrackedPushOutcome,
@@ -48,15 +48,46 @@ pub async fn sync_pull_requests(
         }
 
         let head = PullRequestHead::same_repository(&context.origin.github.owner, &bookmark.branch);
-        if let Some(pull_request) = github
+        let Some(pull_request) = github
             .find_pull_request_for_head(&context.origin.github, &head)
             .await?
-        {
-            pull_requests.push(pull_request);
-        }
+        else {
+            continue;
+        };
+
+        let pull_request = if let Some(description) = bookmark.new_full_description.as_deref() {
+            sync_pull_request_description(context, github, pull_request, description).await?
+        } else {
+            pull_request
+        };
+        pull_requests.push(pull_request);
     }
 
     Ok(pull_requests)
+}
+
+async fn sync_pull_request_description(
+    context: &RepositoryContext,
+    github: &dyn GitHubClient,
+    pull_request: PullRequestRecord,
+    description: &str,
+) -> Result<PullRequestRecord, WorkflowError> {
+    let (title, body) = pull_request_description_from_text(description)?;
+    if pull_request.title == title && pull_request.body.as_deref() == Some(body.as_str()) {
+        return Ok(pull_request);
+    }
+
+    Ok(github
+        .update_pull_request(
+            &context.origin.github,
+            pull_request.number,
+            PullRequestUpdate {
+                title: Some(title),
+                body: Some(body),
+                base: None,
+            },
+        )
+        .await?)
 }
 
 /// Returns an error when fetch created conflicts so sync can stop before pushing.

@@ -192,6 +192,7 @@ pub struct PushedBookmarkSummary {
     pub new_short_commit_id: Option<String>,
     pub old_description: Option<String>,
     pub new_description: Option<String>,
+    pub new_full_description: Option<String>,
     pub new_workspace_visibility: WorkspaceVisibility,
 }
 

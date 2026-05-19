@@ -8,7 +8,10 @@ use crate::{
         AuthenticatedUser, PullRequestCreate, PullRequestHead, PullRequestRecord,
         PullRequestUpdate, RepositoryFork, ReviewerSelection, ReviewerSyncResult,
     },
-    jj::{ChangeSummary, StatusRemoteFacts, StatusWorkspaceFacts, TrunkSummary},
+    jj::{
+        ChangeSummary, PushedBookmarkSummary, StatusRemoteFacts, StatusWorkspaceFacts,
+        TrackedPushOutcome, TrunkSummary, WorkspaceVisibility,
+    },
     repository::{
         GitHubRemote, GitHubRepository, OriginRemote, RepoConfig, RepoPolicyConfig, TokenSource,
         WorkflowConfig, ORIGIN_REMOTE_NAME,
@@ -778,6 +781,64 @@ fn publish_pull_request_updates_existing_pr_without_unconfigured_reviewers() {
         Some("example-user/01-ancestor")
     );
     assert!(reviewer_calls.lock().expect("reviewer calls").is_empty());
+}
+
+#[test]
+fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_base() {
+    // Verifies: Sync updates only existing PR title/body from the pushed local commit description.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Old title".to_owned(),
+            body: Some("Old body".to_owned()),
+            head_branch: "example-user/current".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+        }),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let label_calls = github.label_calls.clone();
+    let reviewer_calls = github.reviewer_calls.clone();
+    let create_calls = github.create_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/current".to_owned(),
+            old_short_commit_id: Some("11112222".to_owned()),
+            new_short_commit_id: Some("a1b2c3d4".to_owned()),
+            old_description: Some("Old title".to_owned()),
+            new_description: Some("New title".to_owned()),
+            new_full_description: Some("New title\n\nNew body".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    let pull_requests = pollster::block_on(sync_pull_requests(&context(), &push, &github))
+        .expect("pull requests sync");
+
+    assert_eq!(pull_requests[0].number, 7);
+    assert_eq!(pull_requests[0].title, "New title");
+    assert_eq!(
+        pull_requests[0].body.as_deref(),
+        Some("New title\n\nNew body")
+    );
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            7,
+            PullRequestUpdate {
+                title: Some("New title".to_owned()),
+                body: Some("New title\n\nNew body".to_owned()),
+                base: None,
+            }
+        )]
+    );
+    assert!(label_calls.lock().expect("label calls").is_empty());
+    assert!(reviewer_calls.lock().expect("reviewer calls").is_empty());
+    assert!(create_calls.lock().expect("create calls").is_empty());
 }
 
 fn context() -> RepositoryContext {

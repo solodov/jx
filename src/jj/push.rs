@@ -228,6 +228,7 @@ pub(super) fn pushed_bookmark_summaries(
                 new_short_commit_id: update.after.as_ref().map(short_commit_id),
                 old_description: commit_description(repo, update.before.as_ref())?,
                 new_description: commit_description(repo, update.after.as_ref())?,
+                new_full_description: commit_full_description(repo, update.after.as_ref())?,
                 new_workspace_visibility: commit_workspace_visibility(
                     repo,
                     update.after.as_ref(),
@@ -247,6 +248,18 @@ pub(super) fn commit_description(
         .map(|commit_id| {
             load_commit_from_repo(repo, commit_id)
                 .map(|commit| first_description_line(commit.description()).to_owned())
+        })
+        .transpose()
+}
+
+pub(super) fn commit_full_description(
+    repo: &dyn jj_lib::repo::Repo,
+    commit_id: Option<&CommitId>,
+) -> Result<Option<String>, JjError> {
+    commit_id
+        .map(|commit_id| {
+            load_commit_from_repo(repo, commit_id)
+                .map(|commit| commit.description().trim().to_owned())
         })
         .transpose()
 }
