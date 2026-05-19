@@ -1040,39 +1040,39 @@ path = "{repo}"
 }
 
 #[test]
-fn work_complete_can_list_current_workspace_names() {
-    // Verifies: Delete completion can offer jj workspace names without global work-location keys.
-    let workspace = TestWorkspace::new();
-    let environment = RuntimeEnvironment::new(workspace.path(), []);
+fn work_complete_workspaces_lists_only_deletable_workspace_names() {
+    // Verifies: Delete completion offers managed workspaces but omits the primary default checkout.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let mut workspaces = project_workspaces(&workspace);
+    workspaces.push(WorkspaceEntry {
+        name: "review".to_owned(),
+        root: workspace.home.join("projects/.work/jx/review"),
+        is_current: false,
+    });
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices {
-        workspaces: vec![
-            WorkspaceEntry {
-                name: "default".to_owned(),
-                root: workspace.path().to_path_buf(),
-                is_current: true,
-            },
-            WorkspaceEntry {
-                name: "fix".to_owned(),
-                root: workspace.path().join("../fix"),
-                is_current: false,
-            },
-            WorkspaceEntry {
-                name: "review".to_owned(),
-                root: workspace.path().join("../review"),
-                is_current: false,
-            },
-        ],
+        workspaces,
         ..FakeServices::default()
     };
 
     let result = run_with_args_and_services(
-        ["jx", "work", "complete", "--workspaces", "--prefix", "f"],
+        ["jx", "work", "complete", "--workspaces", "--prefix", ""],
         &environment,
         &services,
     )
     .expect("workspace completion succeeds");
 
-    assert_eq!(result.stdout, "fix\n");
+    assert_eq!(result.stdout, "fix\nreview\n");
 }
 
 #[test]
@@ -1226,8 +1226,16 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        "current\nfix\ntrunk\nroot\nproject\nproject@current\nproject@fix\nother\n"
+        "current\nfix\ndefault\ntrunk\nroot\nproject\nproject@current\nproject@fix\nother\n"
     );
+
+    let default = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "default"],
+        &environment,
+        &services,
+    )
+    .expect("default navigation root succeeds");
+    assert_eq!(default.stdout, format!("{}\n", primary_root.display()));
 }
 
 #[test]

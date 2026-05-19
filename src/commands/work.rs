@@ -391,6 +391,10 @@ pub(super) fn navigation_work_locations(
     };
 
     locations.push(WorkLocation {
+        key: "default".to_owned(),
+        root: current_repository.primary_root.clone(),
+    });
+    locations.push(WorkLocation {
         key: "trunk".to_owned(),
         root: current_repository.primary_root.clone(),
     });
@@ -442,6 +446,34 @@ pub(super) fn filter_workspace_entries_by_prefix(
         .filter(|workspace| workspace.name.starts_with(prefix))
         .cloned()
         .collect()
+}
+
+pub(super) fn deletable_workspace_entries(
+    context: &LocalRepositoryContext,
+    identity: &RepositoryIdentity,
+    workspaces: &[WorkspaceEntry],
+    environment: &RuntimeEnvironment,
+) -> Result<Vec<WorkspaceEntry>, RepositoryError> {
+    let primary = context
+        .config
+        .layout
+        .project_destination(identity, environment)?;
+    let mut deletable = Vec::new();
+    for workspace in workspaces {
+        if workspace.root == primary {
+            continue;
+        }
+        let managed =
+            context
+                .config
+                .layout
+                .workspace_destination(identity, &workspace.name, environment)?;
+        if workspace.root == managed {
+            deletable.push(workspace.clone());
+        }
+    }
+
+    Ok(deletable)
 }
 
 pub(super) fn resolve_work_repository(

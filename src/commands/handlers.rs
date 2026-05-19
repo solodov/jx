@@ -646,7 +646,11 @@ fn handle_work(
         }
         WorkRequest::Complete(request) => {
             if request.workspaces {
+                let context = LocalRepositoryContext::discover(environment)?;
+                let identity = workspace_identity(&context, environment)?;
                 let workspaces = services.workspace_entries(environment.current_dir())?;
+                let workspaces =
+                    deletable_workspace_entries(&context, &identity, &workspaces, environment)?;
                 let workspaces = filter_workspace_entries_by_prefix(&workspaces, &request.prefix);
                 return Ok(render_workspace_name_complete(&workspaces));
             }
