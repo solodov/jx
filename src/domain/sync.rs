@@ -55,7 +55,7 @@ pub async fn sync_pull_requests(
             continue;
         };
 
-        let pull_request = if let Some(description) = bookmark.new_full_description.as_deref() {
+        let pull_request = if let Some(description) = bookmark.pull_request_description.as_deref() {
             sync_pull_request_description(context, github, pull_request, description).await?
         } else {
             pull_request

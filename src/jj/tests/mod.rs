@@ -1501,6 +1501,34 @@ fn push_tracked_selects_tracked_updates_and_deletions() {
 }
 
 #[test]
+fn bookmark_pull_request_description_uses_first_stack_commit() {
+    // Verifies: Sync PR text follows the PR-opening stack root, not later review-fix commits.
+    let fixture = TestWorkspace::new("bookmark-pr-description-root");
+    let settings = user_settings().expect("settings");
+    let (repo, trunk, tip) = pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let first = write_child(tx.repo_mut(), &trunk, "PR title\n\nPR body").await;
+        let tip = write_child(tx.repo_mut(), &first, "address review comments").await;
+        let repo = tx
+            .commit("arrange bookmark PR description stack")
+            .await
+            .expect("commit");
+        (repo, trunk, tip)
+    });
+
+    let description =
+        bookmark_pull_request_description(repo.as_ref(), Some(tip.id()), Some(trunk.id()))
+            .expect("description resolves");
+
+    assert_eq!(description.as_deref(), Some("PR title\n\nPR body"));
+}
+
+#[test]
 fn advance_trunk_for_sync_moves_main_to_current_and_creates_empty_child() {
     // Verifies: Sync preparation publishes current work locally and leaves the workspace ready.
     let fixture = TestWorkspace::new("advance-trunk-current");

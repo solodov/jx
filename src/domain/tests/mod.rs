@@ -810,7 +810,7 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
             new_short_commit_id: Some("a1b2c3d4".to_owned()),
             old_description: Some("Old title".to_owned()),
             new_description: Some("New title".to_owned()),
-            new_full_description: Some("New title\n\nNew body".to_owned()),
+            pull_request_description: Some("New title\n\nNew body".to_owned()),
             new_workspace_visibility: WorkspaceVisibility::default(),
         }],
         pushed_commits: Vec::new(),

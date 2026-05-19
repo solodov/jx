@@ -228,7 +228,11 @@ pub(super) fn pushed_bookmark_summaries(
                 new_short_commit_id: update.after.as_ref().map(short_commit_id),
                 old_description: commit_description(repo, update.before.as_ref())?,
                 new_description: commit_description(repo, update.after.as_ref())?,
-                new_full_description: commit_full_description(repo, update.after.as_ref())?,
+                pull_request_description: bookmark_pull_request_description(
+                    repo,
+                    update.after.as_ref(),
+                    trunk_id,
+                )?,
                 new_workspace_visibility: commit_workspace_visibility(
                     repo,
                     update.after.as_ref(),
@@ -252,16 +256,59 @@ pub(super) fn commit_description(
         .transpose()
 }
 
-pub(super) fn commit_full_description(
+/// Returns the stack-root description that should back a PR for a bookmark target.
+pub(super) fn bookmark_pull_request_description(
     repo: &dyn jj_lib::repo::Repo,
-    commit_id: Option<&CommitId>,
+    target_id: Option<&CommitId>,
+    trunk_id: Option<&CommitId>,
 ) -> Result<Option<String>, JjError> {
-    commit_id
-        .map(|commit_id| {
-            load_commit_from_repo(repo, commit_id)
-                .map(|commit| commit.description().trim().to_owned())
-        })
-        .transpose()
+    let Some(target_id) = target_id else {
+        return Ok(None);
+    };
+    let description_commit_id = match trunk_id {
+        Some(trunk_id) => first_linear_stack_commit_id(repo, target_id, trunk_id)?
+            .unwrap_or_else(|| target_id.clone()),
+        None => target_id.clone(),
+    };
+
+    commit_full_description(repo, &description_commit_id)
+}
+
+fn first_linear_stack_commit_id(
+    repo: &dyn jj_lib::repo::Repo,
+    target_id: &CommitId,
+    trunk_id: &CommitId,
+) -> Result<Option<CommitId>, JjError> {
+    if target_id == trunk_id || !is_ancestor_or_equal_in_repo(repo, trunk_id, target_id)? {
+        return Ok(None);
+    }
+
+    let mut cursor = load_commit_from_repo(repo, target_id)?;
+    let mut first = target_id.clone();
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(cursor.id().clone()) {
+            return Ok(None);
+        }
+        let parents = cursor.parent_ids();
+        if parents.len() != 1 {
+            return Ok(None);
+        }
+        let parent_id = &parents[0];
+        if parent_id == trunk_id {
+            return Ok(Some(first));
+        }
+        first = parent_id.clone();
+        cursor = load_commit_from_repo(repo, parent_id)?;
+    }
+}
+
+fn commit_full_description(
+    repo: &dyn jj_lib::repo::Repo,
+    commit_id: &CommitId,
+) -> Result<Option<String>, JjError> {
+    load_commit_from_repo(repo, commit_id)
+        .map(|commit| Some(commit.description().trim().to_owned()))
 }
 
 pub(super) fn commit_workspace_visibility(

@@ -4144,7 +4144,7 @@ fn sync_aligns_pushed_bookmark_targets_and_deleted_bookmarks() {
             new_short_commit_id: Some("22223333".to_owned()),
             old_description: Some("previous short branch".to_owned()),
             new_description: Some("short branch".to_owned()),
-            new_full_description: Some("short branch".to_owned()),
+            pull_request_description: Some("short branch".to_owned()),
             new_workspace_visibility: current_workspace_visibility(),
         },
         PushedBookmarkSummary {
@@ -4153,7 +4153,7 @@ fn sync_aligns_pushed_bookmark_targets_and_deleted_bookmarks() {
             new_short_commit_id: Some("33334444".to_owned()),
             old_description: Some("previous long branch".to_owned()),
             new_description: Some("long branch".to_owned()),
-            new_full_description: Some("long branch".to_owned()),
+            pull_request_description: Some("long branch".to_owned()),
             new_workspace_visibility: current_workspace_visibility(),
         },
         PushedBookmarkSummary {
@@ -4162,7 +4162,7 @@ fn sync_aligns_pushed_bookmark_targets_and_deleted_bookmarks() {
             new_short_commit_id: None,
             old_description: Some("old branch".to_owned()),
             new_description: None,
-            new_full_description: None,
+            pull_request_description: None,
             new_workspace_visibility: WorkspaceVisibility::default(),
         },
     ];
@@ -5281,7 +5281,7 @@ impl Default for FakeServices {
                         new_short_commit_id: Some("a1b2c3d4".to_owned()),
                         old_description: Some("previous example change".to_owned()),
                         new_description: Some("example change".to_owned()),
-                        new_full_description: Some("example change".to_owned()),
+                        pull_request_description: Some("example change".to_owned()),
                         new_workspace_visibility: current_workspace_visibility(),
                     },
                     PushedBookmarkSummary {
@@ -5290,7 +5290,7 @@ impl Default for FakeServices {
                         new_short_commit_id: None,
                         old_description: Some("obsolete example change".to_owned()),
                         new_description: None,
-                        new_full_description: None,
+                        pull_request_description: None,
                         new_workspace_visibility: WorkspaceVisibility::default(),
                     },
                 ],
