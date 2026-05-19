@@ -88,9 +88,9 @@ fn generated_push_bookmark_name(workspace: &WorkspaceFacts) -> String {
         },
         |ticket| {
             format!(
-                "ps/{ticket}-{stack_index:02}-{short_commit_id}",
+                "ps/{ticket}-{stack_index:02}-{short_change_id}",
                 stack_index = workspace.stack_index,
-                short_commit_id = workspace.target_change.short_commit_id
+                short_change_id = short_change_id(&workspace.target_change.change_id)
             )
         },
     )

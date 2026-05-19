@@ -2283,7 +2283,7 @@ fn check_loads_context_and_renders_readiness_summary() {
             result.stdout,
             format!(
                 "ready to publish\nrepo: example-owner/example-repo\nchange: a1b2c3d4, non-empty\nbookmark: {}, will create\ngithub: example-user, can push\nreviewers: none\n",
-                example_bookmark_link("example-user/02-a1b2c3d4")
+                example_bookmark_link("example-user/02-zzzzzzzz")
             )
         );
 }
@@ -5056,7 +5056,7 @@ fn preview_plan() -> PullRequestPlan {
         },
         task_id: None,
         bookmark: BookmarkPlan {
-            branch: "example-user/02-a1b2c3d4".to_owned(),
+            branch: "example-user/02-zzzzzzzz".to_owned(),
             action: BookmarkAction::Create,
         },
         target_commit_id: "a1b2c3d4e5f6".to_owned(),
@@ -5064,7 +5064,7 @@ fn preview_plan() -> PullRequestPlan {
         body: "example change".to_owned(),
         changed_files: vec!["src/main.rs".to_owned()],
         base: "main".to_owned(),
-        head: PullRequestHead::same_repository("example-owner", "example-user/02-a1b2c3d4"),
+        head: PullRequestHead::same_repository("example-owner", "example-user/02-zzzzzzzz"),
         labels: Vec::new(),
         draft: false,
         existing_pull_request: None,
@@ -5170,7 +5170,7 @@ impl Default for FakeServices {
                     can_push: true,
                 },
                 bookmark: BookmarkPlan {
-                    branch: "example-user/02-a1b2c3d4".to_owned(),
+                    branch: "example-user/02-zzzzzzzz".to_owned(),
                     action: BookmarkAction::Create,
                 },
             },
@@ -5254,11 +5254,11 @@ impl Default for FakeServices {
             },
             expected_rebase_sources: None,
             bookmark_update: BookmarkUpdate {
-                branch: "example-user/ABC-123-02-a1b2c3d4".to_owned(),
+                branch: "example-user/ABC-123-02-zzzzzzzz".to_owned(),
                 created: true,
             },
             push: PushOutcome {
-                branch: "example-user/ABC-123-02-a1b2c3d4".to_owned(),
+                branch: "example-user/ABC-123-02-zzzzzzzz".to_owned(),
                 pushed_refs: 1,
                 pushed_commits: vec![PushedCommitSummary {
                     short_commit_id: "a1b2c3d4".to_owned(),
@@ -5759,7 +5759,12 @@ impl CommandServices for FakeServices {
         if let Some(expected) = &self.expected_task_id {
             assert_eq!(&task_id, expected);
         }
-        let short = workspace.target_change.short_commit_id.as_str();
+        let short = workspace
+            .target_change
+            .change_id
+            .chars()
+            .take(8)
+            .collect::<String>();
         let branch = match task_id.as_deref() {
             Some(task_id) => format!(
                 "example-user/{task_id}-{stack_index:02}-{short}",

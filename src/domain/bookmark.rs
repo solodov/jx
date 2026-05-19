@@ -8,7 +8,7 @@ pub fn plan_bookmark(request: BookmarkPlanRequest<'_>) -> Result<BookmarkPlan, W
         login,
         task_id.as_deref(),
         request.workspace.stack_index,
-        &request.workspace.target_change.short_commit_id,
+        &short_change_id(&request.workspace.target_change.change_id),
     );
     let selected_planner_bookmarks = planner_bookmarks_for_login(
         login,
@@ -139,12 +139,16 @@ fn generated_bookmark_name(
     login: &str,
     task_id: Option<&str>,
     stack_index: usize,
-    short_commit_id: &str,
+    short_change_id: &str,
 ) -> String {
     match task_id {
-        Some(task_id) => format!("{login}/{task_id}-{stack_index:02}-{short_commit_id}"),
-        None => format!("{login}/{stack_index:02}-{short_commit_id}"),
+        Some(task_id) => format!("{login}/{task_id}-{stack_index:02}-{short_change_id}"),
+        None => format!("{login}/{stack_index:02}-{short_change_id}"),
     }
+}
+
+fn short_change_id(change_id: &str) -> String {
+    change_id.chars().take(8).collect()
 }
 
 fn is_branch_namespace_component(value: &str) -> bool {
@@ -171,14 +175,14 @@ fn planner_bookmarks_for_login<'a>(
 
 fn parse_planner_bookmark(login: &str, bookmark: &str) -> Option<ParsedBookmark> {
     let rest = bookmark.strip_prefix(&format!("{login}/"))?;
-    let (prefix, short_commit_id) = rest.rsplit_once('-')?;
+    let (prefix, short_id) = rest.rsplit_once('-')?;
     let (task_id, stack_index) = match prefix.rsplit_once('-') {
         Some((task_id, stack_index)) => (Some(task_id), stack_index),
         None => (None, prefix),
     };
 
     if !is_stack_index_component(stack_index)
-        || !is_short_commit_id_component(short_commit_id)
+        || !is_short_id_component(short_id)
         || task_id
             .is_some_and(|task_id| task_id.is_empty() || !is_branch_namespace_component(task_id))
     {
@@ -195,6 +199,9 @@ fn is_stack_index_component(value: &str) -> bool {
     value.len() >= 2 && value.chars().all(|character| character.is_ascii_digit())
 }
 
-fn is_short_commit_id_component(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|character| character.is_ascii_hexdigit())
+fn is_short_id_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
 }
