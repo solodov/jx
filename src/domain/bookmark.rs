@@ -92,18 +92,6 @@ fn plan_task_bookmark(
         });
     }
 
-    if let Some(existing) = planner_bookmarks_for_login(
-        generated.split_once('/').map_or("", |(login, _)| login),
-        workspace.local_bookmarks.iter().map(String::as_str),
-    )
-    .into_iter()
-    .find(|bookmark| bookmark.task_id.as_deref() == Some(task_id))
-    {
-        return Err(WorkflowError::BookmarkExistsOnDifferentChange {
-            branch: existing.branch,
-        });
-    }
-
     if workspace.local_bookmarks.contains(&generated.to_owned()) {
         return Err(WorkflowError::BookmarkExistsOnDifferentChange {
             branch: generated.to_owned(),

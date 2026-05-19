@@ -144,23 +144,21 @@ fn bookmark_planner_rejects_invalid_task_id() {
 }
 
 #[test]
-fn bookmark_planner_rejects_task_specific_duplicate_on_another_change() {
-    // Verifies: Bookmark planner rejects a task-specific duplicate on another change.
+fn bookmark_planner_allows_same_task_bookmark_on_another_change() {
+    // Verifies: Task-scoped PR planning can create a new PR head for separate same-task work.
     let mut workspace = workspace_facts();
     workspace.local_bookmarks = vec!["example-user/ABC-123-01-deadbeef".to_owned()];
+    workspace.local_bookmarks_at_target = Vec::new();
 
-    let error = plan_bookmark(BookmarkPlanRequest {
+    let plan = plan_bookmark(BookmarkPlanRequest {
         github_login: "example-user",
         task_id: Some("ABC-123"),
         workspace: &workspace,
     })
-    .expect_err("same task already has a bookmark");
+    .expect("same-task bookmark on another change does not block new PR head");
 
-    assert!(matches!(
-        error,
-        WorkflowError::BookmarkExistsOnDifferentChange { branch }
-            if branch == "example-user/ABC-123-01-deadbeef"
-    ));
+    assert_eq!(plan.branch, "example-user/ABC-123-02-a1b2c3d4");
+    assert_eq!(plan.action, BookmarkAction::Create);
 }
 
 #[test]
