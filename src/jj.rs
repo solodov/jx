@@ -113,7 +113,7 @@ pub use workspace_management::{
 #[cfg(test)]
 use workspace_management::{
     remove_empty_workspace_dirs, validate_workspace_shared_paths_untracked,
-    workspace_names_from_jj_list,
+    workspace_names_from_jj_list, workspace_root_is_missing_recorded_path,
 };
 
 const SHORT_COMMIT_ID_LEN: usize = 8;

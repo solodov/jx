@@ -102,6 +102,17 @@ fn workspace_entries_use_repository_root_for_current_workspace() {
 }
 
 #[test]
+fn workspace_root_missing_path_error_is_skippable() {
+    // Verifies: Work list can ignore stale jj workspace records that have no usable path.
+    let error = JjError::WorkspaceRootFailed {
+        name: "stale".to_owned(),
+        status: "exit code 1: Workspace has no recorded path: stale".to_owned(),
+    };
+
+    assert!(workspace_root_is_missing_recorded_path(&error));
+}
+
+#[test]
 fn workspace_cleanup_removes_empty_managed_parents() {
     // Verifies: Workspace removal prunes the repo layout directory and `.work` when both are empty.
     let fixture = TestWorkspace::new("workspace-cleanup-empty");

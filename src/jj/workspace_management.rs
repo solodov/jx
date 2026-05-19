@@ -192,17 +192,22 @@ pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, J
         .map_err(|source| JjError::WorkspaceListDecode { source })?;
     workspace_names_from_jj_list(&stdout)
         .into_iter()
-        .map(|name| {
+        .filter_map(|name| {
             let is_current = name == current_workspace;
-            Ok(WorkspaceEntry {
-                root: if is_current {
-                    workspace_root.clone()
-                } else {
-                    jj_workspace_root(current_dir, &name)?
-                },
-                is_current,
-                name,
-            })
+            let root = if is_current {
+                Ok(workspace_root.clone())
+            } else {
+                jj_workspace_root(current_dir, &name)
+            };
+            match root {
+                Ok(root) => Some(Ok(WorkspaceEntry {
+                    root,
+                    is_current,
+                    name,
+                })),
+                Err(error) if workspace_root_is_missing_recorded_path(&error) => None,
+                Err(error) => Some(Err(error)),
+            }
         })
         .collect()
 }
@@ -345,7 +350,7 @@ fn jj_workspace_root(current_dir: &Path, name: &str) -> Result<PathBuf, JjError>
         .current_dir(current_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|child| child.wait_with_output())
         .map_err(|source| JjError::WorkspaceRootStart { source })?;
@@ -353,7 +358,7 @@ fn jj_workspace_root(current_dir: &Path, name: &str) -> Result<PathBuf, JjError>
     if !output.status.success() {
         return Err(JjError::WorkspaceRootFailed {
             name: name.to_owned(),
-            status: exit_status_summary(output.status),
+            status: process_failure_summary(output.status, &output.stderr),
         });
     }
 
@@ -363,6 +368,14 @@ fn jj_workspace_root(current_dir: &Path, name: &str) -> Result<PathBuf, JjError>
             source,
         })?;
     Ok(PathBuf::from(stdout.trim_end_matches(['\r', '\n'])))
+}
+
+pub(super) fn workspace_root_is_missing_recorded_path(error: &JjError) -> bool {
+    matches!(
+        error,
+        JjError::WorkspaceRootFailed { status, .. }
+            if status.contains("has no recorded path")
+    )
 }
 
 fn run_jj_workspace_forget(current_dir: &Path, name: &str) -> Result<(), JjError> {
