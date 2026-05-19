@@ -102,6 +102,7 @@ pub(super) fn handle_request(
         CommandRequest::Workflow {
             command,
             task_id,
+            no_task_id,
             commit,
             labels,
             reviewers,
@@ -116,9 +117,10 @@ pub(super) fn handle_request(
                     render_check(&report, environment.current_dir(), output.color)?
                 }
                 WorkflowCommand::PullRequest => {
-                    let task_id = match task_id {
-                        Some(task_id) => Some(task_id),
-                        None => read_workspace_metadata(&context.workspace_root)?.task_id,
+                    let task_id = match (task_id, no_task_id) {
+                        (Some(task_id), _) => Some(task_id),
+                        (None, true) => None,
+                        (None, false) => read_workspace_metadata(&context.workspace_root)?.task_id,
                     };
                     progress.status("Planning pull request…");
                     let status = services

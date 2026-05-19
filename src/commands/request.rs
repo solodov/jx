@@ -19,6 +19,7 @@ pub(super) enum CommandRequest {
     Workflow {
         command: WorkflowCommand,
         task_id: Option<String>,
+        no_task_id: bool,
         commit: Option<String>,
         labels: Vec<String>,
         reviewers: Vec<ReviewerTarget>,
@@ -179,6 +180,7 @@ impl CommandRequest {
             Some(("check", _)) => Ok(Self::Workflow {
                 command: WorkflowCommand::Check,
                 task_id: None,
+                no_task_id: false,
                 commit: None,
                 labels: Vec::new(),
                 reviewers: Vec::new(),
@@ -214,6 +216,7 @@ impl CommandRequest {
             Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
                 command: WorkflowCommand::PullRequest,
                 task_id: task_id(matches),
+                no_task_id: matches.get_flag("no-task-id"),
                 commit: commit(matches),
                 labels: labels(matches),
                 reviewers: reviewers(matches)?,
@@ -691,6 +694,7 @@ pub(super) fn cli() -> ClapCommand {
                 .visible_alias("pr")
                 .about("Publish or update a GitHub pull request for a jj change")
                 .arg(task_id_arg())
+                .arg(no_task_id_arg())
                 .arg(commit_arg())
                 .arg(label_arg())
                 .arg(reviewer_arg())
@@ -775,6 +779,14 @@ fn task_id_arg() -> Arg {
         .long("task-id")
         .value_name("TASK_ID")
         .help("Associate a task identifier with generated workspace or PR bookmark names")
+}
+
+fn no_task_id_arg() -> Arg {
+    Arg::new("no-task-id")
+        .long("no-task-id")
+        .action(ArgAction::SetTrue)
+        .conflicts_with("task-id")
+        .help("Ignore workspace metadata task IDs when generating a pull request bookmark")
 }
 
 fn commit_arg() -> Arg {

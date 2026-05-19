@@ -4428,6 +4428,36 @@ fn pull_request_infers_task_id_from_workspace_metadata() {
 }
 
 #[test]
+fn pull_request_no_task_id_ignores_workspace_metadata() {
+    // Verifies: Operators can opt out of workspace task metadata for ticketless PRs.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        expected_task_id: Some(None),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "pr", "--no-task-id"], &environment, &services)
+        .expect("pull request publishes without task id");
+}
+
+#[test]
 fn pull_request_task_id_flag_overrides_workspace_metadata() {
     // Verifies: Explicit PR task IDs win over workspace-local defaults.
     let workspace = TestWorkspace::new();
