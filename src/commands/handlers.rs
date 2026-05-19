@@ -645,6 +645,12 @@ fn handle_work(
             }
         }
         WorkRequest::Complete(request) => {
+            if request.workspaces {
+                let workspaces = services.workspace_entries(environment.current_dir())?;
+                let workspaces = filter_workspace_entries_by_prefix(&workspaces, &request.prefix);
+                return Ok(render_workspace_name_complete(&workspaces));
+            }
+
             let config = WorkflowConfig::discover_global(environment)?;
             if request.repositories {
                 let repositories = global_work_repositories(&config, environment)?;

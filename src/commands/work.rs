@@ -394,6 +394,17 @@ pub(super) fn filter_work_repositories_by_prefix(
         .collect()
 }
 
+pub(super) fn filter_workspace_entries_by_prefix(
+    workspaces: &[WorkspaceEntry],
+    prefix: &str,
+) -> Vec<WorkspaceEntry> {
+    workspaces
+        .iter()
+        .filter(|workspace| workspace.name.starts_with(prefix))
+        .cloned()
+        .collect()
+}
+
 pub(super) fn resolve_work_repository(
     repositories: &[WorkRepository],
     key: &str,

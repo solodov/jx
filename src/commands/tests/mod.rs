@@ -1040,6 +1040,42 @@ path = "{repo}"
 }
 
 #[test]
+fn work_complete_can_list_current_workspace_names() {
+    // Verifies: Delete completion can offer jj workspace names without global work-location keys.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: workspace.path().to_path_buf(),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "fix".to_owned(),
+                root: workspace.path().join("../fix"),
+                is_current: false,
+            },
+            WorkspaceEntry {
+                name: "review".to_owned(),
+                root: workspace.path().join("../review"),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "complete", "--workspaces", "--prefix", "f"],
+        &environment,
+        &services,
+    )
+    .expect("workspace completion succeeds");
+
+    assert_eq!(result.stdout, "fix\n");
+}
+
+#[test]
 fn work_complete_can_list_only_primary_repositories() {
     // Verifies: Project-argument shell completion omits secondary workspaces.
     let workspace = TestWorkspace::new();
@@ -1260,6 +1296,10 @@ zoxide = "auto"
     assert!(result
         .stdout
         .contains("command jx work complete --repositories --prefix \"$cur\""));
+    assert!(result
+        .stdout
+        .contains("command jx work complete --workspaces --prefix \"$cur\""));
+    assert!(result.stdout.contains("if [[ \"$cur\" == -* ]]; then"));
     assert!(result.stdout.contains("u() {"));
     assert!(result.stdout.contains("command jx work root \"$1\""));
     assert!(result.stdout.contains("\"$2\" == \"trunk\""));

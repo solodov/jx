@@ -70,6 +70,7 @@ pub(super) struct WorkListRequest {
 pub(super) struct WorkCompleteRequest {
     pub(super) prefix: String,
     pub(super) repositories: bool,
+    pub(super) workspaces: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +255,7 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
         Some(("complete", matches)) => Ok(WorkRequest::Complete(WorkCompleteRequest {
             prefix: string_arg(matches, "prefix").unwrap_or_default(),
             repositories: matches.get_flag("repositories"),
+            workspaces: matches.get_flag("workspaces"),
         })),
         Some(("root", matches)) => Ok(WorkRequest::Root(WorkRootRequest {
             key: required_arg(matches, "key"),
@@ -581,7 +583,8 @@ pub(super) fn cli() -> ClapCommand {
                     ClapCommand::new("complete")
                         .about("List global work-location completion keys")
                         .arg(work_prefix_arg())
-                        .arg(work_repositories_arg()),
+                        .arg(work_repositories_arg())
+                        .arg(workspaces_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("root")
@@ -756,7 +759,16 @@ fn work_repositories_arg() -> Arg {
     Arg::new("repositories")
         .long("repositories")
         .action(ArgAction::SetTrue)
+        .conflicts_with("workspaces")
         .help("Complete only primary repository keys")
+}
+
+fn workspaces_arg() -> Arg {
+    Arg::new("workspaces")
+        .long("workspaces")
+        .hide(true)
+        .action(ArgAction::SetTrue)
+        .conflicts_with("repositories")
 }
 
 fn work_key_arg() -> Arg {

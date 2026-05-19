@@ -542,6 +542,13 @@ pub(super) fn render_work_repository_complete(repositories: &[WorkRepository]) -
         .collect()
 }
 
+pub(super) fn render_workspace_name_complete(workspaces: &[WorkspaceEntry]) -> String {
+    workspaces
+        .iter()
+        .map(|workspace| format!("{}\n", workspace.name))
+        .collect()
+}
+
 pub(super) fn render_work_root(root: &Path) -> String {
     format!("{}\n", root.display())
 }
