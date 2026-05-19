@@ -137,8 +137,9 @@ for navigation and workspace management.
 - `jx pr` uses an explicit `--task-id` when present; otherwise it can read the
   task id stored in workspace-local metadata created by `jx work add --task-id`.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
-  completion includes primary repositories and managed workspaces; project
-  argument completion includes only primary repositories.
+  completion prefers current-repository jj workspace names, `trunk`/`root`
+  aliases, and same-repository layout keys before other global work locations;
+  project argument completion includes only primary repositories.
 
 ## Workspace metadata
 

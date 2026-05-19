@@ -116,6 +116,12 @@ struct DiscoveredWorkLocation {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CurrentNavigationRepository {
+    primary_root: PathBuf,
+    workspace_collection_root: PathBuf,
+}
+
 /// Builds the full work-add plan before crossing jj or filesystem mutation boundaries.
 pub(super) fn plan_work_add(
     request: &WorkAddRequest,
@@ -368,6 +374,39 @@ pub(super) fn filter_work_locations_by_prefix(
         .collect()
 }
 
+/// Builds navigation candidates with current-repository targets before global layout targets.
+pub(super) fn navigation_work_locations(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+    current_workspaces: &[WorkspaceEntry],
+) -> Result<Vec<WorkLocation>, RepositoryError> {
+    let global = global_work_locations(config, environment)?;
+    let mut locations = current_workspace_name_locations(current_workspaces);
+
+    let Some(current_repository) =
+        current_navigation_repository(config, environment, current_workspaces)?
+    else {
+        locations.extend(global);
+        return Ok(deduplicate_work_locations_by_key(locations));
+    };
+
+    locations.push(WorkLocation {
+        key: "trunk".to_owned(),
+        root: current_repository.primary_root.clone(),
+    });
+    locations.push(WorkLocation {
+        key: "root".to_owned(),
+        root: current_repository.primary_root.clone(),
+    });
+
+    let (current_global, other_global) =
+        partition_navigation_global_locations(&global, &current_repository);
+    locations.extend(current_global);
+    locations.extend(other_global);
+
+    Ok(deduplicate_work_locations_by_key(locations))
+}
+
 /// Builds the global primary-checkout index used by cross-repository commands.
 pub(super) fn global_work_repositories(
     config: &WorkflowConfig,
@@ -467,6 +506,74 @@ pub(super) fn resolve_work_location(
                 .collect(),
         }),
     }
+}
+
+fn current_workspace_name_locations(current_workspaces: &[WorkspaceEntry]) -> Vec<WorkLocation> {
+    current_workspaces
+        .iter()
+        .map(|workspace| WorkLocation {
+            key: workspace.name.clone(),
+            root: workspace.root.clone(),
+        })
+        .collect()
+}
+
+fn current_navigation_repository(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+    current_workspaces: &[WorkspaceEntry],
+) -> Result<Option<CurrentNavigationRepository>, RepositoryError> {
+    let Some(current) = current_workspaces
+        .iter()
+        .find(|workspace| workspace.is_current)
+    else {
+        return Ok(None);
+    };
+
+    let identity = match config
+        .layout
+        .identity_for_workspace_root(&current.root, environment)
+    {
+        Ok(identity) => identity,
+        Err(RepositoryError::LayoutPathNotMatched { .. })
+        | Err(RepositoryError::AmbiguousLayoutPath { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    Ok(Some(CurrentNavigationRepository {
+        primary_root: config.layout.project_destination(&identity, environment)?,
+        workspace_collection_root: config
+            .layout
+            .workspace_collection_root(&identity, environment)?,
+    }))
+}
+
+fn partition_navigation_global_locations(
+    global: &[WorkLocation],
+    current_repository: &CurrentNavigationRepository,
+) -> (Vec<WorkLocation>, Vec<WorkLocation>) {
+    global
+        .iter()
+        .cloned()
+        .partition(|location| is_current_repository_location(location, current_repository))
+}
+
+fn is_current_repository_location(
+    location: &WorkLocation,
+    current_repository: &CurrentNavigationRepository,
+) -> bool {
+    location.root == current_repository.primary_root
+        || location
+            .root
+            .starts_with(&current_repository.workspace_collection_root)
+}
+
+fn deduplicate_work_locations_by_key(locations: Vec<WorkLocation>) -> Vec<WorkLocation> {
+    let mut seen = BTreeSet::new();
+    locations
+        .into_iter()
+        .filter(|location| seen.insert(location.key.clone()))
+        .collect()
 }
 
 fn matching_work_repositories<'a>(

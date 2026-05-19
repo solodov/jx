@@ -652,7 +652,12 @@ fn handle_work(
             }
 
             let config = WorkflowConfig::discover_global(environment)?;
-            if request.repositories {
+            if request.navigation {
+                let workspaces = current_navigation_workspaces(environment, services)?;
+                let locations = navigation_work_locations(&config, environment, &workspaces)?;
+                let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
+                Ok(render_work_complete(&locations))
+            } else if request.repositories {
                 let repositories = global_work_repositories(&config, environment)?;
                 let repositories =
                     filter_work_repositories_by_prefix(&repositories, &request.prefix);
@@ -665,7 +670,12 @@ fn handle_work(
         }
         WorkRequest::Root(request) => {
             let config = WorkflowConfig::discover_global(environment)?;
-            let locations = global_work_locations(&config, environment)?;
+            let locations = if request.navigation {
+                let workspaces = current_navigation_workspaces(environment, services)?;
+                navigation_work_locations(&config, environment, &workspaces)?
+            } else {
+                global_work_locations(&config, environment)?
+            };
             let root = resolve_work_location(&locations, &request.key)?;
             Ok(render_work_root(&root))
         }
@@ -729,6 +739,25 @@ fn handle_work(
 
 fn shell_cd_target(path: &Path) -> String {
     format!("{SHELL_CD_TARGET_PREFIX}{}\n", path.display())
+}
+
+fn current_navigation_workspaces(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+) -> Result<Vec<WorkspaceEntry>, CommandError> {
+    if has_jj_workspace_ancestor(environment.current_dir()) {
+        services
+            .workspace_entries(environment.current_dir())
+            .map_err(CommandError::from)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn has_jj_workspace_ancestor(start: &Path) -> bool {
+    start
+        .ancestors()
+        .any(|candidate| candidate.join(".jj").is_dir())
 }
 
 fn handle_shell(

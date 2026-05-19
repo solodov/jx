@@ -71,11 +71,13 @@ pub(super) struct WorkCompleteRequest {
     pub(super) prefix: String,
     pub(super) repositories: bool,
     pub(super) workspaces: bool,
+    pub(super) navigation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkRootRequest {
     pub(super) key: String,
+    pub(super) navigation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,9 +258,11 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
             prefix: string_arg(matches, "prefix").unwrap_or_default(),
             repositories: matches.get_flag("repositories"),
             workspaces: matches.get_flag("workspaces"),
+            navigation: matches.get_flag("navigation"),
         })),
         Some(("root", matches)) => Ok(WorkRequest::Root(WorkRootRequest {
             key: required_arg(matches, "key"),
+            navigation: matches.get_flag("navigation"),
         })),
         Some(("trunk", matches)) => Ok(WorkRequest::Trunk(WorkTrunkRequest {
             shell_cd_target: matches.get_flag("shell-cd-target"),
@@ -584,12 +588,14 @@ pub(super) fn cli() -> ClapCommand {
                         .about("List global work-location completion keys")
                         .arg(work_prefix_arg())
                         .arg(work_repositories_arg())
-                        .arg(workspaces_arg()),
+                        .arg(workspaces_arg())
+                        .arg(work_navigation_arg().conflicts_with_all(["repositories", "workspaces"])),
                 )
                 .subcommand(
                     ClapCommand::new("root")
                         .about("Resolve a global work-location key to its root path")
-                        .arg(work_key_arg()),
+                        .arg(work_key_arg())
+                        .arg(work_navigation_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("trunk")
@@ -769,6 +775,13 @@ fn workspaces_arg() -> Arg {
         .hide(true)
         .action(ArgAction::SetTrue)
         .conflicts_with("repositories")
+}
+
+fn work_navigation_arg() -> Arg {
+    Arg::new("navigation")
+        .long("navigation")
+        .hide(true)
+        .action(ArgAction::SetTrue)
 }
 
 fn work_key_arg() -> Arg {

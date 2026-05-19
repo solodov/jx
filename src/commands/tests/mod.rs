@@ -1136,6 +1136,101 @@ path = "{repo}"
 }
 
 #[test]
+fn work_root_navigation_prefers_current_workspace_names_over_global_keys() {
+    // Verifies: `u name` resolves same-repository workspaces before unrelated global keys.
+    let workspace = TestWorkspace::new_under("projects/.work/project/current");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let sibling_root = workspace.home.join("projects/.work/project/other");
+    let unrelated_root = workspace.home.join("projects/other");
+    create_jj_workspace_marker(&sibling_root);
+    create_jj_workspace_marker(&unrelated_root);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "current".to_owned(),
+                root: workspace.path(),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "other".to_owned(),
+                root: sibling_root.clone(),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "other"],
+        &environment,
+        &services,
+    )
+    .expect("navigation root succeeds");
+
+    assert_eq!(result.stdout, format!("{}\n", sibling_root.display()));
+}
+
+#[test]
+fn work_complete_navigation_orders_current_repo_before_global_locations() {
+    // Verifies: navigation completion presents local workspace names and trunk aliases first.
+    let workspace = TestWorkspace::new_under("projects/.work/project/current");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let primary_root = workspace.home.join("projects/project");
+    let sibling_root = workspace.home.join("projects/.work/project/fix");
+    let unrelated_root = workspace.home.join("projects/other");
+    create_jj_workspace_marker(&primary_root);
+    create_jj_workspace_marker(&sibling_root);
+    create_jj_workspace_marker(&unrelated_root);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "current".to_owned(),
+                root: workspace.path(),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "fix".to_owned(),
+                root: sibling_root,
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "complete", "--navigation", "--prefix", ""],
+        &environment,
+        &services,
+    )
+    .expect("navigation completion succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "current\nfix\ntrunk\nroot\nproject\nproject@current\nproject@fix\nother\n"
+    );
+}
+
+#[test]
 fn work_trunk_resolves_primary_checkout_from_current_workspace() {
     // Verifies: A managed workspace can resolve the trunk checkout for quick navigation back.
     let workspace = TestWorkspace::new_under("projects/.work/tool/fix");
@@ -1301,7 +1396,9 @@ zoxide = "auto"
         .contains("command jx work complete --workspaces --prefix \"$cur\""));
     assert!(result.stdout.contains("if [[ \"$cur\" == -* ]]; then"));
     assert!(result.stdout.contains("u() {"));
-    assert!(result.stdout.contains("command jx work root \"$1\""));
+    assert!(result
+        .stdout
+        .contains("command jx work root --navigation \"$1\""));
     assert!(result.stdout.contains("\"$2\" == \"trunk\""));
     assert!(result.stdout.contains("\"$2\" == \"delete\""));
     assert!(result
@@ -1309,7 +1406,7 @@ zoxide = "auto"
         .contains("if (( status == 0 )) && [[ -n \"$cd_target\" ]]"));
     assert!(result
         .stdout
-        .contains("command jx work complete --prefix \"$cur\""));
+        .contains("command jx work complete --navigation --prefix \"$cur\""));
     assert!(result.stdout.contains("command -v zoxide"));
     assert!(result.stdout.contains("zoxide query \"$@\""));
     assert!(result

@@ -194,7 +194,7 @@ fn bash_navigation_script_with_zoxide(command: &str) -> String {
 
   if (( $# == 0 )); then
     target="$HOME"
-  elif (( $# == 1 )) && target="$(command jx work root "$1" 2>/dev/null)"; then
+  elif (( $# == 1 )) && target="$(command jx work root --navigation "$1" 2>/dev/null)"; then
     :
   elif {helper_prefix}_zoxide_enabled && target="$(zoxide query "$@" 2>/dev/null)"; then
     :
@@ -224,7 +224,7 @@ fn bash_navigation_script_with_zoxide(command: &str) -> String {
       [[ "$existing" == "$candidate" ]] && duplicate=1 && break
     done
     (( duplicate == 0 )) && candidates+=("$candidate")
-  done < <(command jx work complete --prefix "$cur" 2>/dev/null)
+  done < <(command jx work complete --navigation --prefix "$cur" 2>/dev/null)
 
   if {helper_prefix}_zoxide_enabled; then
     while IFS= read -r path; do
@@ -255,7 +255,7 @@ fn bash_navigation_script_without_zoxide(command: &str) -> String {
 
   if (( $# == 0 )); then
     target="$HOME"
-  elif (( $# == 1 )) && target="$(command jx work root "$1" 2>/dev/null)"; then
+  elif (( $# == 1 )) && target="$(command jx work root --navigation "$1" 2>/dev/null)"; then
     :
   else
     pushd "$@" > /dev/null
@@ -278,7 +278,7 @@ fn bash_navigation_script_without_zoxide(command: &str) -> String {
 
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] && candidates+=("$candidate")
-  done < <(command jx work complete --prefix "$cur" 2>/dev/null)
+  done < <(command jx work complete --navigation --prefix "$cur" 2>/dev/null)
 
   COMPREPLY=($(compgen -W "${{candidates[*]}}" -- "$cur"))
 }}
