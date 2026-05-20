@@ -490,7 +490,13 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
     for key in table.keys() {
         if !matches!(
             key.as_str(),
-            "advance_trunk" | "reviewers" | "reviewer_rules" | "workspace_shared_paths" | "rules"
+            "advance_trunk"
+                | "event_handlers"
+                | "reviewers"
+                | "path_reviewers"
+                | "reviewer_rules"
+                | "workspace_shared_paths"
+                | "rules"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -542,7 +548,13 @@ fn parse_repo_rule(
     for key in table.keys() {
         if !matches!(
             key.as_str(),
-            "repo" | "advance_trunk" | "reviewers" | "reviewer_rules" | "workspace_shared_paths"
+            "repo"
+                | "advance_trunk"
+                | "event_handlers"
+                | "reviewers"
+                | "path_reviewers"
+                | "reviewer_rules"
+                | "workspace_shared_paths"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -567,18 +579,17 @@ fn parse_repo_policy(
         .get("advance_trunk")
         .map(|value| parse_bool_value(file, &format!("{key_prefix}.advance_trunk"), value))
         .transpose()?;
+    let event_handlers = table
+        .get("event_handlers")
+        .map(|value| parse_event_handlers(file, &format!("{key_prefix}.event_handlers"), value))
+        .transpose()?
+        .unwrap_or_default();
     let reviewers = table
         .get("reviewers")
         .map(|value| parse_reviewers(file, &format!("{key_prefix}.reviewers"), value))
         .transpose()?
         .unwrap_or_default();
-    let reviewer_rules = table
-        .get("reviewer_rules")
-        .map(|value| {
-            parse_reviewer_path_rules(file, &format!("{key_prefix}.reviewer_rules"), value)
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let reviewer_rules = parse_policy_path_reviewers(file, key_prefix, table)?;
     let workspace_shared_paths = table
         .get("workspace_shared_paths")
         .map(|value| {
@@ -593,10 +604,270 @@ fn parse_repo_policy(
 
     Ok(RepoPolicyConfig {
         advance_trunk,
+        event_handlers,
         reviewers,
         reviewer_rules,
         workspace_shared_paths,
     })
+}
+
+fn parse_policy_path_reviewers(
+    file: &str,
+    key_prefix: &str,
+    table: &toml::Table,
+) -> Result<Vec<ReviewerPathRule>, RepositoryError> {
+    match (table.get("path_reviewers"), table.get("reviewer_rules")) {
+        (Some(value), None) => {
+            parse_reviewer_path_rules(file, &format!("{key_prefix}.path_reviewers"), value)
+        }
+        (None, Some(value)) => {
+            parse_reviewer_path_rules(file, &format!("{key_prefix}.reviewer_rules"), value)
+        }
+        (Some(_), Some(_)) => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!(
+                "configure `{key_prefix}.path_reviewers` or legacy `{key_prefix}.reviewer_rules`, not both"
+            ),
+        }),
+        (None, None) => Ok(Vec::new()),
+    }
+}
+
+fn parse_event_handlers(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<RepoEventHandlerConfig>, RepositoryError> {
+    let Some(handlers) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    handlers
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_event_handler(file, key, index, value))
+        .collect()
+}
+
+fn parse_event_handler(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoEventHandlerConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(
+            name.as_str(),
+            "id" | "enabled" | "on" | "when" | "run" | "labels"
+        ) {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let enabled = table
+        .get("enabled")
+        .map(|value| parse_bool_value(file, &format!("{key}[{index}].enabled"), value))
+        .transpose()?
+        .unwrap_or(true);
+    let id = table
+        .get("id")
+        .map(|value| parse_non_empty_string_value(file, &format!("{key}[{index}].id"), value))
+        .transpose()?;
+
+    if !enabled {
+        let Some(id) = id else {
+            return Err(RepositoryError::InvalidConfig {
+                file: file.to_owned(),
+                message: format!("`{key}[{index}].id` is required when `enabled = false`"),
+            });
+        };
+        return Ok(RepoEventHandlerConfig::Disable { id });
+    }
+
+    let on = parse_event_handler_event(
+        file,
+        &format!("{key}[{index}].on"),
+        &required_non_empty_string(file, table, &format!("{key}[{index}].on"))?,
+    )?;
+    let when = table
+        .get("when")
+        .map(|value| {
+            parse_pull_request_event_query(
+                file,
+                &format!("{key}[{index}].when"),
+                &parse_string_value(file, &format!("{key}[{index}].when"), value)?,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let run = parse_event_handler_run(
+        file,
+        key,
+        index,
+        table,
+        on,
+        &required_non_empty_string(file, table, &format!("{key}[{index}].run"))?,
+    )?;
+
+    Ok(RepoEventHandlerConfig::Handler(RepoEventHandler {
+        id,
+        on,
+        when,
+        run,
+    }))
+}
+
+fn parse_event_handler_event(
+    file: &str,
+    key: &str,
+    value: &str,
+) -> Result<RepoEvent, RepositoryError> {
+    match value {
+        "pull_request.prepare" => Ok(RepoEvent::PullRequestPrepare),
+        "pull_request.created" => Ok(RepoEvent::PullRequestCreated),
+        "pull_request.updated" => Ok(RepoEvent::PullRequestUpdated),
+        _ => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!(
+                "`{key}` must be one of `pull_request.prepare`, `pull_request.created`, or `pull_request.updated`"
+            ),
+        }),
+    }
+}
+
+fn parse_event_handler_run(
+    file: &str,
+    key: &str,
+    index: usize,
+    table: &toml::Table,
+    on: RepoEvent,
+    value: &str,
+) -> Result<RepoEventHandlerRun, RepositoryError> {
+    match value {
+        "add_labels" => {
+            let labels = optional_string_array(file, table, &format!("{key}[{index}].labels"))?
+                .unwrap_or_default();
+            let labels = normalize_label_set(labels);
+            if labels.is_empty() {
+                return Err(RepositoryError::InvalidConfig {
+                    file: file.to_owned(),
+                    message: format!("`{key}[{index}].labels` is required for `add_labels`"),
+                });
+            }
+            Ok(RepoEventHandlerRun::AddLabels { labels })
+        }
+        "open_pull_request" => {
+            reject_labels_for_non_label_handler(file, key, index, table)?;
+            Ok(RepoEventHandlerRun::OpenPullRequest)
+        }
+        "prepend_task_id" => {
+            reject_labels_for_non_label_handler(file, key, index, table)?;
+            if on != RepoEvent::PullRequestPrepare {
+                return Err(RepositoryError::InvalidConfig {
+                    file: file.to_owned(),
+                    message: format!(
+                        "`{key}[{index}].run = \"prepend_task_id\"` is only supported for `pull_request.prepare`"
+                    ),
+                });
+            }
+            Ok(RepoEventHandlerRun::PrependTaskId)
+        }
+        _ => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!(
+                "`{key}[{index}].run` must be one of `add_labels`, `open_pull_request`, or `prepend_task_id`"
+            ),
+        }),
+    }
+}
+
+fn reject_labels_for_non_label_handler(
+    file: &str,
+    key: &str,
+    index: usize,
+    table: &toml::Table,
+) -> Result<(), RepositoryError> {
+    if table.contains_key("labels") {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}].labels` is only supported for `add_labels` handlers"),
+        });
+    }
+
+    Ok(())
+}
+
+fn parse_pull_request_event_query(
+    file: &str,
+    key: &str,
+    value: &str,
+) -> Result<PullRequestEventQuery, RepositoryError> {
+    let mut terms = Vec::new();
+    for token in value.split_whitespace() {
+        let (negated, predicate) = token
+            .strip_prefix('-')
+            .map_or((false, token), |predicate| (true, predicate));
+        if predicate.is_empty() {
+            return Err(RepositoryError::InvalidConfig {
+                file: file.to_owned(),
+                message: format!("`{key}` contains an empty negated term"),
+            });
+        }
+
+        let predicate = match predicate {
+            "is:draft" => PullRequestEventPredicate::Draft,
+            "is:ready" => PullRequestEventPredicate::Ready,
+            "has:reviewers" => PullRequestEventPredicate::HasReviewers,
+            "has:task" => PullRequestEventPredicate::HasTask,
+            predicate if predicate.starts_with("label:") => {
+                let label = predicate
+                    .strip_prefix("label:")
+                    .expect("label predicate prefix was checked");
+                if label.is_empty() {
+                    return Err(RepositoryError::InvalidConfig {
+                        file: file.to_owned(),
+                        message: format!("`{key}` contains an empty `label:` term"),
+                    });
+                }
+                PullRequestEventPredicate::Label(label.to_owned())
+            }
+            _ => {
+                return Err(RepositoryError::InvalidConfig {
+                    file: file.to_owned(),
+                    message: format!("`{key}` contains unsupported term `{token}`"),
+                });
+            }
+        };
+
+        terms.push(PullRequestEventQueryTerm { predicate, negated });
+    }
+
+    Ok(PullRequestEventQuery { terms })
+}
+
+fn normalize_label_set(labels: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = BTreeSet::new();
+    for label in labels {
+        let label = label.trim();
+        if !label.is_empty() && seen.insert(label.to_owned()) {
+            normalized.push(label.to_owned());
+        }
+    }
+    normalized
 }
 
 fn parse_workspace_shared_paths(

@@ -13,8 +13,10 @@ use crate::{
         TrackedPushOutcome, TrunkSummary, WorkspaceVisibility,
     },
     repository::{
-        GitHubRemote, GitHubRepository, OriginRemote, RepoConfig, RepoPolicyConfig, TokenSource,
-        WorkflowConfig, ORIGIN_REMOTE_NAME,
+        GitHubRemote, GitHubRepository, OriginRemote, PullRequestEventPredicate,
+        PullRequestEventQuery, PullRequestEventQueryTerm, RepoConfig, RepoEvent, RepoEventHandler,
+        RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig, TokenSource, WorkflowConfig,
+        ORIGIN_REMOTE_NAME,
     },
 };
 
@@ -503,8 +505,95 @@ fn status_surfaces_auth_failure_and_missing_comparison_targets() {
 }
 
 #[test]
-fn pull_request_plan_derives_metadata_bookmark_base_and_reviewers() {
-    // Verifies: Pull request plan derives metadata bookmark base and reviewers.
+fn prepare_pull_request_change_prepends_task_id_to_commit_title() {
+    // Verifies: PR preparation updates the selected commit title before PR planning.
+    let context = context_with_event_handlers(vec![prepend_task_id_handler(
+        "prepend-task",
+        query([has_task()]),
+    )]);
+    let mut workspace = workspace_facts();
+    workspace.target_change.description = "Example title\n\nDetailed body".to_owned();
+
+    let report = prepare_pull_request_change(
+        &context,
+        &workspace,
+        Some("ABC-123"),
+        PullRequestPublishOptions::default(),
+    );
+
+    assert!(report.changed);
+    assert_eq!(
+        report.description,
+        "ABC-123: Example title\n\nDetailed body"
+    );
+    assert_eq!(
+        report.event_effects,
+        vec![PullRequestEventEffect {
+            event: RepoEvent::PullRequestPrepare,
+            handler_id: Some("prepend-task".to_owned()),
+            kind: PullRequestEventEffectKind::UpdatedTitle {
+                title: "ABC-123: Example title".to_owned(),
+            },
+        }]
+    );
+}
+
+#[test]
+fn prepare_pull_request_change_normalizes_existing_task_title_prefix() {
+    // Verifies: Prepend-task-id fixes common existing task title shapes idempotently.
+    let context = context_with_event_handlers(vec![prepend_task_id_handler(
+        "prepend-task",
+        query([has_task()]),
+    )]);
+    let cases = [
+        ("ABC-123 Example title", "ABC-123: Example title", true),
+        ("ABC-123 - Example title", "ABC-123: Example title", true),
+        ("[ABC-123]: Example title", "ABC-123: Example title", true),
+        ("XYZ-9: Example title", "ABC-123: Example title", true),
+        ("ABC-123: Example title", "ABC-123: Example title", false),
+    ];
+
+    for (input, expected, changed) in cases {
+        let mut workspace = workspace_facts();
+        workspace.target_change.description = input.to_owned();
+
+        let report = prepare_pull_request_change(
+            &context,
+            &workspace,
+            Some("ABC-123"),
+            PullRequestPublishOptions::default(),
+        );
+
+        assert_eq!(report.changed, changed, "{input}");
+        assert_eq!(report.description, expected, "{input}");
+    }
+}
+
+#[test]
+fn prepare_pull_request_change_skips_without_task_id() {
+    // Verifies: `has:task` gates commit-title rewriting when no task id is resolved.
+    let context = context_with_event_handlers(vec![prepend_task_id_handler(
+        "prepend-task",
+        query([has_task()]),
+    )]);
+    let mut workspace = workspace_facts();
+    workspace.target_change.description = "Example title".to_owned();
+
+    let report = prepare_pull_request_change(
+        &context,
+        &workspace,
+        None,
+        PullRequestPublishOptions::default(),
+    );
+
+    assert!(!report.changed);
+    assert_eq!(report.description, "Example title");
+    assert!(report.event_effects.is_empty());
+}
+
+#[test]
+fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
+    // Verifies: Pull request plan uses the nearest stack bookmark as the PR base.
     let github = FakeGitHub::default();
     let mut workspace = workspace_facts();
     workspace.target_change.description = "Example title\n\nDetailed body".to_owned();
@@ -520,7 +609,7 @@ fn pull_request_plan_derives_metadata_bookmark_base_and_reviewers() {
     .expect("PR plan is derived");
 
     assert_eq!(plan.title, "Example title");
-    assert_eq!(plan.body, "Example title\n\nDetailed body");
+    assert_eq!(plan.body, "Detailed body");
     assert_eq!(plan.target_commit_id, "a1b2c3d4e5f6");
     assert_eq!(plan.changed_files, ["src/main.rs".to_owned()]);
     assert!(plan.draft);
@@ -545,8 +634,8 @@ fn pull_request_plan_derives_metadata_bookmark_base_and_reviewers() {
 }
 
 #[test]
-fn pull_request_plan_uses_origin_branch_when_no_ancestor_bookmark_exists() {
-    // Verifies: Pull request plan uses origin branch when no ancestor bookmark exists.
+fn pull_request_plan_uses_trunk_branch_when_no_ancestor_bookmark_exists() {
+    // Verifies: Pull request planning still uses trunk when no stack ancestor bookmark exists.
     let github = FakeGitHub::default();
     let mut workspace = workspace_facts();
     workspace.nearest_ancestor_bookmark = None;
@@ -603,6 +692,28 @@ fn pull_request_plan_rejects_empty_or_undescribed_changes() {
 }
 
 #[test]
+fn pull_request_description_omits_title_from_body_and_preserves_body_formatting() {
+    // Verifies: PR bodies do not repeat the title while keeping meaningful body indentation.
+    let (title, body) = pull_request_description_from_text(
+        "\n  Example title  \n\n  Indented first line\nSecond line\n\n",
+    )
+    .expect("description parses");
+
+    assert_eq!(title, "Example title");
+    assert_eq!(body, "  Indented first line\nSecond line");
+}
+
+#[test]
+fn pull_request_description_accepts_title_only_descriptions() {
+    // Verifies: Title-only descriptions produce an empty PR body instead of repeating the title.
+    let (title, body) =
+        pull_request_description_from_text("Example title").expect("description parses");
+
+    assert_eq!(title, "Example title");
+    assert_eq!(body, "");
+}
+
+#[test]
 fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
     // Verifies: Publish pull request creates PR and syncs configured reviewers.
     let github = FakeGitHub {
@@ -630,6 +741,7 @@ fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
         plan,
         bookmark_update(),
         push_outcome(),
+        PullRequestPublishOptions::default(),
         &github,
     ))
     .expect("PR is created");
@@ -675,6 +787,7 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
         create_plan,
         bookmark_update(),
         push_outcome(),
+        PullRequestPublishOptions::default(),
         &create_github,
     ))
     .expect("PR is created");
@@ -717,6 +830,7 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
         update_plan,
         bookmark_update(),
         push_outcome(),
+        PullRequestPublishOptions::default(),
         &update_github,
     ))
     .expect("PR is updated");
@@ -726,6 +840,173 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
         update_label_calls.lock().expect("label calls").as_slice(),
         &[(7, vec!["release-note".to_owned()])]
     );
+}
+
+#[test]
+fn publish_pull_request_runs_created_event_handlers_against_cli_labels() {
+    // Verifies: Created-PR handlers can match CLI labels, add labels, and request browser opening.
+    let github = FakeGitHub::default();
+    let label_calls = github.label_calls.clone();
+    let context = context_with_event_handlers(vec![
+        add_label_handler(
+            "queue-unreviewed",
+            RepoEvent::PullRequestCreated,
+            query([label("seed"), not(has_reviewers()), not(draft())]),
+            ["queued"],
+        ),
+        open_pull_request_handler(
+            "open-queued",
+            RepoEvent::PullRequestCreated,
+            query([label("queued")]),
+        ),
+    ]);
+    let plan = pollster::block_on(pull_request_plan(
+        &context,
+        workspace_facts(),
+        &github,
+        None,
+        vec!["seed".to_owned()],
+        false,
+    ))
+    .expect("PR plan is derived");
+
+    let report = pollster::block_on(publish_pull_request(
+        &context,
+        plan,
+        bookmark_update(),
+        push_outcome(),
+        PullRequestPublishOptions::default(),
+        &github,
+    ))
+    .expect("PR is created");
+
+    assert_eq!(
+        label_calls.lock().expect("label calls").as_slice(),
+        &[
+            (42, vec!["seed".to_owned()]),
+            (42, vec!["queued".to_owned()])
+        ]
+    );
+    assert_eq!(
+        report.event_effects,
+        vec![
+            PullRequestEventEffect {
+                event: RepoEvent::PullRequestCreated,
+                handler_id: Some("queue-unreviewed".to_owned()),
+                kind: PullRequestEventEffectKind::AddLabels {
+                    labels: vec!["queued".to_owned()],
+                },
+            },
+            PullRequestEventEffect {
+                event: RepoEvent::PullRequestCreated,
+                handler_id: Some("open-queued".to_owned()),
+                kind: PullRequestEventEffectKind::OpenPullRequest {
+                    url: "https://github.com/example-owner/example-repo/pull/42".to_owned(),
+                },
+            },
+        ]
+    );
+}
+
+#[test]
+fn publish_pull_request_runs_updated_event_handlers_against_existing_and_cli_labels() {
+    // Verifies: Updated-PR handlers match existing GitHub labels plus new CLI labels.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Old title".to_owned(),
+            body: Some("Old body".to_owned()),
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+        }),
+        pull_request_labels: vec!["existing".to_owned()],
+        ..FakeGitHub::default()
+    };
+    let label_calls = github.label_calls.clone();
+    let context = context_with_event_handlers(vec![
+        add_label_handler(
+            "from-existing-label",
+            RepoEvent::PullRequestUpdated,
+            query([label("existing")]),
+            ["matched-existing"],
+        ),
+        add_label_handler(
+            "from-cli-label",
+            RepoEvent::PullRequestUpdated,
+            query([label("cli")]),
+            ["matched-cli"],
+        ),
+    ]);
+    let plan = pollster::block_on(pull_request_plan(
+        &context,
+        workspace_facts(),
+        &github,
+        None,
+        vec!["cli".to_owned()],
+        false,
+    ))
+    .expect("PR plan is derived");
+
+    pollster::block_on(publish_pull_request(
+        &context,
+        plan,
+        bookmark_update(),
+        push_outcome(),
+        PullRequestPublishOptions::default(),
+        &github,
+    ))
+    .expect("PR is updated");
+
+    assert_eq!(
+        label_calls.lock().expect("label calls").as_slice(),
+        &[
+            (7, vec!["cli".to_owned()]),
+            (7, vec!["matched-existing".to_owned()]),
+            (7, vec!["matched-cli".to_owned()]),
+        ]
+    );
+}
+
+#[test]
+fn publish_pull_request_can_disable_event_handlers() {
+    // Verifies: Command options can suppress configured event handlers without dropping CLI labels.
+    let github = FakeGitHub::default();
+    let label_calls = github.label_calls.clone();
+    let context = context_with_event_handlers(vec![add_label_handler(
+        "disabled-handler",
+        RepoEvent::PullRequestCreated,
+        PullRequestEventQuery::default(),
+        ["configured"],
+    )]);
+    let plan = pollster::block_on(pull_request_plan(
+        &context,
+        workspace_facts(),
+        &github,
+        None,
+        vec!["cli".to_owned()],
+        false,
+    ))
+    .expect("PR plan is derived");
+
+    let report = pollster::block_on(publish_pull_request(
+        &context,
+        plan,
+        bookmark_update(),
+        push_outcome(),
+        PullRequestPublishOptions {
+            event_handlers: false,
+        },
+        &github,
+    ))
+    .expect("PR is created");
+
+    assert_eq!(
+        label_calls.lock().expect("label calls").as_slice(),
+        &[(42, vec!["cli".to_owned()])]
+    );
+    assert!(report.event_effects.is_empty());
 }
 
 #[test]
@@ -765,6 +1046,7 @@ fn publish_pull_request_updates_existing_pr_without_unconfigured_reviewers() {
         plan,
         bookmark_update(),
         push_outcome(),
+        PullRequestPublishOptions::default(),
         &github,
     ))
     .expect("PR is updated");
@@ -820,17 +1102,14 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
 
     assert_eq!(pull_requests[0].number, 7);
     assert_eq!(pull_requests[0].title, "New title");
-    assert_eq!(
-        pull_requests[0].body.as_deref(),
-        Some("New title\n\nNew body")
-    );
+    assert_eq!(pull_requests[0].body.as_deref(), Some("New body"));
     assert_eq!(
         update_calls.lock().expect("update calls").as_slice(),
         &[(
             7,
             PullRequestUpdate {
                 title: Some("New title".to_owned()),
-                body: Some("New title\n\nNew body".to_owned()),
+                body: Some("New body".to_owned()),
                 base: None,
             }
         )]
@@ -838,6 +1117,89 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
     assert!(label_calls.lock().expect("label calls").is_empty());
     assert!(reviewer_calls.lock().expect("reviewer calls").is_empty());
     assert!(create_calls.lock().expect("create calls").is_empty());
+}
+
+#[test]
+fn sync_pull_requests_clears_body_for_title_only_descriptions() {
+    // Verifies: Sync can clear stale GitHub body text when the local PR description has no body.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Old title".to_owned(),
+            body: Some("Old body".to_owned()),
+            head_branch: "example-user/current".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+        }),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/current".to_owned(),
+            old_short_commit_id: Some("11112222".to_owned()),
+            new_short_commit_id: Some("a1b2c3d4".to_owned()),
+            old_description: Some("Old title".to_owned()),
+            new_description: Some("New title".to_owned()),
+            pull_request_description: Some("New title".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    let pull_requests = pollster::block_on(sync_pull_requests(&context(), &push, &github))
+        .expect("pull requests sync");
+
+    assert_eq!(pull_requests[0].title, "New title");
+    assert_eq!(pull_requests[0].body.as_deref(), Some(""));
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            7,
+            PullRequestUpdate {
+                title: Some("New title".to_owned()),
+                body: Some(String::new()),
+                base: None,
+            }
+        )]
+    );
+}
+
+#[test]
+fn sync_pull_requests_skips_title_only_update_when_github_body_is_absent() {
+    // Verifies: GitHub's absent body and jx's empty body compare equal for stable repeated syncs.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "New title".to_owned(),
+            body: None,
+            head_branch: "example-user/current".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+        }),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/current".to_owned(),
+            old_short_commit_id: Some("11112222".to_owned()),
+            new_short_commit_id: Some("a1b2c3d4".to_owned()),
+            old_description: Some("New title".to_owned()),
+            new_description: Some("New title".to_owned()),
+            pull_request_description: Some("New title".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    pollster::block_on(sync_pull_requests(&context(), &push, &github)).expect("pull requests sync");
+
+    assert!(update_calls.lock().expect("update calls").is_empty());
 }
 
 fn context() -> RepositoryContext {
@@ -879,6 +1241,87 @@ fn context_with_reviewers(reviewers: &[&str]) -> RepositoryContext {
         ..RepoPolicyConfig::default()
     };
     context
+}
+
+fn context_with_event_handlers(handlers: Vec<RepoEventHandlerConfig>) -> RepositoryContext {
+    let mut context = context();
+    context.config.repo.base = RepoPolicyConfig {
+        event_handlers: handlers,
+        ..RepoPolicyConfig::default()
+    };
+    context
+}
+
+fn add_label_handler<const N: usize>(
+    id: &str,
+    on: RepoEvent,
+    when: PullRequestEventQuery,
+    labels: [&str; N],
+) -> RepoEventHandlerConfig {
+    RepoEventHandlerConfig::Handler(RepoEventHandler {
+        id: Some(id.to_owned()),
+        on,
+        when,
+        run: RepoEventHandlerRun::AddLabels {
+            labels: labels.into_iter().map(str::to_owned).collect(),
+        },
+    })
+}
+
+fn prepend_task_id_handler(id: &str, when: PullRequestEventQuery) -> RepoEventHandlerConfig {
+    RepoEventHandlerConfig::Handler(RepoEventHandler {
+        id: Some(id.to_owned()),
+        on: RepoEvent::PullRequestPrepare,
+        when,
+        run: RepoEventHandlerRun::PrependTaskId,
+    })
+}
+
+fn open_pull_request_handler(
+    id: &str,
+    on: RepoEvent,
+    when: PullRequestEventQuery,
+) -> RepoEventHandlerConfig {
+    RepoEventHandlerConfig::Handler(RepoEventHandler {
+        id: Some(id.to_owned()),
+        on,
+        when,
+        run: RepoEventHandlerRun::OpenPullRequest,
+    })
+}
+
+fn query<const N: usize>(terms: [PullRequestEventQueryTerm; N]) -> PullRequestEventQuery {
+    PullRequestEventQuery {
+        terms: terms.into_iter().collect(),
+    }
+}
+
+fn draft() -> PullRequestEventQueryTerm {
+    term(PullRequestEventPredicate::Draft)
+}
+
+fn has_reviewers() -> PullRequestEventQueryTerm {
+    term(PullRequestEventPredicate::HasReviewers)
+}
+
+fn has_task() -> PullRequestEventQueryTerm {
+    term(PullRequestEventPredicate::HasTask)
+}
+
+fn label(name: &str) -> PullRequestEventQueryTerm {
+    term(PullRequestEventPredicate::Label(name.to_owned()))
+}
+
+fn not(mut term: PullRequestEventQueryTerm) -> PullRequestEventQueryTerm {
+    term.negated = true;
+    term
+}
+
+fn term(predicate: PullRequestEventPredicate) -> PullRequestEventQueryTerm {
+    PullRequestEventQueryTerm {
+        predicate,
+        negated: false,
+    }
 }
 
 fn bookmark_update() -> BookmarkUpdate {
@@ -981,6 +1424,7 @@ struct FakeGitHub {
     update_calls: UpdateCalls,
     label_calls: LabelCalls,
     label_result: LabelApplyResult,
+    pull_request_labels: Vec<String>,
     reviewer_calls: ReviewerCalls,
     reviewer_result: ReviewerSyncResult,
 }
@@ -1015,6 +1459,7 @@ impl Default for FakeGitHub {
             update_calls: Arc::new(Mutex::new(Vec::new())),
             label_calls: Arc::new(Mutex::new(Vec::new())),
             label_result: LabelApplyResult::default(),
+            pull_request_labels: Vec::new(),
             reviewer_calls: Arc::new(Mutex::new(Vec::new())),
             reviewer_result: ReviewerSyncResult::default(),
         }
@@ -1145,6 +1590,14 @@ impl GitHubClient for FakeGitHub {
         })
     }
 
+    async fn pull_request_labels(
+        &self,
+        _repository: &GitHubRepository,
+        _number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        Ok(self.pull_request_labels.clone())
+    }
+
     async fn add_labels(
         &self,
         _repository: &GitHubRepository,
@@ -1154,8 +1607,12 @@ impl GitHubClient for FakeGitHub {
         self.label_calls
             .lock()
             .expect("label calls")
-            .push((number, labels));
-        Ok(self.label_result.clone())
+            .push((number, labels.clone()));
+        if self.label_result.labels.is_empty() {
+            Ok(LabelApplyResult { labels })
+        } else {
+            Ok(self.label_result.clone())
+        }
     }
 
     async fn sync_reviewers(

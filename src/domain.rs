@@ -20,7 +20,10 @@ use crate::{
         BookmarkUpdate, FetchOutcome, PushOutcome, RebaseOnTrunkOutcome, StatusWorkspaceFacts,
         TrackedPushOutcome, WorkspaceFacts,
     },
-    repository::{GitHubRepository, RepositoryContext},
+    repository::{
+        GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,
+        RepoEventHandler, RepoEventHandlerRun, RepositoryContext,
+    },
 };
 
 mod bookmark;

@@ -70,6 +70,13 @@ pub trait GitHubClient: Send + Sync {
         request: PullRequestUpdate,
     ) -> Result<PullRequestRecord, GitHubError>;
 
+    /// Lists labels currently attached to a pull request's backing issue.
+    async fn pull_request_labels(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Vec<String>, GitHubError>;
+
     /// Adds labels to a pull request's backing issue.
     async fn add_labels(
         &self,
@@ -396,6 +403,25 @@ impl GitHubClient for OctocrabGitHubClient {
             .map_err(|source| api_error("update pull request", source))?;
 
         Ok(map_pull_request(pull))
+    }
+
+    async fn pull_request_labels(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        let page = self
+            .crab
+            .issues(&repository.owner, &repository.name)
+            .list_labels_for_issue(number)
+            .per_page(100u8)
+            .send()
+            .await
+            .map_err(|source| api_error("list pull request labels", source))?;
+
+        Ok(normalize_names(
+            page.items.into_iter().map(|label| label.name),
+        ))
     }
 
     async fn add_labels(

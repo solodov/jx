@@ -24,6 +24,7 @@ pub(super) enum CommandRequest {
         labels: Vec<String>,
         reviewers: Vec<ReviewerTarget>,
         draft: bool,
+        no_event_handlers: bool,
     },
 }
 
@@ -188,6 +189,7 @@ impl CommandRequest {
                 labels: Vec::new(),
                 reviewers: Vec::new(),
                 draft: false,
+                no_event_handlers: false,
             }),
             Some(("remote-status" | "rs", matches)) => {
                 Ok(Self::RemoteStatus(RemoteStatusRequest {
@@ -224,6 +226,7 @@ impl CommandRequest {
                 labels: labels(matches),
                 reviewers: reviewers(matches)?,
                 draft: matches.get_flag("draft"),
+                no_event_handlers: matches.get_flag("no-event-handlers"),
             }),
             None => Ok(Self::Log),
             _ => unreachable!("clap rejects unknown subcommands"),
@@ -707,7 +710,8 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(commit_arg())
                 .arg(label_arg())
                 .arg(reviewer_arg())
-                .arg(draft_arg()),
+                .arg(draft_arg())
+                .arg(no_event_handlers_arg()),
         )
 }
 
@@ -1026,4 +1030,11 @@ fn draft_arg() -> Arg {
         .long("draft")
         .action(ArgAction::SetTrue)
         .help("Create a draft pull request when no open pull request exists")
+}
+
+fn no_event_handlers_arg() -> Arg {
+    Arg::new("no-event-handlers")
+        .long("no-event-handlers")
+        .action(ArgAction::SetTrue)
+        .help("Disable configured repository event handlers for this pull request")
 }

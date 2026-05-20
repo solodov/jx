@@ -113,20 +113,56 @@ at the exact configured path; tracked parent directories are allowed for nested
 paths. If post-create setup fails, `jx` reports the failure without rolling back
 the created jj workspace, and shell integration does not enter it.
 
+Event handlers run configured PR automation while `jx pr` prepares, creates, or
+updates a pull request. Handlers can update the selected commit title, add
+labels, or ask the command layer to open the PR in an operator browser. `when`
+uses a small GitHub-search-like AND query with `has:task`, `is:draft`,
+`is:ready`, `has:reviewers`, `label:name`, and `-term` negation:
+
+```toml
+[[repo.event_handlers]]
+id = "prepend-task-id-to-commit-title"
+on = "pull_request.prepare"
+when = "has:task"
+run = "prepend_task_id"
+
+[[repo.event_handlers]]
+id = "label-draft-prs"
+on = "pull_request.created"
+when = "is:draft -label:bar"
+run = "add_labels"
+labels = ["bar"]
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.event_handlers]]
+id = "open-unreviewed-prs"
+on = "pull_request.created"
+when = "-has:reviewers -is:draft"
+run = "open_pull_request"
+```
+
+Matching rule handlers compose after base handlers. A matching rule can disable a
+previous handler with `id = "..."` and `enabled = false`. Use
+`jx pr --no-event-handlers` to disable all configured handlers for one run.
+`prepend_task_id` rewrites the selected commit title before PR planning, using
+`TASK-ID: title` and normalizing common existing task prefixes.
+
 Reviewers may be GitHub users or teams written as `org/team`.
 
 Path reviewer rules add reviewers when changed-file globs match. Each repo
 policy can contain multiple path rules:
 
 ```toml
-[[repo.reviewer_rules]]
+[[repo.path_reviewers]]
 paths = ["docs/**"]
 reviewers = ["ExampleOrg/docs"]
 
 [[repo.rules]]
 repo = "example-owner/example-repo"
 
-[[repo.rules.reviewer_rules]]
+[[repo.rules.path_reviewers]]
 paths = ["foo/bar/**", "bar/bux/*.py"]
 reviewers = ["work-reviewer", "ExampleOrg/frontend"]
 ```

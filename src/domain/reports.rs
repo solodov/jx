@@ -101,6 +101,47 @@ pub struct PullRequestReport {
     pub head: PullRequestHead,
     pub labels: Option<LabelApplyResult>,
     pub reviewers: Option<ReviewerSyncResult>,
+    pub event_effects: Vec<PullRequestEventEffect>,
+}
+
+/// Command-side effects requested by matching pull-request event handlers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestEventEffect {
+    pub event: RepoEvent,
+    pub handler_id: Option<String>,
+    pub kind: PullRequestEventEffectKind,
+}
+
+/// Effect from a pull-request event handler, reported in handler execution order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullRequestEventEffectKind {
+    AddLabels { labels: Vec<String> },
+    LabelsAlreadyPresent { labels: Vec<String> },
+    OpenPullRequest { url: String },
+    TitleAlready { title: String },
+    UpdatedTitle { title: String },
+}
+
+/// Result of applying pull-request preparation handlers before planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestPrepareReport {
+    pub description: String,
+    pub changed: bool,
+    pub event_effects: Vec<PullRequestEventEffect>,
+}
+
+/// Pull-request event handler controls supplied by command-line flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullRequestPublishOptions {
+    pub event_handlers: bool,
+}
+
+impl Default for PullRequestPublishOptions {
+    fn default() -> Self {
+        Self {
+            event_handlers: true,
+        }
+    }
 }
 
 /// Planned bookmark push data derived before any jj or Git transport mutation.

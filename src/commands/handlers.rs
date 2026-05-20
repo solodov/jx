@@ -107,6 +107,7 @@ pub(super) fn handle_request(
             labels,
             reviewers,
             draft,
+            no_event_handlers,
         } => {
             let context = RepositoryContext::discover(environment)?;
             match command {
@@ -123,9 +124,32 @@ pub(super) fn handle_request(
                         (None, false) => read_workspace_metadata(&context.workspace_root)?.task_id,
                     };
                     progress.status("Planning pull request…");
+                    let publish_options = PullRequestPublishOptions {
+                        event_handlers: !no_event_handlers,
+                    };
+                    let mut selected_revision = commit;
+                    let mut workspace =
+                        services.workspace_facts(&context, selected_revision.as_deref())?;
+                    let mut prepare_effects = Vec::new();
+                    let prepare_report = domain::prepare_pull_request_change(
+                        &context,
+                        &workspace,
+                        task_id.as_deref(),
+                        publish_options,
+                    );
+                    if prepare_report.changed {
+                        let rewrite = services.rewrite_commit_description(
+                            &context,
+                            &workspace.target_change.commit_id,
+                            &prepare_report.description,
+                        )?;
+                        selected_revision = Some(rewrite.commit_id);
+                        workspace =
+                            services.workspace_facts(&context, selected_revision.as_deref())?;
+                    }
+                    prepare_effects.extend(prepare_report.event_effects);
                     let status = services
                         .workspace_status(environment.current_dir(), io::stderr().is_terminal())?;
-                    let workspace = services.workspace_facts(&context, commit.as_deref())?;
                     let mut plan =
                         services.pull_request_plan(&context, workspace, task_id, labels, draft)?;
                     progress.finish();
@@ -149,16 +173,62 @@ pub(super) fn handle_request(
                     progress.status("Pushing branch…");
                     let push = services.push_bookmark(&context, &plan.bookmark.branch)?;
                     progress.status("Publishing pull request…");
-                    let report =
-                        services.publish_pull_request(&context, plan, bookmark_update, push)?;
+                    let mut report = services.publish_pull_request(
+                        &context,
+                        plan,
+                        bookmark_update,
+                        push,
+                        publish_options,
+                    )?;
+                    report.event_effects.splice(0..0, prepare_effects);
                     progress.finish();
-                    render_pull_request(&report)
+                    render_pull_request_with_effects(&report, services)?
                 }
             }
         }
     };
 
     Ok(CommandResult { stdout })
+}
+
+fn render_pull_request_with_effects(
+    report: &PullRequestReport,
+    services: &dyn CommandServices,
+) -> Result<String, CommandError> {
+    let mut output = render_pull_request(report);
+    if report.event_effects.is_empty() {
+        return Ok(output);
+    }
+
+    output.push_str("Event handlers:\n");
+    for effect in &report.event_effects {
+        output.push_str("  ");
+        output.push_str(effect.event.label());
+        output.push(' ');
+        output.push_str(effect.handler_id.as_deref().unwrap_or("(unnamed)"));
+        output.push_str(": ");
+        match &effect.kind {
+            PullRequestEventEffectKind::AddLabels { labels } => {
+                output.push_str(&format!("added labels {}\n", labels.join(", ")))
+            }
+            PullRequestEventEffectKind::LabelsAlreadyPresent { labels } => {
+                output.push_str(&format!("labels already present {}\n", labels.join(", ")))
+            }
+            PullRequestEventEffectKind::OpenPullRequest { url } => match services.open_url(url) {
+                Ok(()) => output.push_str(&format!("opened pull request {url}\n")),
+                Err(error) => {
+                    output.push_str(&format!("could not open pull request {url}: {error}\n"))
+                }
+            },
+            PullRequestEventEffectKind::TitleAlready { title } => {
+                output.push_str(&format!("title already `{title}`\n"))
+            }
+            PullRequestEventEffectKind::UpdatedTitle { title } => {
+                output.push_str(&format!("updated title to `{title}`\n"))
+            }
+        }
+    }
+    Ok(output)
 }
 
 fn handle_fetch(

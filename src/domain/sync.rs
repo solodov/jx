@@ -73,7 +73,8 @@ async fn sync_pull_request_description(
     description: &str,
 ) -> Result<PullRequestRecord, WorkflowError> {
     let (title, body) = pull_request_description_from_text(description)?;
-    if pull_request.title == title && pull_request.body.as_deref() == Some(body.as_str()) {
+    if pull_request.title == title && pull_request_body_matches(pull_request.body.as_deref(), &body)
+    {
         return Ok(pull_request);
     }
 
@@ -88,6 +89,14 @@ async fn sync_pull_request_description(
             },
         )
         .await?)
+}
+
+fn pull_request_body_matches(existing: Option<&str>, desired: &str) -> bool {
+    if desired.is_empty() {
+        existing.unwrap_or_default().is_empty()
+    } else {
+        existing == Some(desired)
+    }
 }
 
 /// Returns an error when fetch created conflicts so sync can stop before pushing.

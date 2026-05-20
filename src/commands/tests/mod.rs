@@ -4538,6 +4538,146 @@ fn pull_request_accepts_short_task_id_flag_and_renders_published_pr() {
 }
 
 #[test]
+fn pull_request_prepare_event_updates_commit_title_before_planning() {
+    // Verifies: Prepare handlers rewrite the selected commit before PR metadata is planned.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.event_handlers]]
+id = "prepend-task"
+on = "pull_request.prepare"
+when = "has:task"
+run = "prepend_task_id"
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut fake_workspace = workspace_facts();
+    fake_workspace.target_change.description = "Example title\n\nDetailed body".to_owned();
+    let services = FakeServices {
+        workspace: fake_workspace,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        services.description_rewrites.borrow().as_slice(),
+        &[(
+            "a1b2c3d4e5f6".to_owned(),
+            "ABC-123: Example title\n\nDetailed body".to_owned()
+        )]
+    );
+    assert_eq!(
+        result.stdout,
+        "Created https://github.com/example-owner/example-repo/pull/42\nEvent handlers:\n  pull_request.prepare prepend-task: updated title to `ABC-123: Example title`\n"
+    );
+}
+
+#[test]
+fn pull_request_opens_created_pr_when_event_handler_requests_it() {
+    // Verifies: PR publishing runs command-side browser effects after the PR is created.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_event_effects: vec![
+            domain::PullRequestEventEffect {
+                event: crate::repository::RepoEvent::PullRequestCreated,
+                handler_id: Some("label-created".to_owned()),
+                kind: PullRequestEventEffectKind::AddLabels {
+                    labels: vec!["queued".to_owned()],
+                },
+            },
+            domain::PullRequestEventEffect {
+                event: crate::repository::RepoEvent::PullRequestCreated,
+                handler_id: Some("open-created".to_owned()),
+                kind: PullRequestEventEffectKind::OpenPullRequest {
+                    url: "https://github.com/example-owner/example-repo/pull/42".to_owned(),
+                },
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        result.stdout,
+        "Created https://github.com/example-owner/example-repo/pull/42\nEvent handlers:\n  pull_request.created label-created: added labels queued\n  pull_request.created open-created: opened pull request https://github.com/example-owner/example-repo/pull/42\n"
+    );
+    assert_eq!(
+        services.opened_urls.borrow().as_slice(),
+        &["https://github.com/example-owner/example-repo/pull/42".to_owned()]
+    );
+}
+
+#[test]
+fn pull_request_no_event_handlers_suppresses_event_effects() {
+    // Verifies: Operators can disable configured PR automation for a single publish.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_event_effects: vec![domain::PullRequestEventEffect {
+            event: crate::repository::RepoEvent::PullRequestCreated,
+            handler_id: Some("open-created".to_owned()),
+            kind: PullRequestEventEffectKind::OpenPullRequest {
+                url: "https://github.com/example-owner/example-repo/pull/42".to_owned(),
+            },
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "pull-request", "--no-event-handlers"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes without event handlers");
+
+    assert_eq!(
+        result.stdout,
+        "Created https://github.com/example-owner/example-repo/pull/42\n"
+    );
+    assert!(services.opened_urls.borrow().is_empty());
+}
+
+#[test]
 fn pull_request_infers_task_id_from_workspace_metadata() {
     // Verifies: Workspace metadata supplies the default task ID for PR planning.
     let workspace = TestWorkspace::new();
@@ -5236,7 +5376,7 @@ fn preview_plan() -> PullRequestPlan {
         },
         target_commit_id: "a1b2c3d4e5f6".to_owned(),
         title: "example change".to_owned(),
-        body: "example change".to_owned(),
+        body: String::new(),
         changed_files: vec!["src/main.rs".to_owned()],
         base: "main".to_owned(),
         head: PullRequestHead::same_repository("example-owner", "example-user/02-zzzzzzzz"),
@@ -5254,6 +5394,7 @@ struct FakeServices {
     next_commit_log: String,
     workspace_status: WorkspaceStatus,
     workspace: WorkspaceFacts,
+    description_rewrites: std::cell::RefCell<Vec<(String, String)>>,
     status_workspace: StatusWorkspaceFacts,
     check: CheckReport,
     status: StatusReport,
@@ -5285,6 +5426,7 @@ struct FakeServices {
     sync_pull_requests: Vec<PullRequestRecord>,
     pull_request_action: PullRequestAction,
     pull_request_url: Option<String>,
+    pull_request_event_effects: Vec<domain::PullRequestEventEffect>,
     existing_pull_request: Option<PullRequestRecord>,
     reviewer_candidates: Vec<ReviewerCandidate>,
     expected_reviewers: Option<ReviewerSelection>,
@@ -5329,6 +5471,7 @@ impl Default for FakeServices {
             next_commit_log: "next commit graph\n".to_owned(),
             workspace_status: workspace_status(),
             workspace: workspace_facts(),
+            description_rewrites: std::cell::RefCell::new(Vec::new()),
             status_workspace: status_workspace_facts(),
             check: CheckReport {
                 repository: repository.clone(),
@@ -5479,6 +5622,7 @@ impl Default for FakeServices {
             pull_request_url: Some(
                 "https://github.com/example-owner/example-repo/pull/42".to_owned(),
             ),
+            pull_request_event_effects: Vec::new(),
             existing_pull_request: None,
             reviewer_candidates: Vec::new(),
             expected_reviewers: None,
@@ -5534,6 +5678,13 @@ impl FakeServices {
             workspace.target_change.commit_id = "deadbeefcafebabe".to_owned();
             workspace.target_change.short_commit_id = "deadbeef".to_owned();
             workspace.stack_index = 3;
+        }
+        if revision == Some("feedfacecafebeef") {
+            workspace.target_change.commit_id = "feedfacecafebeef".to_owned();
+            workspace.target_change.short_commit_id = "feedface".to_owned();
+            if let Some((_, description)) = self.description_rewrites.borrow().last() {
+                workspace.target_change.description = description.clone();
+            }
         }
         Ok(workspace)
     }
@@ -5712,6 +5863,21 @@ impl CommandServices for FakeServices {
         _color: bool,
     ) -> Result<WorkspaceStatus, JjError> {
         Ok(self.workspace_status.clone())
+    }
+
+    fn rewrite_commit_description(
+        &self,
+        _context: &RepositoryContext,
+        target_commit_id: &str,
+        description: &str,
+    ) -> Result<CommitDescriptionRewrite, JjError> {
+        self.description_rewrites
+            .borrow_mut()
+            .push((target_commit_id.to_owned(), description.to_owned()));
+        Ok(CommitDescriptionRewrite {
+            commit_id: "feedfacecafebeef".to_owned(),
+            changed: true,
+        })
     }
 
     fn workspace_facts(
@@ -5951,6 +6117,8 @@ impl CommandServices for FakeServices {
             ),
         };
 
+        let (title, body) = fake_pull_request_description(&workspace.target_change.description);
+
         Ok(PullRequestPlan {
             repository: self.check.repository.clone(),
             task_id,
@@ -5959,12 +6127,12 @@ impl CommandServices for FakeServices {
                 action: BookmarkAction::Create,
             },
             target_commit_id: workspace.target_change.commit_id.clone(),
-            title: "example change".to_owned(),
-            body: "example change".to_owned(),
+            title,
+            body,
             changed_files: workspace.changed_files,
             base: workspace
                 .nearest_ancestor_bookmark
-                .unwrap_or(workspace.origin_branch),
+                .unwrap_or(workspace.trunk.branch),
             head: PullRequestHead::same_repository("example-owner", branch),
             labels,
             draft,
@@ -5980,6 +6148,7 @@ impl CommandServices for FakeServices {
         plan: PullRequestPlan,
         bookmark_update: BookmarkUpdate,
         push: PushOutcome,
+        options: PullRequestPublishOptions,
     ) -> Result<PullRequestReport, WorkflowError> {
         if let Some(expected) = &self.expected_reviewers {
             assert_eq!(&plan.reviewers, expected);
@@ -5999,7 +6168,7 @@ impl CommandServices for FakeServices {
             pull_request: PullRequestRecord {
                 number: 42,
                 title: plan.title,
-                body: Some(plan.body),
+                body: (!plan.body.is_empty()).then_some(plan.body),
                 head_branch: plan.head.branch.clone(),
                 base_branch: plan.base.clone(),
                 html_url: self.pull_request_url.clone(),
@@ -6009,6 +6178,11 @@ impl CommandServices for FakeServices {
             head: plan.head,
             labels: None,
             reviewers: None,
+            event_effects: if options.event_handlers {
+                self.pull_request_event_effects.clone()
+            } else {
+                Vec::new()
+            },
         })
     }
 }
@@ -6087,6 +6261,26 @@ fn status_workspace_facts() -> StatusWorkspaceFacts {
 
 fn test_settings() -> UserSettings {
     UserSettings::from_config(StackedConfig::with_defaults()).expect("test settings")
+}
+
+fn fake_pull_request_description(description: &str) -> (String, String) {
+    let trimmed = description.trim();
+    let title = trimmed
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            (!line.is_empty()).then_some(line.to_owned())
+        })
+        .unwrap_or_else(|| "example change".to_owned());
+    let body = trimmed
+        .lines()
+        .skip_while(|line| line.trim().is_empty())
+        .skip(1)
+        .skip_while(|line| line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    (title, body)
 }
 
 fn test_config_remotes(contents: &str) -> Vec<(String, String)> {

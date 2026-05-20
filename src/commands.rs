@@ -30,9 +30,9 @@ use thiserror::Error;
 use crate::{
     domain::{
         self, BookmarkAction, CheckReport, FetchReport, ForkStatusReport, ForkStatusState,
-        PullRequestAction, PullRequestPlan, PullRequestReport, PushPlan, PushReport,
-        RebaseOnTrunkReport, RemoteStatusReport, StatusReport, SyncReport, TrackedPushReport,
-        WorkflowCommand, WorkflowError,
+        PullRequestAction, PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions,
+        PullRequestReport, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
+        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
@@ -41,10 +41,11 @@ use crate::{
     jj::{
         current_workspace_entry, jj_workspace_entries, remove_jj_workspace, run_current_diff,
         run_jj_git_clone, run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome,
-        BookmarkUpdate, BootstrapPushOutcome, DiffOptions, DiffToolInvocation, ExternalDiffTool,
-        FetchOutcome, InitialPublishTarget, JjError, JjWorkspace, PipeDiffTool, PushOutcome,
-        RebaseOnTrunkOutcome, StatusWorkspaceFacts, TrackedPushOutcome, WorkspaceAddOptions,
-        WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
+        BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
+        DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
+        JjWorkspace, PipeDiffTool, PushOutcome, RebaseOnTrunkOutcome, StatusWorkspaceFacts,
+        TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
+        WorkspaceRemoveOptions, WorkspaceStatus,
     },
     repository::{
         read_workspace_metadata, validate_workspace_name, write_workspace_metadata, ClonePlan,

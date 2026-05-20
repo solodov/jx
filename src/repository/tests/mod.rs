@@ -420,8 +420,8 @@ account = "work-user"
 }
 
 #[test]
-fn reviewer_rules_add_candidates_for_matching_repo_and_files() {
-    // Verifies: Reviewer rules contribute candidates with pattern reasons for matching files.
+fn path_reviewers_add_candidates_for_matching_repo_and_files() {
+    // Verifies: Path reviewer config contributes candidates with pattern reasons for matching files.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
@@ -434,11 +434,11 @@ reviewers = ["global-reviewer"]
 repo = "example-owner/*"
 advance_trunk = true
 
-[[repo.rules.reviewer_rules]]
+[[repo.rules.path_reviewers]]
 paths = ["foo/bar/**", "bar/bux/*.py"]
 reviewers = ["foo-reviewer", "global-reviewer"]
 
-[[repo.rules.reviewer_rules]]
+[[repo.rules.path_reviewers]]
 paths = ["docs/**"]
 reviewers = ["docs-reviewer"]
 "#,
@@ -480,6 +480,150 @@ reviewers = ["docs-reviewer"]
 }
 
 #[test]
+fn legacy_reviewer_rules_alias_still_loads_path_reviewers() {
+    // Verifies: Existing config files keep working while new docs use path_reviewers.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.reviewer_rules]]
+paths = ["src/**"]
+reviewers = ["example-reviewer"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let candidates = context
+        .config
+        .repo
+        .reviewer_candidates_for(&context.origin.github, &["src/main.rs".to_owned()]);
+
+    assert_eq!(
+        candidates,
+        vec![reviewer_user_candidate(
+            "example-reviewer",
+            ["src/** matched 1 file"]
+        )]
+    );
+}
+
+#[test]
+fn repo_event_handlers_compose_and_override_for_matching_repo() {
+    // Verifies: Event handlers compose by repo rule and can be disabled by handler id.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.event_handlers]]
+id = "prepare-title"
+on = "pull_request.prepare"
+when = "has:task"
+run = "prepend_task_id"
+
+[[repo.event_handlers]]
+id = "label-drafts"
+on = "pull_request.created"
+when = "is:draft -label:bar"
+run = "add_labels"
+labels = ["bar"]
+
+[[repo.event_handlers]]
+id = "open-unreviewed"
+on = "pull_request.created"
+when = "-has:reviewers -is:draft"
+run = "open_pull_request"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.event_handlers]]
+id = "open-unreviewed"
+enabled = false
+
+[[repo.rules.event_handlers]]
+id = "label-unreviewed"
+on = "pull_request.created"
+when = "-has:reviewers -label:buz"
+run = "add_labels"
+labels = ["buz", "buz"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let handlers = context
+        .config
+        .repo
+        .event_handlers_for(&context.origin.github);
+
+    assert_eq!(handlers.len(), 3);
+    assert_eq!(handlers[0].id.as_deref(), Some("prepare-title"));
+    assert_eq!(handlers[0].on, RepoEvent::PullRequestPrepare);
+    assert_eq!(handlers[0].when.terms.len(), 1);
+    assert!(matches!(
+        handlers[0].run,
+        RepoEventHandlerRun::PrependTaskId
+    ));
+    assert_eq!(handlers[1].id.as_deref(), Some("label-drafts"));
+    assert_eq!(handlers[1].on, RepoEvent::PullRequestCreated);
+    assert_eq!(handlers[1].when.terms.len(), 2);
+    assert!(matches!(
+        &handlers[1].run,
+        RepoEventHandlerRun::AddLabels { labels } if labels == &vec!["bar".to_owned()]
+    ));
+    assert_eq!(handlers[2].id.as_deref(), Some("label-unreviewed"));
+    assert!(matches!(
+        &handlers[2].run,
+        RepoEventHandlerRun::AddLabels { labels } if labels == &vec!["buz".to_owned()]
+    ));
+}
+
+#[test]
+fn repo_event_handlers_reject_invalid_shape() {
+    // Verifies: Handler config validates event names, actions, and query terms up front.
+    let cases = [
+        (
+            "[[repo.event_handlers]]\non = \"pull_request.closed\"\nrun = \"open_pull_request\"",
+            "pull_request.created",
+        ),
+        (
+            "[[repo.event_handlers]]\non = \"pull_request.created\"\nwhen = \"no:reviewers\"\nrun = \"open_pull_request\"",
+            "unsupported term",
+        ),
+        (
+            "[[repo.event_handlers]]\non = \"pull_request.created\"\nrun = \"add_labels\"",
+            "labels",
+        ),
+        (
+            "[[repo.event_handlers]]\nid = \"missing-event\"\nenabled = false",
+            "",
+        ),
+        (
+            "[[repo.event_handlers]]\nenabled = false",
+            "id",
+        ),
+    ];
+
+    for (contents, expected) in cases {
+        let workspace = TestWorkspace::new();
+        workspace.write_git_config(origin_config());
+        workspace.write_file(".jx.toml", contents);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+        let result = RepositoryContext::discover(&environment);
+
+        if expected.is_empty() {
+            result.expect("disabled handler with id is accepted");
+        } else {
+            let error = result.expect_err("invalid event handler is rejected");
+            assert!(error.to_string().contains(expected), "{contents}: {error}");
+        }
+    }
+}
+
+#[test]
 fn reviewer_config_accepts_github_team_reviewers() {
     // Verifies: Reviewer entries can target GitHub teams with `org/team` syntax.
     let workspace = TestWorkspace::new();
@@ -490,7 +634,7 @@ fn reviewer_config_accepts_github_team_reviewers() {
 [repo]
 reviewers = ["ExampleOrg/platform"]
 
-[[repo.reviewer_rules]]
+[[repo.path_reviewers]]
 paths = ["src/**"]
 reviewers = ["Foo/bar"]
 "#,
@@ -513,8 +657,8 @@ reviewers = ["Foo/bar"]
 }
 
 #[test]
-fn reviewer_rules_ignore_other_repos_and_unmatched_files() {
-    // Verifies: Reviewer rules are gated by repo slug and selected commit paths.
+fn path_reviewers_ignore_other_repos_and_unmatched_files() {
+    // Verifies: Path reviewer config is gated by repo slug and selected commit paths.
     let config = RepoConfig {
         base: RepoPolicyConfig {
             reviewers: reviewer_users(["global-reviewer"]),
@@ -1006,7 +1150,7 @@ fn rejects_unknown_reviewer_rule_keys() {
     workspace.write_file(
         ".jx.toml",
         r#"
-[[repo.reviewer_rules]]
+[[repo.path_reviewers]]
 paths = ["src/**"]
 reviewers = ["example-reviewer"]
 teams = ["example-team"]
@@ -1018,7 +1162,7 @@ teams = ["example-team"]
 
     assert!(matches!(
         error,
-        RepositoryError::UnsupportedConfigKey { key, .. } if key == "repo.reviewer_rules[0].teams"
+        RepositoryError::UnsupportedConfigKey { key, .. } if key == "repo.path_reviewers[0].teams"
     ));
 }
 
@@ -1031,16 +1175,16 @@ fn rejects_invalid_reviewer_rule_config() {
             "repo.rules[0].repo",
         ),
         (
-            "[[repo.reviewer_rules]]\npaths = []\nreviewers = [\"example-reviewer\"]",
-            "repo.reviewer_rules[0].paths",
+            "[[repo.path_reviewers]]\npaths = []\nreviewers = [\"example-reviewer\"]",
+            "repo.path_reviewers[0].paths",
         ),
         (
-            "[[repo.reviewer_rules]]\npaths = [\"src/**\"]",
-            "repo.reviewer_rules[0].reviewers",
+            "[[repo.path_reviewers]]\npaths = [\"src/**\"]",
+            "repo.path_reviewers[0].reviewers",
         ),
         (
-            "[[repo.reviewer_rules]]\npaths = [\"src/**\"]\nreviewers = []",
-            "repo.reviewer_rules[0].reviewers",
+            "[[repo.path_reviewers]]\npaths = [\"src/**\"]\nreviewers = []",
+            "repo.path_reviewers[0].reviewers",
         ),
     ];
 

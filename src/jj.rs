@@ -74,6 +74,7 @@ use thiserror::Error;
 use crate::repository::ORIGIN_REMOTE_NAME;
 
 mod bookmarks;
+mod description;
 mod diff;
 mod error;
 mod facts;

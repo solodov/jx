@@ -279,19 +279,16 @@ impl JjWorkspace {
 
     pub(super) fn nearest_ancestor_bookmark(
         &self,
-        trunk: &Commit,
+        _trunk: &Commit,
         stack_path: &[Commit],
     ) -> Option<String> {
-        stack_path
-            .iter()
-            .rev()
-            .skip(1)
-            .chain(std::iter::once(trunk))
-            .find_map(|commit| {
-                self.local_bookmarks_for_commit(commit.id())
-                    .into_iter()
-                    .next()
-            })
+        // Stacked PRs target bookmarked commits within the stack, but root PRs
+        // must target the resolved trunk branch even when trunk has extra labels.
+        stack_path.iter().rev().skip(1).find_map(|commit| {
+            self.local_bookmarks_for_commit(commit.id())
+                .into_iter()
+                .next()
+        })
     }
 
     pub(super) fn change_summary(&self, commit: &Commit) -> Result<ChangeSummary, JjError> {

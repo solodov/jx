@@ -32,6 +32,13 @@ pub struct WorkspaceRemoveOptions {
     pub cleanup_root: PathBuf,
 }
 
+/// Result of rewriting a selected commit description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDescriptionRewrite {
+    pub commit_id: String,
+    pub changed: bool,
+}
+
 /// Commit selected to seed a newly created remote repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitialPublishTarget {
@@ -68,6 +75,7 @@ pub struct WorkspaceFacts {
     pub origin_branch: String,
     pub local_bookmarks: Vec<String>,
     pub local_bookmarks_at_target: Vec<String>,
+    /// Nearest local bookmark on the selected stack after trunk, excluding trunk itself.
     pub nearest_ancestor_bookmark: Option<String>,
     /// Repo-root-relative file paths changed by the selected jj commit.
     pub changed_files: Vec<String>,

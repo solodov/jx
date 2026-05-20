@@ -72,6 +72,14 @@ pub(super) trait CommandServices {
     fn workspace_status(&self, current_dir: &Path, color: bool)
         -> Result<WorkspaceStatus, JjError>;
 
+    /// Rewrites a selected commit description and returns the replacement commit id.
+    fn rewrite_commit_description(
+        &self,
+        context: &RepositoryContext,
+        target_commit_id: &str,
+        description: &str,
+    ) -> Result<CommitDescriptionRewrite, JjError>;
+
     /// Loads jj facts for the working copy or an explicitly selected revision.
     fn workspace_facts(
         &self,
@@ -251,6 +259,7 @@ pub(super) trait CommandServices {
         plan: PullRequestPlan,
         bookmark_update: BookmarkUpdate,
         push: PushOutcome,
+        options: PullRequestPublishOptions,
     ) -> Result<PullRequestReport, WorkflowError>;
 }
 
@@ -366,6 +375,16 @@ impl CommandServices for ProductionServices<'_> {
         color: bool,
     ) -> Result<WorkspaceStatus, JjError> {
         JjWorkspace::current_status(current_dir, color)
+    }
+
+    fn rewrite_commit_description(
+        &self,
+        context: &RepositoryContext,
+        target_commit_id: &str,
+        description: &str,
+    ) -> Result<CommitDescriptionRewrite, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?
+            .rewrite_commit_description(target_commit_id, description)
     }
 
     fn workspace_facts(
@@ -642,12 +661,14 @@ impl CommandServices for ProductionServices<'_> {
         plan: PullRequestPlan,
         bookmark_update: BookmarkUpdate,
         push: PushOutcome,
+        options: PullRequestPublishOptions,
     ) -> Result<PullRequestReport, WorkflowError> {
         self.github_runtime.block_on(async {
             let github =
                 OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
 
-            domain::publish_pull_request(context, plan, bookmark_update, push, &github).await
+            domain::publish_pull_request(context, plan, bookmark_update, push, options, &github)
+                .await
         })
     }
 }

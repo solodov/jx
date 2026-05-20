@@ -24,6 +24,16 @@ impl RepoConfig {
         enabled
     }
 
+    /// Returns effective event handlers for this repository in deterministic execution order.
+    pub fn event_handlers_for(&self, repository: &GitHubRepository) -> Vec<RepoEventHandler> {
+        let mut handlers = Vec::new();
+        apply_event_handler_configs(&mut handlers, &self.base.event_handlers);
+        for rule in self.matching_rules(repository) {
+            apply_event_handler_configs(&mut handlers, &rule.policy.event_handlers);
+        }
+        handlers
+    }
+
     /// Returns reviewer candidates selected by repo policy and matching file rules.
     pub fn reviewer_candidates_for(
         &self,
@@ -103,6 +113,7 @@ impl RepoConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoPolicyConfig {
     pub advance_trunk: Option<bool>,
+    pub event_handlers: Vec<RepoEventHandlerConfig>,
     pub reviewers: Vec<ReviewerTarget>,
     pub reviewer_rules: Vec<ReviewerPathRule>,
     pub workspace_shared_paths: Vec<String>,
@@ -113,6 +124,7 @@ impl RepoPolicyConfig {
         if layer.advance_trunk.is_some() {
             self.advance_trunk = layer.advance_trunk;
         }
+        merge_event_handler_configs(&mut self.event_handlers, &layer.event_handlers);
         merge_reviewers(&mut self.reviewers, layer.reviewers);
         self.reviewer_rules.extend(layer.reviewer_rules);
         merge_workspace_shared_paths(
@@ -120,6 +132,72 @@ impl RepoPolicyConfig {
             &layer.workspace_shared_paths,
         );
     }
+}
+
+/// One configured repository event handler or a disabling override by handler id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoEventHandlerConfig {
+    Handler(RepoEventHandler),
+    Disable { id: String },
+}
+
+/// Effect to run when a matching repository event is emitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoEventHandler {
+    pub id: Option<String>,
+    pub on: RepoEvent,
+    pub when: PullRequestEventQuery,
+    pub run: RepoEventHandlerRun,
+}
+
+/// Repository events supported by configured handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoEvent {
+    PullRequestPrepare,
+    PullRequestCreated,
+    PullRequestUpdated,
+}
+
+impl RepoEvent {
+    /// Stable config label for this event, used in operator-facing handler output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PullRequestPrepare => "pull_request.prepare",
+            Self::PullRequestCreated => "pull_request.created",
+            Self::PullRequestUpdated => "pull_request.updated",
+        }
+    }
+}
+
+/// Handler action to execute after an event passes its query filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoEventHandlerRun {
+    AddLabels { labels: Vec<String> },
+    OpenPullRequest,
+    PrependTaskId,
+}
+
+/// Parsed pull-request event filter. Terms are ANDed and may be negated.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestEventQuery {
+    pub terms: Vec<PullRequestEventQueryTerm>,
+}
+
+/// One pull-request event predicate, optionally negated by a leading `-`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestEventQueryTerm {
+    pub predicate: PullRequestEventPredicate,
+    pub negated: bool,
+}
+
+/// Pull-request event facts that can be matched by config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullRequestEventPredicate {
+    Draft,
+    Ready,
+    HasReviewers,
+    HasTask,
+    Label(String),
 }
 
 /// Repository glob plus policy overrides for matching `origin` GitHub slugs.
@@ -177,6 +255,52 @@ fn add_repo_policy_reviewer_candidates(
                 add_reviewer_candidate(candidates, reviewer, reason.clone());
             }
         }
+    }
+}
+
+fn apply_event_handler_configs(
+    target: &mut Vec<RepoEventHandler>,
+    configs: &[RepoEventHandlerConfig],
+) {
+    for config in configs {
+        match config {
+            RepoEventHandlerConfig::Handler(handler) => {
+                if let Some(id) = &handler.id {
+                    target.retain(|existing| existing.id.as_deref() != Some(id.as_str()));
+                }
+                target.push(handler.clone());
+            }
+            RepoEventHandlerConfig::Disable { id } => {
+                target.retain(|handler| handler.id.as_deref() != Some(id.as_str()));
+            }
+        }
+    }
+}
+
+fn merge_event_handler_configs(
+    target: &mut Vec<RepoEventHandlerConfig>,
+    configs: &[RepoEventHandlerConfig],
+) {
+    for config in configs {
+        match config {
+            RepoEventHandlerConfig::Handler(handler) => {
+                if let Some(id) = &handler.id {
+                    target
+                        .retain(|existing| event_handler_config_id(existing) != Some(id.as_str()));
+                }
+                target.push(config.clone());
+            }
+            RepoEventHandlerConfig::Disable { id } => {
+                target.retain(|existing| event_handler_config_id(existing) != Some(id.as_str()));
+            }
+        }
+    }
+}
+
+fn event_handler_config_id(config: &RepoEventHandlerConfig) -> Option<&str> {
+    match config {
+        RepoEventHandlerConfig::Handler(handler) => handler.id.as_deref(),
+        RepoEventHandlerConfig::Disable { id } => Some(id.as_str()),
     }
 }
 
