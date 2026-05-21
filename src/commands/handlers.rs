@@ -196,39 +196,50 @@ fn render_pull_request_with_effects(
     services: &dyn CommandServices,
 ) -> Result<String, CommandError> {
     let mut output = render_pull_request(report);
-    if report.event_effects.is_empty() {
-        return Ok(output);
-    }
+    let mut event_output = String::new();
 
-    output.push_str("Event handlers:\n");
     for effect in &report.event_effects {
-        output.push_str("  ");
-        output.push_str(effect.event.label());
-        output.push(' ');
-        output.push_str(effect.handler_id.as_deref().unwrap_or("(unnamed)"));
-        output.push_str(": ");
+        if !pull_request_event_effect_is_default_visible(effect) {
+            continue;
+        }
+
+        event_output.push_str("  ");
+        event_output.push_str(effect.event.label());
+        event_output.push(' ');
+        event_output.push_str(effect.handler_id.as_deref().unwrap_or("(unnamed)"));
+        event_output.push_str(": ");
         match &effect.kind {
             PullRequestEventEffectKind::AddLabels { labels } => {
-                output.push_str(&format!("added labels {}\n", labels.join(", ")))
+                event_output.push_str(&format!("added labels {}\n", labels.join(", ")))
             }
-            PullRequestEventEffectKind::LabelsAlreadyPresent { labels } => {
-                output.push_str(&format!("labels already present {}\n", labels.join(", ")))
-            }
+            PullRequestEventEffectKind::LabelsAlreadyPresent { .. } => {}
             PullRequestEventEffectKind::OpenPullRequest { url } => match services.open_url(url) {
-                Ok(()) => output.push_str(&format!("opened pull request {url}\n")),
+                Ok(()) => event_output.push_str(&format!("opened pull request {url}\n")),
                 Err(error) => {
-                    output.push_str(&format!("could not open pull request {url}: {error}\n"))
+                    event_output.push_str(&format!("could not open pull request {url}: {error}\n"))
                 }
             },
-            PullRequestEventEffectKind::TitleAlready { title } => {
-                output.push_str(&format!("title already `{title}`\n"))
-            }
+            PullRequestEventEffectKind::TitleAlready { .. } => {}
             PullRequestEventEffectKind::UpdatedTitle { title } => {
-                output.push_str(&format!("updated title to `{title}`\n"))
+                event_output.push_str(&format!("updated title to `{title}`\n"))
             }
         }
     }
+
+    if !event_output.is_empty() {
+        output.push_str("Event handlers:\n");
+        output.push_str(&event_output);
+    }
     Ok(output)
+}
+
+fn pull_request_event_effect_is_default_visible(effect: &domain::PullRequestEventEffect) -> bool {
+    matches!(
+        effect.kind,
+        PullRequestEventEffectKind::AddLabels { .. }
+            | PullRequestEventEffectKind::OpenPullRequest { .. }
+            | PullRequestEventEffectKind::UpdatedTitle { .. }
+    )
 }
 
 fn handle_fetch(

@@ -146,8 +146,10 @@ run = "open_pull_request"
 Matching rule handlers compose after base handlers. A matching rule can disable a
 previous handler with `id = "..."` and `enabled = false`. Use
 `jx pr --no-event-handlers` to disable all configured handlers for one run.
-`prepend_task_id` rewrites the selected commit title before PR planning, using
-`TASK-ID: title` and normalizing common existing task prefixes.
+Default output reports handlers that changed PR or commit state, plus browser
+open attempts; no-op matches are kept quiet. `prepend_task_id` rewrites the
+selected commit title before PR planning, using `TASK-ID: title` and normalizing
+common existing task prefixes.
 
 Reviewers may be GitHub users or teams written as `org/team`.
 

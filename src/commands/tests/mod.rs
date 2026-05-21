@@ -4639,6 +4639,49 @@ fn pull_request_opens_created_pr_when_event_handler_requests_it() {
 }
 
 #[test]
+fn pull_request_hides_noop_event_effects_by_default() {
+    // Verifies: Default output stays quiet when handlers matched but did not change state.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_event_effects: vec![
+            domain::PullRequestEventEffect {
+                event: crate::repository::RepoEvent::PullRequestCreated,
+                handler_id: Some("labels-present".to_owned()),
+                kind: PullRequestEventEffectKind::LabelsAlreadyPresent {
+                    labels: vec!["queued".to_owned()],
+                },
+            },
+            domain::PullRequestEventEffect {
+                event: crate::repository::RepoEvent::PullRequestPrepare,
+                handler_id: Some("title-present".to_owned()),
+                kind: PullRequestEventEffectKind::TitleAlready {
+                    title: "ABC-123: Example title".to_owned(),
+                },
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        result.stdout,
+        "Created https://github.com/example-owner/example-repo/pull/42\n"
+    );
+}
+
+#[test]
 fn pull_request_no_event_handlers_suppresses_event_effects() {
     // Verifies: Operators can disable configured PR automation for a single publish.
     let workspace = TestWorkspace::new();
