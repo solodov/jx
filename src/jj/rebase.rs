@@ -236,9 +236,9 @@ impl JjWorkspace {
 
     /// Selects the newest contiguous stack commit that is complete enough to publish.
     ///
-    /// A sync-published trunk commit must carry both file changes and a non-empty
-    /// description. Incomplete commits above that point remain as local work, so sync
-    /// does not push half-populated working-copy state onto trunk.
+    /// A sync-published trunk commit must carry file changes, a non-empty
+    /// description, and no conflicts. Incomplete or conflicted commits above that
+    /// point remain local so sync does not publish unresolved working-copy state.
     pub(super) fn sync_advance_target(
         &self,
         trunk: &Commit,
@@ -259,7 +259,7 @@ impl JjWorkspace {
 
     /// Returns whether a stack commit is complete enough to become trunk during sync.
     fn sync_advance_commit_is_publishable(&self, commit: &Commit) -> Result<bool, JjError> {
-        if commit.description().trim().is_empty() {
+        if commit.has_conflict() || commit.description().trim().is_empty() {
             return Ok(false);
         }
 

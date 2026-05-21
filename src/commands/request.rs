@@ -147,7 +147,8 @@ pub(super) struct FetchRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SyncRequest {
     pub(super) all: bool,
-    pub(super) repository: Option<String>,
+    pub(super) repo: bool,
+    pub(super) revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,7 +217,8 @@ impl CommandRequest {
             })),
             Some(("sync", matches)) => Ok(Self::Sync(SyncRequest {
                 all: matches.get_flag("all"),
-                repository: repository_arg(matches),
+                repo: matches.get_flag("repo"),
+                revision: revision(matches),
             })),
             Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
                 command: WorkflowCommand::PullRequest,
@@ -692,14 +694,13 @@ pub(super) fn cli() -> ClapCommand {
         )
         .subcommand(
             ClapCommand::new("sync")
-                .about(
-                    "Fetch origin, or initialize/create the configured repository, then push bookmark state",
-                )
+                .about("Fetch origin and push repository or selected bookmark state")
                 .long_about(
-                    "Fetch origin, or initialize/create the configured repository, then push bookmark state.\n\nWith --all, sync every eligible primary repository from configured layout roots without prompting. A repository is eligible when it already has a GitHub origin, the token has origin push access, and the origin is not diverged. Pull-only repositories are synced only when the working copy is the empty jj child of origin trunk; repositories with local work that need a pull are skipped.",
+                    "Fetch origin and push repository or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Pass a jj revision or bookmark to sync one bookmarked target instead. Use --repo to force repository mode explicitly. Use --all to sync every eligible primary repository from configured layout roots without prompting.",
                 )
                 .arg(sync_all_arg())
-                .arg(repository_arg_definition()),
+                .arg(sync_repo_arg())
+                .arg(sync_revision_arg()),
         )
         .subcommand(
             ClapCommand::new("pull-request")
@@ -883,8 +884,23 @@ fn sync_all_arg() -> Arg {
         .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
-        .conflicts_with("repository")
+        .conflicts_with_all(["repo", "revision"])
         .help("Sync every eligible primary repository in configured layout roots")
+}
+
+fn sync_repo_arg() -> Arg {
+    Arg::new("repo")
+        .long("repo")
+        .action(ArgAction::SetTrue)
+        .conflicts_with_all(["all", "revision"])
+        .help("Sync all tracked bookmarks in the current repository")
+}
+
+fn sync_revision_arg() -> Arg {
+    Arg::new("revision")
+        .value_name("COMMIT_OR_BOOKMARK")
+        .conflicts_with_all(["all", "repo"])
+        .help("Sync one bookmarked jj revision or local bookmark instead of repository state")
 }
 
 fn repository_arg_definition() -> Arg {

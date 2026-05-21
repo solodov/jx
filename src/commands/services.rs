@@ -235,6 +235,19 @@ pub(super) trait CommandServices {
     /// Pushes all tracked fixed-origin bookmarks, including deleted bookmarks.
     fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError>;
 
+    /// Pushes one selected bookmarked revision when its update does not contain conflicted commits.
+    fn push_syncable_revision(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<SyncPushOutcome, JjError>;
+
+    /// Pushes tracked bookmarks whose updates do not contain conflicted commits.
+    fn push_syncable_tracked(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<SyncPushOutcome, JjError>;
+
     /// Syncs PR descriptions for tracked bookmark updates and returns PR metadata rendered by sync.
     fn sync_pull_requests(
         &self,
@@ -619,6 +632,21 @@ impl CommandServices for ProductionServices<'_> {
 
     fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError> {
         JjWorkspace::load(context.workspace_root.clone())?.push_tracked_deleted()
+    }
+
+    fn push_syncable_revision(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<SyncPushOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_revision(revision)
+    }
+
+    fn push_syncable_tracked(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<SyncPushOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_tracked()
     }
 
     fn sync_pull_requests(

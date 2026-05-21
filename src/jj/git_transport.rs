@@ -248,7 +248,11 @@ impl JjWorkspace {
                     message: "empty working-copy commit has multiple parents".to_owned(),
                 });
             }
-            self.load_commit(parent_id)?
+            if parent_id == self.repo.store().root_commit().id() {
+                current
+            } else {
+                self.load_commit(parent_id)?
+            }
         } else {
             current
         };
@@ -268,7 +272,10 @@ impl JjWorkspace {
         target: &InitialPublishTarget,
     ) -> Result<InitialPublishTarget, JjError> {
         self.ensure_git_backed()?;
-        let target_id = initial_publish_commit_id(target)?;
+        let _planned_target_id = initial_publish_commit_id(target)?;
+        self.snapshot_working_copy_for_initial_publish()?;
+        let target = self.initial_publish_target()?;
+        let target_id = initial_publish_commit_id(&target)?;
         let target_commit = self.load_commit(&target_id)?;
 
         if !self.should_describe_initial_publish_target(&target_commit) {
@@ -324,6 +331,18 @@ impl JjWorkspace {
         self.repo = repo;
 
         Ok(initial_publish_target_summary(&rewritten))
+    }
+
+    fn snapshot_working_copy_for_initial_publish(&mut self) -> Result<(), JjError> {
+        let workspace_root = self.workspace.workspace_root().to_path_buf();
+        // jj-lib loads do not snapshot pending disk changes. Reuse jj's normal
+        // command entrypoint so initial repository creation publishes the files
+        // the operator already has in the working copy.
+        super::status::run_jj_status(&workspace_root, false)?;
+        let refreshed = Self::load(workspace_root)?;
+        self.workspace = refreshed.workspace;
+        self.repo = refreshed.repo;
+        Ok(())
     }
 
     fn should_describe_initial_publish_target(&self, commit: &Commit) -> bool {

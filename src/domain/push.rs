@@ -118,7 +118,7 @@ fn first_ticket_id(description: &str) -> Option<String> {
                 cursor += 1;
             }
             if cursor > digit_start {
-                return Some(description[start..cursor].to_ascii_uppercase());
+                return Some(description[start..cursor].to_ascii_lowercase());
             }
         }
 
@@ -129,7 +129,11 @@ fn first_ticket_id(description: &str) -> Option<String> {
 }
 
 fn short_change_id(change_id: &str) -> String {
-    change_id.chars().take(8).collect()
+    change_id
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn first_description_line(description: &str) -> String {

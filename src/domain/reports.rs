@@ -79,6 +79,7 @@ pub struct PullRequestPlan {
     pub body: String,
     pub changed_files: Vec<String>,
     pub base: String,
+    pub base_pull_request: Option<PullRequestRecord>,
     pub head: PullRequestHead,
     pub labels: Vec<String>,
     pub draft: bool,
@@ -170,12 +171,13 @@ pub struct TrackedPushReport {
     pub outcome: TrackedPushOutcome,
 }
 
-/// Result of fetching origin and then pushing tracked bookmark state.
+/// Result of fetching origin and then pushing syncable tracked bookmark state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncReport {
     pub repository: RepositorySummary,
     pub fetch: FetchOutcome,
     pub push: TrackedPushOutcome,
+    pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
     pub pull_requests: Vec<PullRequestRecord>,
 }
 

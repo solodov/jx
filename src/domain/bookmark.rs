@@ -5,13 +5,13 @@ pub fn plan_bookmark(request: BookmarkPlanRequest<'_>) -> Result<BookmarkPlan, W
     let login = normalize_github_login(request.github_login)?;
     let task_id = normalize_task_id(request.task_id)?;
     let generated = generated_bookmark_name(
-        login,
+        &login,
         task_id.as_deref(),
         request.workspace.stack_index,
         &short_change_id(&request.workspace.target_change.change_id),
     );
     let selected_planner_bookmarks = planner_bookmarks_for_login(
-        login,
+        &login,
         request
             .workspace
             .local_bookmarks_at_target
@@ -19,19 +19,8 @@ pub fn plan_bookmark(request: BookmarkPlanRequest<'_>) -> Result<BookmarkPlan, W
             .map(String::as_str),
     );
 
-    // A task-specific request must not silently reuse a different PR head on the
-    // selected change; otherwise the operator could update the wrong review.
-    if task_id.is_some() {
-        return plan_task_bookmark(
-            request.workspace,
-            &selected_planner_bookmarks,
-            &generated,
-            task_id.as_deref().expect("checked task id"),
-        );
-    }
-
-    // Without an explicit task id, one existing user-scoped PR head is the
-    // clearest expression of operator intent and should be reused.
+    // A selected PR bookmark is the clearest expression of operator intent, even
+    // if a task-specific request would generate a different branch name.
     if selected_planner_bookmarks.len() == 1 {
         return Ok(BookmarkPlan {
             branch: selected_planner_bookmarks[0].branch.clone(),
@@ -58,53 +47,7 @@ pub fn plan_bookmark(request: BookmarkPlanRequest<'_>) -> Result<BookmarkPlan, W
     })
 }
 
-fn plan_task_bookmark(
-    workspace: &WorkspaceFacts,
-    selected_planner_bookmarks: &[ParsedBookmark],
-    generated: &str,
-    task_id: &str,
-) -> Result<BookmarkPlan, WorkflowError> {
-    let matching_selected = selected_planner_bookmarks
-        .iter()
-        .filter(|bookmark| bookmark.task_id.as_deref() == Some(task_id))
-        .collect::<Vec<_>>();
-
-    if matching_selected.len() == 1 && selected_planner_bookmarks.len() == 1 {
-        return Ok(BookmarkPlan {
-            branch: matching_selected[0].branch.clone(),
-            action: BookmarkAction::Reuse,
-        });
-    }
-
-    if selected_planner_bookmarks.len() > 1 {
-        return Err(WorkflowError::AmbiguousSelectedBookmarks {
-            bookmarks: selected_planner_bookmarks
-                .iter()
-                .map(|bookmark| bookmark.branch.clone())
-                .collect(),
-        });
-    }
-
-    if let Some(existing) = selected_planner_bookmarks.first() {
-        return Err(WorkflowError::ConflictingSelectedBookmark {
-            existing: existing.branch.clone(),
-            requested: generated.to_owned(),
-        });
-    }
-
-    if workspace.local_bookmarks.contains(&generated.to_owned()) {
-        return Err(WorkflowError::BookmarkExistsOnDifferentChange {
-            branch: generated.to_owned(),
-        });
-    }
-
-    Ok(BookmarkPlan {
-        branch: generated.to_owned(),
-        action: BookmarkAction::Create,
-    })
-}
-
-fn normalize_github_login(login: &str) -> Result<&str, WorkflowError> {
+fn normalize_github_login(login: &str) -> Result<String, WorkflowError> {
     let login = login.trim();
     if login.is_empty() {
         return Err(WorkflowError::MissingGitHubLogin);
@@ -116,7 +59,7 @@ fn normalize_github_login(login: &str) -> Result<&str, WorkflowError> {
         });
     }
 
-    Ok(login)
+    Ok(login.to_ascii_lowercase())
 }
 
 /// Normalizes a task identifier used in generated bookmark and workspace names.
@@ -142,13 +85,20 @@ fn generated_bookmark_name(
     short_change_id: &str,
 ) -> String {
     match task_id {
-        Some(task_id) => format!("{login}/{task_id}-{stack_index:02}-{short_change_id}"),
+        Some(task_id) => format!(
+            "{login}/{task_id}-{stack_index:02}-{short_change_id}",
+            task_id = task_id.to_ascii_lowercase()
+        ),
         None => format!("{login}/{stack_index:02}-{short_change_id}"),
     }
 }
 
 fn short_change_id(change_id: &str) -> String {
-    change_id.chars().take(8).collect()
+    change_id
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn is_branch_namespace_component(value: &str) -> bool {
@@ -174,7 +124,10 @@ fn planner_bookmarks_for_login<'a>(
 }
 
 fn parse_planner_bookmark(login: &str, bookmark: &str) -> Option<ParsedBookmark> {
-    let rest = bookmark.strip_prefix(&format!("{login}/"))?;
+    let (namespace, rest) = bookmark.split_once('/')?;
+    if !namespace.eq_ignore_ascii_case(login) {
+        return None;
+    }
     let (prefix, short_id) = rest.rsplit_once('-')?;
     let (task_id, stack_index) = match prefix.rsplit_once('-') {
         Some((task_id, stack_index)) => (Some(task_id), stack_index),

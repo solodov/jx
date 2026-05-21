@@ -6,7 +6,7 @@ fn main() -> ExitCode {
     match jx::run_from_process() {
         Ok(result) => {
             print!("{}", result.stdout);
-            ExitCode::SUCCESS
+            ExitCode::from(result.exit_code)
         }
         Err(CommandError::Usage(error)) => {
             if let Err(print_error) = error.print() {

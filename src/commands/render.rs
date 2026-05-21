@@ -176,6 +176,7 @@ pub(super) struct GlobalSyncEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum GlobalSyncOutcome {
     Synced,
+    SyncedWithConflicts { detail: String },
     Skipped(GlobalSyncSkipReason),
     Error(String),
 }
@@ -210,6 +211,24 @@ pub(super) fn render_global_sync(
                     label: entry.display_root.as_str(),
                 })
             }),
+        )?;
+
+        write_global_sync_section(
+            formatter,
+            &mut wrote_any,
+            "Synced with conflicts:",
+            sorted_entries
+                .iter()
+                .filter_map(|entry| match &entry.outcome {
+                    GlobalSyncOutcome::SyncedWithConflicts { detail } => {
+                        Some(GlobalSyncSectionRow {
+                            root: &entry.root,
+                            label: entry.display_root.as_str(),
+                            detail: detail.clone(),
+                        })
+                    }
+                    _ => None,
+                }),
         )?;
 
         write_global_sync_path_section(
@@ -482,14 +501,11 @@ pub(super) fn write_rebase_on_trunk(
 }
 
 pub(super) fn render_pull_request(report: &PullRequestReport) -> String {
-    match &report.pull_request.html_url {
-        Some(url) => format!("{} {url}\n", pull_request_action(report.action)),
-        None => format!(
-            "{} PR #{}\n",
-            pull_request_action(report.action),
-            report.pull_request.number
-        ),
-    }
+    format!(
+        "{} {}\n",
+        pull_request_action(report.action),
+        linked_pull_request_text(&report.repository.github_url, &report.pull_request)
+    )
 }
 
 pub(super) fn render_clone(plan: &ClonePlan, destination: &str) -> String {
@@ -699,7 +715,10 @@ pub(super) fn write_sync(report: &SyncReport, formatter: &mut dyn Formatter) -> 
         .push
         .bookmarks
         .iter()
-        .filter(|bookmark| bookmark.new_short_commit_id.is_some())
+        .filter(|bookmark| {
+            bookmark.new_short_commit_id.is_some()
+                && bookmark.old_short_commit_id != bookmark.new_short_commit_id
+        })
         .collect::<Vec<_>>();
     let deleted_bookmarks = report
         .push
@@ -760,6 +779,15 @@ pub(super) fn write_sync(report: &SyncReport, formatter: &mut dyn Formatter) -> 
                 pull_requests.get(bookmark.branch.as_str()).copied(),
             )?;
         }
+    }
+
+    if !report.skipped_conflicted_bookmarks.is_empty() {
+        write_sync_section_separator(formatter)?;
+        write_skipped_conflicted_bookmarks(
+            formatter,
+            &report.skipped_conflicted_bookmarks,
+            &report.repository.github_url,
+        )?;
     }
 
     Ok(())
@@ -894,6 +922,38 @@ pub(super) fn write_rebased_commit(
         write_labeled_text(formatter, &["conflict"], " (conflicted)")?;
     }
     writeln!(formatter)
+}
+
+pub(super) fn write_skipped_conflicted_bookmarks(
+    formatter: &mut dyn Formatter,
+    bookmarks: &[crate::jj::SkippedPushBookmarkSummary],
+    repository_url: &str,
+) -> io::Result<()> {
+    writeln!(formatter, "Skipped bookmarks with conflicts:")?;
+    let bookmark_width = bookmarks
+        .iter()
+        .map(|bookmark| bookmark.branch.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    for bookmark in bookmarks {
+        for (index, commit) in bookmark.conflicted_commits.iter().enumerate() {
+            write!(formatter, "  ")?;
+            if index == 0 {
+                write_bookmark_target(formatter, repository_url, &bookmark.branch, bookmark_width)?;
+            } else {
+                write!(formatter, "{:bookmark_width$}", "")?;
+            }
+            write!(formatter, "  ")?;
+            write_commit_id(formatter, &commit.short_commit_id)?;
+            write!(formatter, "  ")?;
+            write_description(formatter, &commit.description)?;
+            write_labeled_text(formatter, &["conflict"], " (conflicted)")?;
+            writeln!(formatter)?;
+        }
+    }
+
+    Ok(())
 }
 
 pub(super) fn write_pushed_bookmark_commit(
@@ -1179,24 +1239,199 @@ pub(super) fn render_workspace_status_with_width(status: &WorkspaceStatus, width
 }
 
 pub(super) fn render_status_description(description: &str, width: usize) -> String {
-    MadSkin::default()
+    MadSkin::default_light()
         .text(description, Some(width.max(20)))
         .to_string()
 }
 
-/// Renders the shared status block plus PR-only metadata before any publishing mutation.
+/// Renders the approval-focused PR preview before any publishing mutation.
+#[cfg(test)]
 pub(super) fn render_pull_request_preview(
     plan: &PullRequestPlan,
     status: &WorkspaceStatus,
+    prepare_effects: &[PullRequestEventEffect],
 ) -> String {
-    let mut preview = render_workspace_status(status);
+    render_pull_request_preview_with_style(plan, status, prepare_effects, false)
+}
 
-    if !plan.labels.is_empty() {
-        preview.push('\n');
-        preview.push_str(&format!("Labels: {}\n", plan.labels.join(", ")));
+/// Renders the PR preview with optional log-line styling for interactive terminals.
+pub(super) fn render_pull_request_preview_with_style(
+    plan: &PullRequestPlan,
+    status: &WorkspaceStatus,
+    prepare_effects: &[PullRequestEventEffect],
+    color: bool,
+) -> String {
+    render_pull_request_preview_with_style_for_width(
+        plan,
+        status,
+        prepare_effects,
+        color,
+        termimad::terminal_size().0.into(),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn render_pull_request_preview_for_width(
+    plan: &PullRequestPlan,
+    status: &WorkspaceStatus,
+    prepare_effects: &[PullRequestEventEffect],
+    terminal_width: usize,
+) -> String {
+    render_pull_request_preview_with_style_for_width(
+        plan,
+        status,
+        prepare_effects,
+        false,
+        terminal_width,
+    )
+}
+
+fn render_pull_request_preview_with_style_for_width(
+    plan: &PullRequestPlan,
+    status: &WorkspaceStatus,
+    prepare_effects: &[PullRequestEventEffect],
+    color: bool,
+    terminal_width: usize,
+) -> String {
+    let mut header = vec![pull_request_preview_header(plan)];
+    header.extend(
+        prepare_effects
+            .iter()
+            .filter_map(pull_request_prepare_event_summary),
+    );
+    let header = header
+        .into_iter()
+        .map(|line| style_log_line(&line, color))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let content_width = terminal_width.saturating_sub(PREVIEW_CONTENT_INDENT.len());
+    let mut blocks = vec![header];
+    blocks.push(indent_non_empty_lines(
+        &render_pull_request_description_preview(plan, content_width),
+    ));
+
+    let mut change_lines = status.change_lines.clone();
+    change_lines.extend(status.extra_lines.clone());
+    if !change_lines.is_empty() {
+        blocks.push(indent_non_empty_lines(&change_lines.join("\n")));
     }
 
-    preview
+    let mut metadata = Vec::new();
+    if !plan.labels.is_empty() {
+        metadata.push(format!("Labels: {}", plan.labels.join(", ")));
+    }
+    if !metadata.is_empty() {
+        blocks.push(metadata.join("\n"));
+    }
+
+    format!("{}\n", blocks.join("\n\n"))
+}
+
+const PREVIEW_CONTENT_INDENT: &str = "  ";
+const LOG_LINE_STYLE: &str = "\x1b[2m\x1b[38;5;244m";
+const RESET_STYLE: &str = "\x1b[0m";
+
+pub(super) fn style_log_line(line: &str, color: bool) -> String {
+    if color {
+        format!("{LOG_LINE_STYLE}{line}{RESET_STYLE}")
+    } else {
+        line.to_owned()
+    }
+}
+
+fn indent_non_empty_lines(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{PREVIEW_CONTENT_INDENT}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn pull_request_preview_header(plan: &PullRequestPlan) -> String {
+    let head = linked_bookmark_text(&plan.repository.github_url, &plan.bookmark.branch);
+    let base = pull_request_preview_base(plan);
+    match &plan.existing_pull_request {
+        Some(existing) => {
+            let verb = if existing.draft {
+                "Updating draft"
+            } else {
+                "Updating"
+            };
+            format!(
+                "{verb} {}: {head} → {base}",
+                linked_pull_request_text(&plan.repository.github_url, existing)
+            )
+        }
+        None => {
+            let verb = if plan.draft {
+                "Creating draft"
+            } else {
+                "Creating"
+            };
+            format!("{verb}: {head} → {base}")
+        }
+    }
+}
+
+fn pull_request_preview_base(plan: &PullRequestPlan) -> String {
+    plan.base_pull_request.as_ref().map_or_else(
+        || {
+            osc8_link(
+                &branch_url(&plan.repository.github_url, &plan.base),
+                &plan.base,
+            )
+        },
+        |pull_request| linked_pull_request_text(&plan.repository.github_url, pull_request),
+    )
+}
+
+fn pull_request_prepare_event_summary(effect: &PullRequestEventEffect) -> Option<String> {
+    match &effect.kind {
+        PullRequestEventEffectKind::UpdatedTitle { .. } => Some(format!(
+            "Event[{}]: Added task ID to the title",
+            pull_request_event_display_name(effect)
+        )),
+        PullRequestEventEffectKind::AddLabels { .. }
+        | PullRequestEventEffectKind::LabelsAlreadyPresent { .. }
+        | PullRequestEventEffectKind::OpenPullRequest { .. }
+        | PullRequestEventEffectKind::TitleAlready { .. } => None,
+    }
+}
+
+fn render_pull_request_description_preview(plan: &PullRequestPlan, width: usize) -> String {
+    let mut description = plan.title.clone();
+    if !plan.body.is_empty() {
+        description.push_str("\n\n");
+        description.push_str(&plan.body);
+    }
+    render_status_description(&description, width)
+        .trim_end()
+        .to_owned()
+}
+
+pub(super) fn pull_request_event_display_name(effect: &PullRequestEventEffect) -> &str {
+    effect
+        .handler_id
+        .as_deref()
+        .unwrap_or_else(|| effect.event.label())
+}
+
+pub(super) fn pull_request_event_effect_is_default_visible(
+    effect: &PullRequestEventEffect,
+) -> bool {
+    matches!(
+        &effect.kind,
+        PullRequestEventEffectKind::AddLabels { .. }
+            | PullRequestEventEffectKind::OpenPullRequest { .. }
+            | PullRequestEventEffectKind::UpdatedTitle { .. }
+    )
 }
 
 /// Builds the final confirmation prompt from planned create/update and draft state.
@@ -1206,9 +1441,9 @@ pub(super) fn pull_request_confirmation_prompt(plan: &PullRequestPlan) -> String
         None => ("Create", plan.draft),
     };
     if draft {
-        format!("{verb} draft pull request?")
+        format!("{verb} draft?")
     } else {
-        format!("{verb} pull request?")
+        format!("{verb}?")
     }
 }
 
@@ -1843,11 +2078,20 @@ pub(super) fn bookmark_pull_request_url(repository_url: &str, bookmark: &str) ->
     format!("{repository_url}/pulls?q={query}")
 }
 
-#[cfg(test)]
 pub(super) fn linked_bookmark_text(repository_url: &str, bookmark: &str) -> String {
     osc8_link(
         &bookmark_pull_request_url(repository_url, bookmark),
         bookmark,
+    )
+}
+
+pub(super) fn linked_pull_request_text(
+    repository_url: &str,
+    pull_request: &PullRequestRecord,
+) -> String {
+    osc8_link(
+        &pull_request_url(repository_url, pull_request),
+        &format!("#{}", pull_request.number),
     )
 }
 

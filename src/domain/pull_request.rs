@@ -13,10 +13,18 @@ pub async fn pull_request_plan(
     // Root PRs target trunk, while stacked PRs target the nearest bookmarked stack
     // ancestor. The jj fact excludes trunk bookmarks so alternate labels on trunk
     // do not become accidental PR bases.
-    let base = workspace
-        .nearest_ancestor_bookmark
+    let nearest_ancestor_bookmark = workspace.nearest_ancestor_bookmark.clone();
+    let base = nearest_ancestor_bookmark
         .clone()
         .unwrap_or_else(|| workspace.trunk.branch.clone());
+    let base_pull_request = if let Some(branch) = nearest_ancestor_bookmark.as_deref() {
+        let head = PullRequestHead::same_repository(&context.origin.github.owner, branch);
+        github
+            .find_open_pull_request(&context.origin.github, &head)
+            .await?
+    } else {
+        None
+    };
     let target_commit_id = workspace.target_change.commit_id.clone();
     let changed_files = workspace.changed_files.clone();
     let reviewer_candidates = context
@@ -42,6 +50,7 @@ pub async fn pull_request_plan(
         body,
         changed_files,
         base,
+        base_pull_request,
         head,
         labels,
         draft,

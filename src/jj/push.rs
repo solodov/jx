@@ -49,8 +49,153 @@ impl JjWorkspace {
     /// Pushes all tracked fixed-origin bookmarks, including local deletions.
     pub fn push_tracked_deleted(&mut self) -> Result<TrackedPushOutcome, JjError> {
         self.ensure_git_backed()?;
-
         let updates = self.tracked_origin_bookmark_updates()?;
+        self.push_tracked_updates(
+            updates,
+            "jx push tracked bookmarks".to_owned(),
+            "tracked bookmarks".to_owned(),
+        )
+    }
+
+    /// Pushes tracked bookmarks whose push ranges do not contain conflicted commits.
+    pub fn push_syncable_tracked(&mut self) -> Result<SyncPushOutcome, JjError> {
+        self.ensure_git_backed()?;
+        let updates = self.tracked_origin_bookmark_updates()?;
+        let split = self.split_conflicted_tracked_bookmark_updates(updates)?;
+        let pushed = self.push_tracked_updates(
+            split.pushable,
+            "jx sync push tracked bookmarks".to_owned(),
+            "tracked bookmarks".to_owned(),
+        )?;
+
+        Ok(SyncPushOutcome {
+            pushed,
+            skipped_conflicted_bookmarks: split.skipped_conflicted,
+        })
+    }
+
+    /// Pushes one selected bookmarked revision when its push range has no conflicts.
+    pub fn push_syncable_revision(
+        &mut self,
+        revision: Option<&str>,
+    ) -> Result<SyncPushOutcome, JjError> {
+        self.ensure_git_backed()?;
+        let selection = self.sync_bookmark_selection_for_revision(revision)?;
+        let bookmark = RefName::new(&selection.branch);
+        let targets = self.local_and_origin_bookmark_targets(bookmark);
+        if targets.local_target.has_conflict() {
+            return Err(JjError::ConflictedBookmark {
+                branch: selection.branch,
+            });
+        }
+        let Some(target_id) = targets.local_target.as_normal().cloned() else {
+            return Err(JjError::MissingLocalBookmark {
+                branch: selection.branch,
+            });
+        };
+        if target_id != selection.target_id {
+            return Err(JjError::BookmarkExistsOnDifferentChange {
+                branch: selection.branch,
+            });
+        }
+
+        let Some(update) = classify_push_bookmark_update(
+            bookmark.to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
+            targets,
+            true,
+            false,
+        )?
+        else {
+            return Ok(SyncPushOutcome {
+                pushed: self.unchanged_sync_bookmark_outcome(&selection.branch, &target_id)?,
+                skipped_conflicted_bookmarks: Vec::new(),
+            });
+        };
+
+        let split = self.split_conflicted_tracked_bookmark_updates(vec![(
+            RefNameBuf::from(selection.branch.as_str()),
+            update,
+        )])?;
+        let pushed = self.push_tracked_updates(
+            split.pushable,
+            format!("jx sync push {}", selection.branch),
+            selection.branch,
+        )?;
+
+        Ok(SyncPushOutcome {
+            pushed,
+            skipped_conflicted_bookmarks: split.skipped_conflicted,
+        })
+    }
+
+    pub(super) fn sync_bookmark_selection_for_revision(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<SyncBookmarkSelection, JjError> {
+        if let Some(selector) = revision
+            .map(str::trim)
+            .filter(|selector| !selector.is_empty())
+        {
+            let target = self.repo.view().get_local_bookmark(RefName::new(selector));
+            if target.has_conflict() {
+                return Err(JjError::ConflictedBookmark {
+                    branch: selector.to_owned(),
+                });
+            }
+            if let Some(commit_id) = target.as_normal() {
+                return Ok(SyncBookmarkSelection {
+                    branch: selector.to_owned(),
+                    target_id: commit_id.clone(),
+                });
+            }
+        }
+
+        let target = self.target_for_revision(revision)?;
+        let mut bookmarks = self.local_bookmarks_for_commit(target.id());
+        bookmarks.sort();
+        bookmarks.dedup();
+
+        match bookmarks.as_slice() {
+            [] => Err(JjError::MissingSyncBookmark),
+            [branch] => Ok(SyncBookmarkSelection {
+                branch: branch.clone(),
+                target_id: target.id().clone(),
+            }),
+            _ => Err(JjError::AmbiguousSyncBookmark { bookmarks }),
+        }
+    }
+
+    fn unchanged_sync_bookmark_outcome(
+        &self,
+        branch: &str,
+        target_id: &CommitId,
+    ) -> Result<TrackedPushOutcome, JjError> {
+        let update = (
+            RefNameBuf::from(branch),
+            Diff {
+                before: Some(target_id.clone()),
+                after: Some(target_id.clone()),
+            },
+        );
+        let trunk_id = self.tracked_push_trunk_id();
+        Ok(TrackedPushOutcome {
+            pushed_refs: 0,
+            bookmarks: pushed_bookmark_summaries(
+                self.repo.as_ref(),
+                &[update],
+                trunk_id.as_ref(),
+                self.workspace.workspace_name(),
+            )?,
+            pushed_commits: Vec::new(),
+        })
+    }
+
+    fn push_tracked_updates(
+        &mut self,
+        updates: Vec<BookmarkPushUpdate>,
+        tx_description: String,
+        error_branch: String,
+    ) -> Result<TrackedPushOutcome, JjError> {
         if updates.is_empty() {
             return Ok(TrackedPushOutcome {
                 pushed_refs: 0,
@@ -59,11 +204,7 @@ impl JjWorkspace {
             });
         }
 
-        let trunk_id = self.current_commit().ok().and_then(|current| {
-            self.resolve_trunk(&current)
-                .ok()
-                .map(|(_, trunk)| trunk.id().clone())
-        });
+        let trunk_id = self.tracked_push_trunk_id();
         let bookmarks = pushed_bookmark_summaries(
             self.repo.as_ref(),
             &updates,
@@ -71,11 +212,8 @@ impl JjWorkspace {
             self.workspace.workspace_name(),
         )?;
         let pushed_commits = self.pushed_commits_for_updates(&updates)?;
-        let push_stats = self.push_origin_bookmark_updates(
-            updates,
-            "jx push tracked bookmarks".to_owned(),
-            "tracked bookmarks".to_owned(),
-        )?;
+        let push_stats =
+            self.push_origin_bookmark_updates(updates, tx_description, error_branch)?;
 
         Ok(TrackedPushOutcome {
             pushed_refs: push_stats.pushed.len(),
@@ -109,6 +247,95 @@ impl JjWorkspace {
         }
 
         Ok(updates)
+    }
+
+    pub(super) fn split_conflicted_tracked_bookmark_updates(
+        &self,
+        updates: Vec<BookmarkPushUpdate>,
+    ) -> Result<SyncableBookmarkUpdates, JjError> {
+        let trunk_id = self.tracked_push_trunk_id();
+        let mut pushable = Vec::new();
+        let mut skipped_conflicted = Vec::new();
+
+        for (name, update) in updates {
+            let conflicted_commits = self.conflicted_commits_for_update(
+                &update,
+                trunk_id.as_ref(),
+                self.workspace.workspace_name(),
+            )?;
+            if conflicted_commits.is_empty() {
+                pushable.push((name, update));
+            } else {
+                skipped_conflicted.push(SkippedPushBookmarkSummary {
+                    branch: name.as_str().to_owned(),
+                    conflicted_commits,
+                });
+            }
+        }
+
+        Ok(SyncableBookmarkUpdates {
+            pushable,
+            skipped_conflicted,
+        })
+    }
+
+    fn conflicted_commits_for_update(
+        &self,
+        update: &Diff<Option<CommitId>>,
+        trunk_id: Option<&CommitId>,
+        current_workspace: &WorkspaceName,
+    ) -> Result<Vec<ConflictedCommitSummary>, JjError> {
+        let Some(new_head) = update.after.clone() else {
+            return Ok(Vec::new());
+        };
+
+        let old_heads = self
+            .repo
+            .view()
+            .remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
+            .flat_map(|(_, remote_ref)| remote_ref.target.added_ids().cloned())
+            .collect::<Vec<_>>();
+        let revset = ResolvedRevsetExpression::commits(old_heads)
+            .range(&ResolvedRevsetExpression::commit(new_head))
+            .evaluate(self.repo.as_ref())
+            .map_err(|error| JjError::Backend {
+                message: error.into_backend_error().to_string(),
+            })?;
+        let ids = pollster::block_on(revset.stream().try_collect::<Vec<_>>()).map_err(|error| {
+            JjError::Backend {
+                message: error.into_backend_error().to_string(),
+            }
+        })?;
+        let mut commits = ids
+            .into_iter()
+            .map(|id| self.load_commit(&id))
+            .collect::<Result<Vec<_>, _>>()?;
+        commits.reverse();
+
+        commits
+            .into_iter()
+            .filter(|commit| commit.has_conflict())
+            .map(|commit| {
+                Ok(ConflictedCommitSummary {
+                    short_commit_id: short_commit_id(commit.id()),
+                    description: first_description_line(commit.description()).to_owned(),
+                    workspace_visibility: commit_workspace_visibility(
+                        self.repo.as_ref(),
+                        Some(commit.id()),
+                        trunk_id,
+                        current_workspace,
+                    )?,
+                })
+            })
+            .collect()
+    }
+
+    fn tracked_push_trunk_id(&self) -> Option<CommitId> {
+        self.current_commit().ok().and_then(|current| {
+            self.resolve_trunk(&current)
+                .ok()
+                .map(|(_, trunk)| trunk.id().clone())
+        })
     }
 
     pub(super) fn pushed_commits_for_updates(
@@ -177,6 +404,17 @@ impl JjWorkspace {
 
         Ok(push_stats)
     }
+}
+
+#[derive(Debug)]
+pub(super) struct SyncBookmarkSelection {
+    pub(super) branch: String,
+    pub(super) target_id: CommitId,
+}
+
+pub(super) struct SyncableBookmarkUpdates {
+    pub(super) pushable: Vec<BookmarkPushUpdate>,
+    pub(super) skipped_conflicted: Vec<SkippedPushBookmarkSummary>,
 }
 
 pub(super) fn classify_push_bookmark_update(

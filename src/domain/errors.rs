@@ -22,10 +22,6 @@ pub enum WorkflowError {
     )]
     BookmarkExistsOnDifferentChange { branch: String },
     #[error(
-        "Selected change already has bookmark `{existing}`; refusing to create requested bookmark `{requested}` as a duplicate PR head"
-    )]
-    ConflictingSelectedBookmark { existing: String, requested: String },
-    #[error(
         "Selected change has multiple user-scoped bookmarks {bookmarks:?}; choose one by removing the others before planning a new PR head"
     )]
     AmbiguousSelectedBookmarks { bookmarks: Vec<String> },

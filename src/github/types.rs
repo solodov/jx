@@ -112,7 +112,7 @@ pub enum ComparisonStatus {
 ///
 /// The owner is the repository owner used in GitHub's `owner:branch` PR head
 /// label. The branch may itself be namespaced by the authenticated user's login,
-/// such as `example-user/ABC-123-00-a1b2c3d`.
+/// such as `example-user/abc-123-00-a1b2c3d`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestHead {
     pub owner: String,
@@ -128,7 +128,7 @@ impl PullRequestHead {
         }
     }
 
-    /// Returns the GitHub PR head label, e.g. `example-owner:example-user/ABC-123-00-a1b2c3d`.
+    /// Returns the GitHub PR head label, e.g. `example-owner:example-user/abc-123-00-a1b2c3d`.
     pub fn label(&self) -> String {
         format!("{}:{}", self.owner, self.branch)
     }

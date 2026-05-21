@@ -17,8 +17,9 @@ use crate::{
         ReviewerCandidate, ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
     },
     jj::{
-        BookmarkUpdate, FetchOutcome, PushOutcome, RebaseOnTrunkOutcome, StatusWorkspaceFacts,
-        TrackedPushOutcome, WorkspaceFacts,
+        BookmarkUpdate, FetchOutcome, PushOutcome, RebaseOnTrunkOutcome,
+        SkippedPushBookmarkSummary, StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome,
+        WorkspaceFacts,
     },
     repository::{
         GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,

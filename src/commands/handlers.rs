@@ -71,9 +71,7 @@ pub(super) fn handle_request(
 
                 let bookmark_update = if plan.bookmark.action == BookmarkAction::Create {
                     if !prompts.push_confirmer.confirm_push(&plan)? {
-                        return Ok(CommandResult {
-                            stdout: "cancelled\n".to_owned(),
-                        });
+                        return Ok(CommandResult::success("cancelled\n".to_owned()));
                     }
 
                     progress.status("Creating bookmark…");
@@ -97,7 +95,7 @@ pub(super) fn handle_request(
             }
         }
         CommandRequest::Sync(request) => {
-            handle_sync(request, environment, services, progress, &prompts, output)?
+            return handle_sync(request, environment, services, progress, &prompts, output);
         }
         CommandRequest::Workflow {
             command,
@@ -153,15 +151,15 @@ pub(super) fn handle_request(
                     let mut plan =
                         services.pull_request_plan(&context, workspace, task_id, labels, draft)?;
                     progress.finish();
-                    prompts.pull_request_previewer.show_preview(&plan, &status);
+                    prompts
+                        .pull_request_previewer
+                        .show_preview(&plan, &status, &prepare_effects);
                     plan.reviewers = prompts
                         .reviewer_selector
                         .select_reviewers(&plan.reviewer_candidates, &reviewers)?;
 
                     if !prompts.pull_request_confirmer.confirm_pull_request(&plan)? {
-                        return Ok(CommandResult {
-                            stdout: "cancelled\n".to_owned(),
-                        });
+                        return Ok(CommandResult::success("cancelled\n".to_owned()));
                     }
 
                     progress.status("Creating bookmark…");
@@ -173,73 +171,65 @@ pub(super) fn handle_request(
                     progress.status("Pushing branch…");
                     let push = services.push_bookmark(&context, &plan.bookmark.branch)?;
                     progress.status("Publishing pull request…");
-                    let mut report = services.publish_pull_request(
+                    let report = services.publish_pull_request(
                         &context,
                         plan,
                         bookmark_update,
                         push,
                         publish_options,
                     )?;
-                    report.event_effects.splice(0..0, prepare_effects);
                     progress.finish();
-                    render_pull_request_with_effects(&report, services)?
+                    render_pull_request_with_effects(&report, services, output.color)?
                 }
             }
         }
     };
 
-    Ok(CommandResult { stdout })
+    Ok(CommandResult::success(stdout))
 }
 
 fn render_pull_request_with_effects(
     report: &PullRequestReport,
     services: &dyn CommandServices,
+    color: bool,
 ) -> Result<String, CommandError> {
     let mut output = render_pull_request(report);
-    let mut event_output = String::new();
+    let pull_request =
+        linked_pull_request_text(&report.repository.github_url, &report.pull_request);
 
     for effect in &report.event_effects {
         if !pull_request_event_effect_is_default_visible(effect) {
             continue;
         }
 
-        event_output.push_str("  ");
-        event_output.push_str(effect.event.label());
-        event_output.push(' ');
-        event_output.push_str(effect.handler_id.as_deref().unwrap_or("(unnamed)"));
-        event_output.push_str(": ");
-        match &effect.kind {
-            PullRequestEventEffectKind::AddLabels { labels } => {
-                event_output.push_str(&format!("added labels {}\n", labels.join(", ")))
-            }
-            PullRequestEventEffectKind::LabelsAlreadyPresent { .. } => {}
+        let summary = match &effect.kind {
+            PullRequestEventEffectKind::AddLabels { labels } => added_labels_summary(labels),
+            PullRequestEventEffectKind::LabelsAlreadyPresent { .. } => continue,
             PullRequestEventEffectKind::OpenPullRequest { url } => match services.open_url(url) {
-                Ok(()) => event_output.push_str(&format!("opened pull request {url}\n")),
-                Err(error) => {
-                    event_output.push_str(&format!("could not open pull request {url}: {error}\n"))
-                }
+                Ok(()) => format!("opened {pull_request}"),
+                Err(error) => format!("could not open {pull_request}: {error}"),
             },
-            PullRequestEventEffectKind::TitleAlready { .. } => {}
-            PullRequestEventEffectKind::UpdatedTitle { title } => {
-                event_output.push_str(&format!("updated title to `{title}`\n"))
+            PullRequestEventEffectKind::TitleAlready { .. } => continue,
+            PullRequestEventEffectKind::UpdatedTitle { .. } => {
+                "added task ID to the title".to_owned()
             }
-        }
-    }
-
-    if !event_output.is_empty() {
-        output.push_str("Event handlers:\n");
-        output.push_str(&event_output);
+        };
+        let line = format!(
+            "Event[{}]: {summary}",
+            pull_request_event_display_name(effect)
+        );
+        output.push_str(&style_log_line(&line, color));
+        output.push('\n');
     }
     Ok(output)
 }
 
-fn pull_request_event_effect_is_default_visible(effect: &domain::PullRequestEventEffect) -> bool {
-    matches!(
-        effect.kind,
-        PullRequestEventEffectKind::AddLabels { .. }
-            | PullRequestEventEffectKind::OpenPullRequest { .. }
-            | PullRequestEventEffectKind::UpdatedTitle { .. }
-    )
+fn added_labels_summary(labels: &[String]) -> String {
+    match labels {
+        [] => "added labels".to_owned(),
+        [label] => format!("added label {label}"),
+        labels => format!("added labels {}", labels.join(", ")),
+    }
 }
 
 fn handle_fetch(
@@ -928,23 +918,23 @@ fn handle_sync(
     progress: &dyn ProgressSink,
     prompts: &PromptHandlers<'_>,
     output: OutputMode,
-) -> Result<String, CommandError> {
+) -> Result<CommandResult, CommandError> {
     if request.all {
         return handle_global_sync(environment, services, progress, output);
     }
 
-    if let Some(repository) = request.repository {
-        let repository_environment = repository_environment(&repository, environment)?;
-        return sync_current_repository(
-            &repository_environment,
-            services,
-            progress,
-            prompts,
-            output,
-        );
+    if request.repo || request.revision.is_none() {
+        return sync_current_repository(environment, services, progress, prompts, output);
     }
 
-    sync_current_repository(environment, services, progress, prompts, output)
+    sync_selected_revision(
+        request.revision.as_deref(),
+        environment,
+        services,
+        progress,
+        prompts,
+        output,
+    )
 }
 
 fn handle_global_sync(
@@ -952,7 +942,7 @@ fn handle_global_sync(
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
     output: OutputMode,
-) -> Result<String, CommandError> {
+) -> Result<CommandResult, CommandError> {
     let config = WorkflowConfig::discover_global(environment)?;
     let repositories = global_work_repositories(&config, environment)?;
     let total = repositories.len();
@@ -969,7 +959,13 @@ fn handle_global_sync(
     }
 
     progress.finish();
-    render_global_sync(&entries, environment.current_dir(), output.color).map_err(Into::into)
+    let exit_code = if global_sync_has_conflicts(&entries) {
+        1
+    } else {
+        0
+    };
+    let stdout = render_global_sync(&entries, environment.current_dir(), output.color)?;
+    Ok(CommandResult::with_exit_code(stdout, exit_code))
 }
 
 fn global_sync_for_repository(
@@ -1076,7 +1072,6 @@ fn global_sync_existing_origin(
     local_ahead_by: i64,
 ) -> Result<GlobalSyncOutcome, CommandError> {
     let fetch = services.fetch_origin(&context)?;
-    domain::ensure_fetch_is_pushable(&fetch)?;
     let mut changed = fetch_outcome_changed(&fetch);
     if context
         .config
@@ -1086,11 +1081,13 @@ fn global_sync_existing_origin(
         let advance = services.advance_trunk_for_sync(&context)?;
         changed |= advance_trunk_changed(&advance);
     }
-    let push = services.push_tracked(&context)?;
-    changed |= tracked_push_changed(&push);
-    let _ = services.sync_pull_requests(&context, &push)?;
+    let push = services.push_syncable_tracked(&context)?;
+    changed |= tracked_push_changed(&push.pushed);
+    let _ = services.sync_pull_requests(&context, &push.pushed)?;
 
-    if changed {
+    if let Some(detail) = sync_conflict_detail(&fetch, &push) {
+        Ok(GlobalSyncOutcome::SyncedWithConflicts { detail })
+    } else if changed {
         Ok(GlobalSyncOutcome::Synced)
     } else if local_ahead_by > 0 {
         Ok(GlobalSyncOutcome::Skipped(
@@ -1121,17 +1118,104 @@ fn tracked_push_changed(push: &TrackedPushOutcome) -> bool {
     push.pushed_refs > 0 || !push.bookmarks.is_empty() || !push.pushed_commits.is_empty()
 }
 
+fn sync_report_has_conflicts(report: &SyncReport) -> bool {
+    fetch_has_conflicts(&report.fetch) || !report.skipped_conflicted_bookmarks.is_empty()
+}
+
+fn global_sync_has_conflicts(entries: &[GlobalSyncEntry]) -> bool {
+    entries.iter().any(|entry| {
+        matches!(
+            &entry.outcome,
+            GlobalSyncOutcome::SyncedWithConflicts { .. }
+        )
+    })
+}
+
+fn sync_conflict_detail(fetch: &FetchOutcome, push: &SyncPushOutcome) -> Option<String> {
+    let mut parts = Vec::new();
+    let rebased_conflicts = fetch
+        .rebased_commits
+        .iter()
+        .filter(|commit| commit.has_conflict)
+        .map(|commit| commit.new_short_commit_id.as_str())
+        .collect::<Vec<_>>();
+    if !rebased_conflicts.is_empty() {
+        parts.push(format!(
+            "conflicted rebases: {}",
+            rebased_conflicts.join(", ")
+        ));
+    }
+
+    let skipped_bookmarks = push
+        .skipped_conflicted_bookmarks
+        .iter()
+        .map(|bookmark| bookmark.branch.as_str())
+        .collect::<Vec<_>>();
+    if !skipped_bookmarks.is_empty() {
+        parts.push(format!(
+            "skipped bookmarks: {}",
+            skipped_bookmarks.join(", ")
+        ));
+    }
+
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+fn fetch_has_conflicts(fetch: &FetchOutcome) -> bool {
+    fetch
+        .rebased_commits
+        .iter()
+        .any(|commit| commit.has_conflict)
+}
+
+fn sync_selected_revision(
+    revision: Option<&str>,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    prompts: &PromptHandlers<'_>,
+    output: OutputMode,
+) -> Result<CommandResult, CommandError> {
+    let context = match RepositoryContext::discover(environment) {
+        Ok(context) => context,
+        Err(RepositoryError::WorkspaceNotFound) if revision.is_none() => {
+            return sync_current_repository(environment, services, progress, prompts, output);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    progress.status("Fetching origin…");
+    let fetch = services.fetch_origin(&context)?;
+    progress.status("Pushing selected bookmark…");
+    let push = services.push_syncable_revision(&context, revision)?;
+    progress.status("Syncing pull request description…");
+    let pull_requests = services.sync_pull_requests(&context, &push.pushed)?;
+    progress.finish();
+    let report = domain::sync_report(&context, fetch, push, pull_requests);
+    let exit_code = if sync_report_has_conflicts(&report) {
+        1
+    } else {
+        0
+    };
+    let stdout = render_sync(&report, environment.current_dir(), output.color)?;
+    Ok(CommandResult::with_exit_code(stdout, exit_code))
+}
+
 fn sync_current_repository(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
     prompts: &PromptHandlers<'_>,
     output: OutputMode,
-) -> Result<String, CommandError> {
+) -> Result<CommandResult, CommandError> {
     let local_context = match LocalRepositoryContext::discover(environment) {
         Ok(context) => context,
         Err(RepositoryError::WorkspaceNotFound) => {
-            initialize_layout_repository_for_sync(environment, services, progress)?
+            let Some(context) =
+                initialize_layout_repository_for_sync(environment, services, progress, prompts)?
+            else {
+                return Ok(CommandResult::success("cancelled\n".to_owned()));
+            };
+            context
         }
         Err(error) => return Err(error.into()),
     };
@@ -1150,15 +1234,23 @@ fn initialize_layout_repository_for_sync(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
-) -> Result<LocalRepositoryContext, CommandError> {
+    prompts: &PromptHandlers<'_>,
+) -> Result<Option<LocalRepositoryContext>, CommandError> {
     let config = WorkflowConfig::discover_for_uninitialized(environment)?;
     let workspace_root = uninitialized_layout_workspace_root(&config.layout, environment)?;
+
+    if !prompts
+        .repository_initialization_confirmer
+        .confirm_repository_initialization(&workspace_root)?
+    {
+        return Ok(None);
+    }
 
     progress.status("Initializing jj repository…");
     services.init_repository(&workspace_root)?;
     progress.finish();
 
-    Ok(LocalRepositoryContext::discover(environment)?)
+    Ok(Some(LocalRepositoryContext::discover(environment)?))
 }
 
 fn uninitialized_layout_workspace_root(
@@ -1185,7 +1277,7 @@ fn sync_local_context(
     progress: &dyn ProgressSink,
     prompts: &PromptHandlers<'_>,
     output: OutputMode,
-) -> Result<String, CommandError> {
+) -> Result<CommandResult, CommandError> {
     if local_context
         .remotes
         .iter()
@@ -1203,14 +1295,15 @@ fn sync_local_context(
         return Err(RepositoryError::MissingOrigin.into());
     }
 
-    sync_missing_origin(
+    let stdout = sync_missing_origin(
         local_context,
         environment,
         services,
         progress,
         prompts,
         output,
-    )
+    )?;
+    Ok(CommandResult::success(stdout))
 }
 
 fn sync_missing_origin(
@@ -1277,13 +1370,9 @@ fn sync_existing_origin(
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
     output: OutputMode,
-) -> Result<String, CommandError> {
+) -> Result<CommandResult, CommandError> {
     progress.status("Fetching origin…");
     let fetch = services.fetch_origin(&context)?;
-    if let Err(error) = domain::ensure_fetch_is_pushable(&fetch) {
-        progress.finish();
-        return Err(error.into());
-    }
     if context
         .config
         .repo
@@ -1293,12 +1382,18 @@ fn sync_existing_origin(
         services.advance_trunk_for_sync(&context)?;
     }
     progress.status("Pushing tracked bookmarks…");
-    let push = services.push_tracked(&context)?;
+    let push = services.push_syncable_tracked(&context)?;
     progress.status("Syncing pull request descriptions…");
-    let pull_requests = services.sync_pull_requests(&context, &push)?;
+    let pull_requests = services.sync_pull_requests(&context, &push.pushed)?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
-    render_sync(&report, environment.current_dir(), output.color).map_err(Into::into)
+    let exit_code = if sync_report_has_conflicts(&report) {
+        1
+    } else {
+        0
+    };
+    let stdout = render_sync(&report, environment.current_dir(), output.color)?;
+    Ok(CommandResult::with_exit_code(stdout, exit_code))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

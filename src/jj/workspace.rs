@@ -300,7 +300,7 @@ impl JjWorkspace {
             })?;
 
         Ok(ChangeSummary {
-            change_id: commit.change_id().hex(),
+            change_id: commit.change_id().reverse_hex(),
             commit_id: commit.id().hex(),
             short_commit_id: short_commit_id(commit.id()),
             description: commit.description().to_owned(),

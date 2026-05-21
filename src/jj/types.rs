@@ -102,6 +102,7 @@ pub struct StatusRemoteFacts {
 /// Summary of a jj change/commit relevant to workflow planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSummary {
+    /// User-facing jj change id, using jj's reverse-hex alphabet.
     pub change_id: String,
     pub commit_id: String,
     pub short_commit_id: String,
@@ -190,6 +191,28 @@ pub struct TrackedPushOutcome {
     pub pushed_refs: usize,
     pub bookmarks: Vec<PushedBookmarkSummary>,
     pub pushed_commits: Vec<PushedCommitSummary>,
+}
+
+/// Result of pushing only the tracked bookmarks that can be safely synced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncPushOutcome {
+    pub pushed: TrackedPushOutcome,
+    pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
+}
+
+/// One tracked bookmark skipped by sync because its push range contains conflicts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedPushBookmarkSummary {
+    pub branch: String,
+    pub conflicted_commits: Vec<ConflictedCommitSummary>,
+}
+
+/// One conflicted commit that prevents a bookmark from being synced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictedCommitSummary {
+    pub short_commit_id: String,
+    pub description: String,
+    pub workspace_visibility: WorkspaceVisibility,
 }
 
 /// One pushed bookmark update rendered by `jx push --tracked` and `jx sync`.

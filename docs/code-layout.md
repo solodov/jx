@@ -129,11 +129,12 @@ for navigation and workspace management.
   pages or matching pull-request searches.
 - `jx fetch` uses the current repository by default, can target one primary
   repository key, and can scan every safe primary repository with `--all`.
-- `jx sync` uses the current repository by default, can target one primary
-  repository key, and can conservatively sync every eligible primary repository
-  with `--all`. When run from an uninitialized or no-remote layout path without
-  `--all`, it can initialize the jj repo or infer the GitHub repository to
-  create from the path.
+- `jx sync` syncs tracked bookmarks for the current repository by default and
+  applies repository policy such as trunk advancement. From an uninitialized
+  layout path, it can prompt to initialize the local jj/Git repository before
+  continuing bootstrap. Pass a jj revision or bookmark to sync one bookmarked
+  target instead, use `jx sync --repo` to force repository mode explicitly, or
+  use `jx sync --all` to conservatively sync every eligible primary repository.
 - `jx pr` uses an explicit `--task-id` when present; otherwise it can read the
   task id stored in workspace-local metadata created by `jx work add --task-id`.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
@@ -195,15 +196,15 @@ only when all of these gates pass:
 3. GitHub `origin` is not ahead of the local cached trunk, and the origin branch
    is not diverged.
 
-Eligible repositories run the normal existing-origin sync steps: fetch origin,
-stop before pushing if fetch introduced conflicts, optionally advance the local
-trunk bookmark according to repo policy, then push tracked bookmark state. Local
-jj work does not by itself block `sync --all`; if GitHub `origin` has not moved
-ahead of the cached trunk, pushing tracked bookmark state is still safe. Repos
-that do not fetch, advance trunk, or push anything are grouped as up to date.
-Other skips are grouped by reason so read-only third-party checkouts,
-pull-needed repos, and setup issues remain visible without being treated as
-failures.
+Eligible repositories run the normal repository sync steps: fetch origin,
+optionally advance the local trunk bookmark according to repo policy, then push
+tracked bookmark state whose push ranges have no conflicted commits. Conflicted
+bookmarks are skipped and reported separately. Local jj work does not by itself
+block `sync --all`; if GitHub `origin` has not moved ahead of the cached trunk,
+pushing tracked bookmark state is still safe. Repos that do not fetch, advance
+trunk, or push anything are grouped as up to date. Other skips are grouped by
+reason so read-only third-party checkouts, pull-needed repos, and setup issues
+remain visible without being treated as failures.
 
 ## Current repository versus layout repository
 

@@ -6,20 +6,39 @@ pub(super) struct PromptHandlers<'a> {
     pub(super) reviewer_selector: &'a dyn ReviewerSelector,
     pub(super) pull_request_confirmer: &'a dyn PullRequestConfirmer,
     pub(super) push_confirmer: &'a dyn PushConfirmer,
+    pub(super) repository_initialization_confirmer: &'a dyn RepositoryInitializationConfirmer,
     pub(super) repository_creation_confirmer: &'a dyn RepositoryCreationConfirmer,
     pub(super) workspace_remove_confirmer: &'a dyn WorkspaceRemoveConfirmer,
 }
 
 /// Shows the operator-facing PR summary before any publishing mutation.
 pub(super) trait PullRequestPreviewer {
-    fn show_preview(&self, plan: &PullRequestPlan, status: &WorkspaceStatus);
+    fn show_preview(
+        &self,
+        plan: &PullRequestPlan,
+        status: &WorkspaceStatus,
+        prepare_effects: &[PullRequestEventEffect],
+    );
 }
 
 pub(super) struct TerminalPullRequestPreviewer;
 
 impl PullRequestPreviewer for TerminalPullRequestPreviewer {
-    fn show_preview(&self, plan: &PullRequestPlan, status: &WorkspaceStatus) {
-        eprint!("{}", render_pull_request_preview(plan, status));
+    fn show_preview(
+        &self,
+        plan: &PullRequestPlan,
+        status: &WorkspaceStatus,
+        prepare_effects: &[PullRequestEventEffect],
+    ) {
+        eprint!(
+            "{}",
+            render_pull_request_preview_with_style(
+                plan,
+                status,
+                prepare_effects,
+                io::stderr().is_terminal(),
+            )
+        );
     }
 }
 
@@ -28,7 +47,13 @@ pub(super) struct NoPullRequestPreview;
 
 #[cfg(test)]
 impl PullRequestPreviewer for NoPullRequestPreview {
-    fn show_preview(&self, _plan: &PullRequestPlan, _status: &WorkspaceStatus) {}
+    fn show_preview(
+        &self,
+        _plan: &PullRequestPlan,
+        _status: &WorkspaceStatus,
+        _prepare_effects: &[PullRequestEventEffect],
+    ) {
+    }
 }
 
 /// Selects an existing pull request to open when the operator requests an interactive list.
@@ -299,6 +324,80 @@ impl PushConfirmer for AlwaysConfirmPush {
     }
 }
 
+/// Confirms whether a layout path should be initialized as a local jj repository.
+pub(super) trait RepositoryInitializationConfirmer {
+    fn confirm_repository_initialization(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<bool, RepositoryInitializationConfirmationError>;
+}
+
+#[derive(Debug, Error)]
+pub enum RepositoryInitializationConfirmationError {
+    #[error("Cannot confirm repository initialization without an interactive terminal")]
+    NonInteractive,
+    #[error("Could not read repository initialization confirmation: {source}")]
+    Read { source: dialoguer::Error },
+}
+
+pub(super) struct TerminalRepositoryInitializationConfirmer;
+
+impl RepositoryInitializationConfirmer for TerminalRepositoryInitializationConfirmer {
+    fn confirm_repository_initialization(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<bool, RepositoryInitializationConfirmationError> {
+        if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+            return Err(RepositoryInitializationConfirmationError::NonInteractive);
+        }
+
+        let theme = PlainPromptTheme;
+        let selected = Select::with_theme(&theme)
+            .with_prompt(format!(
+                "Initialize jj repository at {}?",
+                workspace_root.display()
+            ))
+            .items(["Yes", "No"])
+            .default(1)
+            .report(false)
+            .interact()
+            .map_err(|source| {
+                restore_terminal_cursor();
+                RepositoryInitializationConfirmationError::Read { source }
+            })?;
+
+        Ok(selected == 0)
+    }
+}
+
+#[cfg(test)]
+pub(super) struct AlwaysConfirmRepositoryInitialization;
+
+#[cfg(test)]
+impl RepositoryInitializationConfirmer for AlwaysConfirmRepositoryInitialization {
+    fn confirm_repository_initialization(
+        &self,
+        _workspace_root: &Path,
+    ) -> Result<bool, RepositoryInitializationConfirmationError> {
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+pub(super) struct FixedRepositoryInitializationConfirmer {
+    pub(super) confirmed: bool,
+}
+
+#[cfg(test)]
+impl RepositoryInitializationConfirmer for FixedRepositoryInitializationConfirmer {
+    fn confirm_repository_initialization(
+        &self,
+        _workspace_root: &Path,
+    ) -> Result<bool, RepositoryInitializationConfirmationError> {
+        Ok(self.confirmed)
+    }
+}
+
 /// Confirms whether a missing-origin repository should be created on GitHub.
 pub(super) trait RepositoryCreationConfirmer {
     fn confirm_repository_creation(
@@ -450,7 +549,6 @@ impl ReviewerSelector for TerminalReviewerSelector {
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         let choices = reviewer_choices(candidates, preselected);
         if choices.is_empty() {
-            eprintln!("\nReviewers for the pull request cannot be determined, set them manually in github.");
             return Ok(ReviewerSelection::default());
         }
 
@@ -469,7 +567,6 @@ impl ReviewerSelector for TerminalReviewerSelector {
             .map(|choice| choice.checked)
             .collect::<Vec<_>>();
         let theme = PlainPromptTheme;
-        eprintln!();
         let selected = MultiSelect::with_theme(&theme)
             .with_prompt("Reviewers:")
             .items(&labels)

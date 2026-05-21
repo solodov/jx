@@ -2104,14 +2104,14 @@ fn open_pr_accepts_positional_commit_or_bookmark_selector() {
         [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
     );
     let services = FakeServices {
-        open_pull_request_candidates: vec!["solodov/00-1977d9cd".to_owned()],
+        open_pull_request_candidates: vec!["example-user/00-1977d9cd".to_owned()],
         pull_requests_by_head: BTreeMap::from([(
-            "solodov/00-1977d9cd".to_owned(),
+            "example-user/00-1977d9cd".to_owned(),
             PullRequestRecord {
                 number: 1977,
                 title: "Selected change".to_owned(),
                 body: None,
-                head_branch: "solodov/00-1977d9cd".to_owned(),
+                head_branch: "example-user/00-1977d9cd".to_owned(),
                 base_branch: "main".to_owned(),
                 html_url: Some(
                     "https://github.com/example-owner/example-repo/pull/1977".to_owned(),
@@ -2123,7 +2123,7 @@ fn open_pr_accepts_positional_commit_or_bookmark_selector() {
     };
 
     let result = run_with_args_and_services(
-        ["jx", "open", "pr", "--print", "solodov/00-1977d9cd"],
+        ["jx", "open", "pr", "--print", "example-user/00-1977d9cd"],
         &environment,
         &services,
     )
@@ -2135,7 +2135,7 @@ fn open_pr_accepts_positional_commit_or_bookmark_selector() {
     );
     assert_eq!(
         services.open_pull_request_selectors.borrow().as_slice(),
-        [Some("solodov/00-1977d9cd".to_owned())]
+        [Some("example-user/00-1977d9cd".to_owned())]
     );
 }
 
@@ -2848,6 +2848,7 @@ path = "{repo}"
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
@@ -3297,6 +3298,7 @@ path = "{repo}"
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
@@ -3397,6 +3399,7 @@ path = "{repo}"
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
@@ -3874,8 +3877,8 @@ fn push_tracked_pushes_tracked_bookmarks_and_deletions() {
 }
 
 #[test]
-fn sync_fetches_then_pushes_tracked_state_with_commit_lists() {
-    // Verifies: Sync renders rebased commits first, then pushed bookmark heads and deletions.
+fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
+    // Verifies: Bare sync uses repository policy, rendering rebases before pushed heads/deletions.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -3891,6 +3894,14 @@ fn sync_fetches_then_pushes_tracked_state_with_commit_lists() {
 
     assert_eq!(services.advance_trunk_calls.get(), 0);
     assert_eq!(
+        services.push_tracked_roots.borrow().as_slice(),
+        [workspace.path()]
+    );
+    assert!(services
+        .push_syncable_revision_requests
+        .borrow()
+        .is_empty());
+    assert_eq!(
             result.stdout,
             format!(
                 "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  aaaabbbb -> ccccdddd  example change\n  default@  eeeeffff -> 12345678  follow-up change\n\nPushed commits:\n  default@  a1b2c3d4 -> {}  example change\n\nDeleted bookmarks:\n  {}: 99990000 obsolete example change\n",
@@ -3901,37 +3912,30 @@ fn sync_fetches_then_pushes_tracked_state_with_commit_lists() {
 }
 
 #[test]
-fn sync_accepts_specific_repository_argument() {
-    // Verifies: A positional project key runs the normal sync flow from that configured repository.
+fn sync_accepts_revision_argument() {
+    // Verifies: A positional argument selects one jj target instead of changing repository scope.
     let workspace = TestWorkspace::new();
-    workspace.write_home_file(
-        ".config/jx/config.toml",
-        r#"
-[[layout.rules]]
-source = "github"
-owner = "example-owner"
-root = "~/projects"
-path = "{repo}"
-"#,
-    );
-    let target = workspace.create_jj_workspace("projects/target");
-    TestWorkspace::write_git_config_at(
-        &target,
+    workspace.write_git_config(
         r#"
 [remote "origin"]
-    url = https://github.com/example-owner/target.git
+    url = ssh://git@github.com/example-owner/example-repo.git
 "#,
     );
-    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
     let services = FakeServices::default();
 
-    let result = run_with_args_and_services(["jx", "sync", "target"], &environment, &services)
-        .expect("specific sync succeeds");
+    let result = run_with_args_and_services(
+        ["jx", "sync", "example-user/current"],
+        &environment,
+        &services,
+    )
+    .expect("specific sync succeeds");
 
-    assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [target]);
-    assert!(result.stdout.starts_with(
-        "Synced: origin/main (\x1b]8;;https://github.com/example-owner/target/tree/main"
-    ));
+    assert_eq!(
+        services.push_syncable_revision_requests.borrow().as_slice(),
+        [Some("example-user/current".to_owned())]
+    );
+    assert!(result.stdout.starts_with("Synced: origin/main ("));
 }
 
 #[test]
@@ -3972,7 +3976,7 @@ path = "{repo}"
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "sync"], &environment, &services)
+    let result = run_with_args_and_services(["jx", "sync", "--repo"], &environment, &services)
         .expect("sync bootstrap succeeds");
 
     assert_eq!(services.create_repository_calls.get(), 1);
@@ -3990,8 +3994,8 @@ path = "{repo}"
 }
 
 #[test]
-fn sync_initializes_layout_directory_before_bootstrap() {
-    // Verifies: Missing-workspace sync initializes the inferred layout repo before bootstrap.
+fn sync_offers_layout_repository_initialization_before_bootstrap() {
+    // Verifies: Missing-workspace sync initializes an inferred layout repo before bootstrap.
     let workspace = TestWorkspace::new_uninitialized_under("work/example-repo");
     workspace.write_file(
         ".jx.toml",
@@ -4048,13 +4052,54 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_can_cancel_layout_repository_initialization() {
+    // Verifies: Declining local initialization stops before jj, GitHub, or push mutation.
+    let workspace = TestWorkspace::new_uninitialized_under("work/example-repo");
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/work"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [(
+            "HOME".to_owned(),
+            workspace.home.to_string_lossy().into_owned(),
+        )],
+    );
+    let services = FakeServices {
+        expected_init_repository: Some(workspace.path()),
+        ..FakeServices::default()
+    };
+    let confirmer = FixedRepositoryInitializationConfirmer { confirmed: false };
+
+    let result = run_with_args_and_repository_initialization_confirmer(
+        ["jx", "sync"],
+        &environment,
+        &services,
+        &confirmer,
+    )
+    .expect("sync cancellation succeeds");
+
+    assert_eq!(result.stdout, "cancelled\n");
+    assert_eq!(services.init_repository_calls.get(), 0);
+    assert_eq!(services.create_repository_calls.get(), 0);
+    assert!(services.push_tracked_roots.borrow().is_empty());
+}
+
+#[test]
 fn sync_refuses_uninitialized_directory_outside_configured_layout() {
     // Verifies: Sync only initializes directories whose GitHub identity is layout-derived.
     let workspace = TestWorkspace::new_uninitialized_under("misc/example-repo");
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices::default();
 
-    let error = run_with_args_and_services(["jx", "sync"], &environment, &services)
+    let error = run_with_args_and_services(["jx", "sync", "--repo"], &environment, &services)
         .expect_err("off-layout directory is not initialized");
 
     assert!(matches!(
@@ -4115,7 +4160,7 @@ path = "{repo}"
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "sync"], &environment, &services)
+    let result = run_with_args_and_services(["jx", "sync", "--repo"], &environment, &services)
         .expect("sync bootstrap succeeds");
 
     assert_eq!(services.prepare_initial_publish_calls.get(), 1);
@@ -4161,7 +4206,7 @@ path = "{repo}"
     let confirmer = FixedRepositoryCreationConfirmer { confirmed: false };
 
     let result = run_with_args_and_repository_creation_confirmer(
-        ["jx", "sync"],
+        ["jx", "sync", "--repo"],
         &environment,
         &services,
         &confirmer,
@@ -4180,7 +4225,7 @@ fn sync_refuses_missing_origin_outside_configured_layout() {
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices::default();
 
-    let error = run_with_args_and_services(["jx", "sync"], &environment, &services)
+    let error = run_with_args_and_services(["jx", "sync", "--repo"], &environment, &services)
         .expect_err("off-layout repo cannot be bootstrapped");
 
     assert!(matches!(
@@ -4192,7 +4237,7 @@ fn sync_refuses_missing_origin_outside_configured_layout() {
 
 #[test]
 fn sync_advances_trunk_when_repo_policy_enables_it() {
-    // Verifies: Sync runs the optional trunk-advance preparation only for matching repo policy.
+    // Verifies: Bare sync runs repository trunk-advance preparation for matching repo policy.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -4210,7 +4255,8 @@ advance_trunk = true
     let environment = RuntimeEnvironment::new(workspace.path(), []);
     let services = FakeServices::default();
 
-    run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
+    run_with_args_and_services(["jx", "sync"], &environment, &services)
+        .expect("sync succeeds");
 
     assert_eq!(services.advance_trunk_calls.get(), 1);
 }
@@ -4481,8 +4527,8 @@ fn sync_renders_only_summary_when_nothing_changed() {
 }
 
 #[test]
-fn sync_aborts_when_fetch_creates_conflicts() {
-    // Verifies: Sync refuses to push after fetch reports conflicted rebased commits.
+fn sync_pushes_clean_bookmarks_and_reports_conflicted_skips() {
+    // Verifies: Sync keeps pushing safe bookmark updates and reports conflicted ones with a failing exit code.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -4495,17 +4541,29 @@ fn sync_aborts_when_fetch_creates_conflicts() {
     fetch.rebased_commits[0].has_conflict = true;
     let services = FakeServices {
         fetch,
+        sync_conflicted_bookmarks: vec![crate::jj::SkippedPushBookmarkSummary {
+            branch: "example-user/conflicted".to_owned(),
+            conflicted_commits: vec![crate::jj::ConflictedCommitSummary {
+                short_commit_id: "ccccdddd".to_owned(),
+                description: "example change".to_owned(),
+                workspace_visibility: current_workspace_visibility(),
+            }],
+        }],
         ..FakeServices::default()
     };
 
-    let error = run_with_args_and_services(["jx", "sync"], &environment, &services)
-        .expect_err("conflicted sync fails");
+    let result = run_with_args_and_services(["jx", "sync"], &environment, &services)
+        .expect("conflicted sync returns normal output");
 
-    assert!(matches!(
-        error,
-        CommandError::Workflow(WorkflowError::FetchConflicts { .. })
-    ));
-    assert!(error.to_string().contains("ccccdddd"));
+    assert_eq!(result.exit_code, 1);
+    assert!(result.stdout.contains(&format!(
+        "Pushed commits:\n  default@  a1b2c3d4 -> {}  example change\n",
+        example_bookmark_link("example-user/current")
+    )));
+    assert!(result.stdout.contains(&format!(
+        "Skipped bookmarks with conflicts:\n  {}  ccccdddd  example change (conflicted)\n",
+        example_bookmark_link("example-user/conflicted")
+    )));
 }
 
 #[test]
@@ -4533,7 +4591,7 @@ fn pull_request_accepts_short_task_id_flag_and_renders_published_pr() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4587,7 +4645,7 @@ run = "prepend_task_id"
     );
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\nEvent handlers:\n  pull_request.prepare prepend-task: updated title to `ABC-123: Example title`\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4630,7 +4688,11 @@ fn pull_request_opens_created_pr_when_event_handler_requests_it() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\nEvent handlers:\n  pull_request.created label-created: added labels queued\n  pull_request.created open-created: opened pull request https://github.com/example-owner/example-repo/pull/42\n"
+        format!(
+            "Created {}\nEvent[label-created]: added label queued\nEvent[open-created]: opened {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(42)
+        )
     );
     assert_eq!(
         services.opened_urls.borrow().as_slice(),
@@ -4677,7 +4739,7 @@ fn pull_request_hides_noop_event_effects_by_default() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4715,7 +4777,7 @@ fn pull_request_no_event_handlers_suppresses_event_effects() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
     assert!(services.opened_urls.borrow().is_empty());
 }
@@ -4751,7 +4813,7 @@ fn pull_request_infers_task_id_from_workspace_metadata() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4852,7 +4914,7 @@ fn pull_request_accepts_repeated_label_flags() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4880,7 +4942,7 @@ fn pull_request_renders_updated_pr_url() {
 
     assert_eq!(
         result.stdout,
-        "Updated https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Updated {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4906,7 +4968,10 @@ fn pull_request_falls_back_to_number_when_github_omits_url() {
     let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
         .expect("pull request publishes without html url");
 
-    assert_eq!(result.stdout, "Created PR #42\n");
+    assert_eq!(
+        result.stdout,
+        format!("Created {}\n", example_pull_request_link(42))
+    );
 }
 
 #[test]
@@ -4934,7 +4999,7 @@ fn pr_alias_accepts_commit_flag_and_plans_that_commit() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -4977,7 +5042,7 @@ fn pull_request_accepts_repeated_reviewer_flags() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -5005,7 +5070,7 @@ fn pull_request_respects_draft_flag() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -5095,7 +5160,66 @@ fn pull_request_uses_interactively_selected_reviewers() {
 
     assert_eq!(
         result.stdout,
-        "Created https://github.com/example-owner/example-repo/pull/42\n"
+        format!("Created {}\n", example_pull_request_link(42))
+    );
+}
+
+#[test]
+fn pull_request_previews_before_reviewer_selection() {
+    // Verifies: Operators see the PR description before deciding which reviewers to request.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let selected = ReviewerSelection::new(["second-reviewer"], std::iter::empty::<&str>());
+    let services = FakeServices {
+        reviewer_candidates: vec![ReviewerCandidate::new(
+            ReviewerTarget::user("second-reviewer"),
+            vec!["src/** matched 1 file".to_owned()],
+        )],
+        expected_reviewers: Some(selected.clone()),
+        ..FakeServices::default()
+    };
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let previewer = RecordingPullRequestPreviewer {
+        events: events.clone(),
+    };
+    let reviewer_selector = RecordingReviewerSelector {
+        events: events.clone(),
+        selected,
+    };
+    let prompts = PromptHandlers {
+        pull_request_previewer: &previewer,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &reviewer_selector,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+
+    let result = run_with_args_and_progress(
+        ["jx", "pull-request"],
+        &environment,
+        &services,
+        &NoProgress,
+        prompts,
+        OutputMode::plain(),
+    )
+    .expect("pull request publishes");
+
+    assert_eq!(events.borrow().as_slice(), &["preview", "reviewers"]);
+    assert_eq!(
+        result.stdout,
+        format!("Created {}\n", example_pull_request_link(42))
     );
 }
 
@@ -5213,35 +5337,59 @@ fn workspace_status_renderer_renders_markdown_description_for_readability() {
 }
 
 #[test]
-fn pull_request_preview_reuses_workspace_status_renderer_and_adds_labels() {
-    // Verifies: PR preview shares status output with jx status and appends PR-only metadata.
+fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
+    // Verifies: PR preview omits commit headers while keeping description, changed files, and metadata.
     let mut plan = preview_plan();
     plan.labels = vec!["bug".to_owned(), "help wanted".to_owned()];
+    plan.base_pull_request = Some(existing_pull_request(false));
     let status = workspace_status();
+    let prepare_effects = [PullRequestEventEffect {
+        event: crate::repository::RepoEvent::PullRequestPrepare,
+        handler_id: Some("prepend-task".to_owned()),
+        kind: PullRequestEventEffectKind::UpdatedTitle {
+            title: "example change".to_owned(),
+        },
+    }];
 
-    let preview = render_pull_request_preview(&plan, &status);
+    let preview = render_pull_request_preview(&plan, &status, &prepare_effects);
 
-    assert!(preview.starts_with(&expected_workspace_status()));
-    assert!(preview.ends_with("\nLabels: bug, help wanted\n"));
     assert_eq!(
-        pull_request_confirmation_prompt(&plan),
-        "Create pull request?"
+        preview,
+        format!(
+            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n\nLabels: bug, help wanted\n",
+            example_bookmark_link("example-user/02-zzzzzzzz"),
+            example_pull_request_link(7),
+        )
     );
+    assert_eq!(pull_request_confirmation_prompt(&plan), "Create?");
     plan.draft = true;
-    assert_eq!(
-        pull_request_confirmation_prompt(&plan),
-        "Create draft pull request?"
-    );
+    assert_eq!(pull_request_confirmation_prompt(&plan), "Create draft?");
     plan.existing_pull_request = Some(existing_pull_request(false));
-    assert_eq!(
-        pull_request_confirmation_prompt(&plan),
-        "Update pull request?"
-    );
+    assert_eq!(pull_request_confirmation_prompt(&plan), "Update?");
     plan.existing_pull_request = Some(existing_pull_request(true));
-    assert_eq!(
-        pull_request_confirmation_prompt(&plan),
-        "Update draft pull request?"
-    );
+    assert_eq!(pull_request_confirmation_prompt(&plan), "Update draft?");
+}
+
+#[test]
+fn pull_request_preview_wraps_description_inside_content_indent() {
+    // Verifies: Indented PR content still reserves indentation width before markdown wrapping.
+    let mut plan = preview_plan();
+    plan.title = "Example preview title".to_owned();
+    plan.body = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda".to_owned();
+    let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 28);
+
+    let indented_lines = preview
+        .lines()
+        .filter(|line| line.starts_with("  ") && !line.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(indented_lines.len() > 3, "{preview:?}");
+    for line in indented_lines {
+        assert!(
+            line.len() <= 28,
+            "line exceeded preview width: {line:?}\n{preview}"
+        );
+    }
 }
 
 #[test]
@@ -5322,6 +5470,37 @@ fn production_services_builds_octocrab_inside_tokio_runtime() {
             )
         })
         .expect("client builds inside runtime");
+}
+
+struct RecordingPullRequestPreviewer {
+    events: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+}
+
+impl PullRequestPreviewer for RecordingPullRequestPreviewer {
+    fn show_preview(
+        &self,
+        _plan: &PullRequestPlan,
+        _status: &WorkspaceStatus,
+        _prepare_effects: &[PullRequestEventEffect],
+    ) {
+        self.events.borrow_mut().push("preview");
+    }
+}
+
+struct RecordingReviewerSelector {
+    events: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    selected: ReviewerSelection,
+}
+
+impl ReviewerSelector for RecordingReviewerSelector {
+    fn select_reviewers(
+        &self,
+        _candidates: &[ReviewerCandidate],
+        _preselected: &[ReviewerTarget],
+    ) -> Result<ReviewerSelection, ReviewerSelectionError> {
+        self.events.borrow_mut().push("reviewers");
+        Ok(self.selected.clone())
+    }
 }
 
 struct FixedReviewerSelector {
@@ -5422,6 +5601,7 @@ fn preview_plan() -> PullRequestPlan {
         body: String::new(),
         changed_files: vec!["src/main.rs".to_owned()],
         base: "main".to_owned(),
+        base_pull_request: None,
         head: PullRequestHead::same_repository("example-owner", "example-user/02-zzzzzzzz"),
         labels: Vec::new(),
         draft: false,
@@ -5458,6 +5638,7 @@ struct FakeServices {
     up_to_date_sync_roots: BTreeSet<PathBuf>,
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
+    push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
@@ -5466,6 +5647,7 @@ struct FakeServices {
     advance_trunk: AdvanceTrunkOutcome,
     advance_trunk_calls: std::cell::Cell<usize>,
     tracked_push: TrackedPushOutcome,
+    sync_conflicted_bookmarks: Vec<crate::jj::SkippedPushBookmarkSummary>,
     sync_pull_requests: Vec<PullRequestRecord>,
     pull_request_action: PullRequestAction,
     pull_request_url: Option<String>,
@@ -5569,6 +5751,7 @@ impl Default for FakeServices {
             up_to_date_sync_roots: BTreeSet::new(),
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
+            push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -5615,11 +5798,11 @@ impl Default for FakeServices {
             },
             expected_rebase_sources: None,
             bookmark_update: BookmarkUpdate {
-                branch: "example-user/ABC-123-02-zzzzzzzz".to_owned(),
+                branch: "example-user/abc-123-02-zzzzzzzz".to_owned(),
                 created: true,
             },
             push: PushOutcome {
-                branch: "example-user/ABC-123-02-zzzzzzzz".to_owned(),
+                branch: "example-user/abc-123-02-zzzzzzzz".to_owned(),
                 pushed_refs: 1,
                 pushed_commits: vec![PushedCommitSummary {
                     short_commit_id: "a1b2c3d4".to_owned(),
@@ -5660,6 +5843,7 @@ impl Default for FakeServices {
                     description: "example change".to_owned(),
                 }],
             },
+            sync_conflicted_bookmarks: Vec::new(),
             sync_pull_requests: Vec::new(),
             pull_request_action: PullRequestAction::Created,
             pull_request_url: Some(
@@ -6124,6 +6308,45 @@ impl CommandServices for FakeServices {
         Ok(self.tracked_push.clone())
     }
 
+    fn push_syncable_revision(
+        &self,
+        context: &RepositoryContext,
+        revision: Option<&str>,
+    ) -> Result<SyncPushOutcome, JjError> {
+        self.push_tracked_roots
+            .borrow_mut()
+            .push(context.workspace_root.clone());
+        self.push_syncable_revision_requests
+            .borrow_mut()
+            .push(revision.map(str::to_owned));
+        Ok(SyncPushOutcome {
+            pushed: self.tracked_push.clone(),
+            skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
+        })
+    }
+
+    fn push_syncable_tracked(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<SyncPushOutcome, JjError> {
+        self.push_tracked_roots
+            .borrow_mut()
+            .push(context.workspace_root.clone());
+        let pushed = if self.up_to_date_sync_roots.contains(&context.workspace_root) {
+            TrackedPushOutcome {
+                pushed_refs: 0,
+                bookmarks: Vec::new(),
+                pushed_commits: Vec::new(),
+            }
+        } else {
+            self.tracked_push.clone()
+        };
+        Ok(SyncPushOutcome {
+            pushed,
+            skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
+        })
+    }
+
     fn sync_pull_requests(
         &self,
         _context: &RepositoryContext,
@@ -6176,6 +6399,7 @@ impl CommandServices for FakeServices {
             base: workspace
                 .nearest_ancestor_bookmark
                 .unwrap_or(workspace.trunk.branch),
+            base_pull_request: None,
             head: PullRequestHead::same_repository("example-owner", branch),
             labels,
             draft,

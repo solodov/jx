@@ -25,10 +25,11 @@ the checkout at `root/path`. `jx work` uses the same identity to place managed
 workspaces at `root/workspace_dir/path/name`, keeping primary checkouts visible
 while parallel work stays under the hidden workspace directory. Task workspaces
 created with `jx work add --task-id` prefix that workspace name with the task id
-and store the task id in workspace-local metadata for `jx pr`. `jx sync` uses
-the same layout in reverse to infer private GitHub repository creation when a
-new local repo has no remotes. Without config, `owner/repo` uses the built-in
-GitHub source and clones to `~/src/github.com/owner/repo` with an SSH URL.
+and store the task id in workspace-local metadata for `jx pr`. `jx sync` can use
+the same layout in reverse to initialize a local jj/Git repository and infer
+private GitHub repository creation when a layout path has no repo or remotes.
+Without config, `owner/repo` uses the built-in GitHub source and clones to
+`~/src/github.com/owner/repo` with an SSH URL.
 
 ```toml
 [layout]
@@ -97,10 +98,10 @@ reviewers = ["owner-reviewer"]
 workspace_shared_paths = [".local-tool-state"]
 ```
 
-`advance_trunk` makes `jx sync` move the local trunk bookmark to the newest
-contiguous stack commit with both changes and a non-empty description before
-pushing tracked bookmarks, then leaves an empty working-copy change on top when
-needed.
+`advance_trunk` makes repository sync (`jx sync` or `jx sync --repo`) move the
+local trunk bookmark to the newest contiguous stack commit with changes, a
+non-empty description, and no conflicts before pushing tracked bookmarks, then
+leaves an empty working-copy change on top when needed.
 
 `workspace_shared_paths` lists repo-relative local-only paths that managed
 `jx work add` workspaces should symlink from the primary checkout after jj
@@ -147,9 +148,10 @@ Matching rule handlers compose after base handlers. A matching rule can disable 
 previous handler with `id = "..."` and `enabled = false`. Use
 `jx pr --no-event-handlers` to disable all configured handlers for one run.
 Default output reports handlers that changed PR or commit state, plus browser
-open attempts; no-op matches are kept quiet. `prepend_task_id` rewrites the
-selected commit title before PR planning, using `TASK-ID: title` and normalizing
-common existing task prefixes.
+open attempts; no-op matches are kept quiet. Prepare effects appear in the PR
+preview, and create/update effects appear after publishing. `prepend_task_id`
+rewrites the selected commit title before PR planning, using `TASK-ID: title`
+and normalizing common existing task prefixes.
 
 Reviewers may be GitHub users or teams written as `org/team`.
 

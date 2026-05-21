@@ -384,6 +384,10 @@ fn facts_report_trunk_target_bookmarks_and_stack_index() {
     assert_eq!(facts.trunk.branch, "main");
     assert_eq!(facts.trunk.commit_id, trunk.id().hex());
     assert_eq!(facts.trunk_git_commit_sha, trunk.id().hex());
+    assert_eq!(
+        facts.target_change.change_id,
+        current.change_id().reverse_hex()
+    );
     assert_eq!(facts.target_change.commit_id, current.id().hex());
     assert_eq!(facts.target_change.description, "current change");
     assert!(facts.target_change.is_empty);
@@ -820,7 +824,7 @@ fn pull_request_candidates_fall_back_to_exact_local_bookmark() {
         let current = write_child(tx.repo_mut(), &root, "current change").await;
         let selected = write_child(tx.repo_mut(), &root, "review head").await;
 
-        set_local_bookmark(tx.repo_mut(), "solodov/00-1977d9cd", selected.id());
+        set_local_bookmark(tx.repo_mut(), "example-user/00-1977d9cd", selected.id());
         tx.repo_mut()
             .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
             .expect("set current working-copy change away from bookmark");
@@ -834,10 +838,10 @@ fn pull_request_candidates_fall_back_to_exact_local_bookmark() {
     let subject = JjWorkspace { workspace, repo };
 
     let candidates = subject
-        .pull_request_candidate_bookmarks(Some("solodov/00-1977d9cd"))
+        .pull_request_candidate_bookmarks(Some("example-user/00-1977d9cd"))
         .expect("candidate bookmarks load");
 
-    assert_eq!(candidates, ["solodov/00-1977d9cd"]);
+    assert_eq!(candidates, ["example-user/00-1977d9cd"]);
 }
 
 #[test]
@@ -1546,6 +1550,149 @@ fn push_tracked_selects_tracked_updates_and_deletions() {
 }
 
 #[test]
+fn sync_bookmark_selection_requires_one_bookmark_unless_named() {
+    // Verifies: Single-target sync requires an unambiguous bookmark on the selected commit.
+    let fixture = TestWorkspace::new("sync-bookmark-selection");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, ambiguous_commit_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let unbookmarked = write_child(tx.repo_mut(), &trunk, "unbookmarked change").await;
+        let ambiguous = write_child(tx.repo_mut(), &trunk, "ambiguous change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "example-user/one", ambiguous.id());
+        set_local_bookmark(tx.repo_mut(), "example-user/two", ambiguous.id());
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                unbookmarked.id().clone(),
+            )
+            .expect("set working-copy commit");
+
+        let repo = tx
+            .commit("arrange sync bookmark selection")
+            .await
+            .expect("commit");
+        (workspace, repo, ambiguous.id().hex())
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let missing = subject
+        .sync_bookmark_selection_for_revision(None)
+        .expect_err("unbookmarked current change is rejected");
+    let ambiguous = subject
+        .sync_bookmark_selection_for_revision(Some(&ambiguous_commit_id))
+        .expect_err("ambiguous selected change is rejected");
+    let named = subject
+        .sync_bookmark_selection_for_revision(Some("example-user/two"))
+        .expect("exact bookmark selects one branch");
+
+    assert!(matches!(missing, JjError::MissingSyncBookmark));
+    assert!(matches!(ambiguous, JjError::AmbiguousSyncBookmark { .. }));
+    assert_eq!(named.branch, "example-user/two");
+}
+
+#[test]
+fn syncable_tracked_push_skips_bookmarks_with_conflicted_commits() {
+    // Verifies: Sync filters conflicted bookmark updates while retaining clean pushes and deletions.
+    let fixture = TestWorkspace::new("push-syncable-conflicts");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "old main trunk",
+            &[("conflict.txt", b"base\n")],
+        )
+        .await;
+        let local_conflict = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "conflicting branch",
+            &[("conflict.txt", b"local\n")],
+        )
+        .await;
+        let updated_trunk = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "updated main trunk",
+            &[("conflict.txt", b"upstream\n")],
+        )
+        .await;
+        let clean = write_child_with_files(
+            tx.repo_mut(),
+            &updated_trunk,
+            "clean branch",
+            &[("clean.txt", b"clean\n")],
+        )
+        .await;
+        let deleted = write_child(tx.repo_mut(), &updated_trunk, "deleted branch").await;
+
+        let stats = rebase_trunk_children_onto_updated_trunk(
+            tx.repo_mut(),
+            &[local_conflict.id().clone()],
+            &updated_trunk,
+        )
+        .await
+        .expect("conflicting child is rebased");
+        let conflicted_id = CommitId::try_from_hex(&stats.rebased_commits[0].new_commit_id)
+            .expect("rebased commit id is valid");
+        let conflicted = load_commit_from_repo(tx.repo(), &conflicted_id)
+            .expect("load conflicted rebased commit");
+        assert!(conflicted.has_conflict());
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_local_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_origin_bookmark(tx.repo_mut(), "clean", updated_trunk.id());
+        set_local_bookmark(tx.repo_mut(), "clean", clean.id());
+        set_origin_bookmark(tx.repo_mut(), "conflicted", updated_trunk.id());
+        set_local_bookmark(tx.repo_mut(), "conflicted", conflicted.id());
+        set_origin_bookmark(tx.repo_mut(), "deleted", deleted.id());
+
+        let repo = tx
+            .commit("arrange syncable tracked push")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+    let updates = subject
+        .tracked_origin_bookmark_updates()
+        .expect("tracked updates classify");
+
+    let split = subject
+        .split_conflicted_tracked_bookmark_updates(updates)
+        .expect("conflicted updates split");
+
+    assert_eq!(
+        split
+            .pushable
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["clean", "deleted"]
+    );
+    assert_eq!(split.skipped_conflicted.len(), 1);
+    assert_eq!(split.skipped_conflicted[0].branch, "conflicted");
+    assert_eq!(split.skipped_conflicted[0].conflicted_commits.len(), 1);
+    assert_eq!(
+        split.skipped_conflicted[0].conflicted_commits[0].description,
+        "conflicting branch"
+    );
+}
+
+#[test]
 fn bookmark_pull_request_description_uses_first_stack_commit() {
     // Verifies: Sync PR text follows the PR-opening stack root, not later review-fix commits.
     let fixture = TestWorkspace::new("bookmark-pr-description-root");
@@ -1915,6 +2062,87 @@ fn prepare_initial_publish_target_describes_undescribed_root_child() {
     assert_eq!(current_id.hex(), prepared.commit_id);
     assert_eq!(current.description(), "initial commit");
     assert!(!current_is_empty);
+}
+
+#[test]
+fn prepare_initial_publish_target_snapshots_fresh_repo_files() {
+    // Verifies: Initial repository bootstrap includes files that existed before jj init.
+    let fixture = TestWorkspace::new("prepare-initial-files");
+    fs::write(fixture.path().join("README.md"), b"hello\n").expect("write working-copy file");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, initial_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let current_id = repo
+            .view()
+            .get_wc_commit_id(workspace.workspace_name())
+            .expect("working-copy commit exists")
+            .clone();
+        (workspace, repo, current_id)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let target = subject
+        .initial_publish_target()
+        .expect("initial publish target exists before snapshot");
+    let prepared = subject
+        .prepare_initial_publish_target(&target)
+        .expect("initial publish target is snapshotted and described");
+
+    let prepared_commit = subject
+        .load_commit(&CommitId::try_from_hex(&prepared.commit_id).expect("valid commit id"))
+        .expect("load prepared initial commit");
+    let readme_path = RepoPathBuf::from_internal_string("README.md").expect("valid repo path");
+    let readme_value = pollster::block_on(prepared_commit.tree().path_value(&readme_path))
+        .expect("read prepared tree path");
+
+    assert_eq!(target.commit_id, initial_id.hex());
+    assert!(target.description.is_empty());
+    assert_ne!(prepared.commit_id, target.commit_id);
+    assert_eq!(prepared.description, "initial commit");
+    assert!(matches!(
+        readme_value.as_normal(),
+        Some(TreeValue::File { .. })
+    ));
+}
+
+#[test]
+fn prepare_initial_publish_target_describes_empty_fresh_repo_commit() {
+    // Verifies: Repository bootstrap can publish a newly initialized repo before files are added.
+    let fixture = TestWorkspace::new("prepare-empty-initial-description");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, initial_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let current_id = repo
+            .view()
+            .get_wc_commit_id(workspace.workspace_name())
+            .expect("working-copy commit exists")
+            .clone();
+        (workspace, repo, current_id)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let target = subject
+        .initial_publish_target()
+        .expect("empty initial publish target exists");
+    let prepared = subject
+        .prepare_initial_publish_target(&target)
+        .expect("empty initial publish target is described");
+
+    let prepared_commit = subject
+        .load_commit(&CommitId::try_from_hex(&prepared.commit_id).expect("valid commit id"))
+        .expect("load prepared initial commit");
+    let prepared_is_empty = pollster::block_on(prepared_commit.is_empty(subject.repo.as_ref()))
+        .expect("check prepared tree");
+
+    assert_eq!(target.commit_id, initial_id.hex());
+    assert!(target.description.is_empty());
+    assert_ne!(prepared.commit_id, target.commit_id);
+    assert_eq!(prepared.description, "initial commit");
+    assert!(prepared_is_empty);
 }
 
 #[test]

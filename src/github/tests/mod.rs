@@ -3,11 +3,11 @@ use super::*;
 #[test]
 fn same_repository_head_keeps_user_scoped_branch_namespace() {
     // Verifies: Same-repository PR heads preserve user-scoped branch namespaces.
-    let head = PullRequestHead::same_repository("example-owner", "example-user/ABC-123-00-a1b2c3d");
+    let head = PullRequestHead::same_repository("example-owner", "example-user/abc-123-00-a1b2c3d");
 
     assert_eq!(
         head.label(),
-        "example-owner:example-user/ABC-123-00-a1b2c3d"
+        "example-owner:example-user/abc-123-00-a1b2c3d"
     );
 }
 

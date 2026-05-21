@@ -23,13 +23,14 @@ pub fn rebase_on_trunk_report(
 pub fn sync_report(
     context: &RepositoryContext,
     fetch: FetchOutcome,
-    push: TrackedPushOutcome,
+    push: SyncPushOutcome,
     pull_requests: Vec<PullRequestRecord>,
 ) -> SyncReport {
     SyncReport {
         repository: repository_summary(context),
         fetch,
-        push,
+        push: push.pushed,
+        skipped_conflicted_bookmarks: push.skipped_conflicted_bookmarks,
         pull_requests,
     }
 }
@@ -99,7 +100,7 @@ fn pull_request_body_matches(existing: Option<&str>, desired: &str) -> bool {
     }
 }
 
-/// Returns an error when fetch created conflicts so sync can stop before pushing.
+/// Returns an error when callers choose to block on conflicts created by fetch.
 pub fn ensure_fetch_is_pushable(outcome: &FetchOutcome) -> Result<(), WorkflowError> {
     let conflicted = outcome
         .rebased_commits

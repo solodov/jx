@@ -33,10 +33,7 @@ fn root_help_uses_operator_facing_command_descriptions() {
     assert!(stdout.contains("rt"));
     assert!(stdout.contains("Rebase jj source revisions onto origin trunk"));
     assert!(stdout.contains("Push a selected jj change or tracked bookmark state"));
-    assert!(stdout.contains("Fetch origin"));
-    assert!(stdout.contains("initialize/create the configured repository"));
-    assert!(stdout.contains("then push bookmark"));
-    assert!(stdout.contains("state"));
+    assert!(stdout.contains("Fetch origin and push selected bookmark state"));
     assert!(stdout.contains("Publish or update a GitHub pull request for a jj change"));
     assert!(output.stderr.is_empty());
 }
@@ -153,7 +150,7 @@ fn push_help_documents_revision_and_tracked_modes_without_loading_repo() {
 
 #[test]
 fn sync_help_explains_fetch_then_push_without_loading_repo() {
-    // Verifies: Sync help documents fetch, repository bootstrap, and push behavior.
+    // Verifies: Sync help documents repository, selected-target, and global modes.
     let output = Command::new(env!("CARGO_BIN_EXE_jx"))
         .args(["sync", "--help"])
         .output()
@@ -161,15 +158,13 @@ fn sync_help_explains_fetch_then_push_without_loading_repo() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
-    assert!(stdout.contains(
-        "Fetch origin, or initialize/create the configured repository, then push bookmark state"
-    ));
+    assert!(stdout.contains("Fetch origin and push repository or selected bookmark state"));
+    assert!(stdout.contains("COMMIT_OR_BOOKMARK"));
+    assert!(stdout.contains("instead of repository state"));
+    assert!(stdout.contains("--repo"));
+    assert!(stdout.contains("Sync all tracked bookmarks in the current repository"));
     assert!(stdout.contains("--all"));
-    assert!(stdout.contains("sync every eligible primary repository"));
-    assert!(stdout.contains("token has origin push access"));
-    assert!(stdout.contains("origin is not diverged"));
-    assert!(stdout.contains("Pull-only repositories are synced only when"));
-    assert!(stdout.contains("empty jj child of origin trunk"));
+    assert!(stdout.contains("Sync every eligible primary repository"));
     assert!(!stdout.contains("current workspace is safe for global mutation"));
     assert!(output.stderr.is_empty());
 }

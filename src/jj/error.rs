@@ -142,6 +142,12 @@ pub enum JjError {
     },
     #[error("Local bookmark `{branch}` is missing; create it before pushing")]
     MissingLocalBookmark { branch: String },
+    #[error("Selected change has no local bookmark; create or choose a bookmark before syncing one target")]
+    MissingSyncBookmark,
+    #[error(
+        "Selected change has multiple local bookmarks: {bookmarks:?}; pass the bookmark name to choose one"
+    )]
+    AmbiguousSyncBookmark { bookmarks: Vec<String> },
     #[error("Refusing to advance local trunk bookmark `{branch}` because it points outside the current trunk stack")]
     TrunkBookmarkOutsideStack { branch: String },
     #[error("Local bookmark `{branch}` already points at another change")]

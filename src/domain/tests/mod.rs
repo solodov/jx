@@ -68,7 +68,7 @@ fn bookmark_report_plans_task_specific_bookmark_for_pr() {
     .expect("bookmark plans");
 
     assert_eq!(report.task_id.as_deref(), Some("ABC-123"));
-    assert_eq!(report.bookmark.branch, "example-user/ABC-123-02-zzzzzzzz");
+    assert_eq!(report.bookmark.branch, "example-user/abc-123-02-zzzzzzzz");
     assert_eq!(report.bookmark.action, BookmarkAction::Create);
 }
 
@@ -109,6 +109,24 @@ fn bookmark_planner_reuses_existing_task_bookmark_without_task_id() {
 }
 
 #[test]
+fn bookmark_planner_reuses_existing_task_bookmark_case_insensitively() {
+    // Verifies: Existing mixed-case task bookmarks remain reusable after new names became lowercase.
+    let mut workspace = workspace_facts();
+    workspace.local_bookmarks = vec!["example-user/ABC-123-02-deadbeef".to_owned()];
+    workspace.local_bookmarks_at_target = workspace.local_bookmarks.clone();
+
+    let plan = plan_bookmark(BookmarkPlanRequest {
+        github_login: "example-user",
+        task_id: Some("abc-123"),
+        workspace: &workspace,
+    })
+    .expect("existing task bookmark is reused");
+
+    assert_eq!(plan.branch, "example-user/ABC-123-02-deadbeef");
+    assert_eq!(plan.action, BookmarkAction::Reuse);
+}
+
+#[test]
 fn bookmark_planner_formats_multi_digit_stack_indices() {
     // Verifies: Bookmark planner formats multi-digit stack indices.
     let mut workspace = workspace_facts();
@@ -117,20 +135,20 @@ fn bookmark_planner_formats_multi_digit_stack_indices() {
     workspace.target_change.short_commit_id = "deadbeef".to_owned();
 
     let default = plan_bookmark(BookmarkPlanRequest {
-        github_login: "example-user",
+        github_login: "Example-User",
         task_id: None,
         workspace: &workspace,
     })
     .expect("default bookmark plans");
     let task = plan_bookmark(BookmarkPlanRequest {
-        github_login: "example-user",
+        github_login: "Example-User",
         task_id: Some("ABC-123"),
         workspace: &workspace,
     })
     .expect("task bookmark plans");
 
     assert_eq!(default.branch, "example-user/12-mnopqrst");
-    assert_eq!(task.branch, "example-user/ABC-123-12-mnopqrst");
+    assert_eq!(task.branch, "example-user/abc-123-12-mnopqrst");
 }
 
 #[test]
@@ -160,31 +178,26 @@ fn bookmark_planner_allows_same_task_bookmark_on_another_change() {
     })
     .expect("same-task bookmark on another change does not block new PR head");
 
-    assert_eq!(plan.branch, "example-user/ABC-123-02-zzzzzzzz");
+    assert_eq!(plan.branch, "example-user/abc-123-02-zzzzzzzz");
     assert_eq!(plan.action, BookmarkAction::Create);
 }
 
 #[test]
-fn bookmark_planner_rejects_conflicting_selected_bookmark_when_task_id_is_requested() {
-    // Verifies: Bookmark planner rejects a conflicting selected-change bookmark when a task ID
-    // is requested.
+fn bookmark_planner_reuses_selected_bookmark_when_task_id_differs() {
+    // Verifies: An existing PR head on the selected change wins over a generated task bookmark.
     let mut workspace = workspace_facts();
     workspace.local_bookmarks = vec!["example-user/02-a1b2c3d4".to_owned()];
     workspace.local_bookmarks_at_target = workspace.local_bookmarks.clone();
 
-    let error = plan_bookmark(BookmarkPlanRequest {
+    let plan = plan_bookmark(BookmarkPlanRequest {
         github_login: "example-user",
         task_id: Some("ABC-123"),
         workspace: &workspace,
     })
-    .expect_err("selected bookmark would become duplicate PR head");
+    .expect("selected bookmark is reused");
 
-    assert!(matches!(
-        error,
-        WorkflowError::ConflictingSelectedBookmark { existing, requested }
-            if existing == "example-user/02-a1b2c3d4"
-                && requested == "example-user/ABC-123-02-zzzzzzzz"
-    ));
+    assert_eq!(plan.branch, "example-user/02-a1b2c3d4");
+    assert_eq!(plan.action, BookmarkAction::Reuse);
 }
 
 #[test]
@@ -264,7 +277,7 @@ fn push_plan_generates_ticket_or_change_bookmark_when_selected_change_has_none()
 
     assert_eq!(generic.bookmark.branch, "push-zzzzzzzz");
     assert_eq!(generic.bookmark.action, BookmarkAction::Create);
-    assert_eq!(ticket.bookmark.branch, "ps/FD-12345-02-zzzzzzzz");
+    assert_eq!(ticket.bookmark.branch, "ps/fd-12345-02-zzzzzzzz");
     assert_eq!(ticket.bookmark.action, BookmarkAction::Create);
 }
 
@@ -616,9 +629,9 @@ fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
     assert_eq!(plan.base, "example-user/01-ancestor");
     assert_eq!(
         plan.head.label(),
-        "example-owner:example-user/ABC-123-02-zzzzzzzz"
+        "example-owner:example-user/abc-123-02-zzzzzzzz"
     );
-    assert_eq!(plan.bookmark.branch, "example-user/ABC-123-02-zzzzzzzz");
+    assert_eq!(plan.bookmark.branch, "example-user/abc-123-02-zzzzzzzz");
     assert_eq!(plan.labels, ["bug".to_owned(), "help wanted".to_owned()]);
     assert_eq!(
         plan.reviewer_candidates
@@ -1326,14 +1339,14 @@ fn term(predicate: PullRequestEventPredicate) -> PullRequestEventQueryTerm {
 
 fn bookmark_update() -> BookmarkUpdate {
     BookmarkUpdate {
-        branch: "example-user/ABC-123-02-zzzzzzzz".to_owned(),
+        branch: "example-user/abc-123-02-zzzzzzzz".to_owned(),
         created: true,
     }
 }
 
 fn push_outcome() -> PushOutcome {
     PushOutcome {
-        branch: "example-user/ABC-123-02-zzzzzzzz".to_owned(),
+        branch: "example-user/abc-123-02-zzzzzzzz".to_owned(),
         pushed_refs: 1,
         pushed_commits: Vec::new(),
     }

@@ -30,9 +30,10 @@ use thiserror::Error;
 use crate::{
     domain::{
         self, BookmarkAction, CheckReport, FetchReport, ForkStatusReport, ForkStatusState,
-        PullRequestAction, PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions,
-        PullRequestReport, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
-        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
+        PullRequestAction, PullRequestEventEffect, PullRequestEventEffectKind, PullRequestPlan,
+        PullRequestPublishOptions, PullRequestReport, PushPlan, PushReport, RebaseOnTrunkReport,
+        RemoteStatusReport, StatusReport, SyncReport, TrackedPushReport, WorkflowCommand,
+        WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
@@ -44,7 +45,7 @@ use crate::{
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
         JjWorkspace, PipeDiffTool, PushOutcome, RebaseOnTrunkOutcome, StatusWorkspaceFacts,
-        TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
+        SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
         WorkspaceRemoveOptions, WorkspaceStatus,
     },
     repository::{
@@ -69,7 +70,8 @@ use progress::*;
 use prompts::*;
 pub use prompts::{
     PullRequestConfirmationError, PullRequestSelectionError, PushConfirmationError,
-    RepositoryCreationConfirmationError, ReviewerSelectionError, WorkspaceRemoveConfirmationError,
+    RepositoryCreationConfirmationError, RepositoryInitializationConfirmationError,
+    ReviewerSelectionError, WorkspaceRemoveConfirmationError,
 };
 use render::*;
 use request::*;
@@ -83,6 +85,20 @@ const SHELL_CD_TARGET_PREFIX: &str = "__jx_cd_target=";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
     pub stdout: String,
+    pub exit_code: u8,
+}
+
+impl CommandResult {
+    fn success(stdout: String) -> Self {
+        Self {
+            stdout,
+            exit_code: 0,
+        }
+    }
+
+    fn with_exit_code(stdout: String, exit_code: u8) -> Self {
+        Self { stdout, exit_code }
+    }
 }
 
 /// Errors returned by command orchestration before rendering in the binary.
@@ -106,6 +122,8 @@ pub enum CommandError {
     PullRequestConfirmation(#[from] PullRequestConfirmationError),
     #[error(transparent)]
     PushConfirmation(#[from] PushConfirmationError),
+    #[error(transparent)]
+    RepositoryInitializationConfirmation(#[from] RepositoryInitializationConfirmationError),
     #[error(transparent)]
     RepositoryCreationConfirmation(#[from] RepositoryCreationConfirmationError),
     #[error(transparent)]
@@ -151,6 +169,7 @@ where
     let reviewer_selector = TerminalReviewerSelector;
     let pull_request_confirmer = TerminalPullRequestConfirmer;
     let push_confirmer = TerminalPushConfirmer;
+    let repository_initialization_confirmer = TerminalRepositoryInitializationConfirmer;
     let repository_creation_confirmer = TerminalRepositoryCreationConfirmer;
     let workspace_remove_confirmer = TerminalWorkspaceRemoveConfirmer;
     let prompts = PromptHandlers {
@@ -159,6 +178,7 @@ where
         reviewer_selector: &reviewer_selector,
         pull_request_confirmer: &pull_request_confirmer,
         push_confirmer: &push_confirmer,
+        repository_initialization_confirmer: &repository_initialization_confirmer,
         repository_creation_confirmer: &repository_creation_confirmer,
         workspace_remove_confirmer: &workspace_remove_confirmer,
     };
@@ -208,6 +228,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
@@ -259,6 +280,7 @@ where
         reviewer_selector,
         pull_request_confirmer,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
@@ -289,6 +311,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
@@ -319,7 +342,39 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+    run_with_args_and_progress(
+        args,
+        environment,
+        services,
+        &NoProgress,
+        prompts,
+        OutputMode::plain(),
+    )
+}
+
+#[cfg(test)]
+fn run_with_args_and_repository_initialization_confirmer<I, T>(
+    args: I,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    repository_initialization_confirmer: &dyn RepositoryInitializationConfirmer,
+) -> Result<CommandResult, CommandError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
     run_with_args_and_progress(
@@ -349,6 +404,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer,
     };
