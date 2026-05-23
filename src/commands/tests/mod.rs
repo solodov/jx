@@ -239,6 +239,45 @@ path = "{repo}"
 }
 
 #[test]
+fn clone_infers_owner_from_current_layout_prefix() {
+    // Verifies: Repo-only clone shorthands use the cwd when it supplies the configured slug prefix.
+    let workspace = TestWorkspace::new_uninitialized_under("projects");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "solodov"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/termflow");
+    let services = FakeServices {
+        expected_clone: Some((
+            "git@github.com:solodov/termflow.git".to_owned(),
+            expected_destination.clone(),
+        )),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "clone", "termflow"], &environment, &services)
+        .expect("clone succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Cloned {} to ~/projects/termflow\n",
+            osc8_link(
+                "https://github.com/solodov/termflow",
+                "git@github.com:solodov/termflow.git"
+            )
+        )
+    );
+}
+
+#[test]
 fn clone_uses_default_layout_for_unmatched_github_repos() {
     // Verifies: Unmatched repositories stay globally discoverable under the default root.
     let workspace = TestWorkspace::new();
@@ -3897,10 +3936,7 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
         services.push_tracked_roots.borrow().as_slice(),
         [workspace.path()]
     );
-    assert!(services
-        .push_syncable_revision_requests
-        .borrow()
-        .is_empty());
+    assert!(services.push_syncable_revision_requests.borrow().is_empty());
     assert_eq!(
             result.stdout,
             format!(
@@ -4255,8 +4291,7 @@ advance_trunk = true
     let environment = RuntimeEnvironment::new(workspace.path(), []);
     let services = FakeServices::default();
 
-    run_with_args_and_services(["jx", "sync"], &environment, &services)
-        .expect("sync succeeds");
+    run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert_eq!(services.advance_trunk_calls.get(), 1);
 }

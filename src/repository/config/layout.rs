@@ -138,7 +138,7 @@ impl LayoutConfig {
         explicit_destination: Option<&Path>,
         environment: &RuntimeEnvironment,
     ) -> Result<ClonePlan, RepositoryError> {
-        let parsed = self.parse_clone_repository(repository)?;
+        let parsed = self.parse_clone_repository(repository, environment)?;
         let destination = match explicit_destination {
             Some(destination) => resolve_operator_path(destination, environment)?,
             None => self.project_destination(&parsed.identity, environment)?,
@@ -231,6 +231,7 @@ impl LayoutConfig {
     fn parse_clone_repository(
         &self,
         repository: &str,
+        environment: &RuntimeEnvironment,
     ) -> Result<ParsedCloneRepository, RepositoryError> {
         let repository = repository.trim();
         if repository.is_empty() {
@@ -250,13 +251,107 @@ impl LayoutConfig {
 
         let parts = repository.split('/').collect::<Vec<_>>();
         match parts.as_slice() {
+            [repo] => self.repository_from_current_layout_prefix(repo, environment),
             [owner, repo] => self.repository_from_source_slug(&self.default_source, (*owner, *repo)),
             [host, owner, repo] => self.repository_from_host_slug(host, owner, repo),
             _ => Err(RepositoryError::InvalidCloneRepository {
                 repository: repository.to_owned(),
-                message: "use `owner/repo`, `host/owner/repo`, `source:owner/repo`, or an explicit Git URL".to_owned(),
+                message: "use `repo` from a configured layout prefix, `owner/repo`, `host/owner/repo`, `source:owner/repo`, or an explicit Git URL".to_owned(),
             }),
         }
+    }
+
+    fn repository_from_current_layout_prefix(
+        &self,
+        repo: &str,
+        environment: &RuntimeEnvironment,
+    ) -> Result<ParsedCloneRepository, RepositoryError> {
+        let repo = normalize_repo_name(repo)?;
+        let mut candidates = Vec::new();
+
+        for source in self.sources.values() {
+            if let Some(candidate) = self.current_layout_prefix_candidate(
+                source,
+                &self.default_root,
+                &self.default.path,
+                (None, None),
+                &repo,
+                environment,
+            )? {
+                candidates.push(candidate);
+            }
+
+            for rule in self.rules.iter().filter(|rule| rule.source == source.name) {
+                if let Some(candidate) = self.current_layout_prefix_candidate(
+                    source,
+                    rule.root.as_deref().unwrap_or(&self.default_root),
+                    rule.path.as_deref().unwrap_or(&self.default.path),
+                    (rule.owner.as_deref(), rule.repo.as_deref()),
+                    &repo,
+                    environment,
+                )? {
+                    candidates.push(candidate);
+                }
+            }
+        }
+
+        candidates.sort_by(|left, right| {
+            parsed_clone_repository_signature(left).cmp(&parsed_clone_repository_signature(right))
+        });
+        candidates.dedup_by(|left, right| {
+            parsed_clone_repository_signature(left) == parsed_clone_repository_signature(right)
+        });
+
+        match candidates.as_slice() {
+            [candidate] => Ok(candidate.clone()),
+            [] => Err(RepositoryError::InvalidCloneRepository {
+                repository: repo,
+                message: "repo-only shorthands require running from a configured layout prefix; use `owner/repo`, `host/owner/repo`, `source:owner/repo`, or an explicit Git URL".to_owned(),
+            }),
+            _ => Err(RepositoryError::InvalidCloneRepository {
+                repository: repo,
+                message: format!(
+                    "repo-only shorthand from `{}` matches multiple layout identities: {:?}; use `owner/repo`, `host/owner/repo`, `source:owner/repo`, or an explicit Git URL",
+                    environment.current_dir().display(),
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.identity.summary())
+                        .collect::<Vec<_>>()
+                ),
+            }),
+        }
+    }
+
+    fn current_layout_prefix_candidate(
+        &self,
+        source: &LayoutSourceConfig,
+        root: &str,
+        path_template: &str,
+        rule_identity: (Option<&str>, Option<&str>),
+        repo: &str,
+        environment: &RuntimeEnvironment,
+    ) -> Result<Option<ParsedCloneRepository>, RepositoryError> {
+        let Some(identity) = identity_from_current_layout_prefix(
+            source,
+            root,
+            path_template,
+            rule_identity,
+            repo,
+            environment,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let destination = self.project_destination(&identity, environment)?;
+        if destination.parent() != Some(environment.current_dir()) {
+            return Ok(None);
+        }
+
+        Ok(Some(ParsedCloneRepository {
+            remote_url: source.clone_url.remote_url(&identity),
+            identity,
+        }))
     }
 
     fn repository_from_explicit_url(
@@ -625,6 +720,94 @@ struct ParsedCloneUrl {
     host: String,
     owner: String,
     repo: String,
+}
+
+fn parsed_clone_repository_signature(
+    repository: &ParsedCloneRepository,
+) -> (&str, &str, &str, &str, &str) {
+    (
+        &repository.identity.source,
+        &repository.identity.host,
+        &repository.identity.owner,
+        &repository.identity.repo,
+        &repository.remote_url,
+    )
+}
+
+fn identity_from_current_layout_prefix(
+    source: &LayoutSourceConfig,
+    root: &str,
+    path_template: &str,
+    rule_identity: (Option<&str>, Option<&str>),
+    repo: &str,
+    environment: &RuntimeEnvironment,
+) -> Result<Option<RepositoryIdentity>, RepositoryError> {
+    if rule_identity.1.is_some_and(|rule_repo| rule_repo != repo) {
+        return Ok(None);
+    }
+
+    let root = resolve_config_root(root, environment)?;
+    let Ok(relative) = environment.current_dir().strip_prefix(&root) else {
+        return Ok(None);
+    };
+    let Some(template_components) = template_path_components(path_template) else {
+        return Ok(None);
+    };
+    let Some((last_template_component, prefix_template_components)) =
+        template_components.split_last()
+    else {
+        return Ok(None);
+    };
+    if last_template_component != "{repo}" {
+        return Ok(None);
+    }
+
+    let Some(relative_components) = path_components(relative) else {
+        return Ok(None);
+    };
+    if relative_components.len() != prefix_template_components.len() {
+        return Ok(None);
+    }
+
+    let mut owner = None;
+    for (template, value) in prefix_template_components.iter().zip(relative_components) {
+        match template.as_str() {
+            "{source}" if value == source.name => {}
+            "{source}" => return Ok(None),
+            "{host}" if value == source.host => {}
+            "{host}" => return Ok(None),
+            "{owner}" if is_valid_repo_component(&value) => {
+                if owner
+                    .as_deref()
+                    .is_some_and(|owner| owner != value.as_str())
+                {
+                    return Ok(None);
+                }
+                owner = Some(value);
+            }
+            "{owner}" => return Ok(None),
+            "{repo}" => return Ok(None),
+            literal if literal == value.as_str() => {}
+            _ => return Ok(None),
+        }
+    }
+
+    if let Some(rule_owner) = rule_identity.0 {
+        if owner.as_deref().is_some_and(|owner| owner != rule_owner) {
+            return Ok(None);
+        }
+        owner = Some(rule_owner.to_owned());
+    }
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+
+    Ok(Some(RepositoryIdentity {
+        source: source.name.clone(),
+        host: source.host.clone(),
+        owner,
+        repo: repo.to_owned(),
+    }))
 }
 
 fn match_layout_path_template(

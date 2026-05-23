@@ -720,7 +720,7 @@ fn clone_repository_arg() -> Arg {
     Arg::new("repository")
         .value_name("REPOSITORY")
         .required(true)
-        .help("Repository shorthand or URL to clone")
+        .help("Repository shorthand, repo from a layout prefix, or URL to clone")
 }
 
 fn clone_destination_arg() -> Arg {

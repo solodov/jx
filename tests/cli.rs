@@ -33,7 +33,7 @@ fn root_help_uses_operator_facing_command_descriptions() {
     assert!(stdout.contains("rt"));
     assert!(stdout.contains("Rebase jj source revisions onto origin trunk"));
     assert!(stdout.contains("Push a selected jj change or tracked bookmark state"));
-    assert!(stdout.contains("Fetch origin and push selected bookmark state"));
+    assert!(stdout.contains("Fetch origin and push repository or selected bookmark state"));
     assert!(stdout.contains("Publish or update a GitHub pull request for a jj change"));
     assert!(output.stderr.is_empty());
 }

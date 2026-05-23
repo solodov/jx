@@ -116,7 +116,8 @@ for navigation and workspace management.
 
 - `jx clone` resolves repository shorthands through layout sources and places the
   primary checkout at the configured destination, unless an explicit destination
-  is provided.
+  is provided. From a configured layout prefix, a single repo name can infer the
+  missing source and owner.
 - `jx work` lists, completes, resolves, adds, and removes locations in the
   configured layout. `jx work add` creates managed workspaces under the hidden
   workspace tree, can prefix task workspaces with `--task-id`, and `jx work

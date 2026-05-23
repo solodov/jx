@@ -29,7 +29,9 @@ and store the task id in workspace-local metadata for `jx pr`. `jx sync` can use
 the same layout in reverse to initialize a local jj/Git repository and infer
 private GitHub repository creation when a layout path has no repo or remotes.
 Without config, `owner/repo` uses the built-in GitHub source and clones to
-`~/src/github.com/owner/repo` with an SSH URL.
+`~/src/github.com/owner/repo` with an SSH URL. When the current directory is a
+configured layout prefix that fixes the missing source and owner, `jx clone repo`
+uses that prefix to infer the full slug and clone into the matching child path.
 
 ```toml
 [layout]
