@@ -751,7 +751,11 @@ fn handle_work(
             } else {
                 global_work_locations(&config, environment)?
             };
-            let root = resolve_work_location(&locations, &request.key)?;
+            let root = if request.navigation {
+                resolve_navigation_work_location(&locations, &request.key, environment)?
+            } else {
+                resolve_work_location(&locations, &request.key)?
+            };
             Ok(render_work_root(&root))
         }
         WorkRequest::Trunk(request) => {

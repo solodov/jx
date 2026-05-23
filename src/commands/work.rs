@@ -540,6 +540,193 @@ pub(super) fn resolve_work_location(
     }
 }
 
+/// Resolves a shell navigation query by explicit path first, then unique key and child-directory fragments.
+pub(super) fn resolve_navigation_work_location(
+    locations: &[WorkLocation],
+    query: &str,
+    environment: &RuntimeEnvironment,
+) -> Result<PathBuf, RepositoryError> {
+    if let Some(path) = resolve_navigation_path(query, environment) {
+        return Ok(path);
+    }
+
+    let Some(components) = navigation_query_components(query) else {
+        return Err(RepositoryError::WorkLocationNotFound {
+            key: query.to_owned(),
+        });
+    };
+
+    let mut candidates = Vec::new();
+    for split in 1..=components.len() {
+        let location_query = components[..split].join("/");
+        let path_queries = &components[split..];
+        for (location, location_rank) in matching_navigation_locations(locations, &location_query) {
+            if let Some((path, path_ranks)) =
+                resolve_navigation_subpath(&location.root, path_queries)
+            {
+                candidates.push(NavigationResolution {
+                    path,
+                    score: NavigationScore {
+                        location_rank,
+                        remaining_segments: path_queries.len(),
+                        path_ranks,
+                    },
+                });
+            }
+        }
+    }
+
+    let best_score = candidates
+        .iter()
+        .map(|candidate| &candidate.score)
+        .min()
+        .cloned();
+    let Some(best_score) = best_score else {
+        return Err(RepositoryError::WorkLocationNotFound {
+            key: query.to_owned(),
+        });
+    };
+    let matches = candidates
+        .into_iter()
+        .filter(|candidate| candidate.score == best_score)
+        .collect::<Vec<_>>();
+    let mut paths = matches
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        _ => Err(RepositoryError::WorkLocationAmbiguous {
+            key: query.to_owned(),
+            paths,
+        }),
+    }
+}
+
+fn resolve_navigation_path(query: &str, environment: &RuntimeEnvironment) -> Option<PathBuf> {
+    let path = Path::new(query);
+    if !is_explicit_navigation_path(query, path) {
+        return None;
+    }
+
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        environment.current_dir().join(path)
+    };
+    if !path.is_dir() {
+        return None;
+    }
+
+    fs::canonicalize(&path).ok().or(Some(path))
+}
+
+fn is_explicit_navigation_path(query: &str, path: &Path) -> bool {
+    path.is_absolute()
+        || matches!(query, "." | "..")
+        || query.starts_with("./")
+        || query.starts_with("../")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NavigationResolution {
+    path: PathBuf,
+    score: NavigationScore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NavigationScore {
+    location_rank: NavigationMatchRank,
+    remaining_segments: usize,
+    path_ranks: Vec<NavigationMatchRank>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NavigationMatchRank {
+    Exact,
+    Prefix,
+    Contains,
+}
+
+fn navigation_query_components(query: &str) -> Option<Vec<String>> {
+    let components = Path::new(query)
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!components.is_empty()).then_some(components)
+}
+
+fn matching_navigation_locations<'a>(
+    locations: &'a [WorkLocation],
+    query: &str,
+) -> Vec<(&'a WorkLocation, NavigationMatchRank)> {
+    locations
+        .iter()
+        .filter_map(|location| {
+            navigation_match_rank(&location.key, query).map(|rank| (location, rank))
+        })
+        .collect()
+}
+
+fn resolve_navigation_subpath(
+    root: &Path,
+    queries: &[String],
+) -> Option<(PathBuf, Vec<NavigationMatchRank>)> {
+    let mut path = root.to_path_buf();
+    let mut ranks = Vec::new();
+
+    for query in queries {
+        let (child, rank) = resolve_navigation_child(&path, query)?;
+        path = child;
+        ranks.push(rank);
+    }
+
+    Some((path, ranks))
+}
+
+fn resolve_navigation_child(parent: &Path, query: &str) -> Option<(PathBuf, NavigationMatchRank)> {
+    let mut matches = fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_owned();
+            if !entry.path().is_dir() {
+                return None;
+            }
+            navigation_match_rank(&name, query).map(|rank| (entry.path(), rank))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| (left.1, &left.0).cmp(&(right.1, &right.0)));
+
+    let best_rank = matches.first()?.1;
+    let best_matches = matches
+        .into_iter()
+        .filter(|(_, rank)| *rank == best_rank)
+        .collect::<Vec<_>>();
+    match best_matches.as_slice() {
+        [(path, rank)] => Some((path.clone(), *rank)),
+        _ => None,
+    }
+}
+
+fn navigation_match_rank(candidate: &str, query: &str) -> Option<NavigationMatchRank> {
+    if candidate == query {
+        Some(NavigationMatchRank::Exact)
+    } else if candidate.starts_with(query) {
+        Some(NavigationMatchRank::Prefix)
+    } else if candidate.contains(query) {
+        Some(NavigationMatchRank::Contains)
+    } else {
+        None
+    }
+}
+
 fn current_workspace_name_locations(current_workspaces: &[WorkspaceEntry]) -> Vec<WorkLocation> {
     current_workspaces
         .iter()

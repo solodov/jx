@@ -141,7 +141,10 @@ for navigation and workspace management.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
   completion prefers current-repository jj workspace names, `trunk`/`root`
   aliases, and same-repository layout keys before other global work locations;
-  project argument completion includes only primary repositories.
+  project argument completion includes only primary repositories. The navigation
+  command accepts explicit absolute and dot-relative paths, and can also resolve
+  unique key fragments plus slash-separated directory fragments under the
+  selected location.
 
 ## Workspace metadata
 

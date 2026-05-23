@@ -1220,6 +1220,144 @@ path = "{repo}"
 }
 
 #[test]
+fn work_root_navigation_resolves_unique_location_fragment() {
+    // Verifies: `u fragment` can resolve one layout location without requiring a prefix match.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let expected_root = workspace.home.join("projects/termflow");
+    create_jj_workspace_marker(&expected_root);
+    create_jj_workspace_marker(&workspace.home.join("projects/other"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "flow"],
+        &environment,
+        &services,
+    )
+    .expect("navigation root succeeds");
+
+    assert_eq!(result.stdout, format!("{}\n", expected_root.display()));
+}
+
+#[test]
+fn work_root_navigation_resolves_fragment_subpaths() {
+    // Verifies: Slash-separated `u` fragments can pick a repo and nested directory by partial names.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let termflow = workspace.home.join("projects/termflow");
+    create_jj_workspace_marker(&termflow);
+    fs::create_dir_all(termflow.join("bin")).expect("create bin directory");
+    fs::create_dir_all(termflow.join("hammerspoon")).expect("create hammerspoon directory");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let bin = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "flow/bin"],
+        &environment,
+        &services,
+    )
+    .expect("bin navigation root succeeds");
+    let hammerspoon = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "term/spoon"],
+        &environment,
+        &services,
+    )
+    .expect("hammerspoon navigation root succeeds");
+
+    assert_eq!(bin.stdout, format!("{}\n", termflow.join("bin").display()));
+    assert_eq!(
+        hammerspoon.stdout,
+        format!("{}\n", termflow.join("hammerspoon").display())
+    );
+}
+
+#[test]
+fn work_root_navigation_accepts_explicit_paths() {
+    // Verifies: `u` treats absolute and dot-relative paths as filesystem navigation before fuzzy matching.
+    let workspace = TestWorkspace::new_uninitialized_under("projects/current");
+    let relative_target = workspace.home.join("projects/foo");
+    let absolute_target = workspace.home.join("absolute-target");
+    fs::create_dir_all(&relative_target).expect("create relative target");
+    fs::create_dir_all(&absolute_target).expect("create absolute target");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let relative = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "../foo"],
+        &environment,
+        &services,
+    )
+    .expect("relative path navigation succeeds");
+    let absolute_arg = absolute_target.to_string_lossy().into_owned();
+    let absolute = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", absolute_arg.as_str()],
+        &environment,
+        &services,
+    )
+    .expect("absolute path navigation succeeds");
+
+    assert_eq!(
+        relative.stdout,
+        format!("{}\n", fs::canonicalize(relative_target).unwrap().display())
+    );
+    assert_eq!(
+        absolute.stdout,
+        format!("{}\n", fs::canonicalize(absolute_target).unwrap().display())
+    );
+}
+
+#[test]
+fn work_root_navigation_rejects_ambiguous_fragments() {
+    // Verifies: Fuzzy navigation only succeeds when the fragment selects one best target.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/termflow"));
+    create_jj_workspace_marker(&workspace.home.join("projects/terminal"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "term"],
+        &environment,
+        &services,
+    )
+    .expect_err("ambiguous navigation roots are rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::WorkLocationAmbiguous { .. })
+    ));
+}
+
+#[test]
 fn work_complete_navigation_orders_current_repo_before_global_locations() {
     // Verifies: navigation completion presents local workspace names and trunk aliases first.
     let workspace = TestWorkspace::new_under("projects/.work/project/current");
@@ -1443,6 +1581,8 @@ zoxide = "auto"
         .contains("command jx work complete --workspaces --prefix \"$cur\""));
     assert!(result.stdout.contains("if [[ \"$cur\" == -* ]]; then"));
     assert!(result.stdout.contains("u() {"));
+    assert!(result.stdout.contains("__jx_u_path_like"));
+    assert!(result.stdout.contains("compgen -d -- \"$cur\""));
     assert!(result
         .stdout
         .contains("command jx work root --navigation \"$1\""));

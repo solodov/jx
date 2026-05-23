@@ -178,7 +178,10 @@ reviewers = ["work-reviewer", "ExampleOrg/frontend"]
 `jx shell init bash` prints optional shell integration for `eval`. The generated
 navigation function resolves current-repository jj workspace names and trunk
 aliases first, then global `jx work` locations, then optionally falls back to
-zoxide when `zoxide = "auto"` and the `zoxide` binary is installed.
+zoxide when `zoxide = "auto"` and the `zoxide` binary is installed. Explicit
+absolute and dot-relative paths are used directly. Navigation queries can also be
+unique key fragments, and slash-separated fragments can select child directories
+under the matched location.
 
 ```toml
 [shell]
