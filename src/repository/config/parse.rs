@@ -1084,9 +1084,10 @@ fn parse_shell_zoxide_mode(
     match mode.as_str() {
         "auto" => Ok(ShellZoxideMode::Auto),
         "never" => Ok(ShellZoxideMode::Never),
+        "prefer" => Ok(ShellZoxideMode::Prefer),
         _ => Err(RepositoryError::InvalidConfig {
             file: file.to_owned(),
-            message: format!("`{key}` must be `auto` or `never`"),
+            message: format!("`{key}` must be `auto`, `never`, or `prefer`"),
         }),
     }
 }

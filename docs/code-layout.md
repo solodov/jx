@@ -144,8 +144,9 @@ for navigation and workspace management.
   project argument completion includes only primary repositories. The navigation
   command accepts explicit absolute and dot-relative paths, and can also resolve
   unique key fragments plus slash-separated directory fragments under the
-  selected location. An optional tab companion uses the same resolution and opens
-  zellij tabs when available.
+  selected location. In zoxide-prefer mode, zoxide matches win except for the
+  `default`, `trunk`, and `root` jj aliases. An optional tab companion uses the
+  same resolution and opens zellij tabs when available.
 
 ## Workspace metadata
 

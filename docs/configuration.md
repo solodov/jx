@@ -187,14 +187,17 @@ under the matched location.
 [shell]
 navigation = "u"
 navigation_tab = "ut"
-zoxide = "auto"
+zoxide = "prefer"
 ```
 
-Set `zoxide = "never"` to omit zoxide fallback. Omit `navigation` or set it to
-an empty string to skip generating a navigation function. When `navigation_tab`
-is set alongside `navigation`, the generated companion command uses the same
-resolution and completion; inside zellij it opens the target in a new tab, and
-outside zellij it warns and enters the directory in the current shell.
+Set `zoxide = "prefer"` to resolve zoxide matches before jx layout keys, while
+keeping `default`, `trunk`, and `root` as jx-first aliases. Set `zoxide = "auto"`
+to use zoxide only as a fallback, or `zoxide = "never"` to omit zoxide. Omit
+`navigation` or set it to an empty string to skip generating a navigation
+function. When `navigation_tab` is set alongside `navigation`, the generated
+companion command uses the same resolution and completion; inside zellij it opens
+the target in a new tab, and outside zellij it warns and enters the directory in
+the current shell.
 
 ## Diff tools
 

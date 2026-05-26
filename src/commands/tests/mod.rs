@@ -1549,7 +1549,7 @@ path = "{repo}"
 
 #[test]
 fn shell_init_bash_emits_configured_navigation_with_completion() {
-    // Verifies: Shell init includes work navigation, completion, and auto zoxide fallback.
+    // Verifies: Shell init includes work navigation, cached completion, and auto zoxide fallback.
     let workspace = TestWorkspace::new();
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -1593,12 +1593,52 @@ zoxide = "auto"
         .contains("if (( status == 0 )) && [[ -n \"$cd_target\" ]]"));
     assert!(result
         .stdout
-        .contains("command jx work complete --navigation --prefix \"$cur\""));
+        .contains("command jx work complete --navigation --prefix \"\""));
     assert!(result.stdout.contains("command -v zoxide"));
     assert!(result.stdout.contains("zoxide query \"$@\""));
     assert!(result
         .stdout
         .contains("complete -o nospace -F __jx_u_completion u"));
+}
+
+#[test]
+fn shell_init_bash_can_prefer_zoxide_navigation() {
+    // Verifies: Prefer mode uses zoxide before jx lookup while reserving jj aliases for jx.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation = "u"
+zoxide = "prefer"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect("shell init succeeds");
+
+    assert!(result.stdout.contains("__jx_u_jx_first_key"));
+    assert!(result.stdout.contains(
+        "__jx_u_jx_first_key \"$1\" && target=\"$(command jx work root --navigation \"$1\""
+    ));
+    let zoxide_lookup = result
+        .stdout
+        .find("__jx_u_zoxide_enabled && target=\"$(zoxide query \"$@\"")
+        .expect("prefer mode includes zoxide lookup");
+    let jx_fallback = result
+        .stdout
+        .rfind("elif (( $# == 1 )) && target=\"$(command jx work root --navigation \"$1\"")
+        .expect("prefer mode includes jx fallback");
+    assert!(zoxide_lookup < jx_fallback, "{}", result.stdout);
+    assert!(result
+        .stdout
+        .contains("__jx_u_add_zoxide_candidates \"$cur\""));
+    assert!(result
+        .stdout
+        .contains("if (( ${#candidates[@]} > 0 )); then"));
 }
 
 #[test]

@@ -94,6 +94,7 @@ impl ShellConfig {
 pub enum ShellZoxideMode {
     Auto,
     Never,
+    Prefer,
 }
 
 #[derive(Debug, Default)]
