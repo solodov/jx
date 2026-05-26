@@ -1626,7 +1626,9 @@ zoxide = "auto"
     assert!(result
         .stdout
         .contains("__jx_u_resolve_and_navigate tab \"$@\""));
-    assert!(result.stdout.contains("zellij action new-tab --cwd \"$1\""));
+    assert!(result
+        .stdout
+        .contains("zellij action new-tab --cwd \"$1\" >/dev/null"));
     assert!(result
         .stdout
         .contains("opening tabs is only supported inside zellij"));

@@ -333,7 +333,7 @@ fn bash_navigation_tab_function(helper_prefix: &str, tab_command: Option<&str>) 
   fi
 
   if [[ -n "${{ZELLIJ:-}}" ]]; then
-    zellij action new-tab --cwd "$1"
+    zellij action new-tab --cwd "$1" >/dev/null
     return $?
   fi
 
