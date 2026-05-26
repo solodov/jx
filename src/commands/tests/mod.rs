@@ -1602,6 +1602,40 @@ zoxide = "auto"
 }
 
 #[test]
+fn shell_init_bash_emits_zellij_tab_navigation_when_configured() {
+    // Verifies: Tab navigation reuses `u` resolution while keeping zellij as the only tab opener.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation = "u"
+navigation_tab = "ut"
+zoxide = "auto"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect("shell init succeeds");
+
+    assert!(result.stdout.contains("u() {"));
+    assert!(result.stdout.contains("ut() {"));
+    assert!(result
+        .stdout
+        .contains("__jx_u_resolve_and_navigate tab \"$@\""));
+    assert!(result.stdout.contains("zellij action new-tab --cwd \"$1\""));
+    assert!(result
+        .stdout
+        .contains("opening tabs is only supported inside zellij"));
+    assert!(result
+        .stdout
+        .contains("complete -o nospace -F __jx_u_completion u ut"));
+}
+
+#[test]
 fn shell_init_bash_can_disable_zoxide_fallback() {
     // Verifies: zoxide integration is config-enabled and omitted when disabled.
     let workspace = TestWorkspace::new();
@@ -1645,6 +1679,55 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
     assert!(result.stdout.contains("pushd \"$cd_target\""));
     assert!(result.stdout.contains("cd \"$cd_target\""));
     assert!(!result.stdout.contains("u() {"));
+}
+
+#[test]
+fn shell_init_rejects_invalid_navigation_tab_function_name() {
+    // Verifies: Tab navigation command names are also sanitized before shell interpolation.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation = "u"
+navigation_tab = "bad-name"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect_err("invalid tab command names are rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::InvalidConfig { .. })
+    ));
+}
+
+#[test]
+fn shell_init_rejects_tab_navigation_without_navigation() {
+    // Verifies: Tab navigation is a companion to the configured current-shell navigator.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+navigation_tab = "ut"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect_err("tab navigation requires normal navigation");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::InvalidConfig { .. })
+    ));
 }
 
 #[test]

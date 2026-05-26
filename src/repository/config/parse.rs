@@ -1042,7 +1042,7 @@ fn parse_shell_config(
     };
 
     for key in table.keys() {
-        if !matches!(key.as_str(), "navigation" | "zoxide") {
+        if !matches!(key.as_str(), "navigation" | "navigation_tab" | "zoxide") {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
                 key: format!("shell.{key}"),
@@ -1056,12 +1056,23 @@ fn parse_shell_config(
             parse_string_value(file, "shell.navigation", value).map(|value| value.trim().to_owned())
         })
         .transpose()?;
+    let navigation_tab = table
+        .get("navigation_tab")
+        .map(|value| {
+            parse_string_value(file, "shell.navigation_tab", value)
+                .map(|value| value.trim().to_owned())
+        })
+        .transpose()?;
     let zoxide = table
         .get("zoxide")
         .map(|value| parse_shell_zoxide_mode(file, "shell.zoxide", value))
         .transpose()?;
 
-    Ok(ShellConfigLayer { navigation, zoxide })
+    Ok(ShellConfigLayer {
+        navigation,
+        navigation_tab,
+        zoxide,
+    })
 }
 
 fn parse_shell_zoxide_mode(

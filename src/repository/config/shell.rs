@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellConfig {
     pub navigation: Option<String>,
+    pub navigation_tab: Option<String>,
     pub zoxide: ShellZoxideMode,
 }
 
@@ -11,6 +12,7 @@ impl Default for ShellConfig {
     fn default() -> Self {
         Self {
             navigation: None,
+            navigation_tab: None,
             zoxide: ShellZoxideMode::Auto,
         }
     }
@@ -21,6 +23,9 @@ impl ShellConfig {
         if let Some(navigation) = layer.navigation {
             self.navigation = Some(navigation);
         }
+        if let Some(navigation_tab) = layer.navigation_tab {
+            self.navigation_tab = Some(navigation_tab);
+        }
         if let Some(zoxide) = layer.zoxide {
             self.zoxide = zoxide;
         }
@@ -28,23 +33,56 @@ impl ShellConfig {
 
     pub(super) fn validate(&self) -> Result<(), RepositoryError> {
         let Some(command) = self.navigation_command() else {
-            return Ok(());
+            return if self.navigation_tab_command().is_none() {
+                Ok(())
+            } else {
+                Err(RepositoryError::InvalidConfig {
+                    file: "jx config".to_owned(),
+                    message: "`shell.navigation_tab` requires `shell.navigation`".to_owned(),
+                })
+            };
         };
 
-        if is_valid_shell_function_name(command) {
-            Ok(())
-        } else {
-            Err(RepositoryError::InvalidConfig {
+        if !is_valid_shell_function_name(command) {
+            return Err(RepositoryError::InvalidConfig {
                 file: "jx config".to_owned(),
                 message: "`shell.navigation` must be empty or a safe shell function name"
                     .to_owned(),
-            })
+            });
         }
+
+        let Some(tab_command) = self.navigation_tab_command() else {
+            return Ok(());
+        };
+        if !is_valid_shell_function_name(tab_command) {
+            return Err(RepositoryError::InvalidConfig {
+                file: "jx config".to_owned(),
+                message: "`shell.navigation_tab` must be empty or a safe shell function name"
+                    .to_owned(),
+            });
+        }
+        if tab_command == command {
+            return Err(RepositoryError::InvalidConfig {
+                file: "jx config".to_owned(),
+                message: "`shell.navigation_tab` must be different from `shell.navigation`"
+                    .to_owned(),
+            });
+        }
+
+        Ok(())
     }
 
     /// Returns the configured navigation command name, if shell navigation is enabled.
     pub fn navigation_command(&self) -> Option<&str> {
         self.navigation
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+    }
+
+    /// Returns the configured tab-opening navigation command name, if enabled.
+    pub fn navigation_tab_command(&self) -> Option<&str> {
+        self.navigation_tab
             .as_deref()
             .map(str::trim)
             .filter(|command| !command.is_empty())
@@ -61,6 +99,7 @@ pub enum ShellZoxideMode {
 #[derive(Debug, Default)]
 pub(super) struct ShellConfigLayer {
     pub(super) navigation: Option<String>,
+    pub(super) navigation_tab: Option<String>,
     pub(super) zoxide: Option<ShellZoxideMode>,
 }
 

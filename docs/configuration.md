@@ -186,11 +186,15 @@ under the matched location.
 ```toml
 [shell]
 navigation = "u"
+navigation_tab = "ut"
 zoxide = "auto"
 ```
 
 Set `zoxide = "never"` to omit zoxide fallback. Omit `navigation` or set it to
-an empty string to skip generating a navigation function.
+an empty string to skip generating a navigation function. When `navigation_tab`
+is set alongside `navigation`, the generated companion command uses the same
+resolution and completion; inside zellij it opens the target in a new tab, and
+outside zellij it warns and enters the directory in the current shell.
 
 ## Diff tools
 
