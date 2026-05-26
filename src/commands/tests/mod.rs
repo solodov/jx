@@ -5498,17 +5498,30 @@ fn workspace_status_renderer_orders_commit_description_and_jj_changes() {
 }
 
 #[test]
-fn workspace_status_renderer_renders_markdown_description_for_readability() {
-    // Verifies: The shared status renderer keeps PR-description markdown readable in terminal output.
-    let rendered = render_status_description(
-        "# Summary\n\nThis is **important** markdown with enough words to wrap.",
-        28,
-    );
+fn workspace_status_renderer_renders_markdown_description_without_preview_indent() {
+    // Verifies: jx status uses the shared PR markdown renderer without adding preview indentation.
+    let status = WorkspaceStatus {
+        commit_lines: vec!["Working copy  (@) : kvxvwztp b9e8f888".to_owned()],
+        description: "This is **important** markdown with enough words to wrap.".to_owned(),
+        change_lines: Vec::new(),
+        extra_lines: Vec::new(),
+    };
 
-    assert!(rendered.lines().count() > 2, "{rendered:?}");
-    assert!(rendered.contains("Summary"), "{rendered:?}");
-    assert!(rendered.contains("important"), "{rendered:?}");
-    assert!(!rendered.contains("**important**"), "{rendered:?}");
+    let rendered = render_workspace_status_with_width(&status, 28);
+    let description_block = rendered
+        .split("\n\n")
+        .nth(1)
+        .expect("status renders description after commit lines");
+
+    assert!(description_block.lines().count() > 1, "{rendered:?}");
+    assert!(description_block.contains("important"), "{rendered:?}");
+    assert!(!description_block.contains("**important**"), "{rendered:?}");
+    assert!(
+        description_block
+            .lines()
+            .all(|line| !line.starts_with("  ")),
+        "{rendered:?}"
+    );
 }
 
 #[test]

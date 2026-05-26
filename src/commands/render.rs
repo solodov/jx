@@ -1213,11 +1213,8 @@ pub(super) fn render_workspace_status_with_width(status: &WorkspaceStatus, width
         if !lines.is_empty() {
             lines.push(String::new());
         }
-        lines.extend(
-            render_status_description(description, width)
-                .lines()
-                .map(str::to_owned),
-        );
+        let rendered_description = render_status_description(description, width);
+        lines.extend(rendered_description.trim_end().lines().map(str::to_owned));
     }
 
     if !status.change_lines.is_empty() {
