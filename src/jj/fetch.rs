@@ -9,12 +9,16 @@ impl JjWorkspace {
 
         let current_before = self.current_commit()?;
         let current_before_tree = current_before.tree();
-        let (origin_branch, trunk_before) = self.resolve_trunk(&current_before)?;
-        let trunk_children_before = collect_child_ids(self.repo.as_ref(), trunk_before.id())?;
+        let fetch_trunk = self.resolve_fetch_trunk(&current_before)?;
+        let trunk_children_before = collect_child_ids(self.repo.as_ref(), fetch_trunk.commit.id())?;
 
         let mut tx = self.repo.start_transaction();
-        let import_stats = fetch_origin_refs(tx.repo_mut(), &origin_branch)?;
-        let updated_trunk = load_origin_branch(tx.repo(), &origin_branch)?;
+        let import_stats = fetch_origin_refs(
+            tx.repo_mut(),
+            &fetch_trunk.branch,
+            &fetch_trunk.refresh_bookmarks,
+        )?;
+        let updated_trunk = load_origin_branch(tx.repo(), &fetch_trunk.branch)?;
         let mut rebase_stats = pollster::block_on(rebase_trunk_children_onto_updated_trunk(
             tx.repo_mut(),
             &trunk_children_before,
@@ -25,7 +29,7 @@ impl JjWorkspace {
             tx.repo_mut(),
             self.workspace.workspace_name().to_owned(),
             current_before.id(),
-            trunk_before.id(),
+            fetch_trunk.commit.id(),
             &updated_trunk,
         ))?;
         rebase_stats.rebased_descendants += repair_stats.rebased_descendants;
@@ -68,7 +72,7 @@ impl JjWorkspace {
         self.repo = repo;
 
         Ok(FetchOutcome {
-            branch: origin_branch,
+            branch: fetch_trunk.branch,
             changed_remote_bookmarks: import_stats.changed_remote_bookmarks.len(),
             changed_remote_tags: import_stats.changed_remote_tags.len(),
             abandoned_commits: import_stats.abandoned_commits.len()
@@ -80,6 +84,58 @@ impl JjWorkspace {
             rebased_commits,
         })
     }
+
+    /// Resolves the trunk branch fetch should refresh, using live remote HEAD to break stale local ambiguity.
+    pub(super) fn resolve_fetch_trunk(
+        &self,
+        target: &Commit,
+    ) -> Result<FetchTrunkSelection, JjError> {
+        self.resolve_fetch_trunk_with_default_branch(target, |remote| {
+            live_remote_default_branch(&self.workspace_root(), remote)
+        })
+    }
+
+    /// Chooses a fetch trunk from cached jj state, with an injectable live-default lookup for tests.
+    pub(super) fn resolve_fetch_trunk_with_default_branch(
+        &self,
+        target: &Commit,
+        live_default_branch: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<FetchTrunkSelection, JjError> {
+        match self.resolve_trunk(target) {
+            Ok((branch, commit)) => Ok(FetchTrunkSelection {
+                branch,
+                commit,
+                refresh_bookmarks: Vec::new(),
+            }),
+            Err(JjError::AmbiguousTrunk { remote, branches }) if remote == ORIGIN_REMOTE_NAME => {
+                let Some(default_branch) = live_default_branch(&remote) else {
+                    return Err(JjError::AmbiguousTrunk { remote, branches });
+                };
+                if !branches.iter().any(|branch| branch == &default_branch) {
+                    return Err(JjError::AmbiguousTrunk { remote, branches });
+                }
+
+                let (branch, commit) = self.resolve_trunk_for_remote_with_hint(
+                    target,
+                    &remote,
+                    Some(&default_branch),
+                )?;
+                Ok(FetchTrunkSelection {
+                    branch,
+                    commit,
+                    refresh_bookmarks: branches,
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Trunk selection plus extra refs fetch should refresh to prune stale ambiguous candidates.
+pub(super) struct FetchTrunkSelection {
+    pub(super) branch: String,
+    pub(super) commit: Commit,
+    pub(super) refresh_bookmarks: Vec<String>,
 }
 
 pub(super) async fn rebase_trunk_children_onto_updated_trunk(

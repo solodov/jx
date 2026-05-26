@@ -170,6 +170,16 @@ impl JjWorkspace {
         target: &Commit,
         remote: &str,
     ) -> Result<(String, Commit), JjError> {
+        self.resolve_trunk_for_remote_with_hint(target, remote, None)
+    }
+
+    /// Resolves the trunk ancestor for a remote, optionally trusting a live branch hint to break ties.
+    pub(super) fn resolve_trunk_for_remote_with_hint(
+        &self,
+        target: &Commit,
+        remote: &str,
+        branch_hint: Option<&str>,
+    ) -> Result<(String, Commit), JjError> {
         let mut candidates = Vec::new();
         let mut conflicted = Vec::new();
 
@@ -194,7 +204,8 @@ impl JjWorkspace {
             }
         }
 
-        let candidate = select_trunk_candidate(remote, candidates, conflicted)?;
+        let candidate =
+            select_trunk_candidate_with_hint(remote, candidates, conflicted, branch_hint)?;
         let trunk = self.load_commit(&candidate.commit_id)?;
 
         Ok((candidate.branch, trunk))

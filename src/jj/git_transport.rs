@@ -52,9 +52,39 @@ pub(super) fn collect_child_ids(
     })
 }
 
+/// Reads the live Git remote HEAD branch used only to recover from cached trunk ambiguity.
+pub(super) fn live_remote_default_branch(workspace_root: &Path, remote: &str) -> Option<String> {
+    let output = Command::new("git")
+        .arg("ls-remote")
+        .arg("--symref")
+        .arg(remote)
+        .arg("HEAD")
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    parse_remote_default_branch(&stdout)
+}
+
+/// Extracts the HEAD branch from `git ls-remote --symref` output.
+pub(super) fn parse_remote_default_branch(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let line = line.strip_prefix("ref: refs/heads/")?;
+        let (branch, target) = line.split_once('\t')?;
+        (target == "HEAD").then(|| branch.to_owned())
+    })
+}
+
+/// Fetches the selected trunk, tracked origin bookmarks, and any explicit stale-candidate refreshes.
 pub(super) fn fetch_origin_refs(
     mut_repo: &mut MutableRepo,
     origin_branch: &str,
+    refresh_bookmarks: &[String],
 ) -> Result<git::GitImportStats, JjError> {
     let git_settings =
         GitSettings::from_settings(mut_repo.base_repo().settings()).map_err(|error| {
@@ -64,7 +94,7 @@ pub(super) fn fetch_origin_refs(
         })?;
     let import_options = fetch_import_options();
     let bookmark_expression = StringExpression::union_all(
-        tracked_origin_bookmarks(mut_repo, origin_branch)
+        tracked_origin_bookmarks(mut_repo, origin_branch, refresh_bookmarks)
             .into_iter()
             .map(StringExpression::exact)
             .collect(),
@@ -104,8 +134,14 @@ pub(super) fn fetch_origin_refs(
     })
 }
 
-pub(super) fn tracked_origin_bookmarks(mut_repo: &MutableRepo, origin_branch: &str) -> Vec<String> {
+/// Returns the narrow bookmark set fetch should refresh for sync/fetch correctness.
+pub(super) fn tracked_origin_bookmarks(
+    mut_repo: &MutableRepo,
+    origin_branch: &str,
+    refresh_bookmarks: &[String],
+) -> Vec<String> {
     let mut bookmarks = BTreeSet::from([origin_branch.to_owned()]);
+    bookmarks.extend(refresh_bookmarks.iter().cloned());
     bookmarks.extend(
         mut_repo
             .view()
