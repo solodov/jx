@@ -5548,15 +5548,66 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
         draft: true,
     };
 
-    assert_eq!(
-        pull_request_choice_label(&ready),
-        "#42     Ready change [topic/ready -> main]"
-    );
+    assert_eq!(pull_request_choice_label(&ready), "#42     Ready change");
     assert_eq!(
         pull_request_choice_label(&draft),
-        "\x1b[2m\x1b[38;2;150;142;132m#43     Work in progress [topic/wip -> main]\x1b[0m"
+        "\x1b[2m\x1b[38;2;150;142;132m#43     Work in progress\x1b[0m"
     );
     assert!(!pull_request_choice_label(&draft).contains("draft "));
+    assert!(!pull_request_choice_label(&ready).contains("topic/ready"));
+}
+
+#[test]
+fn pull_request_selection_renders_stack_tree_in_merge_order() {
+    // Verifies: PR choices show stack hierarchy and keep row selection mapped after sorting.
+    let pull_requests = vec![
+        pull_request_choice_record(12, "Child 2", "topic/child-2", "topic/root", false),
+        pull_request_choice_record(1, "Draft root", "topic/draft-root", "main", true),
+        pull_request_choice_record(14, "Child 11", "topic/child-11", "topic/child-1", false),
+        pull_request_choice_record(10, "Root", "topic/root", "main", false),
+        pull_request_choice_record(2, "Other root", "topic/other", "main", false),
+        pull_request_choice_record(11, "Child 1", "topic/child-1", "topic/root", false),
+    ];
+
+    let rows = pull_request_choice_rows(&pull_requests);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "#2      Other root",
+            "#10     Root",
+            "├─ #11     Child 1",
+            "│  └─ #14     Child 11",
+            "└─ #12     Child 2",
+            "\x1b[2m\x1b[38;2;150;142;132m#1      Draft root\x1b[0m",
+        ]
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.pull_request.number)
+            .collect::<Vec<_>>(),
+        vec![2, 10, 11, 14, 12, 1]
+    );
+}
+
+fn pull_request_choice_record(
+    number: u64,
+    title: &str,
+    head_branch: &str,
+    base_branch: &str,
+    draft: bool,
+) -> PullRequestRecord {
+    PullRequestRecord {
+        number,
+        title: title.to_owned(),
+        body: None,
+        head_branch: head_branch.to_owned(),
+        base_branch: base_branch.to_owned(),
+        html_url: None,
+        draft,
+    }
 }
 
 #[test]

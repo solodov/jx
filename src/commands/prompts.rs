@@ -88,10 +88,8 @@ impl PullRequestSelector for TerminalPullRequestSelector {
             return Err(PullRequestSelectionError::NoPullRequests);
         }
 
-        let labels = pull_requests
-            .iter()
-            .map(pull_request_choice_label)
-            .collect::<Vec<_>>();
+        let rows = pull_request_choice_rows(pull_requests);
+        let labels = rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>();
         let theme = PlainPromptTheme;
         let selected = Select::with_theme(&theme)
             .with_prompt("Open pull request:")
@@ -104,7 +102,7 @@ impl PullRequestSelector for TerminalPullRequestSelector {
                 PullRequestSelectionError::Read { source }
             })?;
 
-        Ok(pull_requests[selected].clone())
+        Ok(rows[selected].pull_request.clone())
     }
 }
 
@@ -145,18 +143,155 @@ impl PullRequestSelector for FixedPullRequestSelector {
 const PULL_REQUEST_DRAFT_STYLE: &str = "\x1b[2m\x1b[38;2;150;142;132m";
 const RESET_STYLE: &str = "\x1b[0m";
 
+pub(super) struct PullRequestChoice<'a> {
+    pub(super) pull_request: &'a PullRequestRecord,
+    pub(super) label: String,
+}
+
+pub(super) fn pull_request_choice_rows(
+    pull_requests: &[PullRequestRecord],
+) -> Vec<PullRequestChoice<'_>> {
+    let mut head_indexes = BTreeMap::new();
+    for (index, pull_request) in pull_requests.iter().enumerate() {
+        head_indexes
+            .entry(pull_request.head_branch.as_str())
+            .or_insert(index);
+    }
+
+    let mut children = vec![Vec::new(); pull_requests.len()];
+    let mut roots = Vec::new();
+    for (index, pull_request) in pull_requests.iter().enumerate() {
+        match head_indexes.get(pull_request.base_branch.as_str()).copied() {
+            Some(parent) if parent != index => children[parent].push(index),
+            _ => roots.push(index),
+        }
+    }
+
+    sort_pull_request_indexes(&mut roots, pull_requests);
+    for child_indexes in &mut children {
+        sort_pull_request_indexes(child_indexes, pull_requests);
+    }
+
+    let mut tree = PullRequestChoiceTree::new(children, pull_requests);
+    tree.append_roots(&roots);
+
+    let mut unvisited = (0..pull_requests.len())
+        .filter(|index| !tree.visited.contains(index))
+        .collect::<Vec<_>>();
+    sort_pull_request_indexes(&mut unvisited, pull_requests);
+    tree.append_roots(&unvisited);
+
+    tree.rows
+}
+
+fn sort_pull_request_indexes(indexes: &mut [usize], pull_requests: &[PullRequestRecord]) {
+    indexes.sort_by(|left, right| {
+        pull_request_choice_sort_key(&pull_requests[*left])
+            .cmp(&pull_request_choice_sort_key(&pull_requests[*right]))
+    });
+}
+
+fn pull_request_choice_sort_key(pull_request: &PullRequestRecord) -> (u8, u64, &str, &str) {
+    (
+        pull_request.draft as u8,
+        pull_request.number,
+        pull_request.title.as_str(),
+        pull_request.head_branch.as_str(),
+    )
+}
+
+struct PullRequestChoiceTree<'a> {
+    children: Vec<Vec<usize>>,
+    pull_requests: &'a [PullRequestRecord],
+    ancestor_has_next: Vec<bool>,
+    visited: BTreeSet<usize>,
+    rows: Vec<PullRequestChoice<'a>>,
+}
+
+impl<'a> PullRequestChoiceTree<'a> {
+    fn new(children: Vec<Vec<usize>>, pull_requests: &'a [PullRequestRecord]) -> Self {
+        Self {
+            children,
+            pull_requests,
+            ancestor_has_next: Vec::new(),
+            visited: BTreeSet::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn append_roots(&mut self, roots: &[usize]) {
+        for (position, root) in roots.iter().copied().enumerate() {
+            self.append(root, 0, position + 1 < roots.len());
+        }
+    }
+
+    fn append(&mut self, index: usize, depth: usize, has_next_sibling: bool) {
+        if !self.visited.insert(index) {
+            return;
+        }
+
+        let pull_request = &self.pull_requests[index];
+        let label = if depth == 0 {
+            pull_request_choice_label(pull_request)
+        } else {
+            pull_request_choice_label_with_tree_prefix(
+                pull_request,
+                &self.ancestor_has_next,
+                depth,
+                has_next_sibling,
+            )
+        };
+        self.rows.push(PullRequestChoice {
+            pull_request,
+            label,
+        });
+
+        let include_current_in_descendant_prefix = depth > 0;
+        let children = self.children[index].clone();
+        for (position, child) in children.iter().copied().enumerate() {
+            let child_has_next_sibling = position + 1 < children.len();
+            if include_current_in_descendant_prefix {
+                self.ancestor_has_next.push(has_next_sibling);
+            }
+            self.append(child, depth + 1, child_has_next_sibling);
+            if include_current_in_descendant_prefix {
+                self.ancestor_has_next.pop();
+            }
+        }
+    }
+}
+
 pub(super) fn pull_request_choice_label(pull_request: &PullRequestRecord) -> String {
+    pull_request_choice_label_with_tree_prefix(pull_request, &[], 0, false)
+}
+
+fn pull_request_choice_label_with_tree_prefix(
+    pull_request: &PullRequestRecord,
+    ancestor_has_next: &[bool],
+    depth: usize,
+    has_next_sibling: bool,
+) -> String {
+    let mut label = String::new();
+    if depth > 0 {
+        for ancestor_has_next in ancestor_has_next {
+            label.push_str(if *ancestor_has_next { "│  " } else { "   " });
+        }
+        label.push_str(if has_next_sibling {
+            "├─ "
+        } else {
+            "└─ "
+        });
+    }
+
     let title = if pull_request.title.trim().is_empty() {
         "(untitled)"
     } else {
         pull_request.title.trim()
     };
-    let label = format!(
-        "#{number:<6} {title} [{head} -> {base}]",
-        number = pull_request.number,
-        head = pull_request.head_branch.as_str(),
-        base = pull_request.base_branch.as_str(),
-    );
+    label.push_str(&format!(
+        "#{number:<6} {title}",
+        number = pull_request.number
+    ));
     if pull_request.draft {
         format!("{PULL_REQUEST_DRAFT_STYLE}{label}{RESET_STYLE}")
     } else {
