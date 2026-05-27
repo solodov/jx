@@ -54,14 +54,14 @@ use crate::{
         validate_workspace_name, write_stack_metadata, write_workspace_metadata, ClonePlan,
         DiffToolConfig, GitHubRemote, GitHubRepository, LayoutConfig, LocalRepositoryContext,
         RepositoryContext, RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig,
-        ShellZoxideMode, StackMetadata, StackMetadataNode, TokenSource, WorkflowConfig,
-        WorkspaceMetadata,
+        ShellZoxideMode, StackMetadata, TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 
 mod handlers;
 mod progress;
 mod prompts;
+mod pull_request_manager;
 mod render;
 mod request;
 mod services;
@@ -77,6 +77,7 @@ pub use prompts::{
     RepositoryCreationConfirmationError, RepositoryInitializationConfirmationError,
     ReviewerSelectionError, WorkspaceRemoveConfirmationError,
 };
+use pull_request_manager::*;
 use render::*;
 use request::*;
 use services::*;

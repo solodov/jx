@@ -11,6 +11,7 @@ use crate::{
         TrunkSummary, WorkspaceAddOptions, WorkspaceEntry, WorkspaceRemoveOptions, WorkspaceStatus,
         WorkspaceVisibility,
     },
+    repository::StackMetadataNode,
 };
 use jj_lib::{
     config::StackedConfig,
@@ -7023,6 +7024,7 @@ impl CommandServices for FakeServices {
         &self,
         _context: &RepositoryContext,
         _push: &TrackedPushOutcome,
+        _stack_metadata: &StackMetadata,
     ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
         Ok(self.sync_pull_requests.clone())
     }

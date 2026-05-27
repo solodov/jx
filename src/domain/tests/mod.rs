@@ -1,9 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs,
-    path::PathBuf,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -16,10 +13,10 @@ use crate::{
         TrackedPushOutcome, TrunkSummary, WorkspaceVisibility,
     },
     repository::{
-        write_stack_metadata, GitHubRemote, GitHubRepository, OriginRemote,
-        PullRequestEventPredicate, PullRequestEventQuery, PullRequestEventQueryTerm, RepoConfig,
-        RepoEvent, RepoEventHandler, RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig,
-        StackMetadata, StackMetadataNode, TokenSource, WorkflowConfig, ORIGIN_REMOTE_NAME,
+        GitHubRemote, GitHubRepository, OriginRemote, PullRequestEventPredicate,
+        PullRequestEventQuery, PullRequestEventQueryTerm, RepoConfig, RepoEvent, RepoEventHandler,
+        RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig, StackMetadata,
+        StackMetadataNode, TokenSource, WorkflowConfig, ORIGIN_REMOTE_NAME,
     },
 };
 
@@ -1226,8 +1223,13 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
         pushed_commits: Vec::new(),
     };
 
-    let pull_requests = pollster::block_on(sync_pull_requests(&context(), &push, &github))
-        .expect("pull requests sync");
+    let pull_requests = pollster::block_on(sync_pull_requests(
+        &context(),
+        &push,
+        &StackMetadata::default(),
+        &github,
+    ))
+    .expect("pull requests sync");
 
     assert_eq!(pull_requests[0].number, 7);
     assert_eq!(pull_requests[0].title, "New title");
@@ -1280,8 +1282,13 @@ fn sync_pull_requests_updates_stack_base_without_rewriting_matching_description(
         pushed_commits: Vec::new(),
     };
 
-    let pull_requests = pollster::block_on(sync_pull_requests(&context(), &push, &github))
-        .expect("pull requests sync");
+    let pull_requests = pollster::block_on(sync_pull_requests(
+        &context(),
+        &push,
+        &StackMetadata::default(),
+        &github,
+    ))
+    .expect("pull requests sync");
 
     assert_eq!(pull_requests[0].base_branch, "example-user/parent");
     assert_eq!(
@@ -1300,50 +1307,45 @@ fn sync_pull_requests_updates_stack_base_without_rewriting_matching_description(
 #[test]
 fn sync_pull_requests_adds_stack_context_from_metadata() {
     // Verifies: sync renders stack context from durable local state without editing authored body text.
-    let root = temp_test_root();
-    let context = context_with_workspace_root(root.clone());
-    write_stack_metadata(
-        &root,
-        &StackMetadata {
-            version: 1,
-            nodes: vec![
-                StackMetadataNode {
-                    branch: "example-user/root".to_owned(),
-                    base_branch: "main".to_owned(),
-                    parent_branch: None,
-                    pull_request: Some(6),
-                    parent_pull_request: None,
-                    title: "Root".to_owned(),
-                    url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
-                    draft: false,
-                    merged: false,
-                },
-                StackMetadataNode {
-                    branch: "example-user/child".to_owned(),
-                    base_branch: "example-user/root".to_owned(),
-                    parent_branch: Some("example-user/root".to_owned()),
-                    pull_request: Some(7),
-                    parent_pull_request: Some(6),
-                    title: "Child".to_owned(),
-                    url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
-                    draft: false,
-                    merged: false,
-                },
-                StackMetadataNode {
-                    branch: "example-user/draft".to_owned(),
-                    base_branch: "example-user/child".to_owned(),
-                    parent_branch: Some("example-user/child".to_owned()),
-                    pull_request: Some(8),
-                    parent_pull_request: Some(7),
-                    title: "Draft".to_owned(),
-                    url: Some("https://github.com/example-owner/example-repo/pull/8".to_owned()),
-                    draft: true,
-                    merged: false,
-                },
-            ],
-        },
-    )
-    .expect("stack metadata writes");
+    let context = context();
+    let stack_metadata = StackMetadata {
+        version: 1,
+        nodes: vec![
+            StackMetadataNode {
+                branch: "example-user/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(6),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
+                draft: false,
+                merged: false,
+            },
+            StackMetadataNode {
+                branch: "example-user/child".to_owned(),
+                base_branch: "example-user/root".to_owned(),
+                parent_branch: Some("example-user/root".to_owned()),
+                pull_request: Some(7),
+                parent_pull_request: Some(6),
+                title: "Child".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+                draft: false,
+                merged: false,
+            },
+            StackMetadataNode {
+                branch: "example-user/draft".to_owned(),
+                base_branch: "example-user/child".to_owned(),
+                parent_branch: Some("example-user/child".to_owned()),
+                pull_request: Some(8),
+                parent_pull_request: Some(7),
+                title: "Draft".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/8".to_owned()),
+                draft: true,
+                merged: false,
+            },
+        ],
+    };
     let github = FakeGitHub {
         open_pull_request: Some(PullRequestRecord {
             number: 7,
@@ -1373,7 +1375,13 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
         pushed_commits: Vec::new(),
     };
 
-    pollster::block_on(sync_pull_requests(&context, &push, &github)).expect("pull requests sync");
+    pollster::block_on(sync_pull_requests(
+        &context,
+        &push,
+        &stack_metadata,
+        &github,
+    ))
+    .expect("pull requests sync");
 
     assert_eq!(
         update_calls.lock().expect("update calls").as_slice(),
@@ -1389,7 +1397,6 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
             }
         )]
     );
-    fs::remove_dir_all(root).expect("remove temp root");
 }
 
 #[test]
@@ -1426,7 +1433,13 @@ fn sync_pull_requests_removes_stack_context_for_untracked_pr() {
         pushed_commits: Vec::new(),
     };
 
-    pollster::block_on(sync_pull_requests(&context(), &push, &github)).expect("pull requests sync");
+    pollster::block_on(sync_pull_requests(
+        &context(),
+        &push,
+        &StackMetadata::default(),
+        &github,
+    ))
+    .expect("pull requests sync");
 
     assert_eq!(
         update_calls.lock().expect("update calls").as_slice(),
@@ -1473,8 +1486,13 @@ fn sync_pull_requests_clears_body_for_title_only_descriptions() {
         pushed_commits: Vec::new(),
     };
 
-    let pull_requests = pollster::block_on(sync_pull_requests(&context(), &push, &github))
-        .expect("pull requests sync");
+    let pull_requests = pollster::block_on(sync_pull_requests(
+        &context(),
+        &push,
+        &StackMetadata::default(),
+        &github,
+    ))
+    .expect("pull requests sync");
 
     assert_eq!(pull_requests[0].title, "New title");
     assert_eq!(pull_requests[0].body.as_deref(), Some(""));
@@ -1523,7 +1541,13 @@ fn sync_pull_requests_skips_title_only_update_when_github_body_is_absent() {
         pushed_commits: Vec::new(),
     };
 
-    pollster::block_on(sync_pull_requests(&context(), &push, &github)).expect("pull requests sync");
+    pollster::block_on(sync_pull_requests(
+        &context(),
+        &push,
+        &StackMetadata::default(),
+        &github,
+    ))
+    .expect("pull requests sync");
 
     assert!(update_calls.lock().expect("update calls").is_empty());
 }
@@ -1556,23 +1580,6 @@ fn context() -> RepositoryContext {
             shell: Default::default(),
         },
     }
-}
-
-fn context_with_workspace_root(workspace_root: PathBuf) -> RepositoryContext {
-    let mut context = context();
-    context.workspace_root = workspace_root.clone();
-    context.repository_root = workspace_root;
-    context
-}
-
-fn temp_test_root() -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("jx-domain-test-{}-{unique}", std::process::id()));
-    fs::create_dir_all(&root).expect("create temp root");
-    root
 }
 
 fn context_with_reviewers(reviewers: &[&str]) -> RepositoryContext {

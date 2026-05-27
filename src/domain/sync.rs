@@ -42,9 +42,9 @@ pub fn sync_report(
 pub async fn sync_pull_requests(
     context: &RepositoryContext,
     push: &TrackedPushOutcome,
+    stack_metadata: &StackMetadata,
     github: &dyn GitHubClient,
 ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
-    let stack_metadata = read_stack_metadata(&context.repository_root)?;
     let mut seen = BTreeSet::new();
     let mut pull_requests = Vec::new();
     for bookmark in &push.bookmarks {
@@ -66,7 +66,7 @@ pub async fn sync_pull_requests(
             pull_request,
             bookmark.pull_request_description.as_deref(),
             bookmark.pull_request_base.as_deref(),
-            &stack_metadata,
+            stack_metadata,
         )
         .await?;
         pull_requests.push(pull_request);

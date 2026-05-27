@@ -1092,7 +1092,8 @@ fn global_sync_existing_origin(
     }
     let push = services.push_syncable_tracked(&context)?;
     changed |= tracked_push_changed(&push.pushed);
-    let _ = services.sync_pull_requests(&context, &push.pushed)?;
+    let manager = PullRequestStackManager::new(&context, services);
+    let _ = manager.sync_pull_requests(&push.pushed)?;
 
     if let Some(detail) = sync_conflict_detail(&fetch, &push) {
         Ok(GlobalSyncOutcome::SyncedWithConflicts { detail })
@@ -1196,7 +1197,8 @@ fn sync_current_stack(
     progress.status("Pushing stack bookmarks…");
     let push = push_syncable_stack_branches(&context, services, &branches)?;
     progress.status("Syncing pull request descriptions…");
-    let pull_requests = services.sync_pull_requests(&context, &push.pushed)?;
+    let manager = PullRequestStackManager::new(&context, services);
+    let pull_requests = manager.sync_pull_requests(&push.pushed)?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
@@ -1212,16 +1214,8 @@ fn sync_stack_branches(
     context: &RepositoryContext,
     services: &dyn CommandServices,
 ) -> Result<Vec<String>, CommandError> {
-    let metadata = read_stack_metadata(&context.repository_root)?;
-    let candidate_branches = services.pull_request_candidate_bookmarks(context, None)?;
-    let local_branches = services.pull_request_bookmarks(context)?;
-    let snapshot = PullRequestStackSnapshot::from_metadata(
-        &metadata,
-        &local_branches,
-        &[],
-        PullRequestStackSelection::default(),
-    );
-    let branches = snapshot.local_component_branches_for(&candidate_branches);
+    let manager = PullRequestStackManager::new(context, services);
+    let branches = manager.local_component_branches_for_selector(None)?;
 
     if branches.is_empty() {
         Err(WorkflowError::MissingPullRequest.into())
@@ -1288,7 +1282,8 @@ fn sync_selected_revision(
     progress.status("Pushing selected bookmark…");
     let push = services.push_syncable_revision(&context, revision)?;
     progress.status("Syncing pull request description…");
-    let pull_requests = services.sync_pull_requests(&context, &push.pushed)?;
+    let manager = PullRequestStackManager::new(&context, services);
+    let pull_requests = manager.sync_pull_requests(&push.pushed)?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
@@ -1484,7 +1479,8 @@ fn sync_existing_origin(
     progress.status("Pushing tracked bookmarks…");
     let push = services.push_syncable_tracked(&context)?;
     progress.status("Syncing pull request descriptions…");
-    let pull_requests = services.sync_pull_requests(&context, &push.pushed)?;
+    let manager = PullRequestStackManager::new(&context, services);
+    let pull_requests = manager.sync_pull_requests(&push.pushed)?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {

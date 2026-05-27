@@ -253,6 +253,7 @@ pub(super) trait CommandServices {
         &self,
         context: &RepositoryContext,
         push: &TrackedPushOutcome,
+        stack_metadata: &StackMetadata,
     ) -> Result<Vec<PullRequestRecord>, WorkflowError>;
 
     /// Builds PR metadata and bookmark intent before mutation.
@@ -653,6 +654,7 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
         push: &TrackedPushOutcome,
+        stack_metadata: &StackMetadata,
     ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
         if push.bookmarks.is_empty() {
             return Ok(Vec::new());
@@ -661,7 +663,7 @@ impl CommandServices for ProductionServices<'_> {
         self.github_runtime.block_on(async {
             let github =
                 OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
-            domain::sync_pull_requests(context, push, &github).await
+            domain::sync_pull_requests(context, push, stack_metadata, &github).await
         })
     }
 

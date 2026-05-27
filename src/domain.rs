@@ -22,9 +22,9 @@ use crate::{
         WorkspaceFacts,
     },
     repository::{
-        read_stack_metadata, GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery,
-        RepoEvent, RepoEventHandler, RepoEventHandlerRun, RepositoryContext, RepositoryError,
-        StackMetadata, StackMetadataNode,
+        GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,
+        RepoEventHandler, RepoEventHandlerRun, RepositoryContext, RepositoryError, StackMetadata,
+        StackMetadataNode,
     },
 };
 
