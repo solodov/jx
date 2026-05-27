@@ -9,10 +9,10 @@ This file tracks plans managed in the markdown-backed layout.
 ### [20260527-140943-unified-pull-request-stack-model](./20260527-140943-unified-pull-request-stack-model.md)
 - title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and Rendering
 - status: implementing
-- currentPhase: 3
-- currentPhaseTitle: Create a command-side pull request manager for IO and service orchestration
-- nextPhase: 4
-- nextPhaseTitle: Make jx pr maintain stack state as part of publishing
+- currentPhase: 4
+- currentPhaseTitle: Make jx pr maintain stack state as part of publishing
+- nextPhase: 5
+- nextPhaseTitle: Make jx open pr -i select from the stack snapshot
 - totalPhases: 7
 - updated: 2026-05-27
 

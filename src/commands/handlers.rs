@@ -179,8 +179,16 @@ pub(super) fn handle_request(
                         push,
                         publish_options,
                     )?;
+                    progress.status("Updating pull request stack…");
+                    let manager = PullRequestStackManager::new(&context, services);
+                    let stack_update = manager.update_after_publish(&report)?;
                     progress.finish();
-                    render_pull_request_with_effects(&report, services, output.color)?
+                    render_pull_request_with_effects(
+                        &report,
+                        &stack_update,
+                        services,
+                        output.color,
+                    )?
                 }
             }
         }
@@ -191,12 +199,27 @@ pub(super) fn handle_request(
 
 fn render_pull_request_with_effects(
     report: &PullRequestReport,
+    stack_update: &PullRequestStackPublishUpdate,
     services: &dyn CommandServices,
     color: bool,
 ) -> Result<String, CommandError> {
     let mut output = render_pull_request(report);
     let pull_request =
         linked_pull_request_text(&report.repository.github_url, &report.pull_request);
+
+    if !stack_update.is_empty() {
+        let pull_requests = stack_update
+            .pull_requests
+            .iter()
+            .map(|pull_request| {
+                linked_pull_request_text(&report.repository.github_url, pull_request)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let line = format!("Stack: refreshed stack context on {pull_requests}");
+        output.push_str(&style_log_line(&line, color));
+        output.push('\n');
+    }
 
     for effect in &report.event_effects {
         if !pull_request_event_effect_is_default_visible(effect) {

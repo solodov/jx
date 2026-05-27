@@ -285,6 +285,50 @@ fn apply_current_selection(
     }
 }
 
+/// Upserts live PR records into durable stack metadata without dropping unrelated state.
+pub fn upsert_stack_metadata_pull_requests(
+    pull_requests: &[PullRequestRecord],
+    existing_metadata: &StackMetadata,
+) -> StackMetadata {
+    let pull_requests_by_head = pull_requests
+        .iter()
+        .map(|pull_request| (pull_request.head_branch.as_str(), pull_request))
+        .collect::<BTreeMap<_, _>>();
+    let existing_nodes_by_branch = existing_metadata
+        .nodes
+        .iter()
+        .map(|node| (node.branch.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    let mut nodes = existing_metadata.nodes.clone();
+    let mut indexes_by_branch = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.branch.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut pull_requests = pull_requests.to_vec();
+    pull_requests.sort_by(|left, right| {
+        pull_request_stack_sort_key(left).cmp(&pull_request_stack_sort_key(right))
+    });
+
+    for pull_request in &pull_requests {
+        let node = stack_metadata_node_from_pull_request(
+            pull_request,
+            &pull_requests_by_head,
+            &existing_nodes_by_branch,
+            false,
+        );
+        if let Some(index) = indexes_by_branch.get(node.branch.as_str()).copied() {
+            nodes[index] = node;
+        } else {
+            indexes_by_branch.insert(node.branch.clone(), nodes.len());
+            nodes.push(node);
+        }
+    }
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
 /// Builds durable stack metadata from live PR records while retaining missing ancestors.
 pub fn stack_metadata_from_pull_requests(
     pull_requests: &[PullRequestRecord],
@@ -302,30 +346,74 @@ pub fn stack_metadata_from_pull_requests(
     let mut nodes = pull_requests
         .iter()
         .map(|pull_request| {
-            let live_parent = pull_requests_by_head.get(pull_request.base_branch.as_str());
-            let existing_node = existing_nodes_by_branch.get(pull_request.head_branch.as_str());
-            let parent_branch = live_parent
-                .map(|parent| parent.head_branch.clone())
-                .or_else(|| existing_node.and_then(|node| node.parent_branch.clone()));
-            StackMetadataNode {
-                branch: pull_request.head_branch.clone(),
-                base_branch: pull_request.base_branch.clone(),
-                parent_branch,
-                pull_request: Some(pull_request.number),
-                parent_pull_request: live_parent
-                    .map(|parent| parent.number)
-                    .or_else(|| existing_node.and_then(|node| node.parent_pull_request)),
-                title: pull_request_title(pull_request).to_owned(),
-                url: pull_request.html_url.clone(),
-                draft: pull_request.draft,
-                merged: pull_request.merged,
-            }
+            stack_metadata_node_from_pull_request(
+                pull_request,
+                &pull_requests_by_head,
+                &existing_nodes_by_branch,
+                true,
+            )
         })
         .collect::<Vec<_>>();
     preserve_missing_ancestors(&mut nodes, &existing_nodes_by_branch);
     sort_stack_metadata_nodes(&mut nodes);
 
     StackMetadata { version: 1, nodes }
+}
+
+fn stack_metadata_node_from_pull_request(
+    pull_request: &PullRequestRecord,
+    pull_requests_by_head: &BTreeMap<&str, &PullRequestRecord>,
+    existing_nodes_by_branch: &BTreeMap<&str, &StackMetadataNode>,
+    preserve_existing_parent: bool,
+) -> StackMetadataNode {
+    let live_parent = pull_requests_by_head.get(pull_request.base_branch.as_str());
+    let existing_node = existing_nodes_by_branch.get(pull_request.head_branch.as_str());
+    let existing_parent = existing_nodes_by_branch.get(pull_request.base_branch.as_str());
+    let parent_branch = if pull_request.base_branch == pull_request.head_branch {
+        None
+    } else {
+        live_parent
+            .map(|parent| parent.head_branch.clone())
+            .or_else(|| existing_parent.map(|parent| parent.branch.clone()))
+            .or_else(|| {
+                existing_node.and_then(|node| {
+                    preserve_existing_parent
+                        .then(|| node.parent_branch.clone())
+                        .flatten()
+                })
+            })
+    };
+    let parent_pull_request = parent_branch
+        .as_deref()
+        .and_then(|branch| {
+            pull_requests_by_head
+                .get(branch)
+                .map(|parent| parent.number)
+                .or_else(|| {
+                    existing_nodes_by_branch
+                        .get(branch)
+                        .and_then(|node| node.pull_request)
+                })
+        })
+        .or_else(|| {
+            existing_node.and_then(|node| {
+                (node.parent_branch.as_deref() == parent_branch.as_deref())
+                    .then_some(node.parent_pull_request)
+                    .flatten()
+            })
+        });
+
+    StackMetadataNode {
+        branch: pull_request.head_branch.clone(),
+        base_branch: pull_request.base_branch.clone(),
+        parent_branch,
+        pull_request: Some(pull_request.number),
+        parent_pull_request,
+        title: pull_request_title(pull_request).to_owned(),
+        url: pull_request.html_url.clone(),
+        draft: pull_request.draft,
+        merged: pull_request.merged,
+    }
 }
 
 fn preserve_missing_ancestors(

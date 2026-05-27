@@ -99,6 +99,7 @@ pub struct PullRequestReport {
     pub action: PullRequestAction,
     pub pull_request: PullRequestRecord,
     pub base: String,
+    pub base_pull_request: Option<PullRequestRecord>,
     pub head: PullRequestHead,
     pub labels: Option<LabelApplyResult>,
     pub reviewers: Option<ReviewerSyncResult>,

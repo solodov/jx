@@ -29,12 +29,13 @@ use thiserror::Error;
 
 use crate::{
     domain::{
-        self, stack_metadata_from_pull_requests, BookmarkAction, CheckReport, FetchReport,
-        ForkStatusReport, ForkStatusState, PullRequestAction, PullRequestEventEffect,
-        PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions, PullRequestReport,
-        PullRequestStackNode, PullRequestStackRow, PullRequestStackSelection,
-        PullRequestStackSnapshot, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
-        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
+        self, stack_metadata_from_pull_requests, upsert_stack_metadata_pull_requests,
+        BookmarkAction, CheckReport, FetchReport, ForkStatusReport, ForkStatusState,
+        PullRequestAction, PullRequestEventEffect, PullRequestEventEffectKind, PullRequestPlan,
+        PullRequestPublishOptions, PullRequestReport, PullRequestStackNode, PullRequestStackRow,
+        PullRequestStackSelection, PullRequestStackSnapshot, PushPlan, PushReport,
+        RebaseOnTrunkReport, RemoteStatusReport, StatusReport, SyncReport, TrackedPushReport,
+        WorkflowCommand, WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
@@ -45,9 +46,10 @@ use crate::{
         run_jj_git_clone, run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome,
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
-        JjWorkspace, PipeDiffTool, PushOutcome, RebaseOnTrunkOutcome, StatusWorkspaceFacts,
-        SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
-        WorkspaceRemoveOptions, WorkspaceStatus,
+        JjWorkspace, PipeDiffTool, PushOutcome, PushedBookmarkSummary, RebaseOnTrunkOutcome,
+        StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions,
+        WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
+        WorkspaceVisibility,
     },
     repository::{
         read_stack_metadata, read_workspace_metadata, reset_stack_metadata,

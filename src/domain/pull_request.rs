@@ -246,6 +246,7 @@ pub async fn publish_pull_request(
         action,
         pull_request,
         base: plan.base,
+        base_pull_request: plan.base_pull_request,
         head: plan.head,
         labels,
         reviewers,

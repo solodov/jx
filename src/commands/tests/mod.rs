@@ -5199,6 +5199,219 @@ fn pull_request_accepts_short_task_id_flag_and_renders_published_pr() {
 }
 
 #[test]
+fn pull_request_records_published_pr_in_stack_state() {
+    // Verifies: Publishing a PR upserts durable stack state even before a full stack exists.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        result.stdout,
+        format!("Created {}\n", example_pull_request_link(42))
+    );
+    assert!(services.sync_pull_request_pushes.borrow().is_empty());
+    assert_eq!(
+        read_stack_metadata(&workspace.path()).expect("stack metadata reads"),
+        StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "example-user/02-zzzzzzzz".to_owned(),
+                base_branch: "example-user/01-ancestor".to_owned(),
+                parent_branch: None,
+                pull_request: Some(42),
+                parent_pull_request: None,
+                title: "example change".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
+                draft: false,
+                merged: false,
+            }],
+        }
+    );
+}
+
+#[test]
+fn pull_request_refreshes_stack_context_for_published_stack_component() {
+    // Verifies: Publishing a stacked PR refreshes generated stack context for every known PR in the component.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut facts = workspace_facts();
+    facts.nearest_ancestor_bookmark = Some("topic/root".to_owned());
+    let root = pull_request_choice_record(10, "Root", "topic/root", "main", false);
+    let child = PullRequestRecord {
+        number: 42,
+        title: "example change".to_owned(),
+        body: None,
+        head_branch: "example-user/02-zzzzzzzz".to_owned(),
+        base_branch: "topic/root".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
+        draft: false,
+        merged: false,
+    };
+    let services = FakeServices {
+        workspace: facts,
+        pull_requests_by_head: BTreeMap::from([("topic/root".to_owned(), root.clone())]),
+        sync_pull_requests: vec![root.clone(), child.clone()],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created {}\nStack: refreshed stack context on {}, {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(10),
+            example_pull_request_link(42)
+        )
+    );
+    let sync_pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(sync_pushes.len(), 1);
+    assert_eq!(
+        sync_pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["topic/root", "example-user/02-zzzzzzzz"]
+    );
+    assert_eq!(
+        sync_pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.pull_request_base.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("main"), Some("topic/root")]
+    );
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        stack_metadata_rows(&metadata.nodes),
+        vec!["◯ #10     Root", "└─ ◯ #42     example change"]
+    );
+    assert_eq!(
+        metadata.nodes[1].parent_branch.as_deref(),
+        Some("topic/root")
+    );
+    assert_eq!(metadata.nodes[1].parent_pull_request, Some(10));
+}
+
+#[test]
+fn pull_request_preserves_stored_parent_when_base_pr_is_missing() {
+    // Verifies: A published child keeps known parent metadata even when GitHub cannot refresh that parent by branch.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut facts = workspace_facts();
+    facts.nearest_ancestor_bookmark = Some("topic/root".to_owned());
+    let services = FakeServices {
+        workspace: facts,
+        sync_pull_requests: vec![PullRequestRecord {
+            number: 42,
+            title: "example change".to_owned(),
+            body: None,
+            head_branch: "example-user/02-zzzzzzzz".to_owned(),
+            base_branch: "topic/root".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
+            draft: false,
+            merged: false,
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
+        .expect("pull request publishes");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created {}\nStack: refreshed stack context on {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(42)
+        )
+    );
+    assert_eq!(
+        services.pull_request_head_calls.borrow().as_slice(),
+        ["topic/root"]
+    );
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        stack_metadata_rows(&metadata.nodes),
+        vec!["✓ #10     Root", "└─ ◯ #42     example change"]
+    );
+    assert_eq!(
+        metadata.nodes[1].parent_branch.as_deref(),
+        Some("topic/root")
+    );
+    assert_eq!(metadata.nodes[1].parent_pull_request, Some(10));
+}
+
+#[test]
 fn pull_request_prepare_event_updates_commit_title_before_planning() {
     // Verifies: Prepare handlers rewrite the selected commit before PR metadata is planned.
     let workspace = TestWorkspace::new();
@@ -6320,6 +6533,8 @@ struct FakeServices {
     tracked_push: TrackedPushOutcome,
     sync_conflicted_bookmarks: Vec<crate::jj::SkippedPushBookmarkSummary>,
     sync_pull_requests: Vec<PullRequestRecord>,
+    sync_pull_request_pushes: std::cell::RefCell<Vec<TrackedPushOutcome>>,
+    sync_pull_request_metadata: std::cell::RefCell<Vec<StackMetadata>>,
     pull_request_action: PullRequestAction,
     pull_request_url: Option<String>,
     pull_request_event_effects: Vec<domain::PullRequestEventEffect>,
@@ -6518,6 +6733,8 @@ impl Default for FakeServices {
             },
             sync_conflicted_bookmarks: Vec::new(),
             sync_pull_requests: Vec::new(),
+            sync_pull_request_pushes: std::cell::RefCell::new(Vec::new()),
+            sync_pull_request_metadata: std::cell::RefCell::new(Vec::new()),
             pull_request_action: PullRequestAction::Created,
             pull_request_url: Some(
                 "https://github.com/example-owner/example-repo/pull/42".to_owned(),
@@ -7023,9 +7240,15 @@ impl CommandServices for FakeServices {
     fn sync_pull_requests(
         &self,
         _context: &RepositoryContext,
-        _push: &TrackedPushOutcome,
-        _stack_metadata: &StackMetadata,
+        push: &TrackedPushOutcome,
+        stack_metadata: &StackMetadata,
     ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
+        self.sync_pull_request_pushes
+            .borrow_mut()
+            .push(push.clone());
+        self.sync_pull_request_metadata
+            .borrow_mut()
+            .push(stack_metadata.clone());
         Ok(self.sync_pull_requests.clone())
     }
 
@@ -7072,8 +7295,12 @@ impl CommandServices for FakeServices {
             changed_files: workspace.changed_files,
             base: workspace
                 .nearest_ancestor_bookmark
+                .clone()
                 .unwrap_or(workspace.trunk.branch),
-            base_pull_request: None,
+            base_pull_request: workspace
+                .nearest_ancestor_bookmark
+                .as_deref()
+                .and_then(|branch| self.pull_requests_by_head.get(branch).cloned()),
             head: PullRequestHead::same_repository("example-owner", branch),
             labels,
             draft,
@@ -7117,6 +7344,7 @@ impl CommandServices for FakeServices {
                 merged: false,
             },
             base: plan.base,
+            base_pull_request: plan.base_pull_request,
             head: plan.head,
             labels: None,
             reviewers: None,
