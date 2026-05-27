@@ -144,6 +144,7 @@ pub struct PullRequestRecord {
     pub base_branch: String,
     pub html_url: Option<String>,
     pub draft: bool,
+    pub merged: bool,
 }
 
 /// Domain input for creating a pull request.

@@ -9,6 +9,7 @@ pub(super) enum CommandRequest {
     Diff(DiffRequest),
     Clone(CloneRequest),
     Work(WorkRequest),
+    Stack(StackRequest),
     Shell(ShellRequest),
     Open(OpenRequest),
     RemoteStatus(RemoteStatusRequest),
@@ -51,6 +52,13 @@ pub(super) enum WorkRequest {
     Root(WorkRootRequest),
     Trunk(WorkTrunkRequest),
     Delete(WorkDeleteRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StackRequest {
+    Show,
+    Track,
+    Reset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +156,7 @@ pub(super) struct FetchRequest {
 pub(super) struct SyncRequest {
     pub(super) all: bool,
     pub(super) repo: bool,
+    pub(super) stack: bool,
     pub(super) revision: Option<String>,
 }
 
@@ -177,6 +186,7 @@ impl CommandRequest {
                 destination: matches.get_one::<PathBuf>("destination").cloned(),
             })),
             Some(("work", matches)) => Ok(Self::Work(work_request(matches)?)),
+            Some(("stack" | "stk", matches)) => Ok(Self::Stack(stack_request(matches)?)),
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
             Some(("status" | "st", _)) => Ok(Self::Status),
@@ -218,6 +228,7 @@ impl CommandRequest {
             Some(("sync", matches)) => Ok(Self::Sync(SyncRequest {
                 all: matches.get_flag("all"),
                 repo: matches.get_flag("repo"),
+                stack: matches.get_flag("stack"),
                 revision: revision(matches),
             })),
             Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
@@ -280,6 +291,15 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
             ErrorKind::MissingSubcommand,
             "`jx work` requires `add`, `list`, `complete`, `root`, `trunk`, or `delete`",
         )),
+    }
+}
+
+fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
+    match matches.subcommand() {
+        Some(("show", _)) => Ok(StackRequest::Show),
+        Some(("track", _)) => Ok(StackRequest::Track),
+        Some(("reset", _)) => Ok(StackRequest::Reset),
+        _ => Ok(StackRequest::Show),
     }
 }
 
@@ -615,6 +635,14 @@ pub(super) fn cli() -> ClapCommand {
                 ),
         )
         .subcommand(
+            ClapCommand::new("stack")
+                .visible_alias("stk")
+                .about("Manage repo-local pull request stack state")
+                .subcommand(ClapCommand::new("show").about("Show tracked pull request stack state"))
+                .subcommand(ClapCommand::new("track").about("Track authored open pull requests from local bookmarks"))
+                .subcommand(ClapCommand::new("reset").about("Remove tracked pull request stack state")),
+        )
+        .subcommand(
             ClapCommand::new("shell")
                 .about("Generate shell integration scripts")
                 .subcommand_required(true)
@@ -694,12 +722,13 @@ pub(super) fn cli() -> ClapCommand {
         )
         .subcommand(
             ClapCommand::new("sync")
-                .about("Fetch origin and push repository or selected bookmark state")
+                .about("Fetch origin and push repository, stack, or selected bookmark state")
                 .long_about(
-                    "Fetch origin and push repository or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync every eligible primary repository from configured layout roots without prompting.",
+                    "Fetch origin and push repository, stack, or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Use -s/--stack to sync every bookmark in the current pull-request stack. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync every eligible primary repository from configured layout roots without prompting.",
                 )
                 .arg(sync_all_arg())
                 .arg(sync_repo_arg())
+                .arg(sync_stack_arg())
                 .arg(sync_revision_arg()),
         )
         .subcommand(
@@ -884,7 +913,7 @@ fn sync_all_arg() -> Arg {
         .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
-        .conflicts_with_all(["repo", "revision"])
+        .conflicts_with_all(["repo", "stack", "revision"])
         .help("Sync every eligible primary repository in configured layout roots")
 }
 
@@ -893,14 +922,23 @@ fn sync_repo_arg() -> Arg {
         .short('r')
         .long("repo")
         .action(ArgAction::SetTrue)
-        .conflicts_with_all(["all", "revision"])
+        .conflicts_with_all(["all", "stack", "revision"])
         .help("Sync all tracked bookmarks in the current repository")
+}
+
+fn sync_stack_arg() -> Arg {
+    Arg::new("stack")
+        .short('s')
+        .long("stack")
+        .action(ArgAction::SetTrue)
+        .conflicts_with_all(["all", "repo", "revision"])
+        .help("Sync every bookmark in the current pull-request stack")
 }
 
 fn sync_revision_arg() -> Arg {
     Arg::new("revision")
         .value_name("COMMIT_OR_BOOKMARK")
-        .conflicts_with_all(["all", "repo"])
+        .conflicts_with_all(["all", "repo", "stack"])
         .help("Sync one bookmarked jj revision or local bookmark instead of repository state")
 }
 

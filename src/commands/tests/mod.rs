@@ -986,7 +986,7 @@ path = "{repo}"
     );
     assert_eq!(
         fs::read_to_string(expected_destination.join(".jx/.gitignore")).expect("gitignore"),
-        "*\n"
+        "/.gitignore\n/workspace.toml\n/stack.toml\n"
     );
 }
 
@@ -2369,6 +2369,7 @@ fn open_pr_prints_first_candidate_with_pull_request() {
                 base_branch: "main".to_owned(),
                 html_url: Some("https://github.com/example-owner/example-repo/pull/24".to_owned()),
                 draft: false,
+                merged: false,
             },
         )]),
         ..Default::default()
@@ -2421,6 +2422,7 @@ fn open_pr_accepts_positional_commit_or_bookmark_selector() {
                     "https://github.com/example-owner/example-repo/pull/1977".to_owned(),
                 ),
                 draft: false,
+                merged: false,
             },
         )]),
         ..Default::default()
@@ -2469,6 +2471,7 @@ fn open_pr_accepts_commit_option_as_selector() {
                 base_branch: "main".to_owned(),
                 html_url: Some("https://github.com/example-owner/example-repo/pull/25".to_owned()),
                 draft: false,
+                merged: false,
             },
         )]),
         ..Default::default()
@@ -2523,6 +2526,7 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
                         "https://github.com/example-owner/example-repo/pull/10".to_owned(),
                     ),
                     draft: false,
+                    merged: false,
                 },
             ),
             (
@@ -2537,6 +2541,7 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
                         "https://github.com/example-owner/example-repo/pull/11".to_owned(),
                     ),
                     draft: true,
+                    merged: false,
                 },
             ),
         ]),
@@ -2599,6 +2604,7 @@ fn open_pr_interactive_prints_selected_pull_request_url() {
                 base_branch: "main".to_owned(),
                 html_url: None,
                 draft: false,
+                merged: false,
             },
         )]),
         ..Default::default()
@@ -2648,6 +2654,7 @@ fn open_pr_interactive_ignores_historical_or_unowned_pull_requests() {
                     "https://github.com/example-owner/example-repo/pull/40568".to_owned(),
                 ),
                 draft: false,
+                merged: false,
             },
         )]),
         ..Default::default()
@@ -2735,6 +2742,218 @@ fn check_loads_context_and_renders_readiness_summary() {
                 example_bookmark_link("example-user/02-zzzzzzzz")
             )
         );
+}
+
+#[test]
+fn stack_track_persists_hierarchy_and_ignore_rules() {
+    // Verifies: stack tracking records PR hierarchy in repo-local ignored metadata.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "topic/child".to_owned(),
+            "topic/root".to_owned(),
+            "topic/draft".to_owned(),
+        ],
+        authored_open_pull_requests_by_head: BTreeMap::from([
+            (
+                "topic/root".to_owned(),
+                pull_request_choice_record(10, "Root", "topic/root", "main", false),
+            ),
+            (
+                "topic/child".to_owned(),
+                pull_request_choice_record(11, "Child", "topic/child", "topic/root", false),
+            ),
+            (
+                "topic/draft".to_owned(),
+                pull_request_choice_record(12, "Draft", "topic/draft", "topic/root", true),
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "track"], &environment, &services)
+        .expect("stack tracking succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Stack state:\n  ◯ #10     Root\n  ├─ ◯ #11     Child\n  └─ ◌ #12     Draft\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("read gitignore"),
+        "/.gitignore\n/workspace.toml\n/stack.toml\n"
+    );
+    let stack_file =
+        fs::read_to_string(workspace.path().join(".jx/stack.toml")).expect("read stack state");
+    assert!(stack_file.contains("pull_request = 10"));
+    assert!(stack_file.contains("parent_branch = \"topic/root\""));
+}
+
+#[test]
+fn stack_reset_removes_state_but_keeps_ignore_rules() {
+    // Verifies: reset removes durable stack state without exposing future metadata to Git.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    fs::create_dir_all(workspace.path().join(".jx")).expect("create metadata directory");
+    fs::write(workspace.path().join(".jx/stack.toml"), "version = 1\n").expect("write stack file");
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "reset"],
+        &environment,
+        &FakeServices::default(),
+    )
+    .expect("stack reset succeeds");
+
+    assert_eq!(result.stdout, "Stack state reset\n");
+    assert!(!workspace.path().join(".jx/stack.toml").exists());
+    assert_eq!(
+        fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("read gitignore"),
+        "/.gitignore\n/workspace.toml\n/stack.toml\n"
+    );
+}
+
+#[test]
+fn stack_without_subcommand_shows_state() {
+    // Verifies: bare `jx stack` uses the safe read-only stack view.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result =
+        run_with_args_and_services(["jx", "stack"], &environment, &FakeServices::default())
+            .expect("stack show succeeds");
+
+    assert_eq!(result.stdout, "Stack state:\n  ◯ #10     Root\n");
+}
+
+#[test]
+fn stack_show_reads_primary_checkout_state_from_managed_workspace() {
+    // Verifies: stack state is repo-local even when the command runs from a managed workspace.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/current");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let primary = workspace.home.join("projects/jx");
+    write_stack_metadata(
+        &primary,
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "show"],
+        &environment,
+        &FakeServices::default(),
+    )
+    .expect("stack show succeeds");
+
+    assert_eq!(result.stdout, "Stack state:\n  ◯ #10     Root\n");
+    assert!(!workspace.path().join(".jx/stack.toml").exists());
+}
+
+#[test]
+fn stack_tracking_retains_missing_stored_ancestors() {
+    // Verifies: disappeared parents remain in stack state while children are still tracked.
+    let existing = StackMetadata {
+        version: 1,
+        nodes: vec![
+            StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+            },
+            StackMetadataNode {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Old child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+        ],
+    };
+    let child = pull_request_choice_record(11, "Child", "topic/child", "main", false);
+
+    let metadata = stack_metadata_from_pull_requests(&[child], &existing);
+
+    assert_eq!(
+        stack_metadata_rows(&metadata.nodes),
+        vec!["✓ #10     Root", "└─ ◯ #11     Child"]
+    );
 }
 
 #[test]
@@ -4213,6 +4432,84 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
 }
 
 #[test]
+fn sync_stack_pushes_current_pull_request_stack() {
+    // Verifies: -s syncs every local bookmark in the tracked PR stack, not every repository bookmark.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Root".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "topic/child".to_owned(),
+                    base_branch: "topic/root".to_owned(),
+                    parent_branch: Some("topic/root".to_owned()),
+                    pull_request: Some(11),
+                    parent_pull_request: Some(10),
+                    title: "Child".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "topic/draft".to_owned(),
+                    base_branch: "topic/child".to_owned(),
+                    parent_branch: Some("topic/child".to_owned()),
+                    pull_request: Some(12),
+                    parent_pull_request: Some(11),
+                    title: "Draft".to_owned(),
+                    url: None,
+                    draft: true,
+                    merged: false,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        open_pull_request_candidates: vec!["topic/child".to_owned()],
+        pull_request_bookmarks: vec![
+            "topic/root".to_owned(),
+            "topic/child".to_owned(),
+            "topic/draft".to_owned(),
+            "other/topic".to_owned(),
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "-s"], &environment, &services)
+        .expect("stack sync succeeds");
+
+    assert_eq!(
+        services.push_syncable_revision_requests.borrow().as_slice(),
+        [
+            Some("topic/root".to_owned()),
+            Some("topic/child".to_owned()),
+            Some("topic/draft".to_owned())
+        ]
+    );
+    assert!(result.stdout.starts_with("Synced: origin/main ("));
+}
+
+#[test]
 fn sync_accepts_revision_argument() {
     // Verifies: A positional argument selects one jj target instead of changing repository scope.
     let workspace = TestWorkspace::new();
@@ -4584,6 +4881,7 @@ fn sync_links_pull_requests_under_changed_bookmarks() {
                     "https://github.com/example-owner/example-repo/pull/1234".to_owned(),
                 ),
                 draft: false,
+                merged: false,
             },
             PullRequestRecord {
                 number: 1200,
@@ -4595,6 +4893,7 @@ fn sync_links_pull_requests_under_changed_bookmarks() {
                     "https://github.com/example-owner/example-repo/pull/1200".to_owned(),
                 ),
                 draft: false,
+                merged: false,
             },
         ],
         ..FakeServices::default()
@@ -5537,6 +5836,7 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
         base_branch: "main".to_owned(),
         html_url: None,
         draft: false,
+        merged: false,
     };
     let draft = PullRequestRecord {
         number: 43,
@@ -5546,6 +5846,7 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
         base_branch: "main".to_owned(),
         html_url: None,
         draft: true,
+        merged: false,
     };
 
     assert_eq!(pull_request_choice_label(&ready), "#42     Ready change");
@@ -5607,6 +5908,7 @@ fn pull_request_choice_record(
         base_branch: base_branch.to_owned(),
         html_url: None,
         draft,
+        merged: false,
     }
 }
 
@@ -5944,6 +6246,7 @@ fn existing_pull_request(draft: bool) -> PullRequestRecord {
         base_branch: "main".to_owned(),
         html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
         draft,
+        merged: false,
     }
 }
 
@@ -6809,6 +7112,7 @@ impl CommandServices for FakeServices {
                 base_branch: plan.base.clone(),
                 html_url: self.pull_request_url.clone(),
                 draft: plan.draft,
+                merged: false,
             },
             base: plan.base,
             head: plan.head,

@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalRepositoryContext {
     pub workspace_root: PathBuf,
+    pub repository_root: PathBuf,
     pub remotes: Vec<ConfiguredRemote>,
     pub token_source: TokenSource,
     pub config: WorkflowConfig,
@@ -16,9 +17,11 @@ impl LocalRepositoryContext {
         let remotes = read_remote_urls(&workspace_root)?;
         let config = WorkflowConfig::discover_for_workspace(&workspace_root, environment)?;
         let token_source = TokenSource::discover(environment, &config);
+        let repository_root = repository_root(&workspace_root, &config, environment);
 
         Ok(Self {
             workspace_root,
+            repository_root,
             remotes,
             token_source,
             config,
@@ -46,6 +49,7 @@ impl LocalRepositoryContext {
 
         Ok(RepositoryContext {
             workspace_root: self.workspace_root,
+            repository_root: self.repository_root,
             origin: OriginRemote {
                 name: ORIGIN_REMOTE_NAME,
                 url: origin_url,
@@ -62,6 +66,7 @@ impl LocalRepositoryContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryContext {
     pub workspace_root: PathBuf,
+    pub repository_root: PathBuf,
     pub origin: OriginRemote,
     pub github_remotes: Vec<GitHubRemote>,
     pub token_source: TokenSource,
@@ -99,6 +104,18 @@ pub(super) fn find_workspace_root(start: &Path) -> Result<PathBuf, RepositoryErr
     }
 
     Err(RepositoryError::WorkspaceNotFound)
+}
+
+fn repository_root(
+    workspace_root: &Path,
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+) -> PathBuf {
+    config
+        .layout
+        .identity_for_workspace_root(workspace_root, environment)
+        .and_then(|identity| config.layout.project_destination(&identity, environment))
+        .unwrap_or_else(|_| workspace_root.to_path_buf())
 }
 
 fn read_remote_urls(workspace_root: &Path) -> Result<Vec<ConfiguredRemote>, RepositoryError> {

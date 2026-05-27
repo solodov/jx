@@ -34,6 +34,7 @@ pub(super) fn handle_request(
         CommandRequest::Work(request) => {
             handle_work(request, environment, services, progress, &prompts)?
         }
+        CommandRequest::Stack(request) => handle_stack(request, environment, services)?,
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::Open(request) => handle_open(request, environment, services, &prompts)?,
         CommandRequest::PreviousCommit => {
@@ -927,6 +928,10 @@ fn handle_sync(
         return handle_global_sync(environment, services, progress, output);
     }
 
+    if request.stack {
+        return sync_current_stack(environment, services, progress, output);
+    }
+
     if request.repo || request.revision.is_none() {
         return sync_current_repository(environment, services, progress, prompts, output);
     }
@@ -1175,6 +1180,92 @@ fn fetch_has_conflicts(fetch: &FetchOutcome) -> bool {
         .rebased_commits
         .iter()
         .any(|commit| commit.has_conflict)
+}
+
+fn sync_current_stack(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+) -> Result<CommandResult, CommandError> {
+    let context = RepositoryContext::discover(environment)?;
+    progress.status("Fetching origin…");
+    let fetch = services.fetch_origin(&context)?;
+    progress.status("Selecting stack bookmarks…");
+    let branches = sync_stack_branches(&context, services)?;
+    progress.status("Pushing stack bookmarks…");
+    let push = push_syncable_stack_branches(&context, services, &branches)?;
+    progress.status("Syncing pull request descriptions…");
+    let pull_requests = services.sync_pull_requests(&context, &push.pushed)?;
+    progress.finish();
+    let report = domain::sync_report(&context, fetch, push, pull_requests);
+    let exit_code = if sync_report_has_conflicts(&report) {
+        1
+    } else {
+        0
+    };
+    let stdout = render_sync(&report, environment.current_dir(), output.color)?;
+    Ok(CommandResult::with_exit_code(stdout, exit_code))
+}
+
+fn sync_stack_branches(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+) -> Result<Vec<String>, CommandError> {
+    let metadata = read_stack_metadata(&context.repository_root)?;
+    let candidate_branches = services.pull_request_candidate_bookmarks(context, None)?;
+    let local_branches = services
+        .pull_request_bookmarks(context)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let branches = stack_metadata_component_branches(&metadata.nodes, &candidate_branches)
+        .into_iter()
+        .filter(|branch| local_branches.contains(branch))
+        .collect::<Vec<_>>();
+
+    if branches.is_empty() {
+        Err(WorkflowError::MissingPullRequest.into())
+    } else {
+        Ok(branches)
+    }
+}
+
+fn push_syncable_stack_branches(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+    branches: &[String],
+) -> Result<SyncPushOutcome, CommandError> {
+    let mut pushed = TrackedPushOutcome {
+        pushed_refs: 0,
+        bookmarks: Vec::new(),
+        pushed_commits: Vec::new(),
+    };
+    let mut skipped_conflicted_bookmarks = Vec::new();
+    let mut seen_bookmarks = BTreeSet::new();
+    let mut seen_commits = BTreeSet::new();
+
+    for branch in branches {
+        let next = services.push_syncable_revision(context, Some(branch))?;
+        pushed.pushed_refs += next.pushed.pushed_refs;
+        pushed.bookmarks.extend(
+            next.pushed
+                .bookmarks
+                .into_iter()
+                .filter(|bookmark| seen_bookmarks.insert(bookmark.branch.clone())),
+        );
+        pushed.pushed_commits.extend(
+            next.pushed
+                .pushed_commits
+                .into_iter()
+                .filter(|commit| seen_commits.insert(commit.short_commit_id.clone())),
+        );
+        skipped_conflicted_bookmarks.extend(next.skipped_conflicted_bookmarks);
+    }
+
+    Ok(SyncPushOutcome {
+        pushed,
+        skipped_conflicted_bookmarks,
+    })
 }
 
 fn sync_selected_revision(

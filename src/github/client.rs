@@ -555,6 +555,7 @@ fn map_pull_request(pull: models::pulls::PullRequest) -> PullRequestRecord {
         base_branch: pull.base.ref_field,
         html_url: pull.html_url.map(|url| url.to_string()),
         draft: pull.draft.unwrap_or(false),
+        merged: pull.merged.unwrap_or(false) || pull.merged_at.is_some(),
     }
 }
 

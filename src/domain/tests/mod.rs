@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
+    fs,
+    path::PathBuf,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -13,10 +16,10 @@ use crate::{
         TrackedPushOutcome, TrunkSummary, WorkspaceVisibility,
     },
     repository::{
-        GitHubRemote, GitHubRepository, OriginRemote, PullRequestEventPredicate,
-        PullRequestEventQuery, PullRequestEventQueryTerm, RepoConfig, RepoEvent, RepoEventHandler,
-        RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig, TokenSource, WorkflowConfig,
-        ORIGIN_REMOTE_NAME,
+        write_stack_metadata, GitHubRemote, GitHubRepository, OriginRemote,
+        PullRequestEventPredicate, PullRequestEventQuery, PullRequestEventQueryTerm, RepoConfig,
+        RepoEvent, RepoEventHandler, RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig,
+        StackMetadata, StackMetadataNode, TokenSource, WorkflowConfig, ORIGIN_REMOTE_NAME,
     },
 };
 
@@ -824,6 +827,7 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         ..FakeGitHub::default()
     };
@@ -933,6 +937,7 @@ fn publish_pull_request_runs_updated_event_handlers_against_existing_and_cli_lab
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         pull_request_labels: vec!["existing".to_owned()],
         ..FakeGitHub::default()
@@ -1034,6 +1039,7 @@ fn publish_pull_request_updates_existing_pr_without_unconfigured_reviewers() {
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         ..FakeGitHub::default()
     };
@@ -1089,6 +1095,7 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         ..FakeGitHub::default()
     };
@@ -1145,6 +1152,7 @@ fn sync_pull_requests_updates_stack_base_without_rewriting_matching_description(
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         ..FakeGitHub::default()
     };
@@ -1182,6 +1190,150 @@ fn sync_pull_requests_updates_stack_base_without_rewriting_matching_description(
 }
 
 #[test]
+fn sync_pull_requests_adds_stack_context_from_metadata() {
+    // Verifies: sync renders stack context from durable local state without editing authored body text.
+    let root = temp_test_root();
+    let context = context_with_workspace_root(root.clone());
+    write_stack_metadata(
+        &root,
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "example-user/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(6),
+                    parent_pull_request: None,
+                    title: "Root".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "example-user/child".to_owned(),
+                    base_branch: "example-user/root".to_owned(),
+                    parent_branch: Some("example-user/root".to_owned()),
+                    pull_request: Some(7),
+                    parent_pull_request: Some(6),
+                    title: "Child".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "example-user/draft".to_owned(),
+                    base_branch: "example-user/child".to_owned(),
+                    parent_branch: Some("example-user/child".to_owned()),
+                    pull_request: Some(8),
+                    parent_pull_request: Some(7),
+                    title: "Draft".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/8".to_owned()),
+                    draft: true,
+                    merged: false,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Child".to_owned(),
+            body: Some("Authored body".to_owned()),
+            head_branch: "example-user/child".to_owned(),
+            base_branch: "example-user/root".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+            merged: false,
+        }),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/child".to_owned(),
+            old_short_commit_id: Some("old".to_owned()),
+            new_short_commit_id: Some("new".to_owned()),
+            old_description: None,
+            new_description: None,
+            pull_request_description: Some("Child\n\nAuthored body".to_owned()),
+            pull_request_base: Some("example-user/root".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    pollster::block_on(sync_pull_requests(&context, &push, &github)).expect("pull requests sync");
+
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            7,
+            PullRequestUpdate {
+                title: Some("Child".to_owned()),
+                body: Some(
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└─ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;&nbsp;└─ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n\n<!-- jx-stack:end -->"
+                        .to_owned()
+                ),
+                base: None,
+            }
+        )]
+    );
+    fs::remove_dir_all(root).expect("remove temp root");
+}
+
+#[test]
+fn sync_pull_requests_removes_stack_context_for_untracked_pr() {
+    // Verifies: generated stack blocks are output-only and disappear when local stack state no longer includes the PR.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Child".to_owned(),
+            body: Some(
+                "Authored body\n\n<!-- jx-stack:start -->\nstale\n<!-- jx-stack:end -->".to_owned(),
+            ),
+            head_branch: "example-user/child".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+            merged: false,
+        }),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/child".to_owned(),
+            old_short_commit_id: Some("old".to_owned()),
+            new_short_commit_id: Some("new".to_owned()),
+            old_description: None,
+            new_description: None,
+            pull_request_description: Some("Child\n\nAuthored body".to_owned()),
+            pull_request_base: Some("main".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    pollster::block_on(sync_pull_requests(&context(), &push, &github)).expect("pull requests sync");
+
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            7,
+            PullRequestUpdate {
+                title: Some("Child".to_owned()),
+                body: Some("Authored body".to_owned()),
+                base: None,
+            }
+        )]
+    );
+}
+
+#[test]
 fn sync_pull_requests_clears_body_for_title_only_descriptions() {
     // Verifies: Sync can clear stale GitHub body text when the local PR description has no body.
     let github = FakeGitHub {
@@ -1193,6 +1345,7 @@ fn sync_pull_requests_clears_body_for_title_only_descriptions() {
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         ..FakeGitHub::default()
     };
@@ -1242,6 +1395,7 @@ fn sync_pull_requests_skips_title_only_update_when_github_body_is_absent() {
             base_branch: "main".to_owned(),
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
+            merged: false,
         }),
         ..FakeGitHub::default()
     };
@@ -1273,6 +1427,7 @@ fn context() -> RepositoryContext {
     };
     RepositoryContext {
         workspace_root: "/workspace".into(),
+        repository_root: "/workspace".into(),
         origin: OriginRemote {
             name: ORIGIN_REMOTE_NAME,
             url: "https://github.com/example-owner/example-repo.git".to_owned(),
@@ -1293,6 +1448,23 @@ fn context() -> RepositoryContext {
             shell: Default::default(),
         },
     }
+}
+
+fn context_with_workspace_root(workspace_root: PathBuf) -> RepositoryContext {
+    let mut context = context();
+    context.workspace_root = workspace_root.clone();
+    context.repository_root = workspace_root;
+    context
+}
+
+fn temp_test_root() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("jx-domain-test-{}-{unique}", std::process::id()));
+    fs::create_dir_all(&root).expect("create temp root");
+    root
 }
 
 fn context_with_reviewers(reviewers: &[&str]) -> RepositoryContext {
@@ -1627,6 +1799,7 @@ impl GitHubClient for FakeGitHub {
             base_branch: request.base,
             html_url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
             draft: request.draft,
+            merged: false,
         })
     }
 
@@ -1651,6 +1824,7 @@ impl GitHubClient for FakeGitHub {
                 "https://github.com/example-owner/example-repo/pull/{number}"
             )),
             draft: false,
+            merged: false,
         })
     }
 

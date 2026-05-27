@@ -5,6 +5,8 @@ use super::*;
 pub enum WorkflowError {
     #[error(transparent)]
     GitHub(#[from] GitHubError),
+    #[error(transparent)]
+    Repository(#[from] RepositoryError),
     #[error("GitHub token cannot read `{repository}`; use a token with repository read access")]
     MissingReadAccess { repository: String },
     #[error(

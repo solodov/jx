@@ -6,7 +6,7 @@
 //! `fetch`, push planning, sync guards, and pull-request planning are implemented
 //! here so they can be tested with fake jj/GitHub boundaries.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
@@ -22,8 +22,9 @@ use crate::{
         WorkspaceFacts,
     },
     repository::{
-        GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,
-        RepoEventHandler, RepoEventHandlerRun, RepositoryContext,
+        read_stack_metadata, GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery,
+        RepoEvent, RepoEventHandler, RepoEventHandlerRun, RepositoryContext, RepositoryError,
+        StackMetadata, StackMetadataNode,
     },
 };
 

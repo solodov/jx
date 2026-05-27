@@ -49,10 +49,12 @@ use crate::{
         WorkspaceRemoveOptions, WorkspaceStatus,
     },
     repository::{
-        read_workspace_metadata, validate_workspace_name, write_workspace_metadata, ClonePlan,
+        read_stack_metadata, read_workspace_metadata, reset_stack_metadata,
+        validate_workspace_name, write_stack_metadata, write_workspace_metadata, ClonePlan,
         DiffToolConfig, GitHubRemote, GitHubRepository, LayoutConfig, LocalRepositoryContext,
         RepositoryContext, RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig,
-        ShellZoxideMode, TokenSource, WorkflowConfig, WorkspaceMetadata,
+        ShellZoxideMode, StackMetadata, StackMetadataNode, TokenSource, WorkflowConfig,
+        WorkspaceMetadata,
     },
 };
 
@@ -63,6 +65,7 @@ mod render;
 mod request;
 mod services;
 mod shell;
+mod stack;
 mod work;
 
 use handlers::*;
@@ -77,6 +80,7 @@ use render::*;
 use request::*;
 use services::*;
 use shell::*;
+use stack::*;
 use work::*;
 
 const SHELL_CD_TARGET_PREFIX: &str = "__jx_cd_target=";

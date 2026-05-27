@@ -36,6 +36,7 @@ reviewers = []
     let context = RepositoryContext::discover(&environment).expect("context discovers");
 
     assert_eq!(context.workspace_root, workspace.path());
+    assert_eq!(context.repository_root, workspace.path());
     assert_eq!(context.origin.name, ORIGIN_REMOTE_NAME);
     assert_eq!(context.origin.github.owner, "example-owner");
     assert_eq!(context.origin.github.name, "example-repo");
@@ -99,7 +100,7 @@ fn workspace_metadata_missing_file_returns_default() {
 
 #[test]
 fn workspace_metadata_write_creates_ignored_state_file() {
-    // Verifies: Workspace metadata stays local by ignoring the metadata directory.
+    // Verifies: Workspace metadata stays local without ignoring future repo config.
     let workspace = TestWorkspace::new();
 
     write_workspace_metadata(
@@ -112,12 +113,69 @@ fn workspace_metadata_write_creates_ignored_state_file() {
 
     assert_eq!(
         fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("gitignore"),
-        "*\n"
+        "/.gitignore\n/workspace.toml\n/stack.toml\n"
     );
     assert_eq!(
         read_workspace_metadata(&workspace.path()).expect("metadata reads"),
         WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+        }
+    );
+}
+
+#[test]
+fn stack_metadata_missing_file_returns_default() {
+    // Verifies: Stack state is optional until a repository explicitly tracks a stack.
+    let workspace = TestWorkspace::new();
+
+    let metadata = read_stack_metadata(&workspace.path()).expect("metadata reads");
+
+    assert_eq!(metadata, StackMetadata::default());
+}
+
+#[test]
+fn stack_metadata_write_creates_ignored_state_file() {
+    // Verifies: Stack metadata and its colocated ignore file both stay local to the checkout.
+    let workspace = TestWorkspace::new();
+
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                pull_request: Some(12),
+                parent_pull_request: Some(11),
+                title: "Child".to_owned(),
+                url: None,
+                draft: true,
+                merged: false,
+            }],
+        },
+    )
+    .expect("metadata writes");
+
+    assert_eq!(
+        fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("gitignore"),
+        "/.gitignore\n/workspace.toml\n/stack.toml\n"
+    );
+    assert_eq!(
+        read_stack_metadata(&workspace.path()).expect("metadata reads"),
+        StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                pull_request: Some(12),
+                parent_pull_request: Some(11),
+                title: "Child".to_owned(),
+                url: None,
+                draft: true,
+                merged: false,
+            }],
         }
     );
 }
