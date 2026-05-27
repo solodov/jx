@@ -4,7 +4,7 @@ title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and 
 status: implementing
 created: 2026-05-27
 updated: 2026-05-27
-currentPhase: 4
+currentPhase: 5
 externalRef: 
 origin: 
 ---
@@ -24,7 +24,7 @@ Key design choice: keep the pure stack model separate from orchestration. The do
 - [x] 1. Establish a canonical pull-request stack snapshot model
 - [x] 2. Move tree/component logic into the stack domain layer
 - [x] 3. Create a command-side pull request manager for IO and service orchestration
-- [ ] 4. Make jx pr maintain stack state as part of publishing
+- [x] 4. Make jx pr maintain stack state as part of publishing
 - [ ] 5. Make jx open pr -i select from the stack snapshot
 - [ ] 6. Unify stack rendering for jx stack, jx sync -s, and PR descriptions
 - [ ] 7. Add GitHub refresh support for durable PR numbers
