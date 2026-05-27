@@ -2548,7 +2548,7 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
         ]),
         ..Default::default()
     };
-    let selector = FixedPullRequestSelector { selected: 1 };
+    let selector = RecordingPullRequestSelector::new(1);
 
     let result = run_with_args_and_pull_request_selector(
         ["jx", "open", "pr", "-i"],
@@ -2561,6 +2561,13 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
     assert_eq!(
         result.stdout,
         "Opened: https://github.com/example-owner/example-repo/pull/11\n"
+    );
+    assert_eq!(
+        selector.labels.borrow().as_slice(),
+        &[vec![
+            "◯ #10     Older change".to_owned(),
+            "\x1b[2m\x1b[38;2;150;142;132m◌ #11     Chosen change\x1b[0m".to_owned(),
+        ]]
     );
     assert_eq!(
         services.opened_urls.borrow().as_slice(),
@@ -2577,6 +2584,90 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
         ]
     );
     assert!(services.pull_request_head_calls.borrow().is_empty());
+}
+
+#[test]
+fn open_pr_interactive_uses_stack_snapshot_component() {
+    // Verifies: Interactive Open PR shows stored stack context around the current local PR.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                draft: false,
+                merged: true,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/child".to_owned()],
+        open_pull_request_candidates: vec!["topic/child".to_owned()],
+        authored_open_pull_requests_by_head: BTreeMap::from([(
+            "topic/child".to_owned(),
+            PullRequestRecord {
+                number: 11,
+                title: "Child".to_owned(),
+                body: None,
+                head_branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                html_url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
+                draft: false,
+                merged: false,
+            },
+        )]),
+        ..Default::default()
+    };
+    let selector = RecordingPullRequestSelector::new(1);
+
+    let result = run_with_args_and_pull_request_selector(
+        ["jx", "open", "pr", "-i"],
+        &environment,
+        &services,
+        &selector,
+    )
+    .expect("interactive open pr succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Opened: https://github.com/example-owner/example-repo/pull/11\n"
+    );
+    assert_eq!(
+        selector.labels.borrow().as_slice(),
+        &[vec![
+            "✓ #10     Root".to_owned(),
+            "└─ ◉ #11     Child".to_owned(),
+        ]]
+    );
+    assert_eq!(
+        services.open_pull_request_selectors.borrow().as_slice(),
+        [None]
+    );
+    assert_eq!(
+        services
+            .authored_open_pull_request_head_calls
+            .borrow()
+            .as_slice(),
+        [("topic/child".to_owned(), "example-user".to_owned())]
+    );
 }
 
 #[test]
@@ -6063,10 +6154,10 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
         merged: false,
     };
 
-    assert_eq!(pull_request_choice_label(&ready), "#42     Ready change");
+    assert_eq!(pull_request_choice_label(&ready), "◯ #42     Ready change");
     assert_eq!(
         pull_request_choice_label(&draft),
-        "\x1b[2m\x1b[38;2;150;142;132m#43     Work in progress\x1b[0m"
+        "\x1b[2m\x1b[38;2;150;142;132m◌ #43     Work in progress\x1b[0m"
     );
     assert!(!pull_request_choice_label(&draft).contains("draft "));
     assert!(!pull_request_choice_label(&ready).contains("topic/ready"));
@@ -6084,19 +6175,29 @@ fn pull_request_selection_renders_stack_tree_in_merge_order() {
         pull_request_choice_record(11, "Child 1", "topic/child-1", "topic/root", false),
     ];
 
-    let rows = pull_request_choice_rows(&pull_requests);
+    let local_branches = pull_requests
+        .iter()
+        .map(|pull_request| pull_request.head_branch.clone())
+        .collect::<Vec<_>>();
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        &StackMetadata::default(),
+        &local_branches,
+        &pull_requests,
+        PullRequestStackSelection::default(),
+    );
+    let rows = pull_request_choice_rows(&snapshot);
 
     assert_eq!(
         rows.iter()
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "#2      Other root",
-            "#10     Root",
-            "├─ #11     Child 1",
-            "│  └─ #14     Child 11",
-            "└─ #12     Child 2",
-            "\x1b[2m\x1b[38;2;150;142;132m#1      Draft root\x1b[0m",
+            "◯ #2      Other root",
+            "◯ #10     Root",
+            "├─ ◯ #11     Child 1",
+            "│  └─ ◯ #14     Child 11",
+            "└─ ◯ #12     Child 2",
+            "\x1b[2m\x1b[38;2;150;142;132m◌ #1      Draft root\x1b[0m",
         ]
     );
     assert_eq!(
@@ -6105,6 +6206,35 @@ fn pull_request_selection_renders_stack_tree_in_merge_order() {
             .collect::<Vec<_>>(),
         vec![2, 10, 11, 14, 12, 1]
     );
+}
+
+struct RecordingPullRequestSelector {
+    selected: usize,
+    labels: std::cell::RefCell<Vec<Vec<String>>>,
+}
+
+impl RecordingPullRequestSelector {
+    fn new(selected: usize) -> Self {
+        Self {
+            selected,
+            labels: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl PullRequestSelector for RecordingPullRequestSelector {
+    fn select_pull_request(
+        &self,
+        choices: &[PullRequestChoice],
+    ) -> Result<PullRequestRecord, PullRequestSelectionError> {
+        self.labels
+            .borrow_mut()
+            .push(choices.iter().map(|choice| choice.label.clone()).collect());
+        choices
+            .get(self.selected)
+            .map(|choice| choice.pull_request.clone())
+            .ok_or(PullRequestSelectionError::NoPullRequests)
+    }
 }
 
 fn pull_request_choice_record(

@@ -60,7 +60,7 @@ impl PullRequestPreviewer for NoPullRequestPreview {
 pub(super) trait PullRequestSelector {
     fn select_pull_request(
         &self,
-        pull_requests: &[PullRequestRecord],
+        choices: &[PullRequestChoice],
     ) -> Result<PullRequestRecord, PullRequestSelectionError>;
 }
 
@@ -79,17 +79,19 @@ pub(super) struct TerminalPullRequestSelector;
 impl PullRequestSelector for TerminalPullRequestSelector {
     fn select_pull_request(
         &self,
-        pull_requests: &[PullRequestRecord],
+        choices: &[PullRequestChoice],
     ) -> Result<PullRequestRecord, PullRequestSelectionError> {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(PullRequestSelectionError::NonInteractive);
         }
-        if pull_requests.is_empty() {
+        if choices.is_empty() {
             return Err(PullRequestSelectionError::NoPullRequests);
         }
 
-        let rows = pull_request_choice_rows(pull_requests);
-        let labels = rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>();
+        let labels = choices
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>();
         let theme = PlainPromptTheme;
         let selected = Select::with_theme(&theme)
             .with_prompt("Open pull request:")
@@ -102,7 +104,7 @@ impl PullRequestSelector for TerminalPullRequestSelector {
                 PullRequestSelectionError::Read { source }
             })?;
 
-        Ok(rows[selected].pull_request.clone())
+        Ok(choices[selected].pull_request.clone())
     }
 }
 
@@ -113,11 +115,11 @@ pub(super) struct SelectFirstPullRequest;
 impl PullRequestSelector for SelectFirstPullRequest {
     fn select_pull_request(
         &self,
-        pull_requests: &[PullRequestRecord],
+        choices: &[PullRequestChoice],
     ) -> Result<PullRequestRecord, PullRequestSelectionError> {
-        pull_requests
+        choices
             .first()
-            .cloned()
+            .map(|choice| choice.pull_request.clone())
             .ok_or(PullRequestSelectionError::NoPullRequests)
     }
 }
@@ -131,11 +133,11 @@ pub(super) struct FixedPullRequestSelector {
 impl PullRequestSelector for FixedPullRequestSelector {
     fn select_pull_request(
         &self,
-        pull_requests: &[PullRequestRecord],
+        choices: &[PullRequestChoice],
     ) -> Result<PullRequestRecord, PullRequestSelectionError> {
-        pull_requests
+        choices
             .get(self.selected)
-            .cloned()
+            .map(|choice| choice.pull_request.clone())
             .ok_or(PullRequestSelectionError::NoPullRequests)
     }
 }
@@ -143,39 +145,23 @@ impl PullRequestSelector for FixedPullRequestSelector {
 const PULL_REQUEST_DRAFT_STYLE: &str = "\x1b[2m\x1b[38;2;150;142;132m";
 const RESET_STYLE: &str = "\x1b[0m";
 
-pub(super) struct PullRequestChoice<'a> {
-    pub(super) pull_request: &'a PullRequestRecord,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PullRequestChoice {
+    pub(super) pull_request: PullRequestRecord,
     pub(super) label: String,
 }
 
 pub(super) fn pull_request_choice_rows(
-    pull_requests: &[PullRequestRecord],
-) -> Vec<PullRequestChoice<'_>> {
-    let local_branches = pull_requests
-        .iter()
-        .map(|pull_request| pull_request.head_branch.clone())
-        .collect::<Vec<_>>();
-    let pull_requests_by_number = pull_requests
-        .iter()
-        .map(|pull_request| (pull_request.number, pull_request))
-        .collect::<BTreeMap<_, _>>();
-    let snapshot = PullRequestStackSnapshot::from_metadata(
-        &StackMetadata::default(),
-        &local_branches,
-        pull_requests,
-        PullRequestStackSelection::default(),
-    );
-
+    snapshot: &PullRequestStackSnapshot,
+) -> Vec<PullRequestChoice> {
     snapshot
         .rows()
         .into_iter()
         .filter_map(|row| {
-            let pull_request = pull_requests_by_number
-                .get(&row.node.pull_request_number()?)
-                .copied()?;
+            let pull_request = pull_request_record_from_stack_node(row.node)?;
             Some(PullRequestChoice {
                 pull_request,
-                label: pull_request_choice_label_with_prefix(pull_request, &row.prefix),
+                label: pull_request_choice_label_for_row(row),
             })
         })
         .collect()
@@ -183,20 +169,62 @@ pub(super) fn pull_request_choice_rows(
 
 #[cfg(test)]
 pub(super) fn pull_request_choice_label(pull_request: &PullRequestRecord) -> String {
-    pull_request_choice_label_with_prefix(pull_request, "")
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        &StackMetadata::default(),
+        std::slice::from_ref(&pull_request.head_branch),
+        std::slice::from_ref(pull_request),
+        PullRequestStackSelection::default(),
+    );
+    pull_request_choice_rows(&snapshot)
+        .into_iter()
+        .next()
+        .map(|choice| choice.label)
+        .unwrap_or_default()
 }
 
-fn pull_request_choice_label_with_prefix(pull_request: &PullRequestRecord, prefix: &str) -> String {
-    let title = if pull_request.title.trim().is_empty() {
+fn pull_request_record_from_stack_node(node: &PullRequestStackNode) -> Option<PullRequestRecord> {
+    let pull_request = node.pull_request.as_ref()?;
+    Some(PullRequestRecord {
+        number: pull_request.number,
+        title: node.title.clone(),
+        body: None,
+        head_branch: node.branch.clone(),
+        base_branch: node.base_branch.clone(),
+        html_url: pull_request.url.clone(),
+        draft: node.draft,
+        merged: node.merged,
+    })
+}
+
+fn pull_request_choice_label_for_row(row: PullRequestStackRow<'_>) -> String {
+    let node = row.node;
+    let title = if node.title.trim().is_empty() {
         "(untitled)"
     } else {
-        pull_request.title.trim()
+        node.title.trim()
     };
-    let label = format!("{prefix}#{number:<6} {title}", number = pull_request.number);
-    if pull_request.draft {
+    let label = format!(
+        "{}{status} #{number:<6} {title}",
+        row.prefix,
+        status = pull_request_choice_status(node),
+        number = node.pull_request_number().unwrap_or_default(),
+    );
+    if node.draft {
         format!("{PULL_REQUEST_DRAFT_STYLE}{label}{RESET_STYLE}")
     } else {
         label
+    }
+}
+
+fn pull_request_choice_status(node: &PullRequestStackNode) -> &'static str {
+    if node.merged {
+        "✓"
+    } else if node.is_current {
+        "◉"
+    } else if node.draft {
+        "◌"
+    } else {
+        "◯"
     }
 }
 

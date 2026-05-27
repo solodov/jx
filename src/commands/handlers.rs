@@ -400,35 +400,17 @@ fn interactive_pull_request_url(
     selector: &dyn PullRequestSelector,
 ) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
-    let branches = services.pull_request_bookmarks(&context)?;
-    if branches.is_empty() {
+    let manager = PullRequestStackManager::new(&context, services);
+    let snapshot = manager.interactive_open_snapshot()?;
+    let choices = pull_request_choice_rows(&snapshot);
+    if choices.is_empty() {
         return Err(WorkflowError::MissingLocalBookmarkPullRequests {
             repository: context.origin.github.slug(),
         }
         .into());
     }
 
-    let author = services.authenticated_login(&context.token_source)?;
-    let mut pull_requests = Vec::new();
-    let mut seen_numbers = BTreeSet::new();
-    for branch in branches {
-        let Some(pull_request) =
-            services.find_authored_open_pull_request_for_head(&context, &branch, &author)?
-        else {
-            continue;
-        };
-        if seen_numbers.insert(pull_request.number) {
-            pull_requests.push(pull_request);
-        }
-    }
-    if pull_requests.is_empty() {
-        return Err(WorkflowError::MissingLocalBookmarkPullRequests {
-            repository: context.origin.github.slug(),
-        }
-        .into());
-    }
-
-    let selected = selector.select_pull_request(&pull_requests)?;
+    let selected = selector.select_pull_request(&choices)?;
     Ok(pull_request_url(
         &context.origin.github.https_url(),
         &selected,
