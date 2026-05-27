@@ -1214,14 +1214,14 @@ fn sync_stack_branches(
 ) -> Result<Vec<String>, CommandError> {
     let metadata = read_stack_metadata(&context.repository_root)?;
     let candidate_branches = services.pull_request_candidate_bookmarks(context, None)?;
-    let local_branches = services
-        .pull_request_bookmarks(context)?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let branches = stack_metadata_component_branches(&metadata.nodes, &candidate_branches)
-        .into_iter()
-        .filter(|branch| local_branches.contains(branch))
-        .collect::<Vec<_>>();
+    let local_branches = services.pull_request_bookmarks(context)?;
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        &metadata,
+        &local_branches,
+        &[],
+        PullRequestStackSelection::default(),
+    );
+    let branches = snapshot.local_component_branches_for(&candidate_branches);
 
     if branches.is_empty() {
         Err(WorkflowError::MissingPullRequest.into())

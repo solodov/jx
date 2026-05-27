@@ -9,10 +9,10 @@ This file tracks plans managed in the markdown-backed layout.
 ### [20260527-140943-unified-pull-request-stack-model](./20260527-140943-unified-pull-request-stack-model.md)
 - title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and Rendering
 - status: implementing
-- currentPhase: 1
-- currentPhaseTitle: Establish a canonical pull-request stack snapshot model
-- nextPhase: 2
-- nextPhaseTitle: Move tree/component logic into the stack domain layer
+- currentPhase: 2
+- currentPhaseTitle: Move tree/component logic into the stack domain layer
+- nextPhase: 3
+- nextPhaseTitle: Create a command-side pull request manager for IO and service orchestration
 - totalPhases: 7
 - updated: 2026-05-27
 

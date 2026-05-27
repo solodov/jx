@@ -29,11 +29,12 @@ use thiserror::Error;
 
 use crate::{
     domain::{
-        self, BookmarkAction, CheckReport, FetchReport, ForkStatusReport, ForkStatusState,
-        PullRequestAction, PullRequestEventEffect, PullRequestEventEffectKind, PullRequestPlan,
-        PullRequestPublishOptions, PullRequestReport, PushPlan, PushReport, RebaseOnTrunkReport,
-        RemoteStatusReport, StatusReport, SyncReport, TrackedPushReport, WorkflowCommand,
-        WorkflowError,
+        self, stack_metadata_from_pull_requests, BookmarkAction, CheckReport, FetchReport,
+        ForkStatusReport, ForkStatusState, PullRequestAction, PullRequestEventEffect,
+        PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions, PullRequestReport,
+        PullRequestStackNode, PullRequestStackRow, PullRequestStackSelection,
+        PullRequestStackSnapshot, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
+        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,

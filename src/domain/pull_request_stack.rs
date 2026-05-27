@@ -55,6 +55,71 @@ impl PullRequestStackSnapshot {
         resolve_live_parent_edges(&mut nodes, &indexes_by_branch);
         apply_current_selection(nodes, selection)
     }
+
+    /// Returns every stack node in merge order with tree prefixes for renderers.
+    pub fn rows(&self) -> Vec<PullRequestStackRow<'_>> {
+        pull_request_stack_rows(&self.nodes)
+    }
+
+    /// Returns the connected stack component around a selected branch or PR.
+    pub fn component_for_selection(&self, selection: PullRequestStackSelection) -> Self {
+        let selected = selected_stack_indexes(&self.nodes, &selection);
+        self.component_from_indexes(selected, selection)
+    }
+
+    /// Returns the connected stack component around one or more selected branches.
+    pub fn component_for_branches(&self, branches: &[String]) -> Self {
+        let selection = PullRequestStackSelection {
+            branch: self.current_branch.clone(),
+            pull_request: self.current_pull_request,
+        };
+        let indexes_by_branch = stack_indexes_by_branch(&self.nodes);
+        let mut pending = branches
+            .iter()
+            .filter_map(|branch| indexes_by_branch.get(branch.as_str()).copied())
+            .collect::<Vec<_>>();
+        let selected = connected_stack_indexes(&self.nodes, &mut pending);
+        self.component_from_indexes(selected, selection)
+    }
+
+    /// Returns all branch names in merge order for the selected connected component.
+    pub fn component_branches_for(&self, branches: &[String]) -> Vec<String> {
+        self.component_for_branches(branches)
+            .nodes
+            .into_iter()
+            .map(|node| node.branch)
+            .collect()
+    }
+
+    /// Returns local branch names in merge order for the selected connected component.
+    pub fn local_component_branches_for(&self, branches: &[String]) -> Vec<String> {
+        self.component_for_branches(branches)
+            .nodes
+            .into_iter()
+            .filter(|node| node.is_local)
+            .map(|node| node.branch)
+            .collect()
+    }
+
+    fn component_from_indexes(
+        &self,
+        selected: BTreeSet<usize>,
+        selection: PullRequestStackSelection,
+    ) -> Self {
+        let ordered_indexes = ordered_selected_stack_indexes(&self.nodes, &selected);
+        let nodes = ordered_indexes
+            .into_iter()
+            .map(|index| self.nodes[index].clone())
+            .collect::<Vec<_>>();
+        apply_current_selection(nodes, selection)
+    }
+}
+
+/// One stack row with its renderer-neutral tree prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestStackRow<'a> {
+    pub node: &'a PullRequestStackNode,
+    pub prefix: String,
 }
 
 /// Optional current selection used to mark one stack node as current.
@@ -220,6 +285,315 @@ fn apply_current_selection(
     }
 }
 
+/// Builds durable stack metadata from live PR records while retaining missing ancestors.
+pub fn stack_metadata_from_pull_requests(
+    pull_requests: &[PullRequestRecord],
+    existing_metadata: &StackMetadata,
+) -> StackMetadata {
+    let pull_requests_by_head = pull_requests
+        .iter()
+        .map(|pull_request| (pull_request.head_branch.as_str(), pull_request))
+        .collect::<BTreeMap<_, _>>();
+    let existing_nodes_by_branch = existing_metadata
+        .nodes
+        .iter()
+        .map(|node| (node.branch.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    let mut nodes = pull_requests
+        .iter()
+        .map(|pull_request| {
+            let live_parent = pull_requests_by_head.get(pull_request.base_branch.as_str());
+            let existing_node = existing_nodes_by_branch.get(pull_request.head_branch.as_str());
+            let parent_branch = live_parent
+                .map(|parent| parent.head_branch.clone())
+                .or_else(|| existing_node.and_then(|node| node.parent_branch.clone()));
+            StackMetadataNode {
+                branch: pull_request.head_branch.clone(),
+                base_branch: pull_request.base_branch.clone(),
+                parent_branch,
+                pull_request: Some(pull_request.number),
+                parent_pull_request: live_parent
+                    .map(|parent| parent.number)
+                    .or_else(|| existing_node.and_then(|node| node.parent_pull_request)),
+                title: pull_request_title(pull_request).to_owned(),
+                url: pull_request.html_url.clone(),
+                draft: pull_request.draft,
+                merged: pull_request.merged,
+            }
+        })
+        .collect::<Vec<_>>();
+    preserve_missing_ancestors(&mut nodes, &existing_nodes_by_branch);
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
+fn preserve_missing_ancestors(
+    nodes: &mut Vec<StackMetadataNode>,
+    existing_nodes_by_branch: &BTreeMap<&str, &StackMetadataNode>,
+) {
+    let mut retained_branches = nodes
+        .iter()
+        .map(|node| node.branch.clone())
+        .collect::<BTreeSet<_>>();
+    let mut pending = nodes
+        .iter()
+        .filter_map(|node| node.parent_branch.clone())
+        .collect::<Vec<_>>();
+
+    while let Some(branch) = pending.pop() {
+        if retained_branches.contains(&branch) {
+            continue;
+        }
+        let Some(existing_node) = existing_nodes_by_branch.get(branch.as_str()) else {
+            continue;
+        };
+        nodes.push((*existing_node).clone());
+        retained_branches.insert(branch);
+        if let Some(parent_branch) = &existing_node.parent_branch {
+            pending.push(parent_branch.clone());
+        }
+    }
+}
+
+fn pull_request_stack_rows(nodes: &[PullRequestStackNode]) -> Vec<PullRequestStackRow<'_>> {
+    let hierarchy = StackHierarchy::new(nodes);
+    let mut tree = PullRequestStackTree::new(nodes, hierarchy.children);
+    tree.append_roots(&hierarchy.roots);
+
+    let mut unvisited = (0..nodes.len())
+        .filter(|index| !tree.visited.contains(index))
+        .collect::<Vec<_>>();
+    sort_stack_node_indexes(&mut unvisited, nodes);
+    tree.append_roots(&unvisited);
+
+    tree.rows
+}
+
+fn selected_stack_indexes(
+    nodes: &[PullRequestStackNode],
+    selection: &PullRequestStackSelection,
+) -> BTreeSet<usize> {
+    let mut pending = Vec::new();
+    if let Some(branch) = selection.branch.as_deref() {
+        let indexes_by_branch = stack_indexes_by_branch(nodes);
+        if let Some(index) = indexes_by_branch.get(branch).copied() {
+            pending.push(index);
+        }
+    }
+    if let Some(number) = selection.pull_request {
+        pending.extend(nodes.iter().enumerate().filter_map(|(index, node)| {
+            (node.pull_request_number() == Some(number)).then_some(index)
+        }));
+    }
+    connected_stack_indexes(nodes, &mut pending)
+}
+
+fn connected_stack_indexes(
+    nodes: &[PullRequestStackNode],
+    pending: &mut Vec<usize>,
+) -> BTreeSet<usize> {
+    let indexes_by_branch = stack_indexes_by_branch(nodes);
+    let hierarchy = StackHierarchy::new(nodes);
+    let mut selected = BTreeSet::new();
+
+    while let Some(index) = pending.pop() {
+        if !selected.insert(index) {
+            continue;
+        }
+        if let Some(parent) = nodes[index]
+            .parent_branch
+            .as_deref()
+            .and_then(|branch| indexes_by_branch.get(branch).copied())
+        {
+            pending.push(parent);
+        }
+        pending.extend(hierarchy.children[index].iter().copied());
+    }
+
+    selected
+}
+
+fn ordered_selected_stack_indexes(
+    nodes: &[PullRequestStackNode],
+    selected: &BTreeSet<usize>,
+) -> Vec<usize> {
+    let hierarchy = StackHierarchy::new(nodes);
+    let mut roots = selected
+        .iter()
+        .copied()
+        .filter(|index| {
+            nodes[*index]
+                .parent_branch
+                .as_deref()
+                .and_then(|branch| hierarchy.indexes_by_branch.get(branch).copied())
+                .is_none_or(|parent| !selected.contains(&parent) || parent == *index)
+        })
+        .collect::<Vec<_>>();
+    sort_stack_node_indexes(&mut roots, nodes);
+
+    let mut ordered = Vec::new();
+    append_selected_stack_indexes(&mut ordered, &roots, &hierarchy.children, selected);
+    ordered
+}
+
+fn append_selected_stack_indexes(
+    ordered: &mut Vec<usize>,
+    roots: &[usize],
+    children: &[Vec<usize>],
+    selected: &BTreeSet<usize>,
+) {
+    for root in roots.iter().copied() {
+        ordered.push(root);
+        let child_roots = children[root]
+            .iter()
+            .copied()
+            .filter(|child| selected.contains(child))
+            .collect::<Vec<_>>();
+        append_selected_stack_indexes(ordered, &child_roots, children, selected);
+    }
+}
+
+struct StackHierarchy {
+    indexes_by_branch: BTreeMap<String, usize>,
+    children: Vec<Vec<usize>>,
+    roots: Vec<usize>,
+}
+
+impl StackHierarchy {
+    fn new(nodes: &[PullRequestStackNode]) -> Self {
+        let indexes_by_branch = stack_indexes_by_branch(nodes);
+        let mut children = vec![Vec::new(); nodes.len()];
+        let mut roots = Vec::new();
+        for (index, node) in nodes.iter().enumerate() {
+            match node
+                .parent_branch
+                .as_deref()
+                .and_then(|branch| indexes_by_branch.get(branch).copied())
+            {
+                Some(parent) if parent != index => children[parent].push(index),
+                _ => roots.push(index),
+            }
+        }
+
+        sort_stack_node_indexes(&mut roots, nodes);
+        for child_indexes in &mut children {
+            sort_stack_node_indexes(child_indexes, nodes);
+        }
+
+        Self {
+            indexes_by_branch,
+            children,
+            roots,
+        }
+    }
+}
+
+struct PullRequestStackTree<'a> {
+    nodes: &'a [PullRequestStackNode],
+    children: Vec<Vec<usize>>,
+    ancestor_has_next: Vec<bool>,
+    visited: BTreeSet<usize>,
+    rows: Vec<PullRequestStackRow<'a>>,
+}
+
+impl<'a> PullRequestStackTree<'a> {
+    fn new(nodes: &'a [PullRequestStackNode], children: Vec<Vec<usize>>) -> Self {
+        Self {
+            nodes,
+            children,
+            ancestor_has_next: Vec::new(),
+            visited: BTreeSet::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn append_roots(&mut self, roots: &[usize]) {
+        for (position, root) in roots.iter().copied().enumerate() {
+            self.append(root, 0, position + 1 < roots.len());
+        }
+    }
+
+    fn append(&mut self, index: usize, depth: usize, has_next_sibling: bool) {
+        if !self.visited.insert(index) {
+            return;
+        }
+
+        self.rows.push(PullRequestStackRow {
+            node: &self.nodes[index],
+            prefix: stack_tree_prefix(&self.ancestor_has_next, depth, has_next_sibling),
+        });
+
+        let include_current_in_descendant_prefix = depth > 0;
+        let children = self.children[index].clone();
+        for (position, child) in children.iter().copied().enumerate() {
+            let child_has_next_sibling = position + 1 < children.len();
+            if include_current_in_descendant_prefix {
+                self.ancestor_has_next.push(has_next_sibling);
+            }
+            self.append(child, depth + 1, child_has_next_sibling);
+            if include_current_in_descendant_prefix {
+                self.ancestor_has_next.pop();
+            }
+        }
+    }
+}
+
+fn stack_tree_prefix(ancestor_has_next: &[bool], depth: usize, has_next_sibling: bool) -> String {
+    if depth == 0 {
+        return String::new();
+    }
+
+    let mut prefix = String::new();
+    for ancestor_has_next in ancestor_has_next {
+        prefix.push_str(if *ancestor_has_next { "│  " } else { "   " });
+    }
+    prefix.push_str(if has_next_sibling {
+        "├─ "
+    } else {
+        "└─ "
+    });
+    prefix
+}
+
+fn stack_indexes_by_branch(nodes: &[PullRequestStackNode]) -> BTreeMap<String, usize> {
+    let mut indexes_by_branch = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        indexes_by_branch
+            .entry(node.branch.clone())
+            .or_insert(index);
+    }
+    indexes_by_branch
+}
+
+fn sort_stack_node_indexes(indexes: &mut [usize], nodes: &[PullRequestStackNode]) {
+    indexes.sort_by(|left, right| {
+        stack_node_sort_key(&nodes[*left]).cmp(&stack_node_sort_key(&nodes[*right]))
+    });
+}
+
+fn stack_node_sort_key(node: &PullRequestStackNode) -> (u8, u64, &str, &str) {
+    (
+        node.draft as u8,
+        node.pull_request_number().unwrap_or(u64::MAX),
+        node.title.as_str(),
+        node.branch.as_str(),
+    )
+}
+
+fn sort_stack_metadata_nodes(nodes: &mut [StackMetadataNode]) {
+    nodes.sort_by(|left, right| stack_metadata_sort_key(left).cmp(&stack_metadata_sort_key(right)));
+}
+
+fn stack_metadata_sort_key(node: &StackMetadataNode) -> (u8, u64, &str, &str) {
+    (
+        node.draft as u8,
+        node.pull_request.unwrap_or(u64::MAX),
+        node.title.as_str(),
+        node.branch.as_str(),
+    )
+}
+
 fn pull_request_stack_sort_key(pull_request: &PullRequestRecord) -> (u8, u64, &str, &str) {
     (
         pull_request.draft as u8,
@@ -227,4 +601,13 @@ fn pull_request_stack_sort_key(pull_request: &PullRequestRecord) -> (u8, u64, &s
         pull_request.title.as_str(),
         pull_request.head_branch.as_str(),
     )
+}
+
+fn pull_request_title(pull_request: &PullRequestRecord) -> &str {
+    let title = pull_request.title.trim();
+    if title.is_empty() {
+        "(untitled)"
+    } else {
+        title
+    }
 }

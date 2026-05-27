@@ -133,15 +133,22 @@ fn render_pull_request_stack_context(
     current: &PullRequestRecord,
     repository_url: &str,
 ) -> Option<String> {
-    let component = stack_component_for_pull_request(metadata, current)?;
-    if component.len() <= 1 {
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        metadata,
+        std::slice::from_ref(&current.head_branch),
+        std::slice::from_ref(current),
+        PullRequestStackSelection::pull_request(current.number),
+    );
+    let component =
+        snapshot.component_for_selection(PullRequestStackSelection::pull_request(current.number));
+    if component.nodes.len() <= 1 {
         return None;
     }
 
     let mut output = String::from(STACK_CONTEXT_START);
     output.push_str("\n### Pull request stack\n\n");
-    for row in stack_context_rows(&component, current.number, repository_url) {
-        output.push_str(&row);
+    for row in component.rows() {
+        output.push_str(&stack_context_row(row, repository_url));
         output.push('\n');
     }
     output.push('\n');
@@ -149,143 +156,11 @@ fn render_pull_request_stack_context(
     Some(output)
 }
 
-fn stack_component_for_pull_request(
-    metadata: &StackMetadata,
-    current: &PullRequestRecord,
-) -> Option<Vec<StackMetadataNode>> {
-    let indexes_by_branch = stack_indexes_by_branch(&metadata.nodes);
-    let current_index = metadata.nodes.iter().position(|node| {
-        node.pull_request == Some(current.number) || node.branch == current.head_branch
-    })?;
-    let mut children = vec![Vec::new(); metadata.nodes.len()];
-    for (index, node) in metadata.nodes.iter().enumerate() {
-        if let Some(parent) = node
-            .parent_branch
-            .as_deref()
-            .and_then(|branch| indexes_by_branch.get(branch).copied())
-        {
-            if parent != index {
-                children[parent].push(index);
-            }
-        }
-    }
-
-    let mut selected = BTreeSet::new();
-    let mut pending = vec![current_index];
-    while let Some(index) = pending.pop() {
-        if !selected.insert(index) {
-            continue;
-        }
-        if let Some(parent) = metadata.nodes[index]
-            .parent_branch
-            .as_deref()
-            .and_then(|branch| indexes_by_branch.get(branch).copied())
-        {
-            pending.push(parent);
-        }
-        pending.extend(children[index].iter().copied());
-    }
-
-    Some(
-        selected
-            .into_iter()
-            .map(|index| metadata.nodes[index].clone())
-            .collect(),
-    )
-}
-
-fn stack_context_rows(
-    nodes: &[StackMetadataNode],
-    current_pull_request: u64,
-    repository_url: &str,
-) -> Vec<String> {
-    let indexes_by_branch = stack_indexes_by_branch(nodes);
-    let mut children = vec![Vec::new(); nodes.len()];
-    let mut roots = Vec::new();
-    for (index, node) in nodes.iter().enumerate() {
-        match node
-            .parent_branch
-            .as_deref()
-            .and_then(|branch| indexes_by_branch.get(branch).copied())
-        {
-            Some(parent) if parent != index => children[parent].push(index),
-            _ => roots.push(index),
-        }
-    }
-
-    sort_stack_context_indexes(&mut roots, nodes);
-    for child_indexes in &mut children {
-        sort_stack_context_indexes(child_indexes, nodes);
-    }
-
-    let mut tree = StackContextTree::new(children, nodes, current_pull_request, repository_url);
-    tree.append_roots(&roots, 0);
-    tree.rows
-}
-
-struct StackContextTree<'a> {
-    children: Vec<Vec<usize>>,
-    nodes: &'a [StackMetadataNode],
-    current_pull_request: u64,
-    repository_url: &'a str,
-    ancestor_has_next: Vec<bool>,
-    rows: Vec<String>,
-}
-
-impl<'a> StackContextTree<'a> {
-    fn new(
-        children: Vec<Vec<usize>>,
-        nodes: &'a [StackMetadataNode],
-        current_pull_request: u64,
-        repository_url: &'a str,
-    ) -> Self {
-        Self {
-            children,
-            nodes,
-            current_pull_request,
-            repository_url,
-            ancestor_has_next: Vec::new(),
-            rows: Vec::new(),
-        }
-    }
-
-    fn append_roots(&mut self, roots: &[usize], depth: usize) {
-        for (position, root) in roots.iter().copied().enumerate() {
-            let has_next_sibling = position + 1 < roots.len();
-            self.rows.push(stack_context_row(
-                &self.nodes[root],
-                self.current_pull_request,
-                self.repository_url,
-                &self.ancestor_has_next,
-                depth,
-                has_next_sibling,
-            ));
-
-            let include_current_in_descendant_prefix = depth > 0;
-            if include_current_in_descendant_prefix {
-                self.ancestor_has_next.push(has_next_sibling);
-            }
-            let children = self.children[root].clone();
-            self.append_roots(&children, depth + 1);
-            if include_current_in_descendant_prefix {
-                self.ancestor_has_next.pop();
-            }
-        }
-    }
-}
-
-fn stack_context_row(
-    node: &StackMetadataNode,
-    current_pull_request: u64,
-    repository_url: &str,
-    ancestor_has_next: &[bool],
-    depth: usize,
-    has_next_sibling: bool,
-) -> String {
-    let current = node.pull_request == Some(current_pull_request);
-    let status = stack_context_status(node, current);
+fn stack_context_row(row: PullRequestStackRow<'_>, repository_url: &str) -> String {
+    let node = row.node;
+    let status = stack_context_status(node);
     let link = stack_context_link(node, repository_url);
-    let entry = if current {
+    let entry = if node.is_current {
         format!("**{link}** — this PR")
     } else if node.draft {
         format!("{link} — draft")
@@ -294,39 +169,31 @@ fn stack_context_row(
     };
     format!(
         "{}{status} {entry}",
-        stack_context_tree_prefix(ancestor_has_next, depth, has_next_sibling)
+        markdown_stack_tree_prefix(&row.prefix)
     )
 }
 
-fn stack_context_tree_prefix(
-    ancestor_has_next: &[bool],
-    depth: usize,
-    has_next_sibling: bool,
-) -> String {
-    if depth == 0 {
-        return String::new();
-    }
-
-    let mut prefix = String::new();
-    for ancestor_has_next in ancestor_has_next {
-        prefix.push_str(if *ancestor_has_next {
-            "│&nbsp;&nbsp;"
-        } else {
-            "&nbsp;&nbsp;&nbsp;"
-        });
-    }
-    prefix.push_str(if has_next_sibling {
-        "├─ "
-    } else {
-        "└─ "
-    });
-    prefix
+fn markdown_stack_tree_prefix(prefix: &str) -> String {
+    let Some((stem, connector)) = prefix
+        .strip_suffix("├─ ")
+        .map(|stem| (stem, "├─ "))
+        .or_else(|| prefix.strip_suffix("└─ ").map(|stem| (stem, "└─ ")))
+    else {
+        return prefix.to_owned();
+    };
+    format!("{}{connector}", markdown_stack_tree_indent(stem))
 }
 
-fn stack_context_status(node: &StackMetadataNode, current: bool) -> &'static str {
+fn markdown_stack_tree_indent(indent: &str) -> String {
+    indent
+        .replace("│  ", "│&nbsp;&nbsp;")
+        .replace("   ", "&nbsp;&nbsp;&nbsp;")
+}
+
+fn stack_context_status(node: &PullRequestStackNode) -> &'static str {
     if node.merged {
         "✓"
-    } else if current {
+    } else if node.is_current {
         "◉"
     } else if node.draft {
         "◌"
@@ -335,22 +202,22 @@ fn stack_context_status(node: &StackMetadataNode, current: bool) -> &'static str
     }
 }
 
-fn stack_context_link(node: &StackMetadataNode, repository_url: &str) -> String {
+fn stack_context_link(node: &PullRequestStackNode, repository_url: &str) -> String {
     let title = if node.title.trim().is_empty() {
         "(untitled)"
     } else {
         node.title.trim()
     };
-    let label = match node.pull_request {
+    let label = match node.pull_request_number() {
         Some(number) => format!("#{} {}", number, title),
         None => title.to_owned(),
     };
-    match node.pull_request {
-        Some(number) => {
-            let url = node
+    match &node.pull_request {
+        Some(pull_request) => {
+            let url = pull_request
                 .url
                 .clone()
-                .unwrap_or_else(|| format!("{repository_url}/pull/{number}"));
+                .unwrap_or_else(|| format!("{repository_url}/pull/{}", pull_request.number));
             format!("[{}]({url})", escape_markdown_link_text(&label))
         }
         None => escape_markdown_link_text(&label),
@@ -402,31 +269,6 @@ fn line_end_after(value: &str, offset: usize) -> usize {
         Some('\n') => offset + 1,
         _ => offset,
     }
-}
-
-fn stack_indexes_by_branch(nodes: &[StackMetadataNode]) -> BTreeMap<&str, usize> {
-    let mut indexes_by_branch = BTreeMap::new();
-    for (index, node) in nodes.iter().enumerate() {
-        indexes_by_branch
-            .entry(node.branch.as_str())
-            .or_insert(index);
-    }
-    indexes_by_branch
-}
-
-fn sort_stack_context_indexes(indexes: &mut [usize], nodes: &[StackMetadataNode]) {
-    indexes.sort_by(|left, right| {
-        stack_context_sort_key(&nodes[*left]).cmp(&stack_context_sort_key(&nodes[*right]))
-    });
-}
-
-fn stack_context_sort_key(node: &StackMetadataNode) -> (u8, u64, &str, &str) {
-    (
-        node.draft as u8,
-        node.pull_request.unwrap_or(u64::MAX),
-        node.title.as_str(),
-        node.branch.as_str(),
-    )
 }
 
 fn escape_markdown_link_text(value: &str) -> String {
