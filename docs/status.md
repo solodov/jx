@@ -6,6 +6,16 @@ This file tracks plans managed in the markdown-backed layout.
 
 ## Active Plans
 
+### [20260527-140943-unified-pull-request-stack-model](./20260527-140943-unified-pull-request-stack-model.md)
+- title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and Rendering
+- status: implementing
+- currentPhase: 1
+- currentPhaseTitle: Establish a canonical pull-request stack snapshot model
+- nextPhase: 2
+- nextPhaseTitle: Move tree/component logic into the stack domain layer
+- totalPhases: 7
+- updated: 2026-05-27
+
 ### [20260513-184704-add-repo-policy-support-workspace](./20260513-184704-add-repo-policy-support-workspace.md)
 - title: Add repo-policy support for `workspace_shared_paths`, starting with `.pi`, so managed `jx work`
 - status: done
