@@ -654,15 +654,13 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         push: &TrackedPushOutcome,
     ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
-        self.github_runtime.block_on(async {
-            let Ok(github) =
-                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)
-            else {
-                return Ok(Vec::new());
-            };
+        if push.bookmarks.is_empty() {
+            return Ok(Vec::new());
+        }
 
-            // Keep fetch/push usable when GitHub is unavailable, but surface failures once PR
-            // description updates start so stale GitHub text is not silently accepted.
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
             domain::sync_pull_requests(context, push, &github).await
         })
     }

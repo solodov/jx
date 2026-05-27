@@ -1817,6 +1817,62 @@ fn bookmark_pull_request_description_uses_first_stack_commit() {
 }
 
 #[test]
+fn bookmark_pull_request_base_uses_nearest_stack_bookmark() {
+    // Verifies: Sync retargets stacked PRs to the nearest bookmarked ancestor.
+    let fixture = TestWorkspace::new("bookmark-pr-base-parent");
+    let settings = user_settings().expect("settings");
+    let (repo, trunk, tip) = pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let parent = write_child(tx.repo_mut(), &trunk, "parent PR").await;
+        let tip = write_child(tx.repo_mut(), &parent, "child PR").await;
+        set_local_bookmark(tx.repo_mut(), "example-user/parent", parent.id());
+        let repo = tx.commit("arrange bookmark PR base").await.expect("commit");
+        (repo, trunk, tip)
+    });
+    let trunk = TrackedPushTrunk {
+        branch: "main".to_owned(),
+        id: trunk.id().clone(),
+    };
+
+    let base = bookmark_pull_request_base(repo.as_ref(), Some(tip.id()), Some(&trunk))
+        .expect("base resolves");
+
+    assert_eq!(base.as_deref(), Some("example-user/parent"));
+}
+
+#[test]
+fn bookmark_pull_request_base_uses_trunk_for_stack_root() {
+    // Verifies: root PRs keep targeting the resolved trunk branch.
+    let fixture = TestWorkspace::new("bookmark-pr-base-trunk");
+    let settings = user_settings().expect("settings");
+    let (repo, trunk, target) = pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let target = write_child(tx.repo_mut(), &trunk, "root PR").await;
+        let repo = tx.commit("arrange root PR base").await.expect("commit");
+        (repo, trunk, target)
+    });
+    let trunk = TrackedPushTrunk {
+        branch: "main".to_owned(),
+        id: trunk.id().clone(),
+    };
+
+    let base = bookmark_pull_request_base(repo.as_ref(), Some(target.id()), Some(&trunk))
+        .expect("base resolves");
+
+    assert_eq!(base.as_deref(), Some("main"));
+}
+
+#[test]
 fn advance_trunk_for_sync_moves_main_to_current_and_creates_empty_child() {
     // Verifies: Sync preparation publishes current work locally and leaves the workspace ready.
     let fixture = TestWorkspace::new("advance-trunk-current");

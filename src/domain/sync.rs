@@ -35,7 +35,7 @@ pub fn sync_report(
     }
 }
 
-/// Updates PR descriptions for pushed tracked bookmarks and returns PRs for sync annotations.
+/// Updates PR descriptions and stack bases for pushed tracked bookmarks.
 pub async fn sync_pull_requests(
     context: &RepositoryContext,
     push: &TrackedPushOutcome,
@@ -50,45 +50,57 @@ pub async fn sync_pull_requests(
 
         let head = PullRequestHead::same_repository(&context.origin.github.owner, &bookmark.branch);
         let Some(pull_request) = github
-            .find_pull_request_for_head(&context.origin.github, &head)
+            .find_open_pull_request(&context.origin.github, &head)
             .await?
         else {
             continue;
         };
 
-        let pull_request = if let Some(description) = bookmark.pull_request_description.as_deref() {
-            sync_pull_request_description(context, github, pull_request, description).await?
-        } else {
-            pull_request
-        };
+        let pull_request = sync_pull_request_metadata(
+            context,
+            github,
+            pull_request,
+            bookmark.pull_request_description.as_deref(),
+            bookmark.pull_request_base.as_deref(),
+        )
+        .await?;
         pull_requests.push(pull_request);
     }
 
     Ok(pull_requests)
 }
 
-async fn sync_pull_request_description(
+async fn sync_pull_request_metadata(
     context: &RepositoryContext,
     github: &dyn GitHubClient,
     pull_request: PullRequestRecord,
-    description: &str,
+    description: Option<&str>,
+    base: Option<&str>,
 ) -> Result<PullRequestRecord, WorkflowError> {
-    let (title, body) = pull_request_description_from_text(description)?;
-    if pull_request.title == title && pull_request_body_matches(pull_request.body.as_deref(), &body)
-    {
+    let mut update = PullRequestUpdate::default();
+
+    if let Some(description) = description {
+        let (title, body) = pull_request_description_from_text(description)?;
+        if pull_request.title != title
+            || !pull_request_body_matches(pull_request.body.as_deref(), &body)
+        {
+            update.title = Some(title);
+            update.body = Some(body);
+        }
+    }
+
+    if let Some(base) = base {
+        if pull_request.base_branch != base {
+            update.base = Some(base.to_owned());
+        }
+    }
+
+    if update.title.is_none() && update.body.is_none() && update.base.is_none() {
         return Ok(pull_request);
     }
 
     Ok(github
-        .update_pull_request(
-            &context.origin.github,
-            pull_request.number,
-            PullRequestUpdate {
-                title: Some(title),
-                body: Some(body),
-                base: None,
-            },
-        )
+        .update_pull_request(&context.origin.github, pull_request.number, update)
         .await?)
 }
 

@@ -1105,6 +1105,7 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
             old_description: Some("Old title".to_owned()),
             new_description: Some("New title".to_owned()),
             pull_request_description: Some("New title\n\nNew body".to_owned()),
+            pull_request_base: Some("main".to_owned()),
             new_workspace_visibility: WorkspaceVisibility::default(),
         }],
         pushed_commits: Vec::new(),
@@ -1133,6 +1134,54 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
 }
 
 #[test]
+fn sync_pull_requests_updates_stack_base_without_rewriting_matching_description() {
+    // Verifies: stacked PR sync can retarget a child PR while leaving matching title/body alone.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "New title".to_owned(),
+            body: Some("New body".to_owned()),
+            head_branch: "example-user/current".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+        }),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/current".to_owned(),
+            old_short_commit_id: Some("11112222".to_owned()),
+            new_short_commit_id: Some("a1b2c3d4".to_owned()),
+            old_description: Some("Old title".to_owned()),
+            new_description: Some("New title".to_owned()),
+            pull_request_description: Some("New title\n\nNew body".to_owned()),
+            pull_request_base: Some("example-user/parent".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    let pull_requests = pollster::block_on(sync_pull_requests(&context(), &push, &github))
+        .expect("pull requests sync");
+
+    assert_eq!(pull_requests[0].base_branch, "example-user/parent");
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            7,
+            PullRequestUpdate {
+                title: None,
+                body: None,
+                base: Some("example-user/parent".to_owned()),
+            }
+        )]
+    );
+}
+
+#[test]
 fn sync_pull_requests_clears_body_for_title_only_descriptions() {
     // Verifies: Sync can clear stale GitHub body text when the local PR description has no body.
     let github = FakeGitHub {
@@ -1157,6 +1206,7 @@ fn sync_pull_requests_clears_body_for_title_only_descriptions() {
             old_description: Some("Old title".to_owned()),
             new_description: Some("New title".to_owned()),
             pull_request_description: Some("New title".to_owned()),
+            pull_request_base: Some("main".to_owned()),
             new_workspace_visibility: WorkspaceVisibility::default(),
         }],
         pushed_commits: Vec::new(),
@@ -1205,6 +1255,7 @@ fn sync_pull_requests_skips_title_only_update_when_github_body_is_absent() {
             old_description: Some("New title".to_owned()),
             new_description: Some("New title".to_owned()),
             pull_request_description: Some("New title".to_owned()),
+            pull_request_base: Some("main".to_owned()),
             new_workspace_visibility: WorkspaceVisibility::default(),
         }],
         pushed_commits: Vec::new(),

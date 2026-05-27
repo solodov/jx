@@ -224,6 +224,7 @@ pub struct PushedBookmarkSummary {
     pub old_description: Option<String>,
     pub new_description: Option<String>,
     pub pull_request_description: Option<String>,
+    pub pull_request_base: Option<String>,
     pub new_workspace_visibility: WorkspaceVisibility,
 }
 
