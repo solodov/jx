@@ -1809,11 +1809,50 @@ fn bookmark_pull_request_description_uses_first_stack_commit() {
         (repo, trunk, tip)
     });
 
+    let trunk = TrackedPushTrunk {
+        branch: "main".to_owned(),
+        id: trunk.id().clone(),
+    };
+
     let description =
-        bookmark_pull_request_description(repo.as_ref(), Some(tip.id()), Some(trunk.id()))
+        bookmark_pull_request_description(repo.as_ref(), Some(tip.id()), Some(&trunk))
             .expect("description resolves");
 
     assert_eq!(description.as_deref(), Some("PR title\n\nPR body"));
+}
+
+#[test]
+fn bookmark_pull_request_description_uses_first_commit_after_parent_bookmark() {
+    // Verifies: child PR text follows its own stack root when trunk has not advanced.
+    let fixture = TestWorkspace::new("bookmark-pr-description-parent");
+    let settings = user_settings().expect("settings");
+    let (repo, trunk, tip) = pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let parent = write_child(tx.repo_mut(), &trunk, "Parent PR").await;
+        let child = write_child(tx.repo_mut(), &parent, "Child PR\n\nChild body").await;
+        let tip = write_child(tx.repo_mut(), &child, "address child review comments").await;
+        set_local_bookmark(tx.repo_mut(), "example-user/parent", parent.id());
+        let repo = tx
+            .commit("arrange child bookmark PR description stack")
+            .await
+            .expect("commit");
+        (repo, trunk, tip)
+    });
+    let trunk = TrackedPushTrunk {
+        branch: "main".to_owned(),
+        id: trunk.id().clone(),
+    };
+
+    let description =
+        bookmark_pull_request_description(repo.as_ref(), Some(tip.id()), Some(&trunk))
+            .expect("description resolves");
+
+    assert_eq!(description.as_deref(), Some("Child PR\n\nChild body"));
 }
 
 #[test]

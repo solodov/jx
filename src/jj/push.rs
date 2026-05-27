@@ -425,6 +425,11 @@ pub(super) struct TrackedPushTrunk {
     pub(super) id: CommitId,
 }
 
+struct BookmarkStackBase {
+    branch: String,
+    id: CommitId,
+}
+
 pub(super) struct SyncableBookmarkUpdates {
     pub(super) pushable: Vec<BookmarkPushUpdate>,
     pub(super) skipped_conflicted: Vec<SkippedPushBookmarkSummary>,
@@ -482,7 +487,7 @@ pub(super) fn pushed_bookmark_summaries(
                 pull_request_description: bookmark_pull_request_description(
                     repo,
                     update.after.as_ref(),
-                    trunk.map(|trunk| &trunk.id),
+                    trunk,
                 )?,
                 pull_request_base: bookmark_pull_request_base(repo, update.after.as_ref(), trunk)?,
                 new_workspace_visibility: commit_workspace_visibility(
@@ -508,17 +513,17 @@ pub(super) fn commit_description(
         .transpose()
 }
 
-/// Returns the stack-root description that should back a PR for a bookmark target.
+/// Returns the local description that should back a PR for a pushed bookmark target.
 pub(super) fn bookmark_pull_request_description(
     repo: &dyn jj_lib::repo::Repo,
     target_id: Option<&CommitId>,
-    trunk_id: Option<&CommitId>,
+    trunk: Option<&TrackedPushTrunk>,
 ) -> Result<Option<String>, JjError> {
     let Some(target_id) = target_id else {
         return Ok(None);
     };
-    let description_commit_id = match trunk_id {
-        Some(trunk_id) => first_linear_stack_commit_id(repo, target_id, trunk_id)?
+    let description_commit_id = match bookmark_pull_request_stack_base(repo, target_id, trunk)? {
+        Some(base) => first_linear_stack_commit_id(repo, target_id, &base.id)?
             .unwrap_or_else(|| target_id.clone()),
         None => target_id.clone(),
     };
@@ -532,17 +537,11 @@ pub(super) fn bookmark_pull_request_base(
     target_id: Option<&CommitId>,
     trunk: Option<&TrackedPushTrunk>,
 ) -> Result<Option<String>, JjError> {
-    let (Some(target_id), Some(trunk)) = (target_id, trunk) else {
+    let Some(target_id) = target_id else {
         return Ok(None);
     };
 
-    if target_id == &trunk.id || !is_ancestor_or_equal_in_repo(repo, &trunk.id, target_id)? {
-        return Ok(None);
-    }
-
-    let base = nearest_linear_stack_parent_bookmark(repo, target_id, &trunk.id)?
-        .unwrap_or_else(|| trunk.branch.clone());
-    Ok(Some(base))
+    Ok(bookmark_pull_request_stack_base(repo, target_id, trunk)?.map(|base| base.branch))
 }
 
 fn first_linear_stack_commit_id(
@@ -574,11 +573,32 @@ fn first_linear_stack_commit_id(
     }
 }
 
+fn bookmark_pull_request_stack_base(
+    repo: &dyn jj_lib::repo::Repo,
+    target_id: &CommitId,
+    trunk: Option<&TrackedPushTrunk>,
+) -> Result<Option<BookmarkStackBase>, JjError> {
+    let Some(trunk) = trunk else {
+        return Ok(None);
+    };
+    if target_id == &trunk.id || !is_ancestor_or_equal_in_repo(repo, &trunk.id, target_id)? {
+        return Ok(None);
+    }
+
+    let base = nearest_linear_stack_parent_bookmark(repo, target_id, &trunk.id)?.or_else(|| {
+        Some(BookmarkStackBase {
+            branch: trunk.branch.clone(),
+            id: trunk.id.clone(),
+        })
+    });
+    Ok(base)
+}
+
 fn nearest_linear_stack_parent_bookmark(
     repo: &dyn jj_lib::repo::Repo,
     target_id: &CommitId,
     trunk_id: &CommitId,
-) -> Result<Option<String>, JjError> {
+) -> Result<Option<BookmarkStackBase>, JjError> {
     if target_id == trunk_id || !is_ancestor_or_equal_in_repo(repo, trunk_id, target_id)? {
         return Ok(None);
     }
@@ -598,7 +618,10 @@ fn nearest_linear_stack_parent_bookmark(
             return Ok(None);
         }
         if let Some((bookmark, _)) = repo.view().local_bookmarks_for_commit(parent_id).next() {
-            return Ok(Some(bookmark.as_str().to_owned()));
+            return Ok(Some(BookmarkStackBase {
+                branch: bookmark.as_str().to_owned(),
+                id: parent_id.clone(),
+            }));
         }
         cursor = load_commit_from_repo(repo, parent_id)?;
     }
