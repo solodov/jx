@@ -3049,6 +3049,72 @@ fn stack_tracking_retains_missing_stored_ancestors() {
 }
 
 #[test]
+fn stack_track_refreshes_missing_stored_ancestor_by_pull_request_number() {
+    // Verifies: stack tracking refreshes disappeared parent metadata from its durable PR number.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Stale root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let root = PullRequestRecord {
+        number: 10,
+        title: "Merged root".to_owned(),
+        body: None,
+        head_branch: "deleted/root".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+        draft: false,
+        merged: true,
+    };
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/child".to_owned()],
+        authored_open_pull_requests_by_head: BTreeMap::from([(
+            "topic/child".to_owned(),
+            pull_request_choice_record(11, "Child", "topic/child", "topic/root", false),
+        )]),
+        pull_requests_by_number: BTreeMap::from([(10, root)]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "track"], &environment, &services)
+        .expect("stack tracking succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Stack state:\n  ✓ #10     Merged root\n  └─ ◯ #11     Child\n"
+    );
+    assert_eq!(services.pull_request_number_calls.borrow().as_slice(), [10]);
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes[0].branch, "topic/root");
+    assert_eq!(metadata.nodes[0].title, "Merged root");
+    assert!(metadata.nodes[0].merged);
+}
+
+#[test]
 fn remote_status_loads_context_and_renders_github_freshness() {
     // Verifies: Remote status loads context and renders GitHub freshness.
     let workspace = TestWorkspace::new();
@@ -4599,6 +4665,94 @@ fn sync_stack_pushes_current_pull_request_stack() {
         ]
     );
     assert!(result.stdout.starts_with("Synced: origin/main ("));
+}
+
+#[test]
+fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
+    // Verifies: sync -s refreshes stack context metadata for durable PR nodes before syncing descriptions.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Stale root".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "topic/child".to_owned(),
+                    base_branch: "topic/root".to_owned(),
+                    parent_branch: Some("topic/root".to_owned()),
+                    pull_request: Some(11),
+                    parent_pull_request: Some(10),
+                    title: "Child".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let root = PullRequestRecord {
+        number: 10,
+        title: "Merged root".to_owned(),
+        body: None,
+        head_branch: "deleted/root".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+        draft: false,
+        merged: true,
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        open_pull_request_candidates: vec!["topic/child".to_owned()],
+        pull_request_bookmarks: vec!["topic/child".to_owned()],
+        pull_requests_by_number: BTreeMap::from([(10, root)]),
+        tracked_push: TrackedPushOutcome {
+            pushed_refs: 1,
+            bookmarks: vec![PushedBookmarkSummary {
+                branch: "topic/child".to_owned(),
+                old_short_commit_id: Some("11112222".to_owned()),
+                new_short_commit_id: Some("33334444".to_owned()),
+                old_description: Some("old child".to_owned()),
+                new_description: Some("Child".to_owned()),
+                pull_request_description: Some("Child".to_owned()),
+                pull_request_base: Some("topic/root".to_owned()),
+                new_workspace_visibility: current_workspace_visibility(),
+            }],
+            pushed_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "-s"], &environment, &services)
+        .expect("stack sync succeeds");
+
+    assert!(result.stdout.starts_with("Synced: origin/main ("));
+    assert_eq!(
+        services.pull_request_number_calls.borrow().as_slice(),
+        [10, 11]
+    );
+    let synced_metadata = services.sync_pull_request_metadata.borrow();
+    assert_eq!(synced_metadata.len(), 1);
+    assert_eq!(synced_metadata[0].nodes[0].branch, "topic/root");
+    assert_eq!(synced_metadata[0].nodes[0].title, "Merged root");
+    assert!(synced_metadata[0].nodes[0].merged);
 }
 
 #[test]
@@ -6646,6 +6800,8 @@ struct FakeServices {
     authored_open_pull_request_head_calls: std::cell::RefCell<Vec<(String, String)>>,
     pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
     pull_request_head_calls: std::cell::RefCell<Vec<String>>,
+    pull_requests_by_number: BTreeMap<u64, PullRequestRecord>,
+    pull_request_number_calls: std::cell::RefCell<Vec<u64>>,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
@@ -6761,6 +6917,8 @@ impl Default for FakeServices {
             authored_open_pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             pull_requests_by_head: BTreeMap::new(),
             pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
+            pull_requests_by_number: BTreeMap::new(),
+            pull_request_number_calls: std::cell::RefCell::new(Vec::new()),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             origin_push_access_roots: None,
@@ -7252,6 +7410,15 @@ impl CommandServices for FakeServices {
             .borrow_mut()
             .push(branch.to_owned());
         Ok(self.pull_requests_by_head.get(branch).cloned())
+    }
+
+    fn find_pull_request_by_number(
+        &self,
+        _context: &RepositoryContext,
+        number: u64,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.pull_request_number_calls.borrow_mut().push(number);
+        Ok(self.pull_requests_by_number.get(&number).cloned())
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {

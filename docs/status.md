@@ -9,10 +9,10 @@ This file tracks plans managed in the markdown-backed layout.
 ### [20260527-140943-unified-pull-request-stack-model](./20260527-140943-unified-pull-request-stack-model.md)
 - title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and Rendering
 - status: implementing
-- currentPhase: 6
-- currentPhaseTitle: Unify stack rendering for jx stack, jx sync -s, and PR descriptions
-- nextPhase: 7
-- nextPhaseTitle: Add GitHub refresh support for durable PR numbers
+- currentPhase: 7
+- currentPhaseTitle: Add GitHub refresh support for durable PR numbers
+- nextPhase: none
+- nextPhaseTitle: none
 - totalPhases: 7
 - updated: 2026-05-27
 

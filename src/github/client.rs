@@ -55,6 +55,13 @@ pub trait GitHubClient: Send + Sync {
         head: &PullRequestHead,
     ) -> Result<Option<PullRequestRecord>, GitHubError>;
 
+    /// Finds a pull request by durable repository-local PR number.
+    async fn find_pull_request_by_number(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Option<PullRequestRecord>, GitHubError>;
+
     /// Creates a pull request from domain input.
     async fn create_pull_request(
         &self,
@@ -354,6 +361,23 @@ impl GitHubClient for OctocrabGitHubClient {
             "find pull request",
         )
         .await
+    }
+
+    async fn find_pull_request_by_number(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Option<PullRequestRecord>, GitHubError> {
+        match self
+            .crab
+            .pulls(&repository.owner, &repository.name)
+            .get(number)
+            .await
+        {
+            Ok(pull) => Ok(Some(map_pull_request(pull))),
+            Err(source) if api_not_found(&source) => Ok(None),
+            Err(source) => Err(api_error("find pull request by number", source)),
+        }
     }
 
     async fn create_pull_request(

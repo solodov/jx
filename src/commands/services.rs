@@ -154,6 +154,13 @@ pub(super) trait CommandServices {
         branch: &str,
     ) -> Result<Option<PullRequestRecord>, WorkflowError>;
 
+    /// Finds a GitHub pull request by durable repository-local PR number.
+    fn find_pull_request_by_number(
+        &self,
+        context: &RepositoryContext,
+        number: u64,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError>;
+
     /// Opens a URL in the platform default browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
 
@@ -537,6 +544,21 @@ impl CommandServices for ProductionServices<'_> {
 
             Ok(github
                 .find_pull_request_for_head(&context.origin.github, &head)
+                .await?)
+        })
+    }
+
+    fn find_pull_request_by_number(
+        &self,
+        context: &RepositoryContext,
+        number: u64,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+
+            Ok(github
+                .find_pull_request_by_number(&context.origin.github, number)
                 .await?)
         })
     }

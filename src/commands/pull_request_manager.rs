@@ -47,9 +47,9 @@ impl<'a> PullRequestStackManager<'a> {
             ));
         }
 
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
         let live_pull_requests = self.authored_open_pull_requests_for_branches(&local_branches)?;
-        let metadata =
-            stack_metadata_from_pull_requests(&live_pull_requests, &self.read_metadata()?);
+        let metadata = stack_metadata_from_pull_requests(&live_pull_requests, &metadata);
         self.write_metadata(&metadata)?;
 
         Ok(PullRequestStackSnapshot::from_metadata(
@@ -132,8 +132,8 @@ impl<'a> PullRequestStackManager<'a> {
         }
         seed_pull_requests.push(report.pull_request.clone());
 
-        let metadata =
-            upsert_stack_metadata_pull_requests(&seed_pull_requests, &self.read_metadata()?);
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
+        let metadata = upsert_stack_metadata_pull_requests(&seed_pull_requests, &metadata);
         self.write_metadata(&metadata)?;
 
         let snapshot = PullRequestStackSnapshot::from_metadata(
@@ -149,7 +149,7 @@ impl<'a> PullRequestStackManager<'a> {
 
         let component_pull_requests =
             self.pull_requests_for_component(&component, &seed_pull_requests)?;
-        let metadata = upsert_stack_metadata_pull_requests(&component_pull_requests, &metadata);
+        let metadata = refresh_stack_metadata_pull_requests(&component_pull_requests, &metadata);
         self.write_metadata(&metadata)?;
 
         let refreshed_snapshot = PullRequestStackSnapshot::from_metadata(
@@ -160,7 +160,7 @@ impl<'a> PullRequestStackManager<'a> {
         );
         let refreshed_component = refreshed_snapshot.component_for_selection(selection);
         let push = stack_context_sync_push(&refreshed_component, &component_pull_requests);
-        let pull_requests = self.sync_pull_requests(&push)?;
+        let pull_requests = self.sync_pull_requests_with_metadata(&push, &metadata)?;
 
         Ok(PullRequestStackPublishUpdate { pull_requests })
     }
@@ -173,10 +173,8 @@ impl<'a> PullRequestStackManager<'a> {
         if push.bookmarks.is_empty() {
             return Ok(Vec::new());
         }
-        let metadata = self.read_metadata()?;
-        Ok(self
-            .services
-            .sync_pull_requests(self.context, push, &metadata)?)
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
+        self.sync_pull_requests_with_metadata(push, &metadata)
     }
 
     /// Removes durable stack state while preserving generated metadata ignore rules.
@@ -244,10 +242,21 @@ impl<'a> PullRequestStackManager<'a> {
             if pull_requests_by_branch.contains_key(&node.branch) {
                 continue;
             }
-            let Some(pull_request) = self
+            let pull_request = match self
                 .services
                 .find_pull_request_for_head(self.context, &node.branch)?
-            else {
+            {
+                Some(pull_request) => Some(pull_request),
+                None => node
+                    .pull_request_number()
+                    .map(|number| {
+                        self.services
+                            .find_pull_request_by_number(self.context, number)
+                    })
+                    .transpose()?
+                    .flatten(),
+            };
+            let Some(pull_request) = pull_request else {
                 continue;
             };
             pull_requests_by_branch.insert(node.branch.clone(), pull_request);
@@ -258,6 +267,53 @@ impl<'a> PullRequestStackManager<'a> {
             .iter()
             .filter_map(|node| pull_requests_by_branch.get(&node.branch).cloned())
             .collect())
+    }
+
+    fn sync_pull_requests_with_metadata(
+        &self,
+        push: &TrackedPushOutcome,
+        metadata: &StackMetadata,
+    ) -> Result<Vec<PullRequestRecord>, CommandError> {
+        Ok(self
+            .services
+            .sync_pull_requests(self.context, push, metadata)?)
+    }
+
+    fn refresh_metadata_by_number(
+        &self,
+        metadata: StackMetadata,
+    ) -> Result<StackMetadata, CommandError> {
+        let pull_requests = self.pull_requests_for_metadata_numbers(&metadata)?;
+        if pull_requests.is_empty() {
+            return Ok(metadata);
+        }
+
+        let refreshed = refresh_stack_metadata_pull_requests(&pull_requests, &metadata);
+        if refreshed != metadata {
+            self.write_metadata(&refreshed)?;
+        }
+        Ok(refreshed)
+    }
+
+    fn pull_requests_for_metadata_numbers(
+        &self,
+        metadata: &StackMetadata,
+    ) -> Result<Vec<PullRequestRecord>, CommandError> {
+        let mut pull_requests = Vec::new();
+        let mut seen_numbers = BTreeSet::new();
+        for number in metadata.nodes.iter().filter_map(|node| node.pull_request) {
+            if !seen_numbers.insert(number) {
+                continue;
+            }
+            let Some(pull_request) = self
+                .services
+                .find_pull_request_by_number(self.context, number)?
+            else {
+                continue;
+            };
+            pull_requests.push(pull_request);
+        }
+        Ok(pull_requests)
     }
 
     fn read_metadata(&self) -> Result<StackMetadata, CommandError> {
@@ -290,10 +346,18 @@ fn stack_context_sync_push(
         .iter()
         .map(|pull_request| (pull_request.head_branch.as_str(), pull_request))
         .collect::<BTreeMap<_, _>>();
+    let pull_requests_by_number = pull_requests
+        .iter()
+        .map(|pull_request| (pull_request.number, pull_request))
+        .collect::<BTreeMap<_, _>>();
     let bookmarks = component
         .nodes
         .iter()
-        .filter_map(|node| pull_requests_by_branch.get(node.branch.as_str()).copied())
+        .filter_map(|node| {
+            node.pull_request_number()
+                .and_then(|number| pull_requests_by_number.get(&number).copied())
+                .or_else(|| pull_requests_by_branch.get(node.branch.as_str()).copied())
+        })
         .map(|pull_request| PushedBookmarkSummary {
             branch: pull_request.head_branch.clone(),
             old_short_commit_id: None,

@@ -131,6 +131,59 @@ fn pull_request_stack_snapshot_adds_live_prs_missing_from_metadata() {
 }
 
 #[test]
+fn pull_request_stack_snapshot_refreshes_stored_node_by_pull_request_number() {
+    // Verifies: Durable nodes can be refreshed from PR numbers even when branch lookup is unavailable.
+    let metadata = StackMetadata {
+        version: 1,
+        nodes: vec![StackMetadataNode {
+            branch: "topic/root".to_owned(),
+            base_branch: "main".to_owned(),
+            parent_branch: None,
+            pull_request: Some(10),
+            parent_pull_request: None,
+            title: "Stored root".to_owned(),
+            url: None,
+            draft: false,
+            merged: false,
+        }],
+    };
+    let live_root = PullRequestRecord {
+        number: 10,
+        title: "Live root".to_owned(),
+        body: None,
+        head_branch: "deleted/root".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+        draft: true,
+        merged: true,
+    };
+
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        &metadata,
+        &[],
+        std::slice::from_ref(&live_root),
+        PullRequestStackSelection::pull_request(10),
+    );
+    let refreshed = refresh_stack_metadata_pull_requests(&[live_root], &metadata);
+
+    assert_eq!(snapshot.nodes.len(), 1);
+    assert_eq!(snapshot.nodes[0].branch, "topic/root");
+    assert_eq!(snapshot.nodes[0].title, "Live root");
+    assert_eq!(snapshot.nodes[0].pull_request_number(), Some(10));
+    assert!(snapshot.nodes[0].draft);
+    assert!(snapshot.nodes[0].merged);
+    assert!(snapshot.nodes[0].is_current);
+    assert_eq!(refreshed.nodes[0].branch, "topic/root");
+    assert_eq!(refreshed.nodes[0].title, "Live root");
+    assert_eq!(
+        refreshed.nodes[0].url,
+        snapshot.nodes[0].pull_request.as_ref().unwrap().url
+    );
+    assert!(refreshed.nodes[0].draft);
+    assert!(refreshed.nodes[0].merged);
+}
+
+#[test]
 fn check_readiness_validates_github_access_and_plans_bookmark_candidate() {
     // Verifies: Check readiness validates GitHub access and plans bookmark candidate.
     let github = FakeGitHub::default();
@@ -1894,6 +1947,17 @@ impl GitHubClient for FakeGitHub {
         _head: &PullRequestHead,
     ) -> Result<Option<PullRequestRecord>, GitHubError> {
         Ok(self.open_pull_request.clone())
+    }
+
+    async fn find_pull_request_by_number(
+        &self,
+        _repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Option<PullRequestRecord>, GitHubError> {
+        Ok(self
+            .open_pull_request
+            .clone()
+            .filter(|pull_request| pull_request.number == number))
     }
 
     async fn create_pull_request(

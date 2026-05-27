@@ -30,24 +30,36 @@ impl PullRequestStackSnapshot {
             .enumerate()
             .map(|(index, node)| (node.branch.clone(), index))
             .collect::<BTreeMap<_, _>>();
+        let mut indexes_by_pull_request = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| node.pull_request_number().map(|number| (number, index)))
+            .collect::<BTreeMap<_, _>>();
 
         let mut live_pull_requests = live_pull_requests.to_vec();
         live_pull_requests.sort_by(|left, right| {
             pull_request_stack_sort_key(left).cmp(&pull_request_stack_sort_key(right))
         });
         for pull_request in &live_pull_requests {
-            match indexes_by_branch
-                .get(pull_request.head_branch.as_str())
-                .copied()
-            {
-                Some(index) => nodes[index].apply_live_pull_request(pull_request),
-                None => {
+            match (
+                indexes_by_branch
+                    .get(pull_request.head_branch.as_str())
+                    .copied(),
+                indexes_by_pull_request.get(&pull_request.number).copied(),
+            ) {
+                (Some(index), _) => {
+                    nodes[index].apply_live_pull_request(pull_request);
+                    indexes_by_pull_request.insert(pull_request.number, index);
+                }
+                (None, Some(index)) => nodes[index].refresh_live_pull_request(pull_request),
+                (None, None) => {
                     let index = nodes.len();
                     nodes.push(PullRequestStackNode::from_live_pull_request(
                         pull_request,
                         &local_branches,
                     ));
                     indexes_by_branch.insert(pull_request.head_branch.clone(), index);
+                    indexes_by_pull_request.insert(pull_request.number, index);
                 }
             }
         }
@@ -226,6 +238,10 @@ impl PullRequestStackNode {
 
     fn apply_live_pull_request(&mut self, pull_request: &PullRequestRecord) {
         self.base_branch.clone_from(&pull_request.base_branch);
+        self.refresh_live_pull_request(pull_request);
+    }
+
+    fn refresh_live_pull_request(&mut self, pull_request: &PullRequestRecord) {
         self.title.clone_from(&pull_request.title);
         self.pull_request = Some(PullRequestStackPullRequest {
             number: pull_request.number,
@@ -376,6 +392,33 @@ pub fn upsert_stack_metadata_pull_requests(
     StackMetadata { version: 1, nodes }
 }
 
+/// Refreshes durable stack metadata from PR records matched by pull-request number.
+pub fn refresh_stack_metadata_pull_requests(
+    pull_requests: &[PullRequestRecord],
+    existing_metadata: &StackMetadata,
+) -> StackMetadata {
+    let pull_requests_by_number = pull_requests
+        .iter()
+        .map(|pull_request| (pull_request.number, pull_request))
+        .collect::<BTreeMap<_, _>>();
+    let mut nodes = existing_metadata
+        .nodes
+        .iter()
+        .map(|node| {
+            match node
+                .pull_request
+                .and_then(|number| pull_requests_by_number.get(&number))
+            {
+                Some(pull_request) => refreshed_stack_metadata_node(node, pull_request),
+                None => node.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
 /// Builds durable stack metadata from live PR records while retaining missing ancestors.
 pub fn stack_metadata_from_pull_requests(
     pull_requests: &[PullRequestRecord],
@@ -456,6 +499,23 @@ fn stack_metadata_node_from_pull_request(
         parent_branch,
         pull_request: Some(pull_request.number),
         parent_pull_request,
+        title: pull_request_title(pull_request).to_owned(),
+        url: pull_request.html_url.clone(),
+        draft: pull_request.draft,
+        merged: pull_request.merged,
+    }
+}
+
+fn refreshed_stack_metadata_node(
+    node: &StackMetadataNode,
+    pull_request: &PullRequestRecord,
+) -> StackMetadataNode {
+    StackMetadataNode {
+        branch: node.branch.clone(),
+        base_branch: node.base_branch.clone(),
+        parent_branch: node.parent_branch.clone(),
+        pull_request: Some(pull_request.number),
+        parent_pull_request: node.parent_pull_request,
         title: pull_request_title(pull_request).to_owned(),
         url: pull_request.html_url.clone(),
         draft: pull_request.draft,

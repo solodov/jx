@@ -55,6 +55,10 @@ pub(super) fn compare_error(base: &str, head: &str, source: octocrab::Error) -> 
     api_error("compare commits", source)
 }
 
+pub(super) fn api_not_found(source: &octocrab::Error) -> bool {
+    octocrab_github_error(source).is_some_and(|error| error.status_code.as_u16() == 404)
+}
+
 fn octocrab_github_error(source: &octocrab::Error) -> Option<&octocrab::GitHubError> {
     match source {
         octocrab::Error::GitHub { source, .. } => Some(source.as_ref()),
