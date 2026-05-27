@@ -122,6 +122,30 @@ pub struct PullRequestStackRow<'a> {
     pub prefix: String,
 }
 
+impl PullRequestStackRow<'_> {
+    /// Returns the stable status symbol shared by stack renderers.
+    pub fn status_symbol(&self) -> &'static str {
+        self.node.status_symbol()
+    }
+
+    /// Returns the trimmed title fallback shared by stack renderers.
+    pub fn display_title(&self) -> &str {
+        self.node.display_title()
+    }
+
+    /// Returns the stable plain-text row label shared by CLI stack views.
+    pub fn plain_label(&self) -> String {
+        let mut label = self.prefix.clone();
+        label.push_str(self.status_symbol());
+        label.push(' ');
+        if let Some(number) = self.node.pull_request_number() {
+            label.push_str(&format!("#{number:<6} "));
+        }
+        label.push_str(self.display_title());
+        label
+    }
+}
+
 /// Optional current selection used to mark one stack node as current.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PullRequestStackSelection {
@@ -215,6 +239,29 @@ impl PullRequestStackNode {
         self.pull_request
             .as_ref()
             .map(|pull_request| pull_request.number)
+    }
+
+    /// Returns the stable status symbol shared by CLI and Markdown stack renderers.
+    pub fn status_symbol(&self) -> &'static str {
+        if self.merged {
+            "✓"
+        } else if self.is_current {
+            "◉"
+        } else if self.draft {
+            "◌"
+        } else {
+            "◯"
+        }
+    }
+
+    /// Returns a non-empty title for renderer labels.
+    pub fn display_title(&self) -> &str {
+        let title = self.title.trim();
+        if title.is_empty() {
+            "(untitled)"
+        } else {
+            title
+        }
     }
 }
 

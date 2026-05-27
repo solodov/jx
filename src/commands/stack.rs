@@ -38,7 +38,11 @@ fn render_stack_snapshot(snapshot: &PullRequestStackSnapshot) -> Result<String, 
 }
 
 fn stack_snapshot_rows(snapshot: &PullRequestStackSnapshot) -> Vec<String> {
-    snapshot.rows().into_iter().map(stack_row_label).collect()
+    snapshot
+        .rows()
+        .into_iter()
+        .map(|row| row.plain_label())
+        .collect()
 }
 
 #[cfg(test)]
@@ -54,34 +58,4 @@ pub(super) fn stack_metadata_rows(nodes: &[StackMetadataNode]) -> Vec<String> {
         PullRequestStackSelection::default(),
     );
     stack_snapshot_rows(&snapshot)
-}
-
-fn stack_row_label(row: PullRequestStackRow<'_>) -> String {
-    let mut label = row.prefix;
-    label.push_str(stack_node_status(row.node));
-    label.push(' ');
-    if let Some(number) = row.node.pull_request_number() {
-        label.push_str(&format!("#{number:<6} "));
-    }
-    label.push_str(stack_node_title(row.node));
-    label
-}
-
-fn stack_node_status(node: &PullRequestStackNode) -> &'static str {
-    if node.merged {
-        "✓"
-    } else if node.draft {
-        "◌"
-    } else {
-        "◯"
-    }
-}
-
-fn stack_node_title(node: &PullRequestStackNode) -> &str {
-    let title = node.title.trim();
-    if title.is_empty() {
-        "(untitled)"
-    } else {
-        title
-    }
 }

@@ -197,34 +197,12 @@ fn pull_request_record_from_stack_node(node: &PullRequestStackNode) -> Option<Pu
 }
 
 fn pull_request_choice_label_for_row(row: PullRequestStackRow<'_>) -> String {
-    let node = row.node;
-    let title = if node.title.trim().is_empty() {
-        "(untitled)"
-    } else {
-        node.title.trim()
-    };
-    let label = format!(
-        "{}{status} #{number:<6} {title}",
-        row.prefix,
-        status = pull_request_choice_status(node),
-        number = node.pull_request_number().unwrap_or_default(),
-    );
-    if node.draft {
+    let draft = row.node.draft;
+    let label = row.plain_label();
+    if draft {
         format!("{PULL_REQUEST_DRAFT_STYLE}{label}{RESET_STYLE}")
     } else {
         label
-    }
-}
-
-fn pull_request_choice_status(node: &PullRequestStackNode) -> &'static str {
-    if node.merged {
-        "✓"
-    } else if node.is_current {
-        "◉"
-    } else if node.draft {
-        "◌"
-    } else {
-        "◯"
     }
 }
 

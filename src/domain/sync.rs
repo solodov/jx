@@ -158,7 +158,6 @@ fn render_pull_request_stack_context(
 
 fn stack_context_row(row: PullRequestStackRow<'_>, repository_url: &str) -> String {
     let node = row.node;
-    let status = stack_context_status(node);
     let link = stack_context_link(node, repository_url);
     let entry = if node.is_current {
         format!("**{link}** — this PR")
@@ -169,7 +168,8 @@ fn stack_context_row(row: PullRequestStackRow<'_>, repository_url: &str) -> Stri
     };
     format!(
         "{}{status} {entry}",
-        markdown_stack_tree_prefix(&row.prefix)
+        markdown_stack_tree_prefix(&row.prefix),
+        status = row.status_symbol(),
     )
 }
 
@@ -190,27 +190,10 @@ fn markdown_stack_tree_indent(indent: &str) -> String {
         .replace("   ", "&nbsp;&nbsp;&nbsp;")
 }
 
-fn stack_context_status(node: &PullRequestStackNode) -> &'static str {
-    if node.merged {
-        "✓"
-    } else if node.is_current {
-        "◉"
-    } else if node.draft {
-        "◌"
-    } else {
-        "◯"
-    }
-}
-
 fn stack_context_link(node: &PullRequestStackNode, repository_url: &str) -> String {
-    let title = if node.title.trim().is_empty() {
-        "(untitled)"
-    } else {
-        node.title.trim()
-    };
     let label = match node.pull_request_number() {
-        Some(number) => format!("#{} {}", number, title),
-        None => title.to_owned(),
+        Some(number) => format!("#{} {}", number, node.display_title()),
+        None => node.display_title().to_owned(),
     };
     match &node.pull_request {
         Some(pull_request) => {
