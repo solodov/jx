@@ -696,7 +696,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("sync")
                 .about("Fetch origin and push repository or selected bookmark state")
                 .long_about(
-                    "Fetch origin and push repository or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Pass a jj revision or bookmark to sync one bookmarked target instead. Use --repo to force repository mode explicitly. Use --all to sync every eligible primary repository from configured layout roots without prompting.",
+                    "Fetch origin and push repository or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync every eligible primary repository from configured layout roots without prompting.",
                 )
                 .arg(sync_all_arg())
                 .arg(sync_repo_arg())
@@ -890,6 +890,7 @@ fn sync_all_arg() -> Arg {
 
 fn sync_repo_arg() -> Arg {
     Arg::new("repo")
+        .short('r')
         .long("repo")
         .action(ArgAction::SetTrue)
         .conflicts_with_all(["all", "revision"])

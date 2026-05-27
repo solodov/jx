@@ -3631,8 +3631,8 @@ path = "{repo}"
 }
 
 #[test]
-fn sync_all_syncs_writable_repositories_when_origin_does_not_need_pulling() {
-    // Verifies: Global sync can push tracked state even when local jj work is present.
+fn sync_all_shorthand_syncs_writable_repositories_when_origin_does_not_need_pulling() {
+    // Verifies: -a selects global sync and can push tracked state even with local jj work present.
     let workspace = TestWorkspace::new();
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -3708,7 +3708,7 @@ path = "{repo}"
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
     };
     let result = run_with_args_and_progress(
-        ["jx", "sync", "--all"],
+        ["jx", "sync", "-a"],
         &environment,
         &services,
         &progress,
@@ -4240,8 +4240,8 @@ fn sync_accepts_revision_argument() {
 }
 
 #[test]
-fn sync_creates_missing_origin_repository_from_layout() {
-    // Verifies: Missing-origin sync can create the expected private GitHub repo and push main.
+fn sync_repo_shorthand_creates_missing_origin_repository_from_layout() {
+    // Verifies: -r forces repository sync while preserving missing-origin bootstrap behavior.
     let workspace = TestWorkspace::new_under("work/example-repo");
     workspace.write_file(
         ".jx.toml",
@@ -4277,7 +4277,7 @@ path = "{repo}"
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "sync", "--repo"], &environment, &services)
+    let result = run_with_args_and_services(["jx", "sync", "-r"], &environment, &services)
         .expect("sync bootstrap succeeds");
 
     assert_eq!(services.create_repository_calls.get(), 1);
