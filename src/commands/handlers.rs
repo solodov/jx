@@ -1119,7 +1119,12 @@ fn advance_trunk_changed(advance: &AdvanceTrunkOutcome) -> bool {
 }
 
 fn tracked_push_changed(push: &TrackedPushOutcome) -> bool {
-    push.pushed_refs > 0 || !push.bookmarks.is_empty() || !push.pushed_commits.is_empty()
+    push.pushed_refs > 0
+        || !push.pushed_commits.is_empty()
+        || push
+            .bookmarks
+            .iter()
+            .any(|bookmark| bookmark.old_short_commit_id != bookmark.new_short_commit_id)
 }
 
 fn sync_report_has_conflicts(report: &SyncReport) -> bool {

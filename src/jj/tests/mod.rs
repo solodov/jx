@@ -1789,6 +1789,66 @@ fn syncable_tracked_push_skips_bookmarks_with_conflicted_commits() {
 }
 
 #[test]
+fn syncable_tracked_push_includes_unchanged_bookmark_pr_metadata() {
+    // Verifies: repository sync can repair PR metadata even when bookmark refs already match origin.
+    let fixture = TestWorkspace::new("push-syncable-unchanged-pr-metadata");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let parent = write_child(tx.repo_mut(), &trunk, "Parent PR").await;
+        let child = write_child(tx.repo_mut(), &parent, "Child PR\n\nChild body").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_origin_bookmark(tx.repo_mut(), "example-user/parent", parent.id());
+        set_local_bookmark(tx.repo_mut(), "example-user/parent", parent.id());
+        set_origin_bookmark(tx.repo_mut(), "example-user/child", child.id());
+        set_local_bookmark(tx.repo_mut(), "example-user/child", child.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), child.id().clone())
+            .expect("set working-copy commit");
+
+        let repo = tx
+            .commit("arrange unchanged syncable bookmarks")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let outcome = subject
+        .push_syncable_tracked()
+        .expect("syncable tracked push succeeds");
+
+    assert_eq!(outcome.pushed.pushed_refs, 0);
+    assert_eq!(
+        outcome
+            .pushed
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_description.as_deref(),
+                bookmark.pull_request_base.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "example-user/child",
+                Some("Child PR\n\nChild body"),
+                Some("example-user/parent")
+            ),
+            ("example-user/parent", Some("Parent PR"), Some("main")),
+        ]
+    );
+}
+
+#[test]
 fn bookmark_pull_request_description_uses_first_stack_commit() {
     // Verifies: Sync PR text follows the PR-opening stack root, not later review-fix commits.
     let fixture = TestWorkspace::new("bookmark-pr-description-root");

@@ -62,11 +62,19 @@ impl JjWorkspace {
         self.ensure_git_backed()?;
         let updates = self.tracked_origin_bookmark_updates()?;
         let split = self.split_conflicted_tracked_bookmark_updates(updates)?;
-        let pushed = self.push_tracked_updates(
+        let mut pushed = self.push_tracked_updates(
             split.pushable,
             "jx sync push tracked bookmarks".to_owned(),
             "tracked bookmarks".to_owned(),
         )?;
+        let pushed_branches = pushed
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.branch.clone())
+            .collect::<BTreeSet<_>>();
+        pushed
+            .bookmarks
+            .extend(self.unchanged_tracked_bookmark_summaries(&pushed_branches)?);
 
         Ok(SyncPushOutcome {
             pushed,
@@ -247,6 +255,52 @@ impl JjWorkspace {
         }
 
         Ok(updates)
+    }
+
+    fn unchanged_tracked_bookmark_summaries(
+        &self,
+        exclude: &BTreeSet<String>,
+    ) -> Result<Vec<PushedBookmarkSummary>, JjError> {
+        let trunk = self.tracked_push_trunk();
+        let updates = self.unchanged_tracked_origin_bookmark_updates(
+            exclude,
+            trunk.as_ref().map(|trunk| &trunk.id),
+        );
+        pushed_bookmark_summaries(
+            self.repo.as_ref(),
+            &updates,
+            trunk.as_ref(),
+            self.workspace.workspace_name(),
+        )
+    }
+
+    fn unchanged_tracked_origin_bookmark_updates(
+        &self,
+        exclude: &BTreeSet<String>,
+        trunk_id: Option<&CommitId>,
+    ) -> Vec<BookmarkPushUpdate> {
+        self.repo
+            .view()
+            .local_remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
+            .filter_map(|(name, targets)| {
+                if exclude.contains(name.as_str()) || !targets.remote_ref.is_tracked() {
+                    return None;
+                }
+                let local = targets.local_target.as_normal()?;
+                let remote = targets.remote_ref.target.as_normal()?;
+                if local != remote || trunk_id == Some(local) {
+                    return None;
+                }
+
+                Some((
+                    name.to_owned(),
+                    Diff {
+                        before: Some(local.clone()),
+                        after: Some(local.clone()),
+                    },
+                ))
+            })
+            .collect()
     }
 
     pub(super) fn split_conflicted_tracked_bookmark_updates(
