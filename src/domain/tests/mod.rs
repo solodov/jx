@@ -26,6 +26,114 @@ use crate::{
 use super::*;
 
 #[test]
+fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {
+    // Verifies: Snapshot nodes preserve durable stack edges while refreshing PR fields from GitHub.
+    let metadata = StackMetadata {
+        version: 1,
+        nodes: vec![
+            StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Stored root".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                draft: false,
+                merged: true,
+            },
+            StackMetadataNode {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Stored child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+        ],
+    };
+    let live_child = PullRequestRecord {
+        number: 11,
+        title: "Live child".to_owned(),
+        body: None,
+        head_branch: "topic/child".to_owned(),
+        base_branch: "topic/root".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
+        draft: true,
+        merged: false,
+    };
+
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        &metadata,
+        &["topic/child".to_owned()],
+        &[live_child],
+        PullRequestStackSelection::branch("topic/child"),
+    );
+
+    assert_eq!(snapshot.current_branch.as_deref(), Some("topic/child"));
+    assert_eq!(snapshot.current_pull_request, Some(11));
+    assert_eq!(snapshot.nodes.len(), 2);
+    assert_eq!(snapshot.nodes[0].title, "Stored root");
+    assert!(snapshot.nodes[0].merged);
+    assert!(!snapshot.nodes[0].is_local);
+    assert_eq!(snapshot.nodes[1].title, "Live child");
+    assert_eq!(
+        snapshot.nodes[1].parent_branch.as_deref(),
+        Some("topic/root")
+    );
+    assert_eq!(snapshot.nodes[1].parent_pull_request, Some(10));
+    assert!(snapshot.nodes[1].draft);
+    assert!(snapshot.nodes[1].is_local);
+    assert!(snapshot.nodes[1].is_current);
+}
+
+#[test]
+fn pull_request_stack_snapshot_adds_live_prs_missing_from_metadata() {
+    // Verifies: Live PR records can form stack nodes before durable metadata has been written.
+    let metadata = StackMetadata::default();
+    let root = PullRequestRecord {
+        number: 10,
+        title: "Root".to_owned(),
+        body: None,
+        head_branch: "topic/root".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: None,
+        draft: false,
+        merged: false,
+    };
+    let child = PullRequestRecord {
+        number: 11,
+        title: "Child".to_owned(),
+        body: None,
+        head_branch: "topic/child".to_owned(),
+        base_branch: "topic/root".to_owned(),
+        html_url: None,
+        draft: false,
+        merged: false,
+    };
+
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        &metadata,
+        &["topic/root".to_owned(), "topic/child".to_owned()],
+        &[child, root],
+        PullRequestStackSelection::pull_request(10),
+    );
+
+    assert_eq!(snapshot.current_branch.as_deref(), Some("topic/root"));
+    assert_eq!(snapshot.nodes[0].branch, "topic/root");
+    assert_eq!(snapshot.nodes[1].branch, "topic/child");
+    assert_eq!(
+        snapshot.nodes[1].parent_branch.as_deref(),
+        Some("topic/root")
+    );
+    assert_eq!(snapshot.nodes[1].parent_pull_request, Some(10));
+    assert!(snapshot.nodes.iter().all(|node| node.is_local));
+}
+
+#[test]
 fn check_readiness_validates_github_access_and_plans_bookmark_candidate() {
     // Verifies: Check readiness validates GitHub access and plans bookmark candidate.
     let github = FakeGitHub::default();
