@@ -419,6 +419,41 @@ pub fn refresh_stack_metadata_pull_requests(
     StackMetadata { version: 1, nodes }
 }
 
+/// Drops stack components whose stored PR nodes are all merged.
+pub fn prune_merged_stack_metadata_trees(metadata: &StackMetadata) -> StackMetadata {
+    let snapshot = PullRequestStackSnapshot::from_metadata(
+        metadata,
+        &[],
+        &[],
+        PullRequestStackSelection::default(),
+    );
+    let mut unvisited = (0..snapshot.nodes.len()).collect::<BTreeSet<_>>();
+    let mut pruned = BTreeSet::new();
+    while let Some(index) = unvisited.iter().next().copied() {
+        let mut pending = vec![index];
+        let component = connected_stack_indexes(&snapshot.nodes, &mut pending);
+        for index in &component {
+            unvisited.remove(index);
+        }
+        if component.iter().all(|index| snapshot.nodes[*index].merged) {
+            pruned.extend(component);
+        }
+    }
+    if pruned.is_empty() {
+        return metadata.clone();
+    }
+
+    let mut nodes = metadata
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| (!pruned.contains(&index)).then_some(node.clone()))
+        .collect::<Vec<_>>();
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
 /// Builds durable stack metadata from live PR records while retaining missing ancestors.
 pub fn stack_metadata_from_pull_requests(
     pull_requests: &[PullRequestRecord],

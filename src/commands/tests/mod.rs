@@ -4756,6 +4756,105 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
 }
 
 #[test]
+fn sync_prunes_completed_stack_tree_after_refresh() {
+    // Verifies: sync removes completed PR stack trees even when no bookmarks need PR description updates.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Root".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "topic/child".to_owned(),
+                    base_branch: "topic/root".to_owned(),
+                    parent_branch: Some("topic/root".to_owned()),
+                    pull_request: Some(11),
+                    parent_pull_request: Some(10),
+                    title: "Child".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        tracked_push: TrackedPushOutcome {
+            pushed_refs: 0,
+            bookmarks: Vec::new(),
+            pushed_commits: Vec::new(),
+        },
+        pull_requests_by_number: BTreeMap::from([
+            (
+                10,
+                PullRequestRecord {
+                    number: 10,
+                    title: "Root".to_owned(),
+                    body: None,
+                    head_branch: "deleted/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    html_url: Some(
+                        "https://github.com/example-owner/example-repo/pull/10".to_owned(),
+                    ),
+                    draft: false,
+                    merged: true,
+                },
+            ),
+            (
+                11,
+                PullRequestRecord {
+                    number: 11,
+                    title: "Child".to_owned(),
+                    body: None,
+                    head_branch: "deleted/child".to_owned(),
+                    base_branch: "deleted/root".to_owned(),
+                    html_url: Some(
+                        "https://github.com/example-owner/example-repo/pull/11".to_owned(),
+                    ),
+                    draft: false,
+                    merged: true,
+                },
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result =
+        run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
+
+    assert!(result.stdout.starts_with("Synced: origin/main ("));
+    assert_eq!(
+        services.pull_request_number_calls.borrow().as_slice(),
+        [10, 11]
+    );
+    assert!(services.sync_pull_request_metadata.borrow().is_empty());
+    assert!(read_stack_metadata(&workspace.path())
+        .expect("stack metadata reads")
+        .nodes
+        .is_empty());
+    assert!(!workspace.path().join(".jx/stack.toml").exists());
+}
+
+#[test]
 fn sync_accepts_revision_argument() {
     // Verifies: A positional argument selects one jj target instead of changing repository scope.
     let workspace = TestWorkspace::new();

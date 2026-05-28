@@ -170,10 +170,10 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
         push: &TrackedPushOutcome,
     ) -> Result<Vec<PullRequestRecord>, CommandError> {
+        let metadata = self.sync_metadata()?;
         if push.bookmarks.is_empty() {
             return Ok(Vec::new());
         }
-        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
         self.sync_pull_requests_with_metadata(push, &metadata)
     }
 
@@ -277,6 +277,15 @@ impl<'a> PullRequestStackManager<'a> {
         Ok(self
             .services
             .sync_pull_requests(self.context, push, metadata)?)
+    }
+
+    fn sync_metadata(&self) -> Result<StackMetadata, CommandError> {
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
+        let pruned = prune_merged_stack_metadata_trees(&metadata);
+        if pruned != metadata {
+            self.write_metadata(&pruned)?;
+        }
+        Ok(pruned)
     }
 
     fn refresh_metadata_by_number(

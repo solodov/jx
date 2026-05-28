@@ -184,6 +184,71 @@ fn pull_request_stack_snapshot_refreshes_stored_node_by_pull_request_number() {
 }
 
 #[test]
+fn pull_request_stack_prunes_only_fully_merged_components() {
+    // Verifies: completed stack trees are removed while merged ancestors remain for open descendants.
+    let metadata = StackMetadata {
+        version: 1,
+        nodes: vec![
+            StackMetadataNode {
+                branch: "merged/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Merged root".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+            },
+            StackMetadataNode {
+                branch: "merged/child".to_owned(),
+                base_branch: "merged/root".to_owned(),
+                parent_branch: Some("merged/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Merged child".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+            },
+            StackMetadataNode {
+                branch: "mixed/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(20),
+                parent_pull_request: None,
+                title: "Mixed root".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+            },
+            StackMetadataNode {
+                branch: "mixed/child".to_owned(),
+                base_branch: "mixed/root".to_owned(),
+                parent_branch: Some("mixed/root".to_owned()),
+                pull_request: Some(21),
+                parent_pull_request: Some(20),
+                title: "Mixed child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+        ],
+    };
+
+    let pruned = prune_merged_stack_metadata_trees(&metadata);
+
+    assert_eq!(
+        pruned
+            .nodes
+            .iter()
+            .map(|node| node.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["mixed/root", "mixed/child"]
+    );
+}
+
+#[test]
 fn check_readiness_validates_github_access_and_plans_bookmark_candidate() {
     // Verifies: Check readiness validates GitHub access and plans bookmark candidate.
     let github = FakeGitHub::default();
