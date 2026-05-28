@@ -5,7 +5,7 @@
 source of truth for commits, workspaces, and bookmarks, then adds the workflow
 context that usually lives in shell habits: where repositories belong, how
 parallel workspaces are named, which projects can be updated together, and how a
-local task turns into a pull request.
+local task turns into a pull request or pull-request stack.
 
 The core idea is that your code is not just one current checkout. Once `jx` knows
 your layout, it can treat your primary repositories and managed workspaces as one
@@ -23,6 +23,9 @@ inside the directory you already happen to be in.
   repositories, and sync writable repositories without hand-rolling shell loops.
 - **Task-aware workspaces**: create workspaces that carry a task id into local
   metadata so PR bookmarks and publishing can use the same task context later.
+- **Stacked pull request management**: publish, display, move, refresh, and sync
+  PR stacks from local jj ancestry while keeping GitHub bases and descriptions
+  aligned.
 - **Jujutsu-first daily flow**: read the current stack, inspect status, diff with
   configured renderers, fetch/rebase around `origin`, and push tracked bookmark
   state without replacing `jj`.
@@ -32,7 +35,8 @@ inside the directory you already happen to be in.
 
 Run `jx --help` or `jx <command> --help` for exact flags and eligibility rules.
 The README is a tour; detailed layout behavior lives in
-[code layout](docs/code-layout.md), and full configuration is in
+[code layout](docs/code-layout.md), stack workflows are in
+[stack management](docs/stack-management.md), and full configuration is in
 [configuration options](docs/configuration.md).
 
 ## Layout changes the workflow
@@ -101,6 +105,18 @@ names, so the operator does not have to repeat the task id on every command. Use
 command help for exact task-id flags and validation. The metadata format and
 workspace naming behavior are documented in [code layout](docs/code-layout.md).
 
+## Stack-aware PRs
+
+`jx` treats stacked pull requests as a local workflow first. It records stack
+relationships in `.jx/stack.toml`, derives parent/child ordering from jj commits
+and bookmarks, and syncs GitHub PR bases and generated stack context from that
+local state. That keeps stack edits, PR publishing, interactive opening, and
+repository sync on one model instead of separate shell steps.
+
+Use `jx stack` for the stack command group, `jx pr` for publishing/updating PRs,
+and `jx sync` for pushing synchronized bookmark state. See
+[stack management](docs/stack-management.md) for examples and operational notes.
+
 ## Workflow at a glance
 
 Inspect local work:
@@ -126,11 +142,12 @@ jx fetch
 jx sync
 ```
 
-Publish work:
+Publish and manage PR stacks:
 
 ```sh
 jx push
 jx pr
+jx stack
 ```
 
 For better ergonomics, expose the same workflows through `jj` aliases in
@@ -141,6 +158,7 @@ For better ergonomics, expose the same workflows through `jj` aliases in
 st = ["util", "exec", "--", "jx", "status"]
 dx = ["util", "exec", "--", "jx", "diff"]
 pr = ["util", "exec", "--", "jx", "pr"]
+stack = ["util", "exec", "--", "jx", "stack"]
 sync = ["util", "exec", "--", "jx", "sync"]
 push = ["util", "exec", "--", "jx", "push"]
 ```
