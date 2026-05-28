@@ -2580,8 +2580,8 @@ fn stack_interactive_opens_selected_cached_pull_request() {
 }
 
 #[test]
-fn stack_interactive_uses_cached_stack_snapshot_component() {
-    // Verifies: Stack selection focuses the cached component around the current PR branch.
+fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
+    // Verifies: Stack selection keeps draft PRs visible even when another branch is current.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2617,14 +2617,14 @@ fn stack_interactive_uses_cached_stack_snapshot_component() {
                     merged: false,
                 },
                 StackMetadataNode {
-                    branch: "topic/other".to_owned(),
+                    branch: "topic/draft".to_owned(),
                     base_branch: "main".to_owned(),
                     parent_branch: None,
                     pull_request: Some(12),
                     parent_pull_request: None,
-                    title: "Other".to_owned(),
+                    title: "Draft".to_owned(),
                     url: Some("https://github.com/example-owner/example-repo/pull/12".to_owned()),
-                    draft: false,
+                    draft: true,
                     merged: false,
                 },
             ],
@@ -2658,6 +2658,7 @@ fn stack_interactive_uses_cached_stack_snapshot_component() {
         &[vec![
             "✓ #10     Root".to_owned(),
             "└─ ◉ #11     Child".to_owned(),
+            "\x1b[2m\x1b[38;2;150;142;132m◌ #12     Draft\x1b[0m".to_owned(),
         ]]
     );
     assert_eq!(
