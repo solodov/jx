@@ -68,6 +68,43 @@ fn token_source_build_rejects_missing_token() {
 }
 
 #[test]
+fn api_response_error_maps_empty_auth_body_without_octocrab_backtrace() {
+    // Verifies: Empty GitHub auth failures stay actionable instead of exposing octocrab internals.
+    let error = api_response_error("load authenticated user", 401, "");
+
+    assert!(matches!(
+        error,
+        GitHubError::AuthenticationFailed {
+            operation: "load authenticated user",
+            ref message,
+        } if message == "HTTP 401: empty response body"
+    ));
+    assert_eq!(
+        error.to_string(),
+        "GitHub authentication failed while trying to load authenticated user: HTTP 401: empty response body"
+    );
+    assert!(!error.to_string().contains("Found at"));
+}
+
+#[test]
+fn api_response_error_preserves_github_auth_message() {
+    // Verifies: GitHub JSON error bodies keep their concise server-provided message.
+    let error = api_response_error(
+        "load authenticated user",
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
+    );
+
+    assert!(matches!(
+        error,
+        GitHubError::AuthenticationFailed {
+            operation: "load authenticated user",
+            ref message,
+        } if message == "HTTP 403: Resource not accessible by integration"
+    ));
+}
+
+#[test]
 fn token_source_reads_discovered_environment_value() {
     // Verifies: Token lookup reads the discovered environment value without storing secrets.
     let environment = RuntimeEnvironment::new(

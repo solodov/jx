@@ -197,12 +197,30 @@ impl OctocrabGitHubClient {
 #[async_trait]
 impl GitHubClient for OctocrabGitHubClient {
     async fn authenticated_user(&self) -> Result<AuthenticatedUser, GitHubError> {
-        let user = self
+        let response = self
             .crab
-            .current()
-            .user()
+            ._get_with_headers("/user", None)
             .await
             .map_err(|source| api_error("load authenticated user", source))?;
+        let status = response.status();
+        let body = self
+            .crab
+            .body_to_string(response)
+            .await
+            .map_err(|source| api_error("load authenticated user", source))?;
+        if !status.is_success() {
+            return Err(api_response_error(
+                "load authenticated user",
+                status.as_u16(),
+                &body,
+            ));
+        }
+
+        let user: AuthenticatedUserResponse =
+            serde_json::from_str(&body).map_err(|source| GitHubError::ResponseDecode {
+                operation: "load authenticated user",
+                source,
+            })?;
 
         Ok(AuthenticatedUser { login: user.login })
     }
@@ -519,6 +537,11 @@ impl GitHubClient for OctocrabGitHubClient {
             removed_teams,
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthenticatedUserResponse {
+    login: String,
 }
 
 #[derive(Debug, Serialize)]

@@ -22,11 +22,35 @@ pub enum GitHubError {
         head: String,
         message: String,
     },
+    #[error("Could not decode GitHub response while trying to {operation}: {source}")]
+    ResponseDecode {
+        operation: &'static str,
+        source: serde_json::Error,
+    },
+    #[error("Could not {operation} through GitHub: HTTP {status}: {message}")]
+    ApiResponse {
+        operation: &'static str,
+        status: u16,
+        message: String,
+    },
     #[error("Could not {operation} through GitHub: {source}")]
     Api {
         operation: &'static str,
         source: octocrab::Error,
     },
+}
+
+pub(super) fn api_response_error(operation: &'static str, status: u16, body: &str) -> GitHubError {
+    let message = format!("HTTP {status}: {}", github_error_response_message(body));
+    if matches!(status, 401 | 403) {
+        return GitHubError::AuthenticationFailed { operation, message };
+    }
+
+    GitHubError::ApiResponse {
+        operation,
+        status,
+        message: github_error_response_message(body),
+    }
 }
 
 pub(super) fn api_error(operation: &'static str, source: octocrab::Error) -> GitHubError {
@@ -64,4 +88,23 @@ fn octocrab_github_error(source: &octocrab::Error) -> Option<&octocrab::GitHubEr
         octocrab::Error::GitHub { source, .. } => Some(source.as_ref()),
         _ => None,
     }
+}
+
+fn github_error_response_message(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() {
+        return "empty response body".to_owned();
+    }
+
+    serde_json::from_str::<GitHubErrorResponse>(body)
+        .ok()
+        .and_then(|response| response.message)
+        .map(|message| message.trim().to_owned())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| body.to_owned())
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubErrorResponse {
+    message: Option<String>,
 }
