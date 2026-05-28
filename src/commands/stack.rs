@@ -8,16 +8,27 @@ pub(super) fn handle_stack(
     request: StackRequest,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
 ) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     let manager = PullRequestStackManager::new(&context, services);
     match request {
         StackRequest::Show => {
-            render_stack_snapshot(&manager.stored_snapshot(PullRequestStackSelection::default())?)
+            progress.status("Loading pull request stack…");
+            let snapshot = manager.stored_snapshot(PullRequestStackSelection::default())?;
+            progress.finish();
+            render_stack_snapshot(&snapshot)
         }
-        StackRequest::Track => render_stack_snapshot(&manager.track_authored_open_pull_requests()?),
+        StackRequest::Track => {
+            progress.status("Tracking pull request stack…");
+            let snapshot = manager.track_authored_open_pull_requests()?;
+            progress.finish();
+            render_stack_snapshot(&snapshot)
+        }
         StackRequest::Reset => {
+            progress.status("Resetting pull request stack…");
             manager.reset()?;
+            progress.finish();
             Ok("Stack state reset\n".to_owned())
         }
     }

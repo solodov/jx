@@ -2873,9 +2873,30 @@ fn stack_track_persists_hierarchy_and_ignore_rules() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "stack", "track"], &environment, &services)
-        .expect("stack tracking succeeds");
+    let progress = RecordingProgress::default();
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
 
+    let result = run_with_args_and_progress(
+        ["jx", "stack", "track"],
+        &environment,
+        &services,
+        &progress,
+        prompts,
+        OutputMode::plain(),
+    )
+    .expect("stack tracking succeeds");
+
+    assert_eq!(progress.messages(), ["Tracking pull request stack…"]);
+    assert!(progress.finished.get());
     assert_eq!(
         result.stdout,
         "◯ #10     Root\n├─ ◯ #11     Child\n└─ ◌ #12     Draft\n"

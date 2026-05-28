@@ -34,7 +34,7 @@ pub(super) fn handle_request(
         CommandRequest::Work(request) => {
             handle_work(request, environment, services, progress, &prompts)?
         }
-        CommandRequest::Stack(request) => handle_stack(request, environment, services)?,
+        CommandRequest::Stack(request) => handle_stack(request, environment, services, progress)?,
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::Open(request) => handle_open(request, environment, services, &prompts)?,
         CommandRequest::PreviousCommit => {
