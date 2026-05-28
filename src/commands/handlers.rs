@@ -40,6 +40,7 @@ pub(super) fn handle_request(
             services,
             progress,
             prompts.pull_request_selector,
+            output.color,
         )?,
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::Open(request) => handle_open(request, environment, services)?,

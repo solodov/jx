@@ -258,6 +258,81 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
 }
 
 #[test]
+fn stack_show_colored_rows_match_interactive_selector_labels() {
+    // Verifies: Non-interactive stack output and interactive choices share row rendering.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/ready".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Ready".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "topic/draft".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(11),
+                    parent_pull_request: None,
+                    title: "Draft".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
+                    draft: true,
+                    merged: false,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+
+    let stack = run_with_args_and_progress(
+        ["jx", "stack"],
+        &environment,
+        &FakeServices::default(),
+        &NoProgress,
+        prompts,
+        OutputMode { color: true },
+    )
+    .expect("stack show succeeds");
+    let selector = RecordingPullRequestSelector::new(0);
+    run_with_args_and_pull_request_selector(
+        ["jx", "stack", "-i", "--print"],
+        &environment,
+        &FakeServices::default(),
+        &selector,
+    )
+    .expect("interactive stack open succeeds");
+
+    let stack_rows = stack.stdout.lines().map(str::to_owned).collect::<Vec<_>>();
+    assert_eq!(selector.labels.borrow().as_slice(), &[stack_rows]);
+}
+
+#[test]
 fn stack_interactive_prints_selected_pull_request_url() {
     // Verifies: --print suppresses browser launch after cached stack selection.
     let workspace = TestWorkspace::new();

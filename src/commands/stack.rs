@@ -10,6 +10,7 @@ pub(super) fn handle_stack(
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
     selector: &dyn PullRequestSelector,
+    color: bool,
 ) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     let manager = PullRequestStackManager::new(&context, services);
@@ -18,7 +19,7 @@ pub(super) fn handle_stack(
             progress.status("Loading pull request stack…");
             let snapshot = manager.stored_snapshot(PullRequestStackSelection::default());
             progress.finish();
-            render_stack_snapshot(&snapshot?)
+            render_stack_snapshot(&snapshot?, color)
         }
         StackRequest::Open { print } => {
             progress.status("Loading pull request stack…");
@@ -30,7 +31,7 @@ pub(super) fn handle_stack(
             progress.status("Refreshing pull request stack…");
             let snapshot = manager.refresh_authored_open_pull_requests();
             progress.finish();
-            render_stack_snapshot(&snapshot?)
+            render_stack_snapshot(&snapshot?, color)
         }
     }
 }
@@ -64,24 +65,27 @@ fn open_stack_pull_request(
     Ok(format!("Opened: {url}\n"))
 }
 
-fn render_stack_snapshot(snapshot: &PullRequestStackSnapshot) -> Result<String, CommandError> {
+fn render_stack_snapshot(
+    snapshot: &PullRequestStackSnapshot,
+    color: bool,
+) -> Result<String, CommandError> {
     if snapshot.nodes.is_empty() {
         return Ok("No stack state\n".to_owned());
     }
 
     let mut output = String::new();
-    for row in stack_snapshot_rows(snapshot) {
+    for row in stack_snapshot_rows(snapshot, color) {
         output.push_str(&row);
         output.push('\n');
     }
     Ok(output)
 }
 
-fn stack_snapshot_rows(snapshot: &PullRequestStackSnapshot) -> Vec<String> {
+fn stack_snapshot_rows(snapshot: &PullRequestStackSnapshot, color: bool) -> Vec<String> {
     snapshot
         .rows()
         .into_iter()
-        .map(|row| row.plain_label())
+        .map(|row| render_stack_row_label(row, color))
         .collect()
 }
 
@@ -97,5 +101,5 @@ pub(super) fn stack_metadata_rows(nodes: &[StackMetadataNode]) -> Vec<String> {
         &[],
         PullRequestStackSelection::default(),
     );
-    stack_snapshot_rows(&snapshot)
+    stack_snapshot_rows(&snapshot, false)
 }

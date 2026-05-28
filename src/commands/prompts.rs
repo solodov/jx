@@ -145,9 +145,6 @@ impl PullRequestSelector for FixedPullRequestSelector {
     }
 }
 
-const PULL_REQUEST_DRAFT_STYLE: &str = "\x1b[2m\x1b[38;2;150;142;132m";
-const RESET_STYLE: &str = "\x1b[0m";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PullRequestChoice {
     pub(super) pull_request: PullRequestRecord,
@@ -164,7 +161,7 @@ pub(super) fn pull_request_choice_rows(
             let pull_request = pull_request_record_from_stack_node(row.node)?;
             Some(PullRequestChoice {
                 pull_request,
-                label: pull_request_choice_label_for_row(row),
+                label: render_stack_row_label(row, true),
             })
         })
         .collect()
@@ -197,16 +194,6 @@ fn pull_request_record_from_stack_node(node: &PullRequestStackNode) -> Option<Pu
         draft: node.draft,
         merged: node.merged,
     })
-}
-
-fn pull_request_choice_label_for_row(row: PullRequestStackRow<'_>) -> String {
-    let draft = row.node.draft;
-    let label = row.plain_label();
-    if draft {
-        format!("{PULL_REQUEST_DRAFT_STYLE}{label}{RESET_STYLE}")
-    } else {
-        label
-    }
 }
 
 /// Confirms whether a planned PR should proceed to bookmark, push, and GitHub mutation.
@@ -654,12 +641,15 @@ pub(super) struct ReviewerChoice {
 }
 
 const REVIEWER_HINT_STYLE: &str = "\x1b[38;5;244m";
+const REVIEWER_HINT_RESET_STYLE: &str = "\x1b[0m";
 
 impl ReviewerChoice {
     pub(super) fn label(&self) -> String {
         let name = self.target.display_name();
         match reviewer_reason_hint(&self.reasons) {
-            Some(hint) => format!("{name:<24} {REVIEWER_HINT_STYLE}{hint}{RESET_STYLE}"),
+            Some(hint) => {
+                format!("{name:<24} {REVIEWER_HINT_STYLE}{hint}{REVIEWER_HINT_RESET_STYLE}")
+            }
             None => name.to_owned(),
         }
     }
