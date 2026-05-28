@@ -818,7 +818,7 @@ fn sync_repo_shorthand_creates_missing_origin_repository_from_layout() {
     // Verifies: -r forces repository sync while preserving missing-origin bootstrap behavior.
     let workspace = TestWorkspace::new_under("work/example-repo");
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[layout.rules]]
 source = "github"
@@ -873,7 +873,7 @@ fn sync_offers_layout_repository_initialization_before_bootstrap() {
     // Verifies: Missing-workspace sync initializes an inferred layout repo before bootstrap.
     let workspace = TestWorkspace::new_uninitialized_under("work/example-repo");
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[layout.rules]]
 source = "github"
@@ -931,7 +931,7 @@ fn sync_can_cancel_layout_repository_initialization() {
     // Verifies: Declining local initialization stops before jj, GitHub, or push mutation.
     let workspace = TestWorkspace::new_uninitialized_under("work/example-repo");
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[layout.rules]]
 source = "github"
@@ -990,7 +990,7 @@ fn sync_prepares_undescribed_initial_commit_before_bootstrap() {
     // Verifies: Missing-origin sync describes a fresh initial commit before pushing main.
     let workspace = TestWorkspace::new_under("work/example-repo");
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[layout.rules]]
 source = "github"
@@ -1058,7 +1058,7 @@ fn sync_can_cancel_missing_origin_repository_creation() {
     // Verifies: Declining repository creation stops before GitHub or jj mutation.
     let workspace = TestWorkspace::new_under("work/example-repo");
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[layout.rules]]
 source = "github"
@@ -1121,7 +1121,7 @@ fn sync_advances_trunk_when_repo_policy_enables_it() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 advance_trunk = true

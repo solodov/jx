@@ -29,9 +29,10 @@ fn root_help_uses_operator_facing_command_descriptions() {
     assert!(stdout.contains("rs"));
     assert!(stdout.contains("Compare local remote trunks with GitHub"));
     assert!(stdout.contains("Fetch origin and rebase/repair the jj stack"));
-    assert!(stdout.contains("rebase-on-trunk"));
-    assert!(stdout.contains("rt"));
-    assert!(stdout.contains("Rebase jj source revisions onto origin trunk"));
+    assert!(stdout.contains("stack"));
+    assert!(stdout.contains("sk"));
+    assert!(!stdout.contains("rebase-on-trunk"));
+    assert!(!stdout.contains("Rebase jj source revisions onto origin trunk"));
     assert!(stdout.contains("Push a selected jj change or tracked bookmark state"));
     assert!(stdout.contains("Fetch origin and push repository, stack, or selected bookmark state"));
     assert!(stdout.contains("Show, move, publish, or refresh repo-local pull request stack state"));
@@ -104,27 +105,6 @@ fn fetch_help_explains_stack_update_without_loading_repo() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
     assert!(stdout.contains("Fetch origin and rebase/repair the jj stack"));
-    assert!(output.stderr.is_empty());
-}
-
-#[test]
-fn rebase_on_trunk_help_documents_source_without_loading_repo() {
-    // Verifies: Rebase-on-trunk help documents source selection without loading repository state.
-    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
-        .args(["rebase-on-trunk", "--help"])
-        .output()
-        .expect("run jx binary");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
-    assert!(stdout.contains("Rebase jj source revisions onto origin trunk"));
-    assert!(stdout.contains("--source"));
-    assert!(stdout.contains("-s"));
-    assert!(stdout.contains("COMMIT"));
-    assert!(
-        stdout.contains("Rebase a specific jj revision and its descendants; repeat for multiple")
-    );
-    assert!(stdout.contains("sources"));
     assert!(output.stderr.is_empty());
 }
 

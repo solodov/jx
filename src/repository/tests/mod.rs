@@ -22,7 +22,7 @@ fn discovers_fixed_origin_github_context() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = []
@@ -52,7 +52,7 @@ reviewers = []
     );
     assert_eq!(
         context.config.paths,
-        vec![workspace.path().join(".jx.toml")]
+        vec![workspace.path().join(".jx/config.toml")]
     );
     assert!(context.config.repo.base.reviewers.is_empty());
 }
@@ -296,7 +296,7 @@ fn loads_default_reviewers_from_project_config() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = ["example-reviewer", "second-reviewer"]
@@ -323,7 +323,7 @@ fn loads_diff_tools_from_project_config() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [diff]
 default_tool = "difft"
@@ -389,7 +389,7 @@ command = "delta"
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [diff]
 default_tool = "difft"
@@ -674,7 +674,7 @@ fn stack_status_review_gate_checks_compose_for_matching_repo() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo.stack_status]
 ignored_checks = ["^global-noise-check$"]
@@ -753,7 +753,7 @@ fn legacy_reviewer_rules_alias_still_loads_path_reviewers() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.reviewer_rules]]
 paths = ["src/**"]
@@ -783,7 +783,7 @@ fn repo_event_handlers_compose_and_override_for_matching_repo() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.event_handlers]]
 id = "prepare-title"
@@ -850,6 +850,91 @@ labels = ["buz", "buz"]
 }
 
 #[test]
+fn repo_checks_compose_override_and_match_changed_files() {
+    // Verifies: Check commands compose by repo rule, replace by id, and run only for matching paths.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".config/jx/config.toml",
+        r#"
+[[repo.checks]]
+id = "global-docs"
+before = ["pull_request"]
+paths = ["docs/**"]
+command = ["./check-docs"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.checks]]
+id = "api-contract"
+before = ["pull_request", "sync", "sync"]
+paths = ["api/**"]
+command = ["./scripts/check-api-contract"]
+"#,
+    );
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.checks]]
+id = "source-check"
+before = ["push"]
+paths = ["src/**"]
+command = ["./scripts/check-source"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let pull_request_checks = context.config.repo.checks_for(
+        &context.origin.github,
+        RepoCheckTrigger::PullRequest,
+        &["docs/readme.md".to_owned(), "src/main.rs".to_owned()],
+    );
+    let push_checks = context.config.repo.checks_for(
+        &context.origin.github,
+        RepoCheckTrigger::Push,
+        &["src/main.rs".to_owned()],
+    );
+
+    assert_eq!(pull_request_checks.len(), 1);
+    assert_eq!(pull_request_checks[0].id, "global-docs");
+    assert_eq!(push_checks.len(), 1);
+    assert_eq!(push_checks[0].id, "source-check");
+    assert_eq!(
+        push_checks[0].command,
+        vec!["./scripts/check-source".to_owned()]
+    );
+}
+
+#[test]
+fn repo_checks_reject_invalid_shape() {
+    // Verifies: Check config requires explicit triggers, path globs, and command argv.
+    let cases = [
+        ("[[repo.checks]]\nid = \"missing-before\"\npaths = [\"src/**\"]\ncommand = [\"check\"]", "before"),
+        ("[[repo.checks]]\nid = \"bad-before\"\nbefore = [\"commit\"]\npaths = [\"src/**\"]\ncommand = [\"check\"]", "unsupported trigger"),
+        ("[[repo.checks]]\nid = \"missing-paths\"\nbefore = [\"push\"]\ncommand = [\"check\"]", "paths"),
+        ("[[repo.checks]]\nid = \"bad-glob\"\nbefore = [\"push\"]\npaths = [\"[\"]\ncommand = [\"check\"]", "glob"),
+        ("[[repo.checks]]\nid = \"missing-command\"\nbefore = [\"push\"]\npaths = [\"src/**\"]", "command"),
+    ];
+
+    for (contents, expected) in cases {
+        let workspace = TestWorkspace::new();
+        workspace.write_git_config(origin_config());
+        workspace.write_file(".jx/config.toml", contents);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+        let error =
+            RepositoryContext::discover(&environment).expect_err("invalid check is rejected");
+
+        assert!(error.to_string().contains(expected), "{contents}: {error}");
+    }
+}
+
+#[test]
 fn repo_event_handlers_reject_invalid_shape() {
     // Verifies: Handler config validates event names, actions, and query terms up front.
     let cases = [
@@ -878,7 +963,7 @@ fn repo_event_handlers_reject_invalid_shape() {
     for (contents, expected) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
         let result = RepositoryContext::discover(&environment);
 
@@ -897,7 +982,7 @@ fn reviewer_config_accepts_github_team_reviewers() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = ["ExampleOrg/platform"]
@@ -984,7 +1069,7 @@ workspace_shared_paths = ["ignored"]
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 workspace_shared_paths = ["./.cache/jx", "tools/state"]
@@ -1039,7 +1124,7 @@ fn workspace_shared_paths_reject_invalid_path_shapes() {
     for (contents, expected_message) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
@@ -1067,7 +1152,7 @@ workspace_shared_paths = ["foo", "foo/bar"]
     for contents in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
@@ -1086,7 +1171,7 @@ fn workspace_shared_paths_reject_effective_parent_child_overlaps() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 workspace_shared_paths = [".pi"]
@@ -1154,18 +1239,18 @@ reviewers = ["work-reviewer"]
 
 #[test]
 fn project_config_does_not_load_fragment_directory() {
-    // Verifies: Per-workspace composition is intentionally limited to `.jx.toml`.
+    // Verifies: Per-workspace composition is intentionally limited to `.jx/config.toml`.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = ["project-reviewer"]
 "#,
     );
     workspace.write_file(
-        ".jx.d/10-work.toml",
+        ".jx/10-work.toml",
         r#"
 [repo]
 reviewers = ["work-reviewer"]
@@ -1177,7 +1262,7 @@ reviewers = ["work-reviewer"]
 
     assert_eq!(
         context.config.paths,
-        vec![workspace.path().join(".jx.toml")]
+        vec![workspace.path().join(".jx/config.toml")]
     );
     assert_eq!(
         context.config.repo.base.reviewers,
@@ -1202,7 +1287,7 @@ account = "global-user"
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = ["example-reviewer"]
@@ -1216,7 +1301,7 @@ reviewers = ["example-reviewer"]
         context.config.paths,
         vec![
             workspace.path().join(".config/jx/config.toml"),
-            workspace.path().join(".jx.toml"),
+            workspace.path().join(".jx/config.toml"),
         ]
     );
     assert_eq!(
@@ -1246,7 +1331,7 @@ account = "global-user"
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [auth.keychain]
 service = "project-jx"
@@ -1272,7 +1357,7 @@ fn loads_keychain_token_source_from_project_config() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [auth.keychain]
 service = "jx-example"
@@ -1302,7 +1387,7 @@ fn environment_token_overrides_configured_keychain() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [auth.keychain]
 service = "jx-example"
@@ -1325,7 +1410,7 @@ fn trims_and_deduplicates_default_reviewers() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = [" example-reviewer ", "second-reviewer", "example-reviewer"]
@@ -1342,8 +1427,8 @@ reviewers = [" example-reviewer ", "second-reviewer", "example-reviewer"]
 }
 
 #[test]
-fn rejects_configured_remotes_hooks_and_bookmark_roots() {
-    // Verifies: Config parsing rejects configured remotes, hooks, and bookmark roots.
+fn rejects_configured_remotes_legacy_hooks_and_bookmark_roots() {
+    // Verifies: Config parsing rejects configured remotes, legacy hook tables, and bookmark roots.
     let cases = [
             ("default_remote = \"origin\"", "default_remote"),
             ("reviewers = []", "reviewers"),
@@ -1365,7 +1450,7 @@ fn rejects_configured_remotes_hooks_and_bookmark_roots() {
     for (contents, key) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
@@ -1399,7 +1484,7 @@ fn rejects_invalid_diff_config() {
     for (contents, expected_message) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
@@ -1417,7 +1502,7 @@ fn rejects_unknown_reviewer_rule_keys() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.path_reviewers]]
 paths = ["src/**"]
@@ -1460,7 +1545,7 @@ fn rejects_invalid_reviewer_rule_config() {
     for (contents, expected_message) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
@@ -1498,7 +1583,7 @@ fn rejects_invalid_keychain_config() {
     for (contents, expected_message) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
@@ -1517,7 +1602,7 @@ fn rejects_invalid_default_reviewer_shape() {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(origin_config());
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo]
 reviewers = "example-reviewer"
@@ -1542,7 +1627,7 @@ fn rejects_invalid_reviewer_names() {
     for (contents, expected_message) in cases {
         let workspace = TestWorkspace::new();
         workspace.write_git_config(origin_config());
-        workspace.write_file(".jx.toml", contents);
+        workspace.write_file(".jx/config.toml", contents);
         let environment = RuntimeEnvironment::new(workspace.path(), []);
 
         let error = RepositoryContext::discover(&environment).expect_err("config is rejected");

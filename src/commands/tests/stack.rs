@@ -230,7 +230,7 @@ fn stack_status_styles_review_wait_threshold() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo.stack_status]
 review_wait_threshold = "4h"
@@ -600,7 +600,7 @@ fn stack_status_rewrites_titles_before_rendering() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.rules]]
 repo = "example-owner/*"
@@ -780,7 +780,7 @@ fn stack_status_moves_configured_review_gate_failures_to_review_column() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.rules]]
 repo = "example-owner/example-repo"
@@ -1103,7 +1103,7 @@ fn stack_status_colorizes_labels_with_github_backgrounds() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [repo.stack_status]
 ignored_labels_when_merged = ["auto-merge", "run-ci"]
@@ -1272,7 +1272,9 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
     assert!(result
         .stdout
         .contains("\x1b[3m\x1b[30mreviewer-addressed\x1b[0m"));
-    assert!(result.stdout.contains("\x1b[32mreviewer-approved\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[38;2;118;108;96mreviewer-approved\x1b[0m"));
     assert!(result.stdout.contains(
         "\x1b[48;2;246;237;234m\x1b[38;2;190;184;176m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
     ));
@@ -1291,10 +1293,12 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
     assert!(result
         .stdout
         .contains("\x1b[38;2;194;95;0mmerged-commented\x1b[0m"));
-    assert!(result.stdout.contains("\x1b[32mmerged-approved\x1b[0m"));
     assert!(result
         .stdout
-        .contains("\x1b[32mmerged-commented-approved\x1b[0m"));
+        .contains("\x1b[38;2;118;108;96mmerged-approved\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[38;2;118;108;96mmerged-commented-approved\x1b[0m"));
     assert!(!result.stdout.contains("obsolete-reviewer"));
     assert!(!result.stdout.contains("merged-addressed"));
     assert!(result
@@ -1302,7 +1306,9 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .contains("\x1b[2m\x1b[38;2;190;184;176mLegend:"));
     assert!(!result.stdout.contains("[ui]"));
     assert!(!result.stdout.contains("\x1b[1m\x1b[30mdraft-pending"));
-    assert!(!result.stdout.contains("\x1b[32mdraft-approved"));
+    assert!(!result
+        .stdout
+        .contains("\x1b[38;2;118;108;96mdraft-approved"));
 }
 
 #[test]
@@ -3923,6 +3929,45 @@ fn stack_without_subcommand_shows_state() {
     let result =
         run_with_args_and_services(["jx", "stack"], &environment, &FakeServices::default())
             .expect("stack show succeeds");
+
+    assert_eq!(result.stdout, "◯ #10     Root\n");
+}
+
+#[test]
+fn sk_alias_shows_stack_state() {
+    // Verifies: the short `sk` alias keeps the read-only stack view easy to invoke.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "sk"], &environment, &FakeServices::default())
+        .expect("stack alias succeeds");
 
     assert_eq!(result.stdout, "◯ #10     Root\n");
 }

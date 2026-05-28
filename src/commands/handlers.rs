@@ -52,17 +52,11 @@ pub(super) fn handle_request(
         CommandRequest::Fetch(request) => {
             handle_fetch(request, environment, services, progress, output)?
         }
-        CommandRequest::RebaseOnTrunk(request) => {
-            let context = RepositoryContext::discover(environment)?;
-            progress.status("Rebasing onto trunk…");
-            let outcome = services.rebase_on_trunk(&context, &request.sources)?;
-            progress.finish();
-            let report = domain::rebase_on_trunk_report(&context, outcome);
-            render_rebase_on_trunk(&report, environment.current_dir(), output.color)?
-        }
         CommandRequest::Push(request) => {
             let context = RepositoryContext::discover(environment)?;
             if request.tracked {
+                let changed_files = services.changed_files_for_tracked_push(&context)?;
+                run_repo_checks(&context, services, RepoCheckTrigger::Push, &changed_files)?;
                 progress.status("Pushing tracked bookmarks…");
                 let outcome = services.push_tracked(&context)?;
                 progress.finish();
@@ -72,6 +66,12 @@ pub(super) fn handle_request(
                 progress.status("Planning push…");
                 let workspace =
                     services.push_workspace_facts(&context, request.revision.as_deref())?;
+                run_repo_checks(
+                    &context,
+                    services,
+                    RepoCheckTrigger::Push,
+                    &workspace.changed_files,
+                )?;
                 let plan = domain::push_plan(&context, workspace, request.revision.as_deref())?;
                 progress.finish();
 
@@ -1214,6 +1214,10 @@ fn try_global_sync_for_repository(
         (false, _) => {}
     }
 
+    run_sync_repo_checks(&context, services, || {
+        services.changed_files_for_tracked_push(&context)
+    })?;
+
     global_sync_existing_origin(
         context,
         sync_push_options,
@@ -1615,13 +1619,6 @@ fn sync_current_stack_traced(
     output: OutputMode,
     span: &mut PerfSpan,
 ) -> Result<CommandResult, CommandError> {
-    progress.status("Fetching origin…");
-    let fetch = span.measure_with_result_attrs(
-        "fetch_origin",
-        Vec::new(),
-        || services.fetch_origin(&context),
-        fetch_result_attrs,
-    )?;
     let manager = PullRequestStackManager::new(
         &context,
         services,
@@ -1634,6 +1631,16 @@ fn sync_current_stack_traced(
         Vec::new(),
         || sync_stack_selection(&manager),
         sync_selection_result_attrs,
+    )?;
+    run_sync_repo_checks(&context, services, || {
+        services.changed_files_for_bookmarks(&context, &selection.branches)
+    })?;
+    progress.status("Fetching origin…");
+    let fetch = span.measure_with_result_attrs(
+        "fetch_origin",
+        Vec::new(),
+        || services.fetch_origin(&context),
+        fetch_result_attrs,
     )?;
     progress.status("Pushing stack bookmarks…");
     let push = span.measure_with_result_attrs(
@@ -1777,6 +1784,8 @@ fn sync_selected_revision_traced(
     output: OutputMode,
     span: &mut PerfSpan,
 ) -> Result<CommandResult, CommandError> {
+    let workspace = services.workspace_facts(&context, selection.revision)?;
+    run_sync_repo_checks(&context, services, || Ok(workspace.changed_files.clone()))?;
     progress.status("Fetching origin…");
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
@@ -2018,6 +2027,9 @@ fn sync_existing_origin_traced(
     output: OutputMode,
     span: &mut PerfSpan,
 ) -> Result<CommandResult, CommandError> {
+    run_sync_repo_checks(&context, services, || {
+        services.changed_files_for_tracked_push(&context)
+    })?;
     progress.status("Fetching origin…");
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",

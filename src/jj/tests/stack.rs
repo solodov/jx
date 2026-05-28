@@ -37,6 +37,81 @@ fn stack_move_resolves_bookmark_fragment_after_revision_lookup() {
 }
 
 #[test]
+fn stack_trunk_moves_current_to_latest_origin_trunk() {
+    // Verifies: `jx sk --trunk` matches the old trunk-rebase behavior by targeting latest origin trunk.
+    let fixture = TestWorkspace::new("stack-trunk-latest-origin");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, updated_trunk_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated trunk").await;
+        let current = write_child(tx.repo_mut(), &old_trunk, "current change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx.commit("arrange stack trunk move").await.expect("commit");
+        (workspace, repo, updated_trunk.id().clone())
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let outcome = subject
+        .move_current_stack(StackMoveTarget::Trunk)
+        .expect("current change is moved onto updated trunk");
+
+    let current = subject.current_commit().expect("current commit loads");
+    assert_eq!(current.parent_ids(), vec![updated_trunk_id]);
+    assert_eq!(outcome.rebased_commits, 1);
+    assert!(outcome.current_updated);
+}
+
+#[test]
+fn stack_trunk_accepts_current_that_already_landed_on_trunk() {
+    // Verifies: moving onto trunk is a no-op when the current change is already in trunk history.
+    let fixture = TestWorkspace::new("stack-trunk-current-landed");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, updated_trunk_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let current = write_child(tx.repo_mut(), &root, "current change").await;
+        let updated_trunk = write_child(tx.repo_mut(), &current, "updated trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange landed stack trunk move")
+            .await
+            .expect("commit");
+        (workspace, repo, updated_trunk.id().clone())
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let outcome = subject
+        .move_current_stack(StackMoveTarget::Trunk)
+        .expect("landed current is accepted as up to date");
+
+    let current = subject.current_commit().expect("current commit loads");
+    assert!(subject
+        .is_ancestor_or_equal(current.id(), &updated_trunk_id)
+        .expect("ancestor query succeeds"));
+    assert_eq!(outcome.rebased_commits, 0);
+    assert_eq!(outcome.skipped_commits, 1);
+    assert!(!outcome.current_updated);
+}
+
+#[test]
 fn local_stack_branches_reflect_nearest_bookmarked_parent() {
     // Verifies: Local stack metadata repair derives PR bases from jj ancestry, not GitHub state.
     let fixture = TestWorkspace::new("local-stack-branches");

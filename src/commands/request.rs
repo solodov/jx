@@ -15,7 +15,6 @@ pub(super) enum CommandRequest {
     Review(ReviewRequest),
     RemoteStatus(RemoteStatusRequest),
     Fetch(FetchRequest),
-    RebaseOnTrunk(RebaseOnTrunkRequest),
     Push(PushRequest),
     Sync(SyncRequest),
     Check,
@@ -221,11 +220,6 @@ pub(super) struct SyncRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RebaseOnTrunkRequest {
-    pub(super) sources: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PushRequest {
     pub(super) revision: Option<String>,
     pub(super) tracked: bool,
@@ -246,7 +240,7 @@ impl CommandRequest {
                 destination: matches.get_one::<PathBuf>("destination").cloned(),
             })),
             Some(("work", matches)) => Ok(Self::Work(work_request(matches)?)),
-            Some(("stack" | "stk", matches)) => Ok(Self::Stack(stack_request(matches)?)),
+            Some(("stack" | "sk", matches)) => Ok(Self::Stack(stack_request(matches)?)),
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
             Some(("review", matches)) => Ok(Self::Review(ReviewRequest {
@@ -272,11 +266,6 @@ impl CommandRequest {
                 all: matches.get_flag("all"),
                 repository: repository_arg(matches),
             })),
-            Some(("rebase-on-trunk" | "rt", matches)) => {
-                Ok(Self::RebaseOnTrunk(RebaseOnTrunkRequest {
-                    sources: sources(matches),
-                }))
-            }
             Some(("push", matches)) => Ok(Self::Push(PushRequest {
                 revision: revision(matches),
                 tracked: matches.get_flag("tracked"),
@@ -337,9 +326,6 @@ impl CommandRequest {
                 perf_attr("all", request.all),
                 perf_attr("has_repository", request.repository.is_some()),
             ]),
-            Self::RebaseOnTrunk(request) => {
-                attrs.extend([perf_attr("source_count", request.sources.len())])
-            }
             Self::Push(request) => attrs.extend([
                 perf_attr("has_revision", request.revision.is_some()),
                 perf_attr("tracked", request.tracked),
@@ -398,7 +384,6 @@ impl CommandRequest {
             Self::Review(_) => "review",
             Self::RemoteStatus(_) => "remote-status",
             Self::Fetch(_) => "fetch",
-            Self::RebaseOnTrunk(_) => "rebase-on-trunk",
             Self::Push(_) => "push",
             Self::Sync(_) => "sync",
             Self::Check => "check",
@@ -771,15 +756,6 @@ fn open_pr_selector(matches: &ArgMatches) -> Option<String> {
         .get_one::<String>("selector")
         .or_else(|| matches.get_one::<String>("commit"))
         .cloned()
-}
-
-fn sources(matches: &ArgMatches) -> Vec<String> {
-    matches
-        .get_many::<String>("source")
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect()
 }
 
 fn sync_request(matches: &ArgMatches) -> Result<SyncRequest, clap::Error> {
@@ -1219,12 +1195,6 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(repository_arg_definition()),
         )
         .subcommand(
-            ClapCommand::new("rebase-on-trunk")
-                .visible_alias("rt")
-                .about("Rebase jj source revisions onto origin trunk")
-                .arg(source_arg()),
-        )
-        .subcommand(
             ClapCommand::new("push")
                 .about("Push a selected jj change or tracked bookmark state")
                 .arg(push_revision_arg())
@@ -1246,7 +1216,7 @@ pub(super) fn cli() -> ClapCommand {
 
 fn stack_command() -> ClapCommand {
     ClapCommand::new("stack")
-        .visible_alias("stk")
+        .visible_alias("sk")
         .about("Show, move, publish, or refresh repo-local pull request stack state")
         .long_about(
             "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to fetch GitHub check and review summaries for the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish exactly the selected revset. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
@@ -1575,15 +1545,6 @@ fn review_repo_filter_arg() -> Arg {
         .value_name("REPO_GLOB")
         .num_args(0..)
         .help("Filter review requests by configured key or provider/owner/repo glob")
-}
-
-fn source_arg() -> Arg {
-    Arg::new("source")
-        .short('s')
-        .long("source")
-        .value_name("COMMIT")
-        .action(ArgAction::Append)
-        .help("Rebase a specific jj revision and its descendants; repeat for multiple sources")
 }
 
 fn remote_status_all_arg() -> Arg {

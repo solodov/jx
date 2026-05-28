@@ -54,13 +54,6 @@ pub struct FetchReport {
     pub outcome: FetchOutcome,
 }
 
-/// Result of rebasing a selected jj source onto the fixed `origin` trunk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RebaseOnTrunkReport {
-    pub repository: RepositorySummary,
-    pub outcome: RebaseOnTrunkOutcome,
-}
-
 /// Planned PR data derived before any jj or GitHub mutation happens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestPlan {

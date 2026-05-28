@@ -27,7 +27,6 @@ mod log;
 mod navigation;
 mod pull_request;
 mod push;
-mod rebase;
 mod stack;
 mod status;
 mod workspace;

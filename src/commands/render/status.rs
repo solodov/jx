@@ -515,28 +515,6 @@ pub(in crate::commands) fn pull_request_action(action: PullRequestAction) -> &'s
     }
 }
 
-pub(in crate::commands) fn rebase_on_trunk_source_label(outcome: &RebaseOnTrunkOutcome) -> String {
-    match outcome.source_short_commit_ids.as_slice() {
-        [source] => source.clone(),
-        sources => format!("{} sources", sources.len()),
-    }
-}
-
-pub(in crate::commands) fn render_rebase_on_trunk_outcome(
-    outcome: &RebaseOnTrunkOutcome,
-) -> String {
-    if outcome.rebased_commits == 0 {
-        "up to date".to_owned()
-    } else {
-        format!("rebased {}", commit_count(outcome.rebased_commits))
-    }
-}
-
-pub(in crate::commands) fn commit_count(count: usize) -> String {
-    let noun = if count == 1 { "commit" } else { "commits" };
-    format!("{count} {noun}")
-}
-
 pub(in crate::commands) fn write_remote_status(
     formatter: &mut dyn Formatter,
     remote: &domain::RemoteStatusReport,

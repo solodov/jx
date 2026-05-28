@@ -354,7 +354,7 @@ fn pull_request_prepare_event_updates_commit_title_before_planning() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.event_handlers]]
 id = "prepend-task"
@@ -412,7 +412,7 @@ fn stack_pub_task_id_flag_updates_commit_title_before_planning() {
 "#,
     );
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [[repo.event_handlers]]
 id = "prepend-task"

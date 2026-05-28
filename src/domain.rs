@@ -18,9 +18,9 @@ use crate::{
         RepositoryAccess, ReviewerCandidate, ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
     },
     jj::{
-        BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, RebaseOnTrunkOutcome,
-        SkippedPushBookmarkSummary, SkippedSameTreeBookmarkSummary, StatusRemoteFacts,
-        StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome, WorkspaceFacts,
+        BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, SkippedPushBookmarkSummary,
+        SkippedSameTreeBookmarkSummary, StatusRemoteFacts, StatusWorkspaceFacts, SyncPushOutcome,
+        TrackedPushOutcome, WorkspaceFacts,
     },
     repository::{
         GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,

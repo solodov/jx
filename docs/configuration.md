@@ -10,7 +10,7 @@
 Config files compose in this order:
 
 1. `~/.config/jx/*.toml`, lexically sorted
-2. workspace-root `.jx.toml`
+2. workspace-root `.jx/config.toml`
 
 Later scalar values override earlier ones. Lists such as reviewers are normalized
 and deduplicated where the workflow expects sets.
@@ -104,6 +104,33 @@ workspace_shared_paths = [".local-tool-state"]
 local trunk bookmark to the newest contiguous stack commit with changes, a
 non-empty description, and no conflicts before pushing tracked bookmarks, then
 leaves an empty working-copy change on top when needed.
+
+Check commands run before selected lifecycle operations when at least one
+changed file matches the configured repo-relative glob patterns. Commands are
+argv arrays, run from the workspace root, and must exit successfully without
+changing the jj working-copy commit:
+
+```toml
+[[repo.checks]]
+id = "generated-sources"
+before = ["pull_request", "push", "sync"]
+paths = ["schema/**", "src/generated/**"]
+command = ["./scripts/check-generated"]
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.checks]]
+id = "api-contract"
+before = ["pull_request"]
+paths = ["api/**"]
+command = ["./scripts/check-api-contract"]
+```
+
+Supported `before` values are `pull_request`, `push`, and `sync`. A failing
+command prints its captured output and aborts the operation. If a command exits
+successfully but modifies tracked working-copy content, `jx` aborts and leaves
+the changes visible for review or revert.
 
 `workspace_shared_paths` lists repo-relative local-only paths that managed
 `jx work add` workspaces should symlink from the primary checkout after jj

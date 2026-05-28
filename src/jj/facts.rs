@@ -291,15 +291,6 @@ pub(super) struct TrunkCandidate {
     pub(super) commit_id: CommitId,
 }
 
-/// Chooses the cached trunk candidate for read-only workflows without consulting the network.
-pub(super) fn select_trunk_candidate(
-    remote: &str,
-    candidates: Vec<TrunkCandidate>,
-    conflicted: Vec<String>,
-) -> Result<TrunkCandidate, JjError> {
-    select_trunk_candidate_with_hint(remote, candidates, conflicted, None)
-}
-
 /// Chooses a cached trunk candidate, letting networked workflows prefer a trusted branch hint.
 pub(super) fn select_trunk_candidate_with_hint(
     remote: &str,

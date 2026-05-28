@@ -169,7 +169,8 @@ impl JjWorkspace {
             }
         }
 
-        let candidate = select_trunk_candidate(ORIGIN_REMOTE_NAME, candidates, conflicted)?;
+        let candidate =
+            select_trunk_candidate_with_hint(ORIGIN_REMOTE_NAME, candidates, conflicted, None)?;
         let trunk = self.load_commit(&candidate.commit_id)?;
 
         Ok((candidate.branch, trunk))

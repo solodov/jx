@@ -11,17 +11,6 @@ pub fn fetch_report(context: &RepositoryContext, outcome: FetchOutcome) -> Fetch
     }
 }
 
-/// Builds the operator-facing report for a completed `jx rebase-on-trunk` mutation.
-pub fn rebase_on_trunk_report(
-    context: &RepositoryContext,
-    outcome: RebaseOnTrunkOutcome,
-) -> RebaseOnTrunkReport {
-    RebaseOnTrunkReport {
-        repository: repository_summary(context),
-        outcome,
-    }
-}
-
 /// Builds the operator-facing report for a completed fetch-and-push synchronization.
 pub fn sync_report(
     context: &RepositoryContext,

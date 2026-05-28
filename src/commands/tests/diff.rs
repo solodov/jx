@@ -38,7 +38,7 @@ fn diff_uses_configured_default_external_tool_and_appends_args() {
     // Verifies: Diff uses the jx default tool and appends operator args after config args.
     let workspace = TestWorkspace::new();
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [diff]
 default_tool = "difft"
@@ -70,7 +70,7 @@ fn diff_accepts_paths_before_trailing_tool_args() {
     // Verifies: Paths remain jj diff filters while `--` still separates renderer arguments.
     let workspace = TestWorkspace::new();
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [diff]
 default_tool = "difft"
@@ -110,7 +110,7 @@ fn diff_tool_flag_selects_configured_pipe_tool_and_appends_args() {
     // Verifies: Tool selection can choose a pipe renderer and append renderer args.
     let workspace = TestWorkspace::new();
     workspace.write_file(
-        ".jx.toml",
+        ".jx/config.toml",
         r#"
 [diff]
 default_tool = "difft"

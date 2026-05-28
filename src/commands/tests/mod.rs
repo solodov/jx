@@ -12,10 +12,10 @@ use crate::{
         ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
-        ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebaseOnTrunkOutcome,
-        RebasedCommitSummary, StackPublishMetrics, StatusRemoteFacts, StatusWorkspaceFacts,
-        TrackedPushOutcome, TrunkSummary, WorkspaceAddOptions, WorkspaceEntry,
-        WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
+        ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebasedCommitSummary,
+        StackPublishMetrics, StatusRemoteFacts, StatusWorkspaceFacts, TrackedPushOutcome,
+        TrunkSummary, WorkspaceAddOptions, WorkspaceEntry, WorkspaceRemoveOptions, WorkspaceStatus,
+        WorkspaceVisibility,
     },
     repository::{StackMetadataNode, StackMetadataWorkItemHandlerRun},
 };
@@ -35,13 +35,13 @@ use std::{
 };
 
 mod basic;
+mod checks;
 mod clone;
 mod diff;
 mod fetch;
 mod open;
 mod pull_request;
 mod push;
-mod rebase;
 mod remote_status;
 mod render;
 mod review;
@@ -381,6 +381,9 @@ struct FakeServices {
     workspace_status: WorkspaceStatus,
     workspace: WorkspaceFacts,
     description_rewrites: std::cell::RefCell<Vec<(String, String)>>,
+    check_snapshots: std::cell::RefCell<Vec<WorkingCopySnapshot>>,
+    check_command_outputs: std::cell::RefCell<Vec<CheckCommandOutput>>,
+    check_command_calls: std::cell::RefCell<Vec<RepoCheckConfig>>,
     status_workspace: StatusWorkspaceFacts,
     check: CheckReport,
     status: StatusReport,
@@ -413,9 +416,10 @@ struct FakeServices {
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
     sync_push_options: std::cell::RefCell<Vec<SyncPushOptions>>,
+    tracked_changed_files: Vec<String>,
+    bookmark_changed_files: Vec<String>,
+    changed_file_bookmark_requests: std::cell::RefCell<Vec<Vec<String>>>,
     fetch: FetchOutcome,
-    rebase_on_trunk: RebaseOnTrunkOutcome,
-    expected_rebase_sources: Option<Vec<String>>,
     stack_move: StackMoveOutcome,
     stack_move_targets: std::cell::RefCell<Vec<StackMoveTarget>>,
     local_stack_branches: std::cell::RefCell<Vec<Vec<LocalStackBranch>>>,
@@ -489,6 +493,9 @@ impl Default for FakeServices {
             workspace_status: workspace_status(),
             workspace: workspace_facts(),
             description_rewrites: std::cell::RefCell::new(Vec::new()),
+            check_snapshots: std::cell::RefCell::new(Vec::new()),
+            check_command_outputs: std::cell::RefCell::new(Vec::new()),
+            check_command_calls: std::cell::RefCell::new(Vec::new()),
             status_workspace: status_workspace_facts(),
             check: CheckReport {
                 repository: repository.clone(),
@@ -556,6 +563,9 @@ impl Default for FakeServices {
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
             sync_push_options: std::cell::RefCell::new(Vec::new()),
+            tracked_changed_files: vec!["src/main.rs".to_owned()],
+            bookmark_changed_files: vec!["src/main.rs".to_owned()],
+            changed_file_bookmark_requests: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -592,15 +602,6 @@ impl Default for FakeServices {
                     },
                 ],
             },
-            rebase_on_trunk: RebaseOnTrunkOutcome {
-                branch: "main".to_owned(),
-                source_short_commit_ids: vec!["a1b2c3d4".to_owned()],
-                trunk_short_commit_id: "11112222".to_owned(),
-                rebased_commits: 2,
-                skipped_commits: 0,
-                current_updated: true,
-            },
-            expected_rebase_sources: None,
             stack_move: StackMoveOutcome {
                 source_short_commit_id: "a1b2c3d4".to_owned(),
                 target_short_commit_id: "11112222".to_owned(),
@@ -992,6 +993,34 @@ impl CommandServices for FakeServices {
         self.fake_workspace_facts(revision)
     }
 
+    fn working_copy_snapshot(
+        &self,
+        _context: &RepositoryContext,
+    ) -> Result<WorkingCopySnapshot, JjError> {
+        let mut snapshots = self.check_snapshots.borrow_mut();
+        if snapshots.is_empty() {
+            Ok(WorkingCopySnapshot {
+                commit_id: "snapshot".to_owned(),
+            })
+        } else {
+            Ok(snapshots.remove(0))
+        }
+    }
+
+    fn run_check_command(
+        &self,
+        _context: &RepositoryContext,
+        check: &RepoCheckConfig,
+    ) -> io::Result<CheckCommandOutput> {
+        self.check_command_calls.borrow_mut().push(check.clone());
+        let mut outputs = self.check_command_outputs.borrow_mut();
+        if outputs.is_empty() {
+            Ok(CheckCommandOutput::success())
+        } else {
+            Ok(outputs.remove(0))
+        }
+    }
+
     fn check_readiness(
         &self,
         _context: &RepositoryContext,
@@ -1211,17 +1240,6 @@ impl CommandServices for FakeServices {
         Ok(self.fetch.clone())
     }
 
-    fn rebase_on_trunk(
-        &self,
-        _context: &RepositoryContext,
-        sources: &[String],
-    ) -> Result<RebaseOnTrunkOutcome, JjError> {
-        if let Some(expected) = &self.expected_rebase_sources {
-            assert_eq!(sources, expected.as_slice());
-        }
-        Ok(self.rebase_on_trunk.clone())
-    }
-
     fn move_current_stack(
         &self,
         _context: &RepositoryContext,
@@ -1350,6 +1368,24 @@ impl CommandServices for FakeServices {
             });
         }
         Ok(self.tracked_push.clone())
+    }
+
+    fn changed_files_for_tracked_push(
+        &self,
+        _context: &RepositoryContext,
+    ) -> Result<Vec<String>, JjError> {
+        Ok(self.tracked_changed_files.clone())
+    }
+
+    fn changed_files_for_bookmarks(
+        &self,
+        _context: &RepositoryContext,
+        branches: &[String],
+    ) -> Result<Vec<String>, JjError> {
+        self.changed_file_bookmark_requests
+            .borrow_mut()
+            .push(branches.to_vec());
+        Ok(self.bookmark_changed_files.clone())
     }
 
     fn push_syncable_revision(

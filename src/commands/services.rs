@@ -6,6 +6,7 @@ use crate::github::{
 };
 use chrono::Utc;
 use futures::{stream, StreamExt};
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
@@ -97,6 +98,19 @@ pub(super) trait CommandServices {
         target_commit_id: &str,
         description: &str,
     ) -> Result<CommitDescriptionRewrite, JjError>;
+
+    /// Snapshots pending disk changes and returns the current working-copy commit id.
+    fn working_copy_snapshot(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<WorkingCopySnapshot, JjError>;
+
+    /// Runs a configured check command from the repository root with combined captured output.
+    fn run_check_command(
+        &self,
+        context: &RepositoryContext,
+        check: &RepoCheckConfig,
+    ) -> io::Result<CheckCommandOutput>;
 
     /// Loads jj facts for the working copy or an explicitly selected revision.
     fn workspace_facts(
@@ -369,13 +383,6 @@ pub(super) trait CommandServices {
     /// Fetches origin and applies jj stack repair/rebase behavior.
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError>;
 
-    /// Rebases selected source revisions and descendants onto the fixed origin trunk.
-    fn rebase_on_trunk(
-        &self,
-        context: &RepositoryContext,
-        sources: &[String],
-    ) -> Result<RebaseOnTrunkOutcome, JjError>;
-
     /// Moves the current change and descendants onto a stack target or trunk.
     fn move_current_stack(
         &self,
@@ -460,6 +467,19 @@ pub(super) trait CommandServices {
 
     /// Pushes all tracked fixed-origin bookmarks, including deleted bookmarks.
     fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError>;
+
+    /// Returns changed files that tracked bookmark push would publish.
+    fn changed_files_for_tracked_push(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<Vec<String>, JjError>;
+
+    /// Returns changed files that selected bookmark pushes would publish.
+    fn changed_files_for_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        branches: &[String],
+    ) -> Result<Vec<String>, JjError>;
 
     /// Pushes one selected bookmarked revision when its update does not contain conflicted commits.
     fn push_syncable_revision(
@@ -1757,6 +1777,39 @@ impl CommandServices for ProductionServices<'_> {
         JjWorkspace::load(context.workspace_root.clone())?.push_facts_for_revision(revision)
     }
 
+    fn working_copy_snapshot(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<WorkingCopySnapshot, JjError> {
+        JjWorkspace::snapshot_working_copy(&context.workspace_root)
+    }
+
+    fn run_check_command(
+        &self,
+        context: &RepositoryContext,
+        check: &RepoCheckConfig,
+    ) -> io::Result<CheckCommandOutput> {
+        let mut command = check.command.iter();
+        let program = command
+            .next()
+            .expect("check command is validated as non-empty");
+        let mut output_file = tempfile::tempfile()?;
+        let status = ProcessCommand::new(program)
+            .args(command)
+            .current_dir(&context.workspace_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(output_file.try_clone()?))
+            .stderr(Stdio::from(output_file.try_clone()?))
+            .status()?;
+
+        output_file.seek(SeekFrom::Start(0))?;
+        let mut output = Vec::new();
+        output_file.read_to_end(&mut output)?;
+        let output = String::from_utf8_lossy(&output).into_owned();
+
+        Ok(CheckCommandOutput::from_process_status(status, output))
+    }
+
     fn check_readiness(
         &self,
         context: &RepositoryContext,
@@ -2218,14 +2271,6 @@ impl CommandServices for ProductionServices<'_> {
         result
     }
 
-    fn rebase_on_trunk(
-        &self,
-        context: &RepositoryContext,
-        sources: &[String],
-    ) -> Result<RebaseOnTrunkOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.rebase_on_trunk(sources)
-    }
-
     fn move_current_stack(
         &self,
         context: &RepositoryContext,
@@ -2306,6 +2351,21 @@ impl CommandServices for ProductionServices<'_> {
 
     fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError> {
         JjWorkspace::load(context.workspace_root.clone())?.push_tracked_deleted()
+    }
+
+    fn changed_files_for_tracked_push(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<Vec<String>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.changed_files_for_tracked_push()
+    }
+
+    fn changed_files_for_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        branches: &[String],
+    ) -> Result<Vec<String>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.changed_files_for_bookmarks(branches)
     }
 
     fn push_syncable_revision(

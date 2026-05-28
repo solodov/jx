@@ -8,6 +8,7 @@ pub(in crate::commands) const DIM_STYLE: &str = "\x1b[2m";
 pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
 const DRAFT_TEXT_RGB: (u8, u8, u8) = (190, 184, 176);
 pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
+const APPROVED_REVIEWER_STYLE: &str = "\x1b[38;2;118;108;96m";
 const ORANGE_STYLE: &str = "\x1b[38;2;194;95;0m";
 pub(in crate::commands) const RED_STYLE: &str = "\x1b[31m";
 const RED_BOLD_STYLE: &str = "\x1b[1m\x1b[31m";
@@ -489,7 +490,7 @@ fn pull_request_reviewer_token(
         ReviewerTokenState::Requested => BLACK_BOLD_STYLE,
         ReviewerTokenState::Commented => ORANGE_STYLE,
         ReviewerTokenState::Addressed => BLACK_ITALIC_STYLE,
-        ReviewerTokenState::Approved => GREEN_STYLE,
+        ReviewerTokenState::Approved => APPROVED_REVIEWER_STYLE,
     };
     format!("{style}{label}{RESET_STYLE}")
 }

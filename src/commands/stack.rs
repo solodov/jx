@@ -981,6 +981,12 @@ impl StackPublishExecution<'_> {
                 task_id,
                 &fix_intent_indexes,
             )?;
+            run_repo_checks(
+                self.context,
+                self.services,
+                RepoCheckTrigger::PullRequest,
+                &Self::stack_publish_changed_files(&facts, &facts.publish_indexes),
+            )?;
             let stable_selection = stable_stack_publish_selection(&selection, &facts);
             let mut rewrote = false;
             for index in &facts.publish_indexes {
@@ -1027,6 +1033,16 @@ impl StackPublishExecution<'_> {
             }
             return Ok((facts, prepare_effects));
         }
+    }
+
+    fn stack_publish_changed_files(facts: &StackPublishFacts, indexes: &[usize]) -> Vec<String> {
+        let mut changed_files = indexes
+            .iter()
+            .flat_map(|index| facts.nodes[*index].workspace.changed_files.clone())
+            .collect::<Vec<_>>();
+        changed_files.sort();
+        changed_files.dedup();
+        changed_files
     }
 
     fn plan_pull_requests(

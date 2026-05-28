@@ -135,14 +135,14 @@ fn workspace_status_renderer_orders_commit_description_and_jj_changes() {
             "Working copy  (@) : kvxvwztp b9e8f888".to_owned(),
             "Parent commit (@-): xskrmynn 6257dd5a main | parent".to_owned(),
         ],
-        description: "Add rebase-on-trunk command".to_owned(),
+        description: "Add stack trunk move".to_owned(),
         change_lines: vec!["M README.md".to_owned(), "M src/commands.rs".to_owned()],
         extra_lines: Vec::new(),
     };
 
     assert_eq!(
             render_workspace_status_with_width(&status, 80),
-            "Working copy  (@) : kvxvwztp b9e8f888\nParent commit (@-): xskrmynn 6257dd5a main | parent\n\nAdd rebase-on-trunk command\n\nM README.md\nM src/commands.rs\n"
+            "Working copy  (@) : kvxvwztp b9e8f888\nParent commit (@-): xskrmynn 6257dd5a main | parent\n\nAdd stack trunk move\n\nM README.md\nM src/commands.rs\n"
         );
 }
 

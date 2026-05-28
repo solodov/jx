@@ -612,10 +612,11 @@ fn facts_reject_non_linear_stack_paths() {
 #[test]
 fn select_trunk_candidate_reports_missing_and_conflicted_trunk() {
     // Verifies: Trunk selection reports missing and conflicted origin trunk state.
-    let missing = select_trunk_candidate("origin", Vec::new(), Vec::new())
+    let missing = select_trunk_candidate_with_hint("origin", Vec::new(), Vec::new(), None)
         .expect_err("missing trunk is rejected");
-    let conflicted = select_trunk_candidate("origin", Vec::new(), vec!["main".to_owned()])
-        .expect_err("conflicted trunk is rejected");
+    let conflicted =
+        select_trunk_candidate_with_hint("origin", Vec::new(), vec!["main".to_owned()], None)
+            .expect_err("conflicted trunk is rejected");
 
     assert!(matches!(missing, JjError::MissingTrunk { .. }));
     assert!(

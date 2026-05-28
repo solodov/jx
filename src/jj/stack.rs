@@ -11,14 +11,16 @@ impl JjWorkspace {
 
         let current_before = self.current_commit()?;
         let current_before_tree = current_before.tree();
+        let target_is_trunk = matches!(target, StackMoveTarget::Trunk);
         let target = match target {
             StackMoveTarget::Onto(target) => self.resolve_stack_move_target(&target)?,
-            StackMoveTarget::Trunk => self.resolve_trunk(&current_before)?.1,
+            StackMoveTarget::Trunk => self.resolve_trunk_destination()?.1,
         };
 
         let source_short_commit_id = short_commit_id(current_before.id());
         let target_short_commit_id = short_commit_id(target.id());
-        if current_before.id() == target.id() {
+        let target_is_descendant = self.is_ancestor_or_equal(current_before.id(), target.id())?;
+        if current_before.id() == target.id() || (target_is_trunk && target_is_descendant) {
             return Ok(StackMoveOutcome {
                 source_short_commit_id,
                 target_short_commit_id,
@@ -27,7 +29,7 @@ impl JjWorkspace {
                 current_updated: false,
             });
         }
-        if self.is_ancestor_or_equal(current_before.id(), target.id())? {
+        if target_is_descendant {
             return Err(JjError::StackTargetDescendant);
         }
 
@@ -225,7 +227,8 @@ impl JjWorkspace {
             });
         }
 
-        let Ok(candidate) = select_trunk_candidate(ORIGIN_REMOTE_NAME, candidates, conflicted)
+        let Ok(candidate) =
+            select_trunk_candidate_with_hint(ORIGIN_REMOTE_NAME, candidates, conflicted, None)
         else {
             return Ok(None);
         };

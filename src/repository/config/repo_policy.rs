@@ -56,6 +56,30 @@ impl RepoConfig {
         handlers
     }
 
+    /// Returns whether any lifecycle check is configured for the trigger after repo overrides.
+    pub fn has_checks_for_trigger(
+        &self,
+        repository: &GitHubRepository,
+        before: RepoCheckTrigger,
+    ) -> bool {
+        self.effective_checks_for(repository)
+            .iter()
+            .any(|check| check.before.contains(&before))
+    }
+
+    /// Returns lifecycle checks selected by repo policy, event, and changed files.
+    pub fn checks_for(
+        &self,
+        repository: &GitHubRepository,
+        before: RepoCheckTrigger,
+        changed_files: &[String],
+    ) -> Vec<RepoCheckConfig> {
+        self.effective_checks_for(repository)
+            .into_iter()
+            .filter(|check| check.matches(before, changed_files))
+            .collect()
+    }
+
     /// Returns reviewer candidates selected by repo policy and matching file rules.
     pub fn reviewer_candidates_for(
         &self,
@@ -141,6 +165,15 @@ impl RepoConfig {
         }
     }
 
+    fn effective_checks_for(&self, repository: &GitHubRepository) -> Vec<RepoCheckConfig> {
+        let mut checks = Vec::new();
+        apply_check_configs(&mut checks, &self.base.checks);
+        for rule in self.matching_rules(repository) {
+            apply_check_configs(&mut checks, &rule.policy.checks);
+        }
+        checks
+    }
+
     fn matching_rules(&self, repository: &GitHubRepository) -> Vec<&RepoRuleConfig> {
         let slug = repository.slug();
         self.rules
@@ -157,6 +190,7 @@ pub struct RepoPolicyConfig {
     pub event_handlers: Vec<RepoEventHandlerConfig>,
     pub work_items: RepoWorkItemsConfig,
     pub work_item_handlers: Vec<RepoWorkItemHandlerConfig>,
+    pub checks: Vec<RepoCheckConfig>,
     pub reviewers: Vec<ReviewerTarget>,
     pub reviewer_rules: Vec<ReviewerPathRule>,
     pub workspace_shared_paths: Vec<String>,
@@ -171,6 +205,7 @@ impl RepoPolicyConfig {
         merge_event_handler_configs(&mut self.event_handlers, &layer.event_handlers);
         self.work_items.apply_layer(layer.work_items);
         merge_work_item_handler_configs(&mut self.work_item_handlers, &layer.work_item_handlers);
+        merge_check_configs(&mut self.checks, &layer.checks);
         merge_reviewers(&mut self.reviewers, layer.reviewers);
         self.reviewer_rules.extend(layer.reviewer_rules);
         merge_workspace_shared_paths(
@@ -352,6 +387,52 @@ pub enum RepoEventHandlerConfig {
 pub enum RepoWorkItemHandlerConfig {
     Handler(RepoWorkItemHandler),
     Disable { id: String },
+}
+
+/// Check-only command that can block selected lifecycle operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCheckConfig {
+    pub id: String,
+    pub before: Vec<RepoCheckTrigger>,
+    pub paths: Vec<String>,
+    pub command: Vec<String>,
+}
+
+impl RepoCheckConfig {
+    fn matches(&self, before: RepoCheckTrigger, changed_files: &[String]) -> bool {
+        self.before.contains(&before) && self.matches_changed_files(changed_files)
+    }
+
+    fn matches_changed_files(&self, changed_files: &[String]) -> bool {
+        self.paths.iter().any(|pattern| {
+            Glob::new(pattern)
+                .ok()
+                .map(|glob| {
+                    let matcher = glob.compile_matcher();
+                    changed_files.iter().any(|path| matcher.is_match(path))
+                })
+                .unwrap_or(false)
+        })
+    }
+}
+
+/// Lifecycle points that can run configured repo checks before mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoCheckTrigger {
+    PullRequest,
+    Push,
+    Sync,
+}
+
+impl RepoCheckTrigger {
+    /// Stable config label for this check trigger.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PullRequest => "pull_request",
+            Self::Push => "push",
+            Self::Sync => "sync",
+        }
+    }
 }
 
 /// Effect to run when a matching repository event is emitted.
@@ -581,6 +662,20 @@ fn work_item_handler_config_id(config: &RepoWorkItemHandlerConfig) -> Option<&st
     match config {
         RepoWorkItemHandlerConfig::Handler(handler) => handler.id.as_deref(),
         RepoWorkItemHandlerConfig::Disable { id } => Some(id.as_str()),
+    }
+}
+
+fn apply_check_configs(target: &mut Vec<RepoCheckConfig>, configs: &[RepoCheckConfig]) {
+    for config in configs {
+        target.retain(|existing| existing.id != config.id);
+        target.push(config.clone());
+    }
+}
+
+fn merge_check_configs(target: &mut Vec<RepoCheckConfig>, configs: &[RepoCheckConfig]) {
+    for config in configs {
+        target.retain(|existing| existing.id != config.id);
+        target.push(config.clone());
     }
 }
 

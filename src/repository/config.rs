@@ -13,7 +13,8 @@ pub use repo_policy::*;
 pub use shell::*;
 
 const GLOBAL_CONFIG_RELATIVE_PATH: [&str; 2] = [".config", "jx"];
-const PROJECT_CONFIG_FILE: &str = ".jx.toml";
+const PROJECT_CONFIG_RELATIVE_PATH: [&str; 2] = [".jx", "config.toml"];
+const PROJECT_CONFIG_FILE: &str = "config.toml";
 
 /// Optional workflow config composed from global files and the project file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,7 +54,7 @@ impl WorkflowConfig {
             config.apply_optional_global_configs(path)?;
         }
         if let Ok(workspace_root) = find_workspace_root(environment.current_dir()) {
-            config.apply_optional_project_config(workspace_root.join(PROJECT_CONFIG_FILE))?;
+            config.apply_optional_project_config(project_config_file(&workspace_root))?;
         }
         config.validate()?;
 
@@ -69,8 +70,7 @@ impl WorkflowConfig {
         if let Some(path) = global_config_dir(environment) {
             config.apply_optional_global_configs(path)?;
         }
-        config
-            .apply_optional_project_config(environment.current_dir().join(PROJECT_CONFIG_FILE))?;
+        config.apply_optional_project_config(project_config_file(environment.current_dir()))?;
         config.validate()?;
 
         Ok(config)
@@ -85,7 +85,7 @@ impl WorkflowConfig {
         if let Some(path) = global_config_dir(environment) {
             config.apply_optional_global_configs(path)?;
         }
-        config.apply_optional_project_config(workspace_root.join(PROJECT_CONFIG_FILE))?;
+        config.apply_optional_project_config(project_config_file(workspace_root))?;
         config.validate()?;
 
         Ok(config)
@@ -209,7 +209,7 @@ pub enum RepositoryError {
         source: toml::de::Error,
     },
     #[error(
-        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.stack_status]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes and hooks are not configurable."
+        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes and hooks are not configurable."
     )]
     UnsupportedConfigKey { file: String, key: String },
     #[error("Invalid workflow config `{file}`: {message}")]
@@ -275,6 +275,14 @@ pub enum RepositoryError {
     },
     #[error("Could not write cache `{file}`: {source}")]
     CacheWrite { file: PathBuf, source: io::Error },
+}
+
+fn project_config_file(workspace_root: &Path) -> PathBuf {
+    PROJECT_CONFIG_RELATIVE_PATH
+        .iter()
+        .fold(workspace_root.to_path_buf(), |path, component| {
+            path.join(component)
+        })
 }
 
 fn global_config_dir(environment: &RuntimeEnvironment) -> Option<PathBuf> {

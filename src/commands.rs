@@ -16,7 +16,7 @@ use std::{
     io::IsTerminal as _,
     io::Write as _,
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
+    process::{Command as ProcessCommand, Stdio},
     time::Duration,
 };
 
@@ -37,8 +37,8 @@ use crate::{
         PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions,
         PullRequestReadiness, PullRequestReport, PullRequestStackNode, PullRequestStackRow,
         PullRequestStackSelection, PullRequestStackSnapshot, PullRequestStackStatusReport,
-        PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport, RepositorySummary,
-        StatusReport, StatusState, SyncReport, TrackedPushReport, WorkflowError,
+        PushPlan, PushReport, RemoteStatusReport, RepositorySummary, StatusReport, StatusState,
+        SyncReport, TrackedPushReport, WorkflowError,
     },
     github::{
         GitHubClient, GitHubUserProfile, OctocrabGitHubClient, PullRequestCheckStatus,
@@ -53,23 +53,25 @@ use crate::{
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, FetchTraceAttr, FetchTraceStep,
         FetchTraceValue, InitialPublishTarget, JjError, JjWorkspace, LocalStackBranch,
         LocalStackBranchFacts, LocalStackBranchMetrics, PipeDiffTool, PushBookmarksMetrics,
-        PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary, RebaseOnTrunkOutcome,
-        StackMoveOutcome, StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
+        PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary, StackMoveOutcome,
+        StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
         StackPublishSelection, StatusWorkspaceFacts, StatusWorkspaceMetrics, SyncPushMetrics,
         SyncPushMetricsOutcome, SyncPushOptions, SyncPushOutcome, TrackedPushOutcome,
-        WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions,
-        WorkspaceStatus, WorkspaceVisibility,
+        WorkingCopySnapshot, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
+        WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
     },
     repository::{
         read_github_user_name_cache, read_stack_metadata, read_workspace_metadata,
         validate_workspace_name, write_github_user_name_cache, write_stack_metadata,
         write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote, GitHubRepository,
-        LayoutConfig, LocalRepositoryContext, RepoWorkItemEvent, RepoWorkItemHandler,
-        RepositoryContext, RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig,
-        ShellZoxideMode, StackMetadata, TokenSource, WorkflowConfig, WorkspaceMetadata,
+        LayoutConfig, LocalRepositoryContext, RepoCheckConfig, RepoCheckTrigger, RepoWorkItemEvent,
+        RepoWorkItemHandler, RepositoryContext, RepositoryError, RepositoryIdentity,
+        RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata, TokenSource,
+        WorkflowConfig, WorkspaceMetadata,
     },
 };
 
+mod checks;
 mod dashboard;
 mod handlers;
 mod perf;
@@ -84,6 +86,7 @@ mod shell;
 mod stack;
 mod work;
 
+use checks::*;
 use dashboard::*;
 use handlers::*;
 use perf::*;
@@ -160,6 +163,8 @@ pub enum CommandError {
         work_id: String,
         message: String,
     },
+    #[error("{message}")]
+    Check { message: String },
     #[error("Workspace `{workspace}` was created at {destination}, but post-create setup failed: {message}. The workspace was not rolled back; repair or delete it manually.")]
     WorkAddSetup {
         workspace: String,

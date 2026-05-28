@@ -172,7 +172,7 @@ surface.
 - `jj` commits and bookmarks are the local workflow model.
 - GitHub publishing uses the fixed `origin` remote.
 - PR heads are pushed to the same GitHub repository, not a fork.
-- Hooks, configurable remotes, and configurable bookmark roots are out of scope.
+- Configurable remotes and configurable bookmark roots are out of scope.
 
 Those constraints keep the tool predictable: if a workflow needs broad `jj`
 control, use `jj` directly.
@@ -192,11 +192,11 @@ if you prefer a different visual style.
 Config files are TOML and compose in this order:
 
 1. `~/.config/jx/*.toml`, lexically sorted
-2. workspace-root `.jx.toml`
+2. workspace-root `.jx/config.toml`
 
-Supported config covers clone/workspace layout, repo policy, reviewers,
-file-based reviewer rules, named diff renderers, and optional keychain token
-lookup:
+Supported config covers clone/workspace layout, repo policy, lifecycle checks,
+reviewers, file-based reviewer rules, named diff renderers, and optional
+keychain token lookup:
 
 ```toml
 [layout]
@@ -211,6 +211,12 @@ path = "{repo}"
 [repo]
 reviewers = ["example-reviewer", "ExampleOrg/platform"]
 workspace_shared_paths = [".pi"]
+
+[[repo.checks]]
+id = "generated-sources"
+before = ["pull_request", "push", "sync"]
+paths = ["schema/**", "src/generated/**"]
+command = ["./scripts/check-generated"]
 
 [[repo.rules]]
 repo = "example-owner/*"
@@ -245,6 +251,8 @@ Notes:
 - Layout rules place clones and managed workspaces by normalized source, owner,
   and repo identity.
 - Repo rules match the fixed `origin` GitHub repo with `owner/repo` globs.
+- Repo checks run check-only commands before selected lifecycle operations when
+  changed files match configured globs.
 - `workspace_shared_paths` symlink existing local-only paths such as `.pi` from
   the primary checkout into managed `jx work add` workspaces; missing sources
   are skipped, and configured paths must be untracked at the exact selected

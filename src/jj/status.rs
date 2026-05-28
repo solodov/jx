@@ -1,6 +1,18 @@
 use super::*;
 
 impl JjWorkspace {
+    /// Snapshots pending disk changes and returns the current jj working-copy commit id.
+    pub fn snapshot_working_copy(current_dir: &Path) -> Result<WorkingCopySnapshot, JjError> {
+        let workspace_root = find_jj_workspace_root(current_dir)?;
+        run_jj_status(&workspace_root, false)?;
+        let workspace = Self::load(workspace_root)?;
+        let commit = workspace.current_commit()?;
+
+        Ok(WorkingCopySnapshot {
+            commit_id: commit.id().hex(),
+        })
+    }
+
     /// Returns status lines for the current working-copy commit using jj's own summary rendering.
     pub fn current_status(current_dir: &Path, color: bool) -> Result<WorkspaceStatus, JjError> {
         let workspace_root = find_jj_workspace_root(current_dir)?;

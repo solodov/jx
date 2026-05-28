@@ -403,39 +403,6 @@ fn write_fetch_prefix(formatter: &mut dyn Formatter, report: &FetchReport) -> io
     )
 }
 
-pub(in crate::commands) fn render_rebase_on_trunk(
-    report: &RebaseOnTrunkReport,
-    current_dir: &Path,
-    color: bool,
-) -> Result<String, JjError> {
-    render_linked_output(current_dir, color, |formatter| {
-        write_rebase_on_trunk(formatter, report)
-    })
-}
-
-pub(in crate::commands) fn write_rebase_on_trunk(
-    formatter: &mut dyn Formatter,
-    report: &RebaseOnTrunkReport,
-) -> io::Result<()> {
-    write!(
-        formatter,
-        "Rebased: {} onto {}/{} (",
-        rebase_on_trunk_source_label(&report.outcome),
-        report.repository.origin_name,
-        report.outcome.branch
-    )?;
-    write_osc8_link(
-        formatter,
-        &branch_url(&report.repository.github_url, &report.outcome.branch),
-        &report.repository.origin_url,
-    )?;
-    writeln!(
-        formatter,
-        "), {}",
-        render_rebase_on_trunk_outcome(&report.outcome)
-    )
-}
-
 pub(in crate::commands) fn render_push(
     report: &PushReport,
     current_dir: &Path,

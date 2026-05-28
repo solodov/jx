@@ -494,6 +494,7 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
                 | "event_handlers"
                 | "work_items"
                 | "work_item_handlers"
+                | "checks"
                 | "reviewers"
                 | "path_reviewers"
                 | "reviewer_rules"
@@ -556,6 +557,7 @@ fn parse_repo_rule(
                 | "event_handlers"
                 | "work_items"
                 | "work_item_handlers"
+                | "checks"
                 | "reviewers"
                 | "path_reviewers"
                 | "reviewer_rules"
@@ -602,6 +604,11 @@ fn parse_repo_policy(
         })
         .transpose()?
         .unwrap_or_default();
+    let checks = table
+        .get("checks")
+        .map(|value| parse_repo_checks(file, &format!("{key_prefix}.checks"), value))
+        .transpose()?
+        .unwrap_or_default();
     let reviewers = table
         .get("reviewers")
         .map(|value| parse_reviewers(file, &format!("{key_prefix}.reviewers"), value))
@@ -630,6 +637,7 @@ fn parse_repo_policy(
         event_handlers,
         work_items,
         work_item_handlers,
+        checks,
         reviewers,
         reviewer_rules,
         workspace_shared_paths,
@@ -993,6 +1001,123 @@ fn validate_named_glob_rule(
         message: format!("`{key}` must be a valid {description}: {source}"),
     })?;
     Ok(name)
+}
+
+fn parse_repo_checks(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<RepoCheckConfig>, RepositoryError> {
+    let Some(checks) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    checks
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_repo_check(file, key, index, value))
+        .collect()
+}
+
+fn parse_repo_check(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoCheckConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "id" | "before" | "paths" | "command") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let id = required_non_empty_string(file, table, &format!("{key}[{index}].id"))?;
+    let before = parse_repo_check_triggers(
+        file,
+        &format!("{key}[{index}].before"),
+        &required_string_array(file, table, &format!("{key}[{index}].before"))?,
+    )?;
+    let paths = required_string_array(file, table, &format!("{key}[{index}].paths"))?;
+    if paths.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}].paths` must not be empty"),
+        });
+    }
+    for pattern in &paths {
+        validate_glob_pattern(file, &format!("{key}[{index}].paths"), pattern)?;
+    }
+    let command = required_string_array(file, table, &format!("{key}[{index}].command"))?;
+    if command.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}].command` must not be empty"),
+        });
+    }
+
+    Ok(RepoCheckConfig {
+        id,
+        before,
+        paths,
+        command,
+    })
+}
+
+fn parse_repo_check_triggers(
+    file: &str,
+    key: &str,
+    values: &[String],
+) -> Result<Vec<RepoCheckTrigger>, RepositoryError> {
+    if values.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must not be empty"),
+        });
+    }
+
+    let mut triggers = Vec::new();
+    for value in values {
+        let trigger = match value.as_str() {
+            "pull_request" => RepoCheckTrigger::PullRequest,
+            "push" => RepoCheckTrigger::Push,
+            "sync" => RepoCheckTrigger::Sync,
+            _ => {
+                return Err(RepositoryError::InvalidConfig {
+                    file: file.to_owned(),
+                    message: format!(
+                        "`{key}` contains unsupported trigger `{value}`; use `pull_request`, `push`, or `sync`"
+                    ),
+                });
+            }
+        };
+        if !triggers.contains(&trigger) {
+            triggers.push(trigger);
+        }
+    }
+
+    Ok(triggers)
+}
+
+fn validate_glob_pattern(file: &str, key: &str, pattern: &str) -> Result<(), RepositoryError> {
+    Glob::new(pattern)
+        .map(drop)
+        .map_err(|error| RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` glob `{pattern}` is invalid: {error}"),
+        })
 }
 
 fn parse_policy_path_reviewers(
@@ -1648,6 +1773,22 @@ fn parse_keychain_config(
         service: required_non_empty_string(file, table, "auth.keychain.service")?,
         account: required_non_empty_string(file, table, "auth.keychain.account")?,
     })
+}
+
+fn required_string_array(
+    file: &str,
+    table: &toml::Table,
+    key: &str,
+) -> Result<Vec<String>, RepositoryError> {
+    let value = table.get(key.rsplit_once('.').map_or(key, |(_, key)| key));
+    let Some(value) = value else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` is required"),
+        });
+    };
+
+    parse_string_array(file, key, value)
 }
 
 fn required_non_empty_string(

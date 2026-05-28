@@ -112,6 +112,34 @@ impl JjWorkspace {
         )
     }
 
+    /// Returns repo-root-relative files changed by commits that tracked push would publish.
+    pub fn changed_files_for_tracked_push(&self) -> Result<Vec<String>, JjError> {
+        self.ensure_git_backed()?;
+        let updates = self.tracked_origin_bookmark_updates()?;
+        self.changed_files_for_updates(&updates)
+    }
+
+    /// Returns repo-root-relative files changed by commits that selected bookmarks would publish.
+    pub fn changed_files_for_bookmarks(&self, branches: &[String]) -> Result<Vec<String>, JjError> {
+        self.ensure_git_backed()?;
+        let mut updates = Vec::new();
+
+        for branch in branches {
+            let bookmark = RefName::new(branch);
+            let targets = self.local_and_origin_bookmark_targets(bookmark);
+            if let Some(update) = classify_push_bookmark_update(
+                bookmark.to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
+                targets,
+                true,
+                false,
+            )? {
+                updates.push((RefNameBuf::from(branch.as_str()), update));
+            }
+        }
+
+        self.changed_files_for_updates(&updates)
+    }
+
     /// Pushes tracked bookmarks whose push ranges do not contain conflicted commits.
     pub fn push_syncable_tracked(
         &mut self,
@@ -750,6 +778,38 @@ impl JjWorkspace {
         &self,
         updates: &[BookmarkPushUpdate],
     ) -> Result<Vec<PushedCommitSummary>, JjError> {
+        let mut commits = self
+            .commit_ids_for_updates(updates)?
+            .into_iter()
+            .map(|id| {
+                self.load_commit(&id)
+                    .and_then(|commit| pushed_commit_summary(&commit))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        commits.reverse();
+
+        Ok(commits)
+    }
+
+    fn changed_files_for_updates(
+        &self,
+        updates: &[BookmarkPushUpdate],
+    ) -> Result<Vec<String>, JjError> {
+        let mut files = Vec::new();
+        for id in self.commit_ids_for_updates(updates)? {
+            let commit = self.load_commit(&id)?;
+            files.extend(changed_file_facts_for_commit(self.repo.as_ref(), &commit)?.files);
+        }
+        files.sort();
+        files.dedup();
+
+        Ok(files)
+    }
+
+    fn commit_ids_for_updates(
+        &self,
+        updates: &[BookmarkPushUpdate],
+    ) -> Result<Vec<CommitId>, JjError> {
         let new_heads = updates
             .iter()
             .filter_map(|(_, update)| update.after.clone())
@@ -770,21 +830,12 @@ impl JjWorkspace {
             .map_err(|error| JjError::Backend {
                 message: error.into_backend_error().to_string(),
             })?;
-        let ids = pollster::block_on(revset.stream().try_collect::<Vec<_>>()).map_err(|error| {
+
+        pollster::block_on(revset.stream().try_collect::<Vec<_>>()).map_err(|error| {
             JjError::Backend {
                 message: error.into_backend_error().to_string(),
             }
-        })?;
-        let mut commits = ids
-            .into_iter()
-            .map(|id| {
-                self.load_commit(&id)
-                    .and_then(|commit| pushed_commit_summary(&commit))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        commits.reverse();
-
-        Ok(commits)
+        })
     }
 
     fn push_origin_bookmark_updates_with_metrics(

@@ -56,6 +56,12 @@ pub struct BootstrapPushOutcome {
     pub working_copy_short_commit_id: Option<String>,
 }
 
+/// Snapshot of the jj working-copy commit after jj has captured pending disk changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingCopySnapshot {
+    pub commit_id: String,
+}
+
 /// Status of the current working-copy commit rendered by `jj status` plus its description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceStatus {
@@ -351,17 +357,6 @@ pub struct RebasedCommitSummary {
     pub has_conflict: bool,
     pub is_empty: bool,
     pub workspace_visibility: WorkspaceVisibility,
-}
-
-/// Outcome of rebasing a jj source revision onto the fixed origin trunk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RebaseOnTrunkOutcome {
-    pub branch: String,
-    pub source_short_commit_ids: Vec<String>,
-    pub trunk_short_commit_id: String,
-    pub rebased_commits: usize,
-    pub skipped_commits: usize,
-    pub current_updated: bool,
 }
 
 /// Destination for moving the current jj stack through `jx stack`.
