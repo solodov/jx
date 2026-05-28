@@ -53,11 +53,11 @@ use crate::{
         WorkspaceVisibility,
     },
     repository::{
-        read_stack_metadata, read_workspace_metadata, reset_stack_metadata,
-        validate_workspace_name, write_stack_metadata, write_workspace_metadata, ClonePlan,
-        DiffToolConfig, GitHubRemote, GitHubRepository, LayoutConfig, LocalRepositoryContext,
-        RepositoryContext, RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig,
-        ShellZoxideMode, StackMetadata, TokenSource, WorkflowConfig, WorkspaceMetadata,
+        read_stack_metadata, read_workspace_metadata, validate_workspace_name,
+        write_stack_metadata, write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote,
+        GitHubRepository, LayoutConfig, LocalRepositoryContext, RepositoryContext, RepositoryError,
+        RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
+        TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 

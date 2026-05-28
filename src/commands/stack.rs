@@ -26,18 +26,11 @@ pub(super) fn handle_stack(
             progress.finish();
             open_stack_pull_request(&context, services, selector, &snapshot?, print)
         }
-        StackRequest::Track => {
-            progress.status("Tracking pull request stack…");
-            let snapshot = manager.track_authored_open_pull_requests();
+        StackRequest::Refresh => {
+            progress.status("Refreshing pull request stack…");
+            let snapshot = manager.refresh_authored_open_pull_requests();
             progress.finish();
             render_stack_snapshot(&snapshot?)
-        }
-        StackRequest::Reset => {
-            progress.status("Resetting pull request stack…");
-            let result = manager.reset();
-            progress.finish();
-            result?;
-            Ok("Stack state reset\n".to_owned())
         }
     }
 }

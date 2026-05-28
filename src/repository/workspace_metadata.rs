@@ -107,12 +107,6 @@ pub fn write_stack_metadata(root: &Path, metadata: &StackMetadata) -> Result<(),
     Ok(())
 }
 
-/// Removes repo-local stack metadata while preserving ignore rules for future stack use.
-pub fn reset_stack_metadata(root: &Path) -> Result<(), RepositoryError> {
-    ensure_metadata_directory_ignored(root)?;
-    remove_metadata_file(stack_metadata_file(root))
-}
-
 fn write_metadata_file<T>(root: &Path, file: PathBuf, metadata: &T) -> Result<(), RepositoryError>
 where
     T: serde::Serialize,

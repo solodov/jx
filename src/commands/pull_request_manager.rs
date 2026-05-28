@@ -38,8 +38,8 @@ impl<'a> PullRequestStackManager<'a> {
         self.snapshot_from_live_pull_requests(Vec::new(), selection)
     }
 
-    /// Tracks authored open PRs attached to local bookmarks and writes durable stack state.
-    pub(super) fn track_authored_open_pull_requests(
+    /// Refreshes stack state from authored open PRs attached to local bookmarks.
+    pub(super) fn refresh_authored_open_pull_requests(
         &self,
     ) -> Result<PullRequestStackSnapshot, CommandError> {
         let local_branches = self.local_pull_request_branches()?;
@@ -164,11 +164,6 @@ impl<'a> PullRequestStackManager<'a> {
             return Ok(Vec::new());
         }
         self.sync_pull_requests_with_metadata(push, &metadata)
-    }
-
-    /// Removes durable stack state while preserving generated metadata ignore rules.
-    pub(super) fn reset(&self) -> Result<(), CommandError> {
-        reset_stack_metadata(&self.context.repository_root).map_err(Into::into)
     }
 
     fn snapshot_from_live_pull_requests(

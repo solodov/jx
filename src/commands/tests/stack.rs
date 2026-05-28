@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn stack_help_describes_cached_display_and_live_refresh() {
+    // Verifies: Stack help distinguishes local cached display from GitHub-backed refresh.
+    let help = help_output(["jx", "stack", "--help"]);
+
+    assert!(help.contains("Show or refresh repo-local pull request stack state"));
+    assert!(help.contains(".jx/stack.toml"));
+    assert!(help.contains("without contacting GitHub"));
+    assert!(help.contains("open GitHub PRs authored by you"));
+    assert!(help.contains("show"));
+    assert!(help.contains("refresh"));
+    assert!(!help.contains("track"));
+    assert!(!help.contains("reset"));
+}
+
+#[test]
+fn stack_subcommand_help_explains_effects() {
+    // Verifies: Stack subcommand help names data sources and non-mutating GitHub behavior.
+    let show_help = help_output(["jx", "stack", "show", "--help"]);
+    assert!(show_help.contains("Show stored pull request stack state"));
+    assert!(show_help.contains("without contacting GitHub"));
+    assert!(show_help.contains("default when no stack subcommand"));
+
+    let refresh_help = help_output(["jx", "stack", "refresh", "--help"]);
+    assert!(refresh_help.contains("Rebuild repo-local stack state"));
+    assert!(refresh_help.contains("local PR bookmark heads"));
+    assert!(refresh_help.contains("writes .jx/stack.toml"));
+    assert!(refresh_help.contains("does not push branches"));
+    assert!(refresh_help.contains("create, update, close, or delete pull requests"));
+}
+
+#[test]
 fn stack_interactive_opens_selected_cached_pull_request() {
     // Verifies: Stack selection opens cached PR metadata without querying GitHub.
     let workspace = TestWorkspace::new();
@@ -374,8 +405,8 @@ fn stack_interactive_reports_missing_stack_state() {
 }
 
 #[test]
-fn stack_track_persists_hierarchy_and_ignore_rules() {
-    // Verifies: stack tracking records PR hierarchy in repo-local ignored metadata.
+fn stack_refresh_persists_hierarchy_and_ignore_rules() {
+    // Verifies: stack refresh records PR hierarchy in repo-local ignored metadata.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -423,16 +454,16 @@ fn stack_track_persists_hierarchy_and_ignore_rules() {
     };
 
     let result = run_with_args_and_progress(
-        ["jx", "stack", "track"],
+        ["jx", "stack", "refresh"],
         &environment,
         &services,
         &progress,
         prompts,
         OutputMode::plain(),
     )
-    .expect("stack tracking succeeds");
+    .expect("stack refresh succeeds");
 
-    assert_eq!(progress.messages(), ["Tracking pull request stack…"]);
+    assert_eq!(progress.messages(), ["Refreshing pull request stack…"]);
     assert!(progress.finished.get());
     assert_eq!(
         result.stdout,
@@ -446,35 +477,6 @@ fn stack_track_persists_hierarchy_and_ignore_rules() {
         fs::read_to_string(workspace.path().join(".jx/stack.toml")).expect("read stack state");
     assert!(stack_file.contains("pull_request = 10"));
     assert!(stack_file.contains("parent_branch = \"topic/root\""));
-}
-
-#[test]
-fn stack_reset_removes_state_but_keeps_ignore_rules() {
-    // Verifies: reset removes durable stack state without exposing future metadata to Git.
-    let workspace = TestWorkspace::new();
-    workspace.write_git_config(
-        r#"
-[remote "origin"]
-    url = ssh://git@github.com/example-owner/example-repo.git
-"#,
-    );
-    let environment = RuntimeEnvironment::new(workspace.path(), []);
-    fs::create_dir_all(workspace.path().join(".jx")).expect("create metadata directory");
-    fs::write(workspace.path().join(".jx/stack.toml"), "version = 1\n").expect("write stack file");
-
-    let result = run_with_args_and_services(
-        ["jx", "stack", "reset"],
-        &environment,
-        &FakeServices::default(),
-    )
-    .expect("stack reset succeeds");
-
-    assert_eq!(result.stdout, "Stack state reset\n");
-    assert!(!workspace.path().join(".jx/stack.toml").exists());
-    assert_eq!(
-        fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("read gitignore"),
-        "/.gitignore\n/workspace.toml\n/stack.toml\n"
-    );
 }
 
 #[test]
@@ -607,8 +609,8 @@ fn stack_tracking_retains_missing_stored_ancestors() {
 }
 
 #[test]
-fn stack_track_refreshes_missing_stored_ancestor_by_pull_request_number() {
-    // Verifies: stack tracking refreshes disappeared parent metadata from its durable PR number.
+fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
+    // Verifies: stack refresh updates disappeared parent metadata from its durable PR number.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -658,8 +660,8 @@ fn stack_track_refreshes_missing_stored_ancestor_by_pull_request_number() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "stack", "track"], &environment, &services)
-        .expect("stack tracking succeeds");
+    let result = run_with_args_and_services(["jx", "stack", "refresh"], &environment, &services)
+        .expect("stack refresh succeeds");
 
     assert_eq!(result.stdout, "✓ #10     Merged root\n└─ ◯ #11     Child\n");
     assert_eq!(services.pull_request_number_calls.borrow().as_slice(), [10]);
@@ -667,4 +669,12 @@ fn stack_track_refreshes_missing_stored_ancestor_by_pull_request_number() {
     assert_eq!(metadata.nodes[0].branch, "topic/root");
     assert_eq!(metadata.nodes[0].title, "Merged root");
     assert!(metadata.nodes[0].merged);
+}
+
+fn help_output<const N: usize>(args: [&str; N]) -> String {
+    let error = cli()
+        .try_get_matches_from(args)
+        .expect_err("help exits before command execution");
+    assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+    error.to_string()
 }

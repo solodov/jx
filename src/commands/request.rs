@@ -58,8 +58,7 @@ pub(super) enum WorkRequest {
 pub(super) enum StackRequest {
     Show,
     Open { print: bool },
-    Track,
-    Reset,
+    Refresh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,8 +298,7 @@ fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
 
     match matches.subcommand() {
         Some(("show", _)) => Ok(StackRequest::Show),
-        Some(("track", _)) => Ok(StackRequest::Track),
-        Some(("reset", _)) => Ok(StackRequest::Reset),
+        Some(("refresh", _)) => Ok(StackRequest::Refresh),
         _ => Ok(StackRequest::Show),
     }
 }
@@ -635,17 +633,7 @@ pub(super) fn cli() -> ClapCommand {
                         .arg(work_shell_cd_target_arg()),
                 ),
         )
-        .subcommand(
-            ClapCommand::new("stack")
-                .visible_alias("stk")
-                .about("Manage repo-local pull request stack state")
-                .args_conflicts_with_subcommands(true)
-                .arg(stack_interactive_arg())
-                .arg(open_print_arg().requires("interactive"))
-                .subcommand(ClapCommand::new("show").about("Show tracked pull request stack state"))
-                .subcommand(ClapCommand::new("track").about("Track authored open pull requests from local bookmarks"))
-                .subcommand(ClapCommand::new("reset").about("Remove tracked pull request stack state")),
-        )
+        .subcommand(stack_command())
         .subcommand(
             ClapCommand::new("shell")
                 .about("Generate shell integration scripts")
@@ -745,6 +733,32 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(reviewer_arg())
                 .arg(draft_arg())
                 .arg(no_event_handlers_arg()),
+        )
+}
+
+fn stack_command() -> ClapCommand {
+    ClapCommand::new("stack")
+        .visible_alias("stk")
+        .about("Show or refresh repo-local pull request stack state")
+        .long_about(
+            "Show or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand, jx stack shows the stored local stack without contacting GitHub. Use refresh to rebuild that metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+        )
+        .args_conflicts_with_subcommands(true)
+        .arg(stack_interactive_arg())
+        .arg(open_print_arg().requires("interactive"))
+        .subcommand(
+            ClapCommand::new("show")
+                .about("Show stored pull request stack state")
+                .long_about(
+                    "Show stored pull request stack state from .jx/stack.toml without contacting GitHub.\n\nThis is the default when no stack subcommand is provided. It reports the last refreshed or PR-maintained stack snapshot.",
+                ),
+        )
+        .subcommand(
+            ClapCommand::new("refresh")
+                .about("Rebuild stack state from local bookmarks and authored open PRs")
+                .long_about(
+                    "Rebuild repo-local stack state from local PR bookmarks and open GitHub pull requests authored by you.\n\nThe command reads local PR bookmark heads, looks up matching open GitHub PRs for the authenticated login, refreshes durable PR-number metadata for stored ancestors, writes .jx/stack.toml, and prints the resulting stack. It does not push branches or create, update, close, or delete pull requests.",
+                ),
         )
 }
 
@@ -880,7 +894,7 @@ fn stack_interactive_arg() -> Arg {
         .short('i')
         .long("interactive")
         .action(ArgAction::SetTrue)
-        .help("Select a tracked pull request from the stack and open it")
+        .help("Select a stored pull request from the stack and open it")
 }
 
 fn source_arg() -> Arg {
