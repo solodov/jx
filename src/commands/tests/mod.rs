@@ -4753,6 +4753,69 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
 }
 
 #[test]
+fn sync_stack_prunes_completed_tree_before_selecting_bookmarks() {
+    // Verifies: sync -s garbage-collects already completed stack trees before selecting branches to push.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Root".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: true,
+                },
+                StackMetadataNode {
+                    branch: "topic/child".to_owned(),
+                    base_branch: "topic/root".to_owned(),
+                    parent_branch: Some("topic/root".to_owned()),
+                    pull_request: Some(11),
+                    parent_pull_request: Some(10),
+                    title: "Child".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: true,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        open_pull_request_candidates: vec!["topic/child".to_owned()],
+        pull_request_bookmarks: vec!["topic/root".to_owned(), "topic/child".to_owned()],
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(["jx", "sync", "-s"], &environment, &services)
+        .expect_err("completed stack is not syncable");
+
+    assert!(matches!(
+        error,
+        CommandError::Workflow(WorkflowError::MissingPullRequest)
+    ));
+    assert!(services.push_syncable_revision_requests.borrow().is_empty());
+    assert!(read_stack_metadata(&workspace.path())
+        .expect("stack metadata reads")
+        .nodes
+        .is_empty());
+    assert!(!workspace.path().join(".jx/stack.toml").exists());
+}
+
+#[test]
 fn sync_prunes_completed_stack_tree_after_refresh() {
     // Verifies: sync removes completed PR stack trees even when no bookmarks need PR description updates.
     let workspace = TestWorkspace::new();

@@ -18,6 +18,13 @@ impl PullRequestStackPublishUpdate {
     }
 }
 
+/// Local stack branches selected for sync with the maintained metadata used to render them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PullRequestStackSyncSelection {
+    pub(super) branches: Vec<String>,
+    pub(super) metadata: StackMetadata,
+}
+
 impl<'a> PullRequestStackManager<'a> {
     pub(super) fn new(context: &'a RepositoryContext, services: &'a dyn CommandServices) -> Self {
         Self { context, services }
@@ -99,25 +106,25 @@ impl<'a> PullRequestStackManager<'a> {
         Err(missing_local_bookmark_pull_requests(self.context).into())
     }
 
-    /// Selects local stack component branches for a jj revision/bookmark selector.
-    pub(super) fn local_component_branches_for_selector(
+    /// Selects local stack component branches for sync after applying stack maintenance.
+    pub(super) fn sync_selection_for_selector(
         &self,
         selector: Option<&str>,
-    ) -> Result<Vec<String>, CommandError> {
+    ) -> Result<PullRequestStackSyncSelection, CommandError> {
         let selected_branches = self
             .services
             .pull_request_candidate_bookmarks(self.context, selector)?;
-        self.local_component_branches_for(&selected_branches)
-    }
+        let metadata = self.sync_metadata()?;
+        let local_branches = self.local_pull_request_branches()?;
+        let branches = PullRequestStackSnapshot::from_metadata(
+            &metadata,
+            &local_branches,
+            &[],
+            PullRequestStackSelection::default(),
+        )
+        .local_component_branches_for(&selected_branches);
 
-    /// Returns local stack component branches in merge order for one or more selected branches.
-    pub(super) fn local_component_branches_for(
-        &self,
-        selected_branches: &[String],
-    ) -> Result<Vec<String>, CommandError> {
-        Ok(self
-            .stored_snapshot(PullRequestStackSelection::default())?
-            .local_component_branches_for(selected_branches))
+        Ok(PullRequestStackSyncSelection { branches, metadata })
     }
 
     /// Upserts a newly published PR and refreshes stack context for its component.
@@ -269,7 +276,7 @@ impl<'a> PullRequestStackManager<'a> {
             .collect())
     }
 
-    fn sync_pull_requests_with_metadata(
+    pub(super) fn sync_pull_requests_with_metadata(
         &self,
         push: &TrackedPushOutcome,
         metadata: &StackMetadata,

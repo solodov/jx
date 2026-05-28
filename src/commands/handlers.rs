@@ -1197,13 +1197,14 @@ fn sync_current_stack(
     let context = RepositoryContext::discover(environment)?;
     progress.status("Fetching origin…");
     let fetch = services.fetch_origin(&context)?;
-    progress.status("Selecting stack bookmarks…");
-    let branches = sync_stack_branches(&context, services)?;
-    progress.status("Pushing stack bookmarks…");
-    let push = push_syncable_stack_branches(&context, services, &branches)?;
-    progress.status("Syncing pull request descriptions…");
     let manager = PullRequestStackManager::new(&context, services);
-    let pull_requests = manager.sync_pull_requests(&push.pushed)?;
+    progress.status("Selecting stack bookmarks…");
+    let selection = sync_stack_selection(&manager)?;
+    progress.status("Pushing stack bookmarks…");
+    let push = push_syncable_stack_branches(&context, services, &selection.branches)?;
+    progress.status("Syncing pull request descriptions…");
+    let pull_requests =
+        manager.sync_pull_requests_with_metadata(&push.pushed, &selection.metadata)?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
@@ -1215,17 +1216,15 @@ fn sync_current_stack(
     Ok(CommandResult::with_exit_code(stdout, exit_code))
 }
 
-fn sync_stack_branches(
-    context: &RepositoryContext,
-    services: &dyn CommandServices,
-) -> Result<Vec<String>, CommandError> {
-    let manager = PullRequestStackManager::new(context, services);
-    let branches = manager.local_component_branches_for_selector(None)?;
+fn sync_stack_selection(
+    manager: &PullRequestStackManager<'_>,
+) -> Result<PullRequestStackSyncSelection, CommandError> {
+    let selection = manager.sync_selection_for_selector(None)?;
 
-    if branches.is_empty() {
+    if selection.branches.is_empty() {
         Err(WorkflowError::MissingPullRequest.into())
     } else {
-        Ok(branches)
+        Ok(selection)
     }
 }
 
