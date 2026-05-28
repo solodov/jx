@@ -29,9 +29,11 @@ fn stack_subcommand_help_explains_effects() {
     let refresh_help = help_output(["jx", "stack", "refresh", "--help"]);
     assert!(refresh_help.contains("Rebuild repo-local stack state"));
     assert!(refresh_help.contains("local PR bookmark heads"));
-    assert!(refresh_help.contains("writes .jx/stack.toml"));
-    assert!(refresh_help.contains("does not push branches"));
-    assert!(refresh_help.contains("create, update, close, or delete pull requests"));
+    assert!(refresh_help.contains("writes"));
+    assert!(refresh_help.contains(".jx/stack.toml"));
+    assert!(refresh_help.contains("syncs affected PR bases/descriptions"));
+    assert!(refresh_help.contains("push branches"));
+    assert!(refresh_help.contains("create, close, or delete pull requests"));
 }
 
 #[test]
@@ -555,6 +557,24 @@ fn stack_refresh_persists_hierarchy_and_ignore_rules() {
         fs::read_to_string(workspace.path().join(".jx/stack.toml")).expect("read stack state");
     assert!(stack_file.contains("pull_request = 10"));
     assert!(stack_file.contains("parent_branch = \"topic/root\""));
+    let sync_pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(sync_pushes.len(), 1);
+    assert_eq!(
+        sync_pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["topic/root", "topic/child", "topic/draft"]
+    );
+    assert_eq!(
+        sync_pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.pull_request_base.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("main"), Some("topic/root"), Some("topic/root")]
+    );
 }
 
 #[test]
@@ -742,7 +762,10 @@ fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
         .expect("stack refresh succeeds");
 
     assert_eq!(result.stdout, "✓ #10     Merged root\n└─ ◯ #11     Child\n");
-    assert_eq!(services.pull_request_number_calls.borrow().as_slice(), [10]);
+    assert_eq!(
+        services.pull_request_number_calls.borrow().as_slice(),
+        [10, 10]
+    );
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(metadata.nodes[0].branch, "topic/root");
     assert_eq!(metadata.nodes[0].title, "Merged root");

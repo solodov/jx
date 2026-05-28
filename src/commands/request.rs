@@ -784,7 +784,7 @@ fn stack_command() -> ClapCommand {
             ClapCommand::new("refresh")
                 .about("Rebuild stack state from local bookmarks and authored open PRs")
                 .long_about(
-                    "Rebuild repo-local stack state from local PR bookmarks and open GitHub pull requests authored by you.\n\nThe command reads local PR bookmark heads, looks up matching open GitHub PRs for the authenticated login, refreshes durable PR-number metadata for stored ancestors, writes .jx/stack.toml, and prints the resulting stack. It does not push branches or create, update, close, or delete pull requests.",
+                    "Rebuild repo-local stack state from local PR bookmarks and open GitHub pull requests authored by you.\n\nThe command reads local PR bookmark heads, looks up matching open GitHub PRs for the authenticated login, refreshes durable PR-number metadata for stored ancestors, applies local jj ancestry, writes .jx/stack.toml, syncs affected PR bases/descriptions, and prints the resulting stack. It does not push branches or create, close, or delete pull requests.",
                 ),
         )
 }

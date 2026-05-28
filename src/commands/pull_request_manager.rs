@@ -6,7 +6,7 @@ pub(super) struct PullRequestStackManager<'a> {
     services: &'a dyn CommandServices,
 }
 
-/// PRs whose generated stack context was refreshed after publishing.
+/// PRs whose generated stack context was refreshed after stack synchronization.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct PullRequestStackPublishUpdate {
     pub(super) pull_requests: Vec<PullRequestRecord>,
@@ -38,33 +38,23 @@ impl<'a> PullRequestStackManager<'a> {
         self.snapshot_from_live_pull_requests(Vec::new(), selection)
     }
 
-    /// Refreshes stack state from authored open PRs attached to local bookmarks.
-    pub(super) fn refresh_authored_open_pull_requests(
+    /// Refreshes stack state and updates GitHub PR descriptions/bases from that state.
+    pub(super) fn refresh_and_sync_authored_open_pull_requests(
         &self,
     ) -> Result<PullRequestStackSnapshot, CommandError> {
-        let local_branches = self.local_pull_request_branches()?;
-        if local_branches.is_empty() {
-            let metadata = StackMetadata::default();
-            self.write_metadata(&metadata)?;
-            return Ok(PullRequestStackSnapshot::from_metadata(
-                &metadata,
-                &local_branches,
-                &[],
-                PullRequestStackSelection::default(),
-            ));
-        }
-
-        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
-        let live_pull_requests = self.authored_open_pull_requests_for_branches(&local_branches)?;
-        let metadata = stack_metadata_from_pull_requests(&live_pull_requests, &metadata);
-        self.write_metadata(&metadata)?;
-
-        Ok(PullRequestStackSnapshot::from_metadata(
-            &metadata,
-            &local_branches,
-            &live_pull_requests,
+        let refresh = self.refresh_authored_open_stack_metadata()?;
+        let snapshot = PullRequestStackSnapshot::from_metadata(
+            &refresh.metadata,
+            &refresh.local_branches,
+            &refresh.live_pull_requests,
             PullRequestStackSelection::default(),
-        ))
+        );
+        let _ = self.sync_pull_requests_for_snapshot(
+            &snapshot,
+            &refresh.live_pull_requests,
+            &refresh.metadata,
+        )?;
+        Ok(snapshot)
     }
 
     /// Builds the full cached stack for interactive opening without refreshing GitHub state.
@@ -117,49 +107,21 @@ impl<'a> PullRequestStackManager<'a> {
         Ok(PullRequestStackSyncSelection { branches, metadata })
     }
 
-    /// Upserts a newly published PR and refreshes stack context for its component.
+    /// Upserts a newly published PR and syncs stack context for every PR in its component.
     pub(super) fn update_after_publish(
         &self,
         report: &PullRequestReport,
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
-        let selection = PullRequestStackSelection::pull_request(report.pull_request.number);
         let mut seed_pull_requests = Vec::new();
         if let Some(base_pull_request) = &report.base_pull_request {
             seed_pull_requests.push(base_pull_request.clone());
         }
         seed_pull_requests.push(report.pull_request.clone());
 
-        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
-        let metadata = upsert_stack_metadata_pull_requests(&seed_pull_requests, &metadata);
-        self.write_metadata(&metadata)?;
-
-        let snapshot = PullRequestStackSnapshot::from_metadata(
-            &metadata,
-            &[],
+        self.sync_stack_component(
+            PullRequestStackSelection::pull_request(report.pull_request.number),
             &seed_pull_requests,
-            selection.clone(),
-        );
-        let component = snapshot.component_for_selection(selection.clone());
-        if component.nodes.len() <= 1 {
-            return Ok(PullRequestStackPublishUpdate::default());
-        }
-
-        let component_pull_requests =
-            self.pull_requests_for_component(&component, &seed_pull_requests)?;
-        let metadata = refresh_stack_metadata_pull_requests(&component_pull_requests, &metadata);
-        self.write_metadata(&metadata)?;
-
-        let refreshed_snapshot = PullRequestStackSnapshot::from_metadata(
-            &metadata,
-            &[],
-            &component_pull_requests,
-            selection.clone(),
-        );
-        let refreshed_component = refreshed_snapshot.component_for_selection(selection);
-        let push = stack_context_sync_push(&refreshed_component, &component_pull_requests);
-        let pull_requests = self.sync_pull_requests_with_metadata(&push, &metadata)?;
-
-        Ok(PullRequestStackPublishUpdate { pull_requests })
+        )
     }
 
     /// Syncs PR descriptions using the currently stored stack metadata.
@@ -172,6 +134,55 @@ impl<'a> PullRequestStackManager<'a> {
             return Ok(Vec::new());
         }
         self.sync_pull_requests_with_metadata(push, &metadata)
+    }
+
+    fn sync_stack_component(
+        &self,
+        selection: PullRequestStackSelection,
+        seed_pull_requests: &[PullRequestRecord],
+    ) -> Result<PullRequestStackPublishUpdate, CommandError> {
+        let metadata = self.stack_metadata_with_local_and_seed_pull_requests(seed_pull_requests)?;
+        let snapshot = PullRequestStackSnapshot::from_metadata(
+            &metadata,
+            &[],
+            seed_pull_requests,
+            selection.clone(),
+        );
+        let component = snapshot.component_for_selection(selection.clone());
+        let component_pull_requests =
+            self.pull_requests_for_component(&component, seed_pull_requests)?;
+        if component_pull_requests.is_empty() {
+            return Ok(PullRequestStackPublishUpdate::default());
+        }
+
+        let metadata = refresh_stack_metadata_pull_requests(&component_pull_requests, &metadata);
+        let metadata = self.apply_local_stack_metadata(metadata)?;
+        self.write_metadata(&metadata)?;
+
+        let refreshed_snapshot = PullRequestStackSnapshot::from_metadata(
+            &metadata,
+            &[],
+            &component_pull_requests,
+            selection.clone(),
+        );
+        let refreshed_component = refreshed_snapshot.component_for_selection(selection);
+        self.sync_available_pull_requests_for_snapshot(
+            &refreshed_component,
+            &component_pull_requests,
+            &metadata,
+        )
+    }
+
+    fn stack_metadata_with_local_and_seed_pull_requests(
+        &self,
+        seed_pull_requests: &[PullRequestRecord],
+    ) -> Result<StackMetadata, CommandError> {
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
+        let metadata = self.apply_local_stack_metadata(metadata)?;
+        let metadata = upsert_stack_metadata_pull_requests(seed_pull_requests, &metadata);
+        let metadata = self.apply_local_stack_metadata(metadata)?;
+        self.write_metadata(&metadata)?;
+        Ok(metadata)
     }
 
     fn snapshot_from_live_pull_requests(
@@ -187,6 +198,33 @@ impl<'a> PullRequestStackManager<'a> {
             &live_pull_requests,
             selection,
         ))
+    }
+
+    fn refresh_authored_open_stack_metadata(
+        &self,
+    ) -> Result<AuthoredStackMetadataRefresh, CommandError> {
+        let local_branches = self.local_pull_request_branches()?;
+        if local_branches.is_empty() {
+            let metadata = StackMetadata::default();
+            self.write_metadata(&metadata)?;
+            return Ok(AuthoredStackMetadataRefresh {
+                metadata,
+                local_branches,
+                live_pull_requests: Vec::new(),
+            });
+        }
+
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
+        let live_pull_requests = self.authored_open_pull_requests_for_branches(&local_branches)?;
+        let metadata = stack_metadata_from_pull_requests(&live_pull_requests, &metadata);
+        let metadata = self.apply_local_stack_metadata(metadata)?;
+        self.write_metadata(&metadata)?;
+
+        Ok(AuthoredStackMetadataRefresh {
+            metadata,
+            local_branches,
+            live_pull_requests,
+        })
     }
 
     fn authored_open_pull_requests_for_branches(
@@ -271,6 +309,31 @@ impl<'a> PullRequestStackManager<'a> {
             .sync_pull_requests(self.context, push, metadata)?)
     }
 
+    fn sync_pull_requests_for_snapshot(
+        &self,
+        snapshot: &PullRequestStackSnapshot,
+        seed_pull_requests: &[PullRequestRecord],
+        metadata: &StackMetadata,
+    ) -> Result<PullRequestStackPublishUpdate, CommandError> {
+        let pull_requests = self.pull_requests_for_component(snapshot, seed_pull_requests)?;
+        self.sync_available_pull_requests_for_snapshot(snapshot, &pull_requests, metadata)
+    }
+
+    fn sync_available_pull_requests_for_snapshot(
+        &self,
+        snapshot: &PullRequestStackSnapshot,
+        pull_requests: &[PullRequestRecord],
+        metadata: &StackMetadata,
+    ) -> Result<PullRequestStackPublishUpdate, CommandError> {
+        if pull_requests.is_empty() {
+            return Ok(PullRequestStackPublishUpdate::default());
+        }
+
+        let push = stack_context_sync_push(snapshot, pull_requests);
+        let pull_requests = self.sync_pull_requests_with_metadata(&push, metadata)?;
+        Ok(PullRequestStackPublishUpdate { pull_requests })
+    }
+
     fn sync_metadata(&self) -> Result<StackMetadata, CommandError> {
         let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
         let pruned = prune_merged_stack_metadata_trees(&metadata);
@@ -278,6 +341,14 @@ impl<'a> PullRequestStackManager<'a> {
             self.write_metadata(&pruned)?;
         }
         Ok(pruned)
+    }
+
+    fn apply_local_stack_metadata(
+        &self,
+        metadata: StackMetadata,
+    ) -> Result<StackMetadata, CommandError> {
+        let local_branches = self.services.local_stack_branches(self.context)?;
+        Ok(apply_local_stack_branches(&local_branches, &metadata))
     }
 
     fn refresh_metadata_by_number(
@@ -326,6 +397,12 @@ impl<'a> PullRequestStackManager<'a> {
     }
 }
 
+struct AuthoredStackMetadataRefresh {
+    metadata: StackMetadata,
+    local_branches: Vec<String>,
+    live_pull_requests: Vec<PullRequestRecord>,
+}
+
 fn stack_snapshot_has_openable_pull_request(snapshot: &PullRequestStackSnapshot) -> bool {
     snapshot
         .nodes
@@ -354,20 +431,28 @@ fn stack_context_sync_push(
     let bookmarks = component
         .nodes
         .iter()
-        .filter_map(|node| {
+        .filter(|node| {
             node.pull_request_number()
                 .and_then(|number| pull_requests_by_number.get(&number).copied())
                 .or_else(|| pull_requests_by_branch.get(node.branch.as_str()).copied())
+                .is_some()
         })
-        .map(|pull_request| PushedBookmarkSummary {
-            branch: pull_request.head_branch.clone(),
-            old_short_commit_id: None,
-            new_short_commit_id: None,
-            old_description: None,
-            new_description: Some(pull_request.title.clone()),
-            pull_request_description: Some(pull_request_description(pull_request)),
-            pull_request_base: Some(pull_request.base_branch.clone()),
-            new_workspace_visibility: WorkspaceVisibility::default(),
+        .map(|node| {
+            let pull_request = node
+                .pull_request_number()
+                .and_then(|number| pull_requests_by_number.get(&number).copied())
+                .or_else(|| pull_requests_by_branch.get(node.branch.as_str()).copied())
+                .expect("filter ensured pull request exists");
+            PushedBookmarkSummary {
+                branch: pull_request.head_branch.clone(),
+                old_short_commit_id: None,
+                new_short_commit_id: None,
+                old_description: None,
+                new_description: Some(pull_request.title.clone()),
+                pull_request_description: Some(pull_request_description(pull_request)),
+                pull_request_base: Some(node.base_branch.clone()),
+                new_workspace_visibility: WorkspaceVisibility::default(),
+            }
         })
         .collect::<Vec<_>>();
 

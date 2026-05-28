@@ -34,7 +34,7 @@ pub(super) fn handle_stack(
         }
         StackRequest::Refresh => {
             progress.status("Refreshing pull request stack…");
-            let snapshot = manager.refresh_authored_open_pull_requests();
+            let snapshot = manager.refresh_and_sync_authored_open_pull_requests();
             progress.finish();
             Ok(CommandResult::success(render_stack_snapshot(
                 &snapshot?,

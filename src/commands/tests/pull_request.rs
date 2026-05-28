@@ -52,7 +52,16 @@ fn pull_request_records_published_pr_in_stack_state() {
         result.stdout,
         format!("Created {}\n", example_pull_request_link(42))
     );
-    assert!(services.sync_pull_request_pushes.borrow().is_empty());
+    let sync_pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(sync_pushes.len(), 1);
+    assert_eq!(
+        sync_pushes[0].bookmarks[0].branch,
+        "example-user/02-zzzzzzzz"
+    );
+    assert_eq!(
+        sync_pushes[0].bookmarks[0].pull_request_base.as_deref(),
+        Some("example-user/01-ancestor")
+    );
     assert_eq!(
         read_stack_metadata(&workspace.path()).expect("stack metadata reads"),
         StackMetadata {
