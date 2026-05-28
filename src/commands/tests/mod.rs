@@ -1871,6 +1871,105 @@ path = "{repo}"
 }
 
 #[test]
+fn work_delete_resolves_unique_workspace_name_fragment() {
+    // Verifies: Delete accepts the same exact/prefix/contains workspace fragments as navigation.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: workspace.home.join("projects/jx"),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "food".to_owned(),
+                root: workspace.home.join("projects/.work/jx/food"),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+    let confirmer = FixedWorkspaceRemoveConfirmer { confirmed: true };
+
+    let result = run_with_args_and_workspace_remove_confirmer(
+        ["jx", "work", "delete", "foo"],
+        &environment,
+        &services,
+        &confirmer,
+    )
+    .expect("workspace deletion succeeds");
+
+    assert_eq!(result.stdout, "Deleted workspace: food\n");
+    assert_eq!(
+        services.workspace_removes.borrow().as_slice(),
+        [WorkspaceRemoveOptions {
+            name: "food".to_owned(),
+            root: workspace.home.join("projects/.work/jx/food"),
+            cleanup_root: workspace.home.join("projects/.work"),
+        }]
+    );
+}
+
+#[test]
+fn work_delete_rejects_ambiguous_workspace_name_fragments() {
+    // Verifies: Fragment deletion fails before prompting when multiple names share the best match.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: workspace.home.join("projects/jx"),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "food".to_owned(),
+                root: workspace.home.join("projects/.work/jx/food"),
+                is_current: false,
+            },
+            WorkspaceEntry {
+                name: "fool".to_owned(),
+                root: workspace.home.join("projects/.work/jx/fool"),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let error =
+        run_with_args_and_services(["jx", "work", "delete", "foo"], &environment, &services)
+            .expect_err("ambiguous workspace fragment is rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::WorkspaceNameAmbiguous { name, matches })
+            if name == "foo" && matches == vec!["food".to_owned(), "fool".to_owned()]
+    ));
+    assert!(services.workspace_removes.borrow().is_empty());
+}
+
+#[test]
 fn work_delete_current_managed_workspace_returns_shell_cd_target() {
     // Verifies: Deleting the active managed workspace runs from the trunk checkout and tells shell integration where to land.
     let workspace = TestWorkspace::new_under("projects/.work/tool/fix");

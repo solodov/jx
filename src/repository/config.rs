@@ -222,6 +222,8 @@ pub enum RepositoryError {
     WorkspacePathExists { path: PathBuf },
     #[error("Workspace `{name}` is not registered in this jj repository")]
     WorkspaceNameNotFound { name: String },
+    #[error("Workspace name `{name}` is ambiguous; matches: {matches:?}")]
+    WorkspaceNameAmbiguous { name: String, matches: Vec<String> },
     #[error("Current workspace is not registered in this jj repository")]
     CurrentWorkspaceNotFound,
     #[error("Refusing to delete current workspace `{name}`")]

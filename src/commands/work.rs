@@ -448,6 +448,46 @@ pub(super) fn filter_workspace_entries_by_prefix(
         .collect()
 }
 
+pub(super) fn resolve_workspace_entry_by_fragment(
+    workspaces: &[WorkspaceEntry],
+    query: &str,
+) -> Result<WorkspaceEntry, RepositoryError> {
+    let mut matches = workspaces
+        .iter()
+        .filter_map(|workspace| {
+            navigation_match_rank(&workspace.name, query).map(|rank| (workspace, rank))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| (left.1, &left.0.name).cmp(&(right.1, &right.0.name)));
+
+    let Some(best_rank) = matches.first().map(|(_, rank)| *rank) else {
+        return Err(RepositoryError::WorkspaceNameNotFound {
+            name: query.to_owned(),
+        });
+    };
+    let best_matches = matches
+        .into_iter()
+        .filter(|(_, rank)| *rank == best_rank)
+        .map(|(workspace, _)| workspace)
+        .collect::<Vec<_>>();
+
+    match best_matches.as_slice() {
+        [workspace] => Ok((*workspace).clone()),
+        _ => {
+            let mut names = best_matches
+                .into_iter()
+                .map(|workspace| workspace.name.clone())
+                .collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            Err(RepositoryError::WorkspaceNameAmbiguous {
+                name: query.to_owned(),
+                matches: names,
+            })
+        }
+    }
+}
+
 pub(super) fn deletable_workspace_entries(
     context: &LocalRepositoryContext,
     identity: &RepositoryIdentity,

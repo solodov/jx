@@ -860,13 +860,7 @@ fn removable_workspace(
     environment: &RuntimeEnvironment,
 ) -> Result<RemovableWorkspace, RepositoryError> {
     let workspace = match name {
-        Some(name) => workspaces
-            .iter()
-            .find(|workspace| workspace.name == name)
-            .cloned()
-            .ok_or_else(|| RepositoryError::WorkspaceNameNotFound {
-                name: name.to_owned(),
-            })?,
+        Some(name) => resolve_workspace_entry_by_fragment(workspaces, name)?,
         None => workspaces
             .iter()
             .find(|workspace| workspace.is_current)
