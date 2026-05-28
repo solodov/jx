@@ -70,6 +70,8 @@ pub enum PullRequestSelectionError {
     NonInteractive,
     #[error("No pull requests are available to select")]
     NoPullRequests,
+    #[error("Pull request selection cancelled")]
+    Cancelled,
     #[error("Could not read pull request selection: {source}")]
     Read { source: dialoguer::Error },
 }
@@ -98,11 +100,12 @@ impl PullRequestSelector for TerminalPullRequestSelector {
             .items(&labels)
             .default(0)
             .report(false)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 PullRequestSelectionError::Read { source }
-            })?;
+            })?
+            .ok_or(PullRequestSelectionError::Cancelled)?;
 
         Ok(choices[selected].pull_request.clone())
     }
@@ -296,13 +299,13 @@ impl PullRequestConfirmer for TerminalPullRequestConfirmer {
             .items(["Yes", "No"])
             .default(1)
             .report(false)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 PullRequestConfirmationError::Read { source }
             })?;
 
-        Ok(selected == 0)
+        Ok(selected == Some(0))
     }
 }
 
@@ -346,13 +349,13 @@ impl PushConfirmer for TerminalPushConfirmer {
             .with_prompt(push_confirmation_prompt(plan))
             .items(["Yes", "No"])
             .default(1)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 PushConfirmationError::Read { source }
             })?;
 
-        Ok(selected == 0)
+        Ok(selected == Some(0))
     }
 }
 
@@ -402,13 +405,13 @@ impl RepositoryInitializationConfirmer for TerminalRepositoryInitializationConfi
             .items(["Yes", "No"])
             .default(1)
             .report(false)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 RepositoryInitializationConfirmationError::Read { source }
             })?;
 
-        Ok(selected == 0)
+        Ok(selected == Some(0))
     }
 }
 
@@ -473,13 +476,13 @@ impl RepositoryCreationConfirmer for TerminalRepositoryCreationConfirmer {
             .items(["Yes", "No"])
             .default(1)
             .report(false)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 RepositoryCreationConfirmationError::Read { source }
             })?;
 
-        Ok(selected == 0)
+        Ok(selected == Some(0))
     }
 }
 
@@ -544,13 +547,13 @@ impl WorkspaceRemoveConfirmer for TerminalWorkspaceRemoveConfirmer {
             .items(["Yes", "No"])
             .default(1)
             .report(false)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 WorkspaceRemoveConfirmationError::Read { source }
             })?;
 
-        Ok(selected == 0)
+        Ok(selected == Some(0))
     }
 }
 
@@ -577,6 +580,8 @@ pub(super) trait ReviewerSelector {
 
 #[derive(Debug, Error)]
 pub enum ReviewerSelectionError {
+    #[error("Reviewer selection cancelled")]
+    Cancelled,
     #[error("Could not read reviewer selection: {source}")]
     Read { source: dialoguer::Error },
 }
@@ -615,11 +620,12 @@ impl ReviewerSelector for TerminalReviewerSelector {
             .defaults(&defaults)
             .clear(false)
             .report(false)
-            .interact()
+            .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 ReviewerSelectionError::Read { source }
-            })?;
+            })?
+            .ok_or(ReviewerSelectionError::Cancelled)?;
 
         Ok(selection_from_indexes(&choices, &selected))
     }

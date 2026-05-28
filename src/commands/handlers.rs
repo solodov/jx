@@ -161,9 +161,16 @@ pub(super) fn handle_request(
                     prompts
                         .pull_request_previewer
                         .show_preview(&plan, &status, &prepare_effects);
-                    plan.reviewers = prompts
+                    plan.reviewers = match prompts
                         .reviewer_selector
-                        .select_reviewers(&plan.reviewer_candidates, &reviewers)?;
+                        .select_reviewers(&plan.reviewer_candidates, &reviewers)
+                    {
+                        Ok(reviewers) => reviewers,
+                        Err(ReviewerSelectionError::Cancelled) => {
+                            return Ok(CommandResult::success("cancelled\n".to_owned()));
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
 
                     if !prompts.pull_request_confirmer.confirm_pull_request(&plan)? {
                         return Ok(CommandResult::success("cancelled\n".to_owned()));

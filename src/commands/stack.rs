@@ -57,7 +57,11 @@ fn open_stack_pull_request(
         .into());
     }
 
-    let selected = selector.select_pull_request(&choices)?;
+    let selected = match selector.select_pull_request(&choices) {
+        Ok(selected) => selected,
+        Err(PullRequestSelectionError::Cancelled) => return Ok("cancelled\n".to_owned()),
+        Err(error) => return Err(error.into()),
+    };
     let url = pull_request_url(&context.origin.github.https_url(), &selected);
     if print {
         return Ok(format!("{url}\n"));

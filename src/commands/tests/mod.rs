@@ -2580,6 +2580,53 @@ fn stack_interactive_opens_selected_cached_pull_request() {
 }
 
 #[test]
+fn stack_interactive_can_be_cancelled() {
+    // Verifies: Quitting the stack selector stops without opening a browser.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "example-user/change".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Change".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices::default();
+    let selector = CancellingPullRequestSelector;
+
+    let result = run_with_args_and_pull_request_selector(
+        ["jx", "stack", "-i"],
+        &environment,
+        &services,
+        &selector,
+    )
+    .expect("interactive stack cancellation succeeds");
+
+    assert_eq!(result.stdout, "cancelled\n");
+    assert!(services.opened_urls.borrow().is_empty());
+}
+
+#[test]
 fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
     // Verifies: Stack selection keeps draft PRs visible even when another branch is current.
     let workspace = TestWorkspace::new();
@@ -6329,6 +6376,34 @@ fn pull_request_respects_draft_flag() {
 }
 
 #[test]
+fn pull_request_reviewer_selection_can_be_cancelled() {
+    // Verifies: Quitting reviewer selection cancels PR publishing before final confirmation.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_prompts(
+        ["jx", "pull-request"],
+        &environment,
+        &services,
+        &CancellingReviewerSelector,
+        &AlwaysConfirmPullRequest,
+    )
+    .expect("pull request reviewer cancellation succeeds");
+
+    assert_eq!(result.stdout, "cancelled\n");
+}
+
+#[test]
 fn pull_request_can_be_cancelled_after_planning() {
     // Verifies: Declining the final confirmation stops before bookmark, push, or PR mutation.
     let workspace = TestWorkspace::new();
@@ -6581,6 +6656,17 @@ impl PullRequestSelector for RecordingPullRequestSelector {
             .get(self.selected)
             .map(|choice| choice.pull_request.clone())
             .ok_or(PullRequestSelectionError::NoPullRequests)
+    }
+}
+
+struct CancellingPullRequestSelector;
+
+impl PullRequestSelector for CancellingPullRequestSelector {
+    fn select_pull_request(
+        &self,
+        _choices: &[PullRequestChoice],
+    ) -> Result<PullRequestRecord, PullRequestSelectionError> {
+        Err(PullRequestSelectionError::Cancelled)
     }
 }
 
@@ -6865,6 +6951,18 @@ impl ReviewerSelector for RecordingReviewerSelector {
 
 struct FixedReviewerSelector {
     selected: ReviewerSelection,
+}
+
+struct CancellingReviewerSelector;
+
+impl ReviewerSelector for CancellingReviewerSelector {
+    fn select_reviewers(
+        &self,
+        _candidates: &[ReviewerCandidate],
+        _preselected: &[ReviewerTarget],
+    ) -> Result<ReviewerSelection, ReviewerSelectionError> {
+        Err(ReviewerSelectionError::Cancelled)
+    }
 }
 
 impl ReviewerSelector for FixedReviewerSelector {
