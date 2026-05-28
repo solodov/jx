@@ -6,6 +6,16 @@ This file tracks plans managed in the markdown-backed layout.
 
 ## Active Plans
 
+### [20260528-large-repo-clone-optimizations](./20260528-large-repo-clone-optimizations.md)
+- title: Large-repository clone optimizations for jj-backed checkouts
+- status: blocked
+- currentPhase: none
+- currentPhaseTitle: none
+- nextPhase: none
+- nextPhaseTitle: none
+- totalPhases: 0
+- updated: 2026-05-28
+
 ### [20260527-140943-unified-pull-request-stack-model](./20260527-140943-unified-pull-request-stack-model.md)
 - title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and Rendering
 - status: done
