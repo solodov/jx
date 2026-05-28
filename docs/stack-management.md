@@ -59,6 +59,57 @@ Publishing a child PR records its base relationship. Publishing or updating any
 PR in the component refreshes generated stack context for the component, including
 root PRs whose body may need stale stack context removed.
 
+## Stack context in PR descriptions
+
+When a component has more than one PR, `jx` maintains a generated block at the
+end of each PR description. The block is bounded by HTML comments so later syncs
+can replace only stack context while preserving the rest of the description.
+
+For the middle PR in a three-PR stack, GitHub might show:
+
+```markdown
+<!-- jx-stack:start -->
+### Pull request stack
+
+✓ [#10 Prepare API shape](https://github.com/example-org/example-repo/pull/10)
+**◉ [#12 Add service layer](https://github.com/example-org/example-repo/pull/12)** — this PR
+└─ ◌ [#13 Wire UI to service](https://github.com/example-org/example-repo/pull/13) — draft
+
+<!-- jx-stack:end -->
+```
+
+For the draft child PR in the same component, the same stack is rendered with the
+current marker moved to that PR:
+
+```markdown
+<!-- jx-stack:start -->
+### Pull request stack
+
+✓ [#10 Prepare API shape](https://github.com/example-org/example-repo/pull/10)
+◯ [#12 Add service layer](https://github.com/example-org/example-repo/pull/12)
+└─ **◉ [#13 Wire UI to service](https://github.com/example-org/example-repo/pull/13)** — this PR
+
+<!-- jx-stack:end -->
+```
+
+Nested trees preserve indentation for GitHub markdown:
+
+```markdown
+<!-- jx-stack:start -->
+### Pull request stack
+
+◯ [#20 Split repository config](https://github.com/example-org/example-repo/pull/20)
+├─ ◯ [#21 Add layout parser](https://github.com/example-org/example-repo/pull/21)
+└─ ◯ [#22 Add workspace commands](https://github.com/example-org/example-repo/pull/22)
+&nbsp;&nbsp;&nbsp;└─ **◉ [#23 Add workspace cleanup](https://github.com/example-org/example-repo/pull/23)** — this PR
+
+<!-- jx-stack:end -->
+```
+
+The generated block is omitted for single-PR components. If a stack collapses
+back to one PR, the next publish, refresh, or stack sync removes the old block
+instead of leaving stale stack context in GitHub.
+
 ## Refresh stack metadata
 
 Use refresh when local bookmarks and GitHub PRs already exist but `.jx/stack.toml`
