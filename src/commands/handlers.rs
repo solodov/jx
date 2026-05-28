@@ -34,9 +34,15 @@ pub(super) fn handle_request(
         CommandRequest::Work(request) => {
             handle_work(request, environment, services, progress, &prompts)?
         }
-        CommandRequest::Stack(request) => handle_stack(request, environment, services, progress)?,
+        CommandRequest::Stack(request) => handle_stack(
+            request,
+            environment,
+            services,
+            progress,
+            prompts.pull_request_selector,
+        )?,
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
-        CommandRequest::Open(request) => handle_open(request, environment, services, &prompts)?,
+        CommandRequest::Open(request) => handle_open(request, environment, services)?,
         CommandRequest::PreviousCommit => {
             services.previous_commit_log(environment.current_dir())?
         }
@@ -344,21 +350,19 @@ fn handle_open(
     request: OpenRequest,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
-    prompts: &PromptHandlers<'_>,
 ) -> Result<String, CommandError> {
     let urls = match &request.target {
         OpenTarget::Repository => open_targets(&request, environment)?
             .iter()
             .map(|target| target.repository.https_url())
             .collect::<Vec<_>>(),
-        OpenTarget::PullRequest {
-            selector,
-            interactive,
-        } => vec![if *interactive {
-            interactive_pull_request_url(environment, services, prompts.pull_request_selector)?
-        } else {
-            selected_pull_request_url(environment, services, selector.as_deref())?
-        }],
+        OpenTarget::PullRequest { selector } => {
+            vec![selected_pull_request_url(
+                environment,
+                services,
+                selector.as_deref(),
+            )?]
+        }
         OpenTarget::PullRequests { all } => {
             let targets = open_targets(&request, environment)?;
             vec![pull_requests_url(&targets, *all, services)?]
@@ -392,29 +396,6 @@ fn selected_pull_request_url(
     }
 
     Err(WorkflowError::MissingPullRequest.into())
-}
-
-fn interactive_pull_request_url(
-    environment: &RuntimeEnvironment,
-    services: &dyn CommandServices,
-    selector: &dyn PullRequestSelector,
-) -> Result<String, CommandError> {
-    let context = RepositoryContext::discover(environment)?;
-    let manager = PullRequestStackManager::new(&context, services);
-    let snapshot = manager.interactive_open_snapshot()?;
-    let choices = pull_request_choice_rows(&snapshot);
-    if choices.is_empty() {
-        return Err(WorkflowError::MissingLocalBookmarkPullRequests {
-            repository: context.origin.github.slug(),
-        }
-        .into());
-    }
-
-    let selected = selector.select_pull_request(&choices)?;
-    Ok(pull_request_url(
-        &context.origin.github.https_url(),
-        &selected,
-    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

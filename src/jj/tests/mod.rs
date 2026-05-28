@@ -749,7 +749,7 @@ fn pull_request_candidates_order_selected_bookmarks_before_descendants() {
 
 #[test]
 fn pull_request_bookmarks_include_all_local_bookmark_heads() {
-    // Verifies: Interactive Open PR uses every normal local bookmark, not just the current stack.
+    // Verifies: Stack tracking sees every normal local bookmark, not just the current chain.
     let fixture = TestWorkspace::new("pr-bookmarks-all-local");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {

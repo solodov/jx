@@ -67,34 +67,21 @@ impl<'a> PullRequestStackManager<'a> {
         ))
     }
 
-    /// Builds the stack snapshot used by interactive PR opening.
-    pub(super) fn interactive_open_snapshot(
-        &self,
-    ) -> Result<PullRequestStackSnapshot, CommandError> {
+    /// Builds the stack snapshot used by interactive opening without refreshing GitHub state.
+    pub(super) fn cached_open_snapshot(&self) -> Result<PullRequestStackSnapshot, CommandError> {
         let metadata = self.read_metadata()?;
-        let local_branches = self.local_pull_request_branches()?;
-        if metadata.nodes.is_empty() && local_branches.is_empty() {
+        if metadata.nodes.is_empty() {
             return Err(missing_local_bookmark_pull_requests(self.context).into());
         }
 
         let selected_branches = self
             .services
             .pull_request_candidate_bookmarks(self.context, None)?;
-        let live_pull_requests = if local_branches.is_empty() {
-            Vec::new()
-        } else {
-            self.authored_open_pull_requests_for_branches(&local_branches)?
-        };
         let selection = selected_branches
             .first()
             .map(|branch| PullRequestStackSelection::branch(branch.clone()))
             .unwrap_or_default();
-        let snapshot = PullRequestStackSnapshot::from_metadata(
-            &metadata,
-            &local_branches,
-            &live_pull_requests,
-            selection,
-        );
+        let snapshot = PullRequestStackSnapshot::from_metadata(&metadata, &[], &[], selection);
         let component = snapshot.component_for_branches(&selected_branches);
         if stack_snapshot_has_openable_pull_request(&component) {
             return Ok(component);

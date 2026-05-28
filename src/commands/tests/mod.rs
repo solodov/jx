@@ -2496,8 +2496,8 @@ fn open_pr_accepts_commit_option_as_selector() {
 }
 
 #[test]
-fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
-    // Verifies: Interactive Open PR lists PRs attached to local bookmarks and opens the selected one.
+fn stack_interactive_opens_selected_cached_pull_request() {
+    // Verifies: Stack selection opens cached PR metadata without querying GitHub.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2505,58 +2505,51 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
     url = https://github.com/example-owner/example-repo.git
 "#,
     );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "example-user/old".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Older change".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "example-user/chosen".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(11),
+                    parent_pull_request: None,
+                    title: "Chosen change".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
+                    draft: true,
+                    merged: false,
+                },
+            ],
+        },
+    )
+    .expect("stack metadata writes");
     let environment = RuntimeEnvironment::new(
         workspace.path(),
         [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
     );
-    let services = FakeServices {
-        pull_request_bookmarks: vec![
-            "example-user/old".to_owned(),
-            "example-user/chosen".to_owned(),
-        ],
-        authored_open_pull_requests_by_head: BTreeMap::from([
-            (
-                "example-user/old".to_owned(),
-                PullRequestRecord {
-                    number: 10,
-                    title: "Older change".to_owned(),
-                    body: None,
-                    head_branch: "example-user/old".to_owned(),
-                    base_branch: "main".to_owned(),
-                    html_url: Some(
-                        "https://github.com/example-owner/example-repo/pull/10".to_owned(),
-                    ),
-                    draft: false,
-                    merged: false,
-                },
-            ),
-            (
-                "example-user/chosen".to_owned(),
-                PullRequestRecord {
-                    number: 11,
-                    title: "Chosen change".to_owned(),
-                    body: None,
-                    head_branch: "example-user/chosen".to_owned(),
-                    base_branch: "main".to_owned(),
-                    html_url: Some(
-                        "https://github.com/example-owner/example-repo/pull/11".to_owned(),
-                    ),
-                    draft: true,
-                    merged: false,
-                },
-            ),
-        ]),
-        ..Default::default()
-    };
+    let services = FakeServices::default();
     let selector = RecordingPullRequestSelector::new(1);
 
     let result = run_with_args_and_pull_request_selector(
-        ["jx", "open", "pr", "-i"],
+        ["jx", "stack", "-i"],
         &environment,
         &services,
         &selector,
     )
-    .expect("interactive open pr succeeds");
+    .expect("interactive stack open succeeds");
 
     assert_eq!(
         result.stdout,
@@ -2574,21 +2567,21 @@ fn open_pr_interactive_opens_selected_local_bookmark_pull_request() {
         ["https://github.com/example-owner/example-repo/pull/11"]
     );
     assert_eq!(
-        services
-            .authored_open_pull_request_head_calls
-            .borrow()
-            .as_slice(),
-        [
-            ("example-user/old".to_owned(), "example-user".to_owned()),
-            ("example-user/chosen".to_owned(), "example-user".to_owned())
-        ]
+        services.open_pull_request_selectors.borrow().as_slice(),
+        [None]
     );
+    assert_eq!(services.pull_request_bookmark_calls.get(), 0);
+    assert!(services
+        .authored_open_pull_request_head_calls
+        .borrow()
+        .is_empty());
     assert!(services.pull_request_head_calls.borrow().is_empty());
+    assert!(services.pull_request_number_calls.borrow().is_empty());
 }
 
 #[test]
-fn open_pr_interactive_uses_stack_snapshot_component() {
-    // Verifies: Interactive Open PR shows stored stack context around the current local PR.
+fn stack_interactive_uses_cached_stack_snapshot_component() {
+    // Verifies: Stack selection focuses the cached component around the current PR branch.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2600,17 +2593,41 @@ fn open_pr_interactive_uses_stack_snapshot_component() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
-            nodes: vec![StackMetadataNode {
-                branch: "topic/root".to_owned(),
-                base_branch: "main".to_owned(),
-                parent_branch: None,
-                pull_request: Some(10),
-                parent_pull_request: None,
-                title: "Root".to_owned(),
-                url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
-                draft: false,
-                merged: true,
-            }],
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/root".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(10),
+                    parent_pull_request: None,
+                    title: "Root".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                    draft: false,
+                    merged: true,
+                },
+                StackMetadataNode {
+                    branch: "topic/child".to_owned(),
+                    base_branch: "topic/root".to_owned(),
+                    parent_branch: Some("topic/root".to_owned()),
+                    pull_request: Some(11),
+                    parent_pull_request: Some(10),
+                    title: "Child".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
+                    draft: false,
+                    merged: false,
+                },
+                StackMetadataNode {
+                    branch: "topic/other".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: Some(12),
+                    parent_pull_request: None,
+                    title: "Other".to_owned(),
+                    url: Some("https://github.com/example-owner/example-repo/pull/12".to_owned()),
+                    draft: false,
+                    merged: false,
+                },
+            ],
         },
     )
     .expect("stack metadata writes");
@@ -2619,32 +2636,18 @@ fn open_pr_interactive_uses_stack_snapshot_component() {
         [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
     );
     let services = FakeServices {
-        pull_request_bookmarks: vec!["topic/child".to_owned()],
         open_pull_request_candidates: vec!["topic/child".to_owned()],
-        authored_open_pull_requests_by_head: BTreeMap::from([(
-            "topic/child".to_owned(),
-            PullRequestRecord {
-                number: 11,
-                title: "Child".to_owned(),
-                body: None,
-                head_branch: "topic/child".to_owned(),
-                base_branch: "topic/root".to_owned(),
-                html_url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
-                draft: false,
-                merged: false,
-            },
-        )]),
         ..Default::default()
     };
     let selector = RecordingPullRequestSelector::new(1);
 
     let result = run_with_args_and_pull_request_selector(
-        ["jx", "open", "pr", "-i"],
+        ["jx", "stack", "-i"],
         &environment,
         &services,
         &selector,
     )
-    .expect("interactive open pr succeeds");
+    .expect("interactive stack open succeeds");
 
     assert_eq!(
         result.stdout,
@@ -2661,18 +2664,18 @@ fn open_pr_interactive_uses_stack_snapshot_component() {
         services.open_pull_request_selectors.borrow().as_slice(),
         [None]
     );
-    assert_eq!(
-        services
-            .authored_open_pull_request_head_calls
-            .borrow()
-            .as_slice(),
-        [("topic/child".to_owned(), "example-user".to_owned())]
-    );
+    assert_eq!(services.pull_request_bookmark_calls.get(), 0);
+    assert!(services
+        .authored_open_pull_request_head_calls
+        .borrow()
+        .is_empty());
+    assert!(services.pull_request_head_calls.borrow().is_empty());
+    assert!(services.pull_request_number_calls.borrow().is_empty());
 }
 
 #[test]
-fn open_pr_interactive_prints_selected_pull_request_url() {
-    // Verifies: --print still suppresses browser launch after interactive PR selection.
+fn stack_interactive_prints_selected_pull_request_url() {
+    // Verifies: --print suppresses browser launch after cached stack selection.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2680,47 +2683,50 @@ fn open_pr_interactive_prints_selected_pull_request_url() {
     url = https://github.com/example-owner/example-repo.git
 "#,
     );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "example-user/selected".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(12),
+                parent_pull_request: None,
+                title: "Selected change".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
     let environment = RuntimeEnvironment::new(
         workspace.path(),
         [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
     );
-    let services = FakeServices {
-        pull_request_bookmarks: vec!["example-user/selected".to_owned()],
-        authored_open_pull_requests_by_head: BTreeMap::from([(
-            "example-user/selected".to_owned(),
-            PullRequestRecord {
-                number: 12,
-                title: "Selected change".to_owned(),
-                body: None,
-                head_branch: "example-user/selected".to_owned(),
-                base_branch: "main".to_owned(),
-                html_url: None,
-                draft: false,
-                merged: false,
-            },
-        )]),
-        ..Default::default()
-    };
+    let services = FakeServices::default();
     let selector = FixedPullRequestSelector { selected: 0 };
 
     let result = run_with_args_and_pull_request_selector(
-        ["jx", "open", "pr", "--interactive", "--print"],
+        ["jx", "stack", "-i", "--print"],
         &environment,
         &services,
         &selector,
     )
-    .expect("interactive open pr succeeds");
+    .expect("interactive stack open succeeds");
 
     assert_eq!(
         result.stdout,
         "https://github.com/example-owner/example-repo/pull/12\n"
     );
     assert!(services.opened_urls.borrow().is_empty());
+    assert!(services.pull_request_number_calls.borrow().is_empty());
 }
 
 #[test]
-fn open_pr_interactive_ignores_historical_or_unowned_pull_requests() {
-    // Verifies: Interactive Open PR only accepts open authored PRs attached to local bookmarks.
+fn stack_interactive_opens_historical_cached_pull_requests() {
+    // Verifies: Cached stack opening trusts stored PR identity instead of live authored filters.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2728,57 +2734,59 @@ fn open_pr_interactive_ignores_historical_or_unowned_pull_requests() {
     url = https://github.com/example-owner/example-repo.git
 "#,
     );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "example-user/reused".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(40568),
+                parent_pull_request: None,
+                title: "Merged or unowned historical PR".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/40568".to_owned()),
+                draft: false,
+                merged: true,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
     let environment = RuntimeEnvironment::new(
         workspace.path(),
         [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
     );
-    let services = FakeServices {
-        pull_request_bookmarks: vec!["example-user/reused".to_owned()],
-        pull_requests_by_head: BTreeMap::from([(
-            "example-user/reused".to_owned(),
-            PullRequestRecord {
-                number: 40568,
-                title: "Merged or unowned historical PR".to_owned(),
-                body: None,
-                head_branch: "example-user/reused".to_owned(),
-                base_branch: "main".to_owned(),
-                html_url: Some(
-                    "https://github.com/example-owner/example-repo/pull/40568".to_owned(),
-                ),
-                draft: false,
-                merged: false,
-            },
-        )]),
-        ..Default::default()
-    };
+    let services = FakeServices::default();
     let selector = FixedPullRequestSelector { selected: 0 };
 
-    let error = run_with_args_and_pull_request_selector(
-        ["jx", "open", "pr", "-i"],
+    let result = run_with_args_and_pull_request_selector(
+        ["jx", "stack", "-i"],
         &environment,
         &services,
         &selector,
     )
-    .expect_err("historical or unowned pull requests are ignored");
+    .expect("interactive stack open succeeds");
 
-    assert!(matches!(
-        error,
-        CommandError::Workflow(WorkflowError::MissingLocalBookmarkPullRequests { repository })
-            if repository == "example-owner/example-repo"
-    ));
     assert_eq!(
-        services
-            .authored_open_pull_request_head_calls
-            .borrow()
-            .as_slice(),
-        [("example-user/reused".to_owned(), "example-user".to_owned())]
+        result.stdout,
+        "Opened: https://github.com/example-owner/example-repo/pull/40568\n"
     );
+    assert_eq!(
+        services.opened_urls.borrow().as_slice(),
+        ["https://github.com/example-owner/example-repo/pull/40568"]
+    );
+    assert_eq!(services.pull_request_bookmark_calls.get(), 0);
+    assert!(services
+        .authored_open_pull_request_head_calls
+        .borrow()
+        .is_empty());
     assert!(services.pull_request_head_calls.borrow().is_empty());
+    assert!(services.pull_request_number_calls.borrow().is_empty());
 }
 
 #[test]
-fn open_pr_interactive_reports_missing_local_bookmark_pull_requests() {
-    // Verifies: Interactive Open PR reports when local bookmarks have no PRs.
+fn stack_interactive_reports_missing_stack_state() {
+    // Verifies: Interactive stack opening is cache-only and reports empty metadata directly.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2794,18 +2802,22 @@ fn open_pr_interactive_reports_missing_local_bookmark_pull_requests() {
     let selector = FixedPullRequestSelector { selected: 0 };
 
     let error = run_with_args_and_pull_request_selector(
-        ["jx", "open", "pr", "-i"],
+        ["jx", "stack", "-i"],
         &environment,
         &services,
         &selector,
     )
-    .expect_err("missing pull requests are reported");
+    .expect_err("missing stack state is reported");
 
     assert!(matches!(
         error,
         CommandError::Workflow(WorkflowError::MissingLocalBookmarkPullRequests { repository })
             if repository == "example-owner/example-repo"
     ));
+    assert!(services.open_pull_request_selectors.borrow().is_empty());
+    assert_eq!(services.pull_request_bookmark_calls.get(), 0);
+    assert!(services.pull_request_head_calls.borrow().is_empty());
+    assert!(services.pull_request_number_calls.borrow().is_empty());
 }
 
 #[test]

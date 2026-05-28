@@ -57,6 +57,7 @@ pub(super) enum WorkRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StackRequest {
     Show,
+    Open { print: bool },
     Track,
     Reset,
 }
@@ -121,13 +122,8 @@ pub(super) struct OpenRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OpenTarget {
     Repository,
-    PullRequest {
-        selector: Option<String>,
-        interactive: bool,
-    },
-    PullRequests {
-        all: bool,
-    },
+    PullRequest { selector: Option<String> },
+    PullRequests { all: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,6 +291,12 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
 }
 
 fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
+    if matches.get_flag("interactive") {
+        return Ok(StackRequest::Open {
+            print: matches.get_flag("print"),
+        });
+    }
+
     match matches.subcommand() {
         Some(("show", _)) => Ok(StackRequest::Show),
         Some(("track", _)) => Ok(StackRequest::Track),
@@ -320,7 +322,6 @@ fn open_request(matches: &ArgMatches) -> OpenRequest {
         Some(("pr", matches)) => OpenRequest {
             target: OpenTarget::PullRequest {
                 selector: open_pr_selector(matches),
-                interactive: matches.get_flag("interactive"),
             },
             repository: None,
             repo_filters: Vec::new(),
@@ -638,6 +639,9 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("stack")
                 .visible_alias("stk")
                 .about("Manage repo-local pull request stack state")
+                .args_conflicts_with_subcommands(true)
+                .arg(stack_interactive_arg())
+                .arg(open_print_arg().requires("interactive"))
                 .subcommand(ClapCommand::new("show").about("Show tracked pull request stack state"))
                 .subcommand(ClapCommand::new("track").about("Track authored open pull requests from local bookmarks"))
                 .subcommand(ClapCommand::new("reset").about("Remove tracked pull request stack state")),
@@ -665,7 +669,6 @@ pub(super) fn cli() -> ClapCommand {
                         .visible_alias("pull-request")
                         .about("Open a pull request for the current repository")
                         .arg(open_pr_selector_arg())
-                        .arg(open_interactive_arg())
                         .arg(open_commit_arg())
                         .arg(open_print_arg()),
                 )
@@ -861,24 +864,23 @@ fn open_commit_arg() -> Arg {
         .short('c')
         .long("commit")
         .value_name("COMMIT_OR_BOOKMARK")
-        .conflicts_with_all(["selector", "interactive"])
+        .conflicts_with("selector")
         .help("Open the pull request for a specific jj revision or local bookmark")
 }
 
 fn open_pr_selector_arg() -> Arg {
     Arg::new("selector")
         .value_name("COMMIT_OR_BOOKMARK")
-        .conflicts_with_all(["commit", "interactive"])
+        .conflicts_with("commit")
         .help("Open the pull request for a specific jj revision or local bookmark")
 }
 
-fn open_interactive_arg() -> Arg {
+fn stack_interactive_arg() -> Arg {
     Arg::new("interactive")
         .short('i')
         .long("interactive")
         .action(ArgAction::SetTrue)
-        .conflicts_with_all(["selector", "commit"])
-        .help("Select one of the pull requests attached to local bookmarks")
+        .help("Select a tracked pull request from the stack and open it")
 }
 
 fn source_arg() -> Arg {

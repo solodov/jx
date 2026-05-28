@@ -9,29 +9,62 @@ pub(super) fn handle_stack(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
+    selector: &dyn PullRequestSelector,
 ) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     let manager = PullRequestStackManager::new(&context, services);
     match request {
         StackRequest::Show => {
             progress.status("Loading pull request stack…");
-            let snapshot = manager.stored_snapshot(PullRequestStackSelection::default())?;
+            let snapshot = manager.stored_snapshot(PullRequestStackSelection::default());
             progress.finish();
-            render_stack_snapshot(&snapshot)
+            render_stack_snapshot(&snapshot?)
+        }
+        StackRequest::Open { print } => {
+            progress.status("Loading pull request stack…");
+            let snapshot = manager.cached_open_snapshot();
+            progress.finish();
+            open_stack_pull_request(&context, services, selector, &snapshot?, print)
         }
         StackRequest::Track => {
             progress.status("Tracking pull request stack…");
-            let snapshot = manager.track_authored_open_pull_requests()?;
+            let snapshot = manager.track_authored_open_pull_requests();
             progress.finish();
-            render_stack_snapshot(&snapshot)
+            render_stack_snapshot(&snapshot?)
         }
         StackRequest::Reset => {
             progress.status("Resetting pull request stack…");
-            manager.reset()?;
+            let result = manager.reset();
             progress.finish();
+            result?;
             Ok("Stack state reset\n".to_owned())
         }
     }
+}
+
+fn open_stack_pull_request(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+    selector: &dyn PullRequestSelector,
+    snapshot: &PullRequestStackSnapshot,
+    print: bool,
+) -> Result<String, CommandError> {
+    let choices = pull_request_choice_rows(snapshot);
+    if choices.is_empty() {
+        return Err(WorkflowError::MissingLocalBookmarkPullRequests {
+            repository: context.origin.github.slug(),
+        }
+        .into());
+    }
+
+    let selected = selector.select_pull_request(&choices)?;
+    let url = pull_request_url(&context.origin.github.https_url(), &selected);
+    if print {
+        return Ok(format!("{url}\n"));
+    }
+
+    services.open_url(&url)?;
+    Ok(format!("Opened: {url}\n"))
 }
 
 fn render_stack_snapshot(snapshot: &PullRequestStackSnapshot) -> Result<String, CommandError> {
