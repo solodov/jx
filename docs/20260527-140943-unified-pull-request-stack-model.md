@@ -1,10 +1,10 @@
 ---
 id: 20260527-140943-unified-pull-request-stack-model
 title: Unified Pull Request Stack Model Across Publishing, Selection, Sync, and Rendering
-status: implementing
+status: done
 created: 2026-05-27
-updated: 2026-05-27
-currentPhase: 7
+updated: 2026-05-28
+currentPhase: 
 externalRef: 
 origin: 
 ---
@@ -27,7 +27,7 @@ Key design choice: keep the pure stack model separate from orchestration. The do
 - [x] 4. Make jx pr maintain stack state as part of publishing
 - [x] 5. Make jx open pr -i select from the stack snapshot
 - [x] 6. Unify stack rendering for jx stack, jx sync -s, and PR descriptions
-- [ ] 7. Add GitHub refresh support for durable PR numbers
+- [x] 7. Add GitHub refresh support for durable PR numbers
 
 ## Phase Details
 
