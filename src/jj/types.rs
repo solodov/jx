@@ -170,6 +170,32 @@ pub struct RebaseOnTrunkOutcome {
     pub current_updated: bool,
 }
 
+/// Destination for moving the current jj stack through `jx stack`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StackMoveTarget {
+    Onto(String),
+    Trunk,
+}
+
+/// Outcome of moving the current jj change and descendants to a new parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackMoveOutcome {
+    pub source_short_commit_id: String,
+    pub target_short_commit_id: String,
+    pub rebased_commits: usize,
+    pub skipped_commits: usize,
+    pub current_updated: bool,
+}
+
+/// Local branch ancestry derived from jj after stack mutations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalStackBranch {
+    pub branch: String,
+    pub base_branch: String,
+    pub parent_branch: Option<String>,
+    pub title: String,
+}
+
 /// Result of ensuring a planned bookmark points at the selected jj change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkUpdate {

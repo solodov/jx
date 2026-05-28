@@ -360,6 +360,9 @@ struct FakeServices {
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
+    stack_move: StackMoveOutcome,
+    stack_move_targets: std::cell::RefCell<Vec<StackMoveTarget>>,
+    local_stack_branches: std::cell::RefCell<Vec<Vec<LocalStackBranch>>>,
     bookmark_update: BookmarkUpdate,
     push: PushOutcome,
     advance_trunk: AdvanceTrunkOutcome,
@@ -519,6 +522,15 @@ impl Default for FakeServices {
                 current_updated: true,
             },
             expected_rebase_sources: None,
+            stack_move: StackMoveOutcome {
+                source_short_commit_id: "a1b2c3d4".to_owned(),
+                target_short_commit_id: "11112222".to_owned(),
+                rebased_commits: 1,
+                skipped_commits: 0,
+                current_updated: true,
+            },
+            stack_move_targets: std::cell::RefCell::new(Vec::new()),
+            local_stack_branches: std::cell::RefCell::new(Vec::new()),
             bookmark_update: BookmarkUpdate {
                 branch: "example-user/abc-123-02-zzzzzzzz".to_owned(),
                 created: true,
@@ -997,6 +1009,27 @@ impl CommandServices for FakeServices {
             assert_eq!(sources, expected.as_slice());
         }
         Ok(self.rebase_on_trunk.clone())
+    }
+
+    fn move_current_stack(
+        &self,
+        _context: &RepositoryContext,
+        target: &StackMoveTarget,
+    ) -> Result<StackMoveOutcome, JjError> {
+        self.stack_move_targets.borrow_mut().push(target.clone());
+        Ok(self.stack_move.clone())
+    }
+
+    fn local_stack_branches(
+        &self,
+        _context: &RepositoryContext,
+    ) -> Result<Vec<LocalStackBranch>, JjError> {
+        let mut branches = self.local_stack_branches.borrow_mut();
+        if branches.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Ok(branches.remove(0))
+        }
     }
 
     fn ensure_bookmark(

@@ -15,6 +15,15 @@ pub enum JjError {
     RevisionNotFound { revision: String },
     #[error("Revision `{revision}` resolved to multiple commits; pass a single commit")]
     AmbiguousRevision { revision: String },
+    #[error("Stack target `{target}` did not resolve to a commit or local bookmark")]
+    StackTargetNotFound { target: String },
+    #[error("Stack target `{target}` matches multiple local bookmarks: {matches:?}")]
+    StackTargetAmbiguous {
+        target: String,
+        matches: Vec<String>,
+    },
+    #[error("Cannot move current stack onto one of its descendants")]
+    StackTargetDescendant,
     #[error("Internal PR bookmark target `{commit_id}` is not a valid commit id")]
     InvalidTargetCommitId { commit_id: String },
     #[error("Workspace `{workspace}` does not have a current working-copy change")]

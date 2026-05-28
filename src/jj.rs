@@ -84,6 +84,7 @@ mod log;
 mod navigation;
 mod push;
 mod rebase;
+mod stack;
 mod status;
 mod types;
 mod workspace;

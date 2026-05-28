@@ -218,6 +218,19 @@ pub(super) trait CommandServices {
         sources: &[String],
     ) -> Result<RebaseOnTrunkOutcome, JjError>;
 
+    /// Moves the current change and descendants onto a stack target or trunk.
+    fn move_current_stack(
+        &self,
+        context: &RepositoryContext,
+        target: &StackMoveTarget,
+    ) -> Result<StackMoveOutcome, JjError>;
+
+    /// Reads local branch ancestry from jj for stack metadata repair.
+    fn local_stack_branches(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<Vec<LocalStackBranch>, JjError>;
+
     /// Ensures the selected PR bookmark points at the selected jj commit.
     fn ensure_bookmark(
         &self,
@@ -627,6 +640,21 @@ impl CommandServices for ProductionServices<'_> {
         sources: &[String],
     ) -> Result<RebaseOnTrunkOutcome, JjError> {
         JjWorkspace::load(context.workspace_root.clone())?.rebase_on_trunk(sources)
+    }
+
+    fn move_current_stack(
+        &self,
+        context: &RepositoryContext,
+        target: &StackMoveTarget,
+    ) -> Result<StackMoveOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.move_current_stack(target.clone())
+    }
+
+    fn local_stack_branches(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<Vec<LocalStackBranch>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.local_stack_branches()
     }
 
     fn ensure_bookmark(

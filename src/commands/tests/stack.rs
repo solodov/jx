@@ -5,10 +5,13 @@ fn stack_help_describes_cached_display_and_live_refresh() {
     // Verifies: Stack help distinguishes local cached display from GitHub-backed refresh.
     let help = help_output(["jx", "stack", "--help"]);
 
-    assert!(help.contains("Show or refresh repo-local pull request stack state"));
+    assert!(help.contains("Show, move, or refresh repo-local pull request stack state"));
     assert!(help.contains(".jx/stack.toml"));
     assert!(help.contains("without contacting GitHub"));
     assert!(help.contains("open GitHub PRs authored by you"));
+    assert!(help.contains("--onto"));
+    assert!(help.contains("--trunk"));
+    assert!(help.contains("--no-sync"));
     assert!(help.contains("show"));
     assert!(help.contains("refresh"));
     assert!(!help.contains("track"));
@@ -744,6 +747,179 @@ fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
     assert_eq!(metadata.nodes[0].branch, "topic/root");
     assert_eq!(metadata.nodes[0].title, "Merged root");
     assert!(metadata.nodes[0].merged);
+}
+
+#[test]
+fn stack_onto_moves_current_stack_and_syncs_old_and_new_components() {
+    // Verifies: Stack moves sync every branch affected by the old and new stack graph.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                stack_node("topic/root", "main", None, 10, "Root"),
+                stack_node("topic/child", "topic/root", Some("topic/root"), 11, "Child"),
+                stack_node("topic/new-root", "main", None, 12, "New root"),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "topic/root".to_owned(),
+            "topic/child".to_owned(),
+            "topic/new-root".to_owned(),
+        ],
+        open_pull_request_candidates: vec!["topic/child".to_owned()],
+        local_stack_branches: std::cell::RefCell::new(vec![
+            vec![
+                local_stack_branch("topic/root", "main", None),
+                local_stack_branch("topic/child", "topic/root", Some("topic/root")),
+                local_stack_branch("topic/new-root", "main", None),
+            ],
+            vec![
+                local_stack_branch("topic/root", "main", None),
+                local_stack_branch("topic/child", "topic/new-root", Some("topic/new-root")),
+                local_stack_branch("topic/new-root", "main", None),
+            ],
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "--onto", "new-root"],
+        &environment,
+        &services,
+    )
+    .expect("stack move succeeds");
+
+    assert_eq!(
+        services.stack_move_targets.borrow().as_slice(),
+        &[StackMoveTarget::Onto("new-root".to_owned())]
+    );
+    assert_eq!(
+        services.push_syncable_revision_requests.borrow().as_slice(),
+        &[
+            Some("topic/root".to_owned()),
+            Some("topic/child".to_owned()),
+            Some("topic/new-root".to_owned()),
+        ]
+    );
+    let synced_metadata = services.sync_pull_request_metadata.borrow();
+    let child = synced_metadata
+        .last()
+        .expect("sync receives metadata")
+        .nodes
+        .iter()
+        .find(|node| node.branch == "topic/child")
+        .expect("child metadata exists");
+    assert_eq!(child.base_branch, "topic/new-root");
+    assert_eq!(child.parent_branch.as_deref(), Some("topic/new-root"));
+    assert!(result
+        .stdout
+        .starts_with("Moved current stack from a1b2c3d4 onto new-root\nSynced:"));
+}
+
+#[test]
+fn stack_move_no_sync_updates_local_metadata_without_github_mutations() {
+    // Verifies: --no-sync keeps the stack move local while still repairing cached stack state.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                stack_node("topic/root", "main", None, 10, "Root"),
+                stack_node("topic/child", "topic/root", Some("topic/root"), 11, "Child"),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        local_stack_branches: std::cell::RefCell::new(vec![vec![
+            local_stack_branch("topic/root", "main", None),
+            local_stack_branch("topic/child", "main", None),
+        ]]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "--trunk", "--no-sync"],
+        &environment,
+        &services,
+    )
+    .expect("local stack move succeeds");
+
+    assert_eq!(
+        services.stack_move_targets.borrow().as_slice(),
+        &[StackMoveTarget::Trunk]
+    );
+    assert!(services.fetch_origin_roots.borrow().is_empty());
+    assert!(services.push_syncable_revision_requests.borrow().is_empty());
+    assert!(services.sync_pull_request_metadata.borrow().is_empty());
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    let child = metadata
+        .nodes
+        .iter()
+        .find(|node| node.branch == "topic/child")
+        .expect("child metadata exists");
+    assert_eq!(child.base_branch, "main");
+    assert_eq!(child.parent_branch, None);
+    assert_eq!(
+        result.stdout,
+        "Moved current stack from a1b2c3d4 onto trunk\nSync skipped (--no-sync)\n"
+    );
+}
+
+fn stack_node(
+    branch: &str,
+    base_branch: &str,
+    parent_branch: Option<&str>,
+    pull_request: u64,
+    title: &str,
+) -> StackMetadataNode {
+    StackMetadataNode {
+        branch: branch.to_owned(),
+        base_branch: base_branch.to_owned(),
+        parent_branch: parent_branch.map(str::to_owned),
+        pull_request: Some(pull_request),
+        parent_pull_request: None,
+        title: title.to_owned(),
+        url: None,
+        draft: false,
+        merged: false,
+    }
+}
+
+fn local_stack_branch(
+    branch: &str,
+    base_branch: &str,
+    parent_branch: Option<&str>,
+) -> LocalStackBranch {
+    LocalStackBranch {
+        branch: branch.to_owned(),
+        base_branch: base_branch.to_owned(),
+        parent_branch: parent_branch.map(str::to_owned),
+        title: branch.to_owned(),
+    }
 }
 
 fn help_output<const N: usize>(args: [&str; N]) -> String {

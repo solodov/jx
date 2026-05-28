@@ -485,6 +485,39 @@ pub fn stack_metadata_from_pull_requests(
     StackMetadata { version: 1, nodes }
 }
 
+/// Applies local jj branch ancestry while preserving durable PR identity and status.
+pub fn apply_local_stack_branches(
+    local_branches: &[LocalStackBranch],
+    existing_metadata: &StackMetadata,
+) -> StackMetadata {
+    let existing_nodes_by_branch = existing_metadata
+        .nodes
+        .iter()
+        .map(|node| (node.branch.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    let mut nodes = existing_metadata.nodes.clone();
+    let mut indexes_by_branch = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.branch.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut local_branches = local_branches.to_vec();
+    local_branches.sort_by(|left, right| left.branch.cmp(&right.branch));
+
+    for local in &local_branches {
+        let node = stack_metadata_node_from_local_branch(local, &existing_nodes_by_branch);
+        if let Some(index) = indexes_by_branch.get(node.branch.as_str()).copied() {
+            nodes[index] = node;
+        } else {
+            indexes_by_branch.insert(node.branch.clone(), nodes.len());
+            nodes.push(node);
+        }
+    }
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
 fn stack_metadata_node_from_pull_request(
     pull_request: &PullRequestRecord,
     pull_requests_by_head: &BTreeMap<&str, &PullRequestRecord>,
@@ -538,6 +571,41 @@ fn stack_metadata_node_from_pull_request(
         url: pull_request.html_url.clone(),
         draft: pull_request.draft,
         merged: pull_request.merged,
+    }
+}
+
+fn stack_metadata_node_from_local_branch(
+    local: &LocalStackBranch,
+    existing_nodes_by_branch: &BTreeMap<&str, &StackMetadataNode>,
+) -> StackMetadataNode {
+    let existing_node = existing_nodes_by_branch.get(local.branch.as_str());
+    let parent_pull_request = local.parent_branch.as_deref().and_then(|branch| {
+        existing_nodes_by_branch
+            .get(branch)
+            .and_then(|node| node.pull_request)
+    });
+
+    StackMetadataNode {
+        branch: local.branch.clone(),
+        base_branch: local.base_branch.clone(),
+        parent_branch: local.parent_branch.clone(),
+        pull_request: existing_node.and_then(|node| node.pull_request),
+        parent_pull_request,
+        title: existing_node
+            .map(|node| node.title.clone())
+            .unwrap_or_else(|| local_stack_branch_title(local)),
+        url: existing_node.and_then(|node| node.url.clone()),
+        draft: existing_node.is_some_and(|node| node.draft),
+        merged: existing_node.is_some_and(|node| node.merged),
+    }
+}
+
+fn local_stack_branch_title(local: &LocalStackBranch) -> String {
+    let title = local.title.trim();
+    if title.is_empty() {
+        "(untitled)".to_owned()
+    } else {
+        title.to_owned()
     }
 }
 

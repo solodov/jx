@@ -17,7 +17,7 @@ use crate::{
         ReviewerCandidate, ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
     },
     jj::{
-        BookmarkUpdate, FetchOutcome, PushOutcome, RebaseOnTrunkOutcome,
+        BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, RebaseOnTrunkOutcome,
         SkippedPushBookmarkSummary, StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome,
         WorkspaceFacts,
     },

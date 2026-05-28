@@ -88,6 +88,14 @@ impl<'a> PullRequestStackManager<'a> {
         Err(missing_local_bookmark_pull_requests(self.context).into())
     }
 
+    /// Refreshes durable stack metadata from local jj branch ancestry.
+    pub(super) fn refresh_local_stack_metadata(&self) -> Result<StackMetadata, CommandError> {
+        let local_branches = self.services.local_stack_branches(self.context)?;
+        let metadata = apply_local_stack_branches(&local_branches, &self.read_metadata()?);
+        self.write_metadata(&metadata)?;
+        Ok(metadata)
+    }
+
     /// Selects local stack component branches for sync after applying stack maintenance.
     pub(super) fn sync_selection_for_selector(
         &self,

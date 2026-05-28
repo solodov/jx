@@ -57,8 +57,14 @@ pub(super) enum WorkRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StackRequest {
     Show,
-    Open { print: bool },
+    Open {
+        print: bool,
+    },
     Refresh,
+    Move {
+        target: StackMoveTarget,
+        no_sync: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +299,19 @@ fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
     if matches.get_flag("interactive") {
         return Ok(StackRequest::Open {
             print: matches.get_flag("print"),
+        });
+    }
+
+    if let Some(target) = matches.get_one::<String>("onto") {
+        return Ok(StackRequest::Move {
+            target: StackMoveTarget::Onto(target.clone()),
+            no_sync: matches.get_flag("no-sync"),
+        });
+    }
+    if matches.get_flag("trunk") {
+        return Ok(StackRequest::Move {
+            target: StackMoveTarget::Trunk,
+            no_sync: matches.get_flag("no-sync"),
         });
     }
 
@@ -739,12 +758,20 @@ pub(super) fn cli() -> ClapCommand {
 fn stack_command() -> ClapCommand {
     ClapCommand::new("stack")
         .visible_alias("stk")
-        .about("Show or refresh repo-local pull request stack state")
+        .about("Show, move, or refresh repo-local pull request stack state")
         .long_about(
-            "Show or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand, jx stack shows the stored local stack without contacting GitHub. Use refresh to rebuild that metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+            "Show, move, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
         )
         .args_conflicts_with_subcommands(true)
+        .group(
+            ArgGroup::new("stack-move-target")
+                .args(["onto", "trunk"])
+                .multiple(false),
+        )
         .arg(stack_interactive_arg())
+        .arg(stack_onto_arg())
+        .arg(stack_trunk_arg())
+        .arg(stack_no_sync_arg().requires("stack-move-target"))
         .arg(open_print_arg().requires("interactive"))
         .subcommand(
             ClapCommand::new("show")
@@ -894,7 +921,33 @@ fn stack_interactive_arg() -> Arg {
         .short('i')
         .long("interactive")
         .action(ArgAction::SetTrue)
+        .conflicts_with_all(["onto", "trunk", "no-sync"])
         .help("Select a stored pull request from the stack and open it")
+}
+
+fn stack_onto_arg() -> Arg {
+    Arg::new("onto")
+        .short('o')
+        .long("onto")
+        .value_name("COMMIT_OR_BOOKMARK")
+        .conflicts_with_all(["interactive", "trunk"])
+        .help("Move the current change and descendants onto a commit, change, or bookmark target, then sync")
+}
+
+fn stack_trunk_arg() -> Arg {
+    Arg::new("trunk")
+        .short('t')
+        .long("trunk")
+        .action(ArgAction::SetTrue)
+        .conflicts_with_all(["interactive", "onto"])
+        .help("Move the current change and descendants onto trunk, then sync")
+}
+
+fn stack_no_sync_arg() -> Arg {
+    Arg::new("no-sync")
+        .long("no-sync")
+        .action(ArgAction::SetTrue)
+        .help("Update local stack state without pushing branches or updating GitHub PRs")
 }
 
 fn source_arg() -> Arg {

@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command as ClapCommand};
+use clap::{error::ErrorKind, Arg, ArgAction, ArgGroup, ArgMatches, Command as ClapCommand};
 use dialoguer::{theme::Theme, MultiSelect, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use jj_cli::formatter::{Formatter, PlainTextFormatter};
@@ -29,14 +29,14 @@ use thiserror::Error;
 
 use crate::{
     domain::{
-        self, prune_merged_stack_metadata_trees, refresh_stack_metadata_pull_requests,
-        stack_metadata_from_pull_requests, upsert_stack_metadata_pull_requests, BookmarkAction,
-        CheckReport, FetchReport, ForkStatusReport, ForkStatusState, PullRequestAction,
-        PullRequestEventEffect, PullRequestEventEffectKind, PullRequestPlan,
-        PullRequestPublishOptions, PullRequestReport, PullRequestStackNode, PullRequestStackRow,
-        PullRequestStackSelection, PullRequestStackSnapshot, PushPlan, PushReport,
-        RebaseOnTrunkReport, RemoteStatusReport, StatusReport, SyncReport, TrackedPushReport,
-        WorkflowCommand, WorkflowError,
+        self, apply_local_stack_branches, prune_merged_stack_metadata_trees,
+        refresh_stack_metadata_pull_requests, stack_metadata_from_pull_requests,
+        upsert_stack_metadata_pull_requests, BookmarkAction, CheckReport, FetchReport,
+        ForkStatusReport, ForkStatusState, PullRequestAction, PullRequestEventEffect,
+        PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions, PullRequestReport,
+        PullRequestStackNode, PullRequestStackRow, PullRequestStackSelection,
+        PullRequestStackSnapshot, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
+        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
@@ -47,10 +47,10 @@ use crate::{
         run_jj_git_clone, run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome,
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
-        JjWorkspace, PipeDiffTool, PushOutcome, PushedBookmarkSummary, RebaseOnTrunkOutcome,
-        StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions,
-        WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
-        WorkspaceVisibility,
+        JjWorkspace, LocalStackBranch, PipeDiffTool, PushOutcome, PushedBookmarkSummary,
+        RebaseOnTrunkOutcome, StackMoveOutcome, StackMoveTarget, StatusWorkspaceFacts,
+        SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
+        WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
     },
     repository::{
         read_stack_metadata, read_workspace_metadata, validate_workspace_name,
