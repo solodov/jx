@@ -25,12 +25,11 @@ pub(super) fn handle_stack(
 
 fn render_stack_snapshot(snapshot: &PullRequestStackSnapshot) -> Result<String, CommandError> {
     if snapshot.nodes.is_empty() {
-        return Ok("Stack state: none\n".to_owned());
+        return Ok("No stack state\n".to_owned());
     }
 
-    let mut output = String::from("Stack state:\n");
+    let mut output = String::new();
     for row in stack_snapshot_rows(snapshot) {
-        output.push_str("  ");
         output.push_str(&row);
         output.push('\n');
     }

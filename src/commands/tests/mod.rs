@@ -2878,7 +2878,7 @@ fn stack_track_persists_hierarchy_and_ignore_rules() {
 
     assert_eq!(
         result.stdout,
-        "Stack state:\n  ◯ #10     Root\n  ├─ ◯ #11     Child\n  └─ ◌ #12     Draft\n"
+        "◯ #10     Root\n├─ ◯ #11     Child\n└─ ◌ #12     Draft\n"
     );
     assert_eq!(
         fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("read gitignore"),
@@ -2953,7 +2953,7 @@ fn stack_without_subcommand_shows_state() {
         run_with_args_and_services(["jx", "stack"], &environment, &FakeServices::default())
             .expect("stack show succeeds");
 
-    assert_eq!(result.stdout, "Stack state:\n  ◯ #10     Root\n");
+    assert_eq!(result.stdout, "◯ #10     Root\n");
 }
 
 #[test]
@@ -3004,7 +3004,7 @@ path = "{repo}"
     )
     .expect("stack show succeeds");
 
-    assert_eq!(result.stdout, "Stack state:\n  ◯ #10     Root\n");
+    assert_eq!(result.stdout, "◯ #10     Root\n");
     assert!(!workspace.path().join(".jx/stack.toml").exists());
 }
 
@@ -3103,10 +3103,7 @@ fn stack_track_refreshes_missing_stored_ancestor_by_pull_request_number() {
     let result = run_with_args_and_services(["jx", "stack", "track"], &environment, &services)
         .expect("stack tracking succeeds");
 
-    assert_eq!(
-        result.stdout,
-        "Stack state:\n  ✓ #10     Merged root\n  └─ ◯ #11     Child\n"
-    );
+    assert_eq!(result.stdout, "✓ #10     Merged root\n└─ ◯ #11     Child\n");
     assert_eq!(services.pull_request_number_calls.borrow().as_slice(), [10]);
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(metadata.nodes[0].branch, "topic/root");
