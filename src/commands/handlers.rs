@@ -915,7 +915,13 @@ fn handle_sync(
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
     if request.all {
-        return handle_global_sync(environment, services, progress, output);
+        return handle_global_sync(
+            &request.repo_filters,
+            environment,
+            services,
+            progress,
+            output,
+        );
     }
 
     if request.stack {
@@ -937,6 +943,7 @@ fn handle_sync(
 }
 
 fn handle_global_sync(
+    repo_filters: &[String],
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -944,6 +951,7 @@ fn handle_global_sync(
 ) -> Result<CommandResult, CommandError> {
     let config = WorkflowConfig::discover_global(environment)?;
     let repositories = global_work_repositories(&config, environment)?;
+    let repositories = filter_work_repositories(&repositories, repo_filters)?;
     let total = repositories.len();
     let mut entries = Vec::new();
 

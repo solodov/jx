@@ -1,5 +1,5 @@
 use super::*;
-use globset::Glob;
+use globset::{Glob, GlobMatcher};
 use std::fs;
 
 /// One globally navigable work location discovered from the configured layout.
@@ -14,6 +14,7 @@ pub(super) struct WorkLocation {
 pub(super) struct WorkRepository {
     pub(super) key: String,
     pub(super) root: PathBuf,
+    identity: RepositoryIdentity,
 }
 
 /// Complete command plan for adding a managed jj workspace.
@@ -340,11 +341,10 @@ fn repo_relative_path(path: &str) -> PathBuf {
     })
 }
 
-/// Builds the global work-location index used by shell completion and path resolution.
-pub(super) fn global_work_locations(
+fn global_discovered_work_locations(
     config: &WorkflowConfig,
     environment: &RuntimeEnvironment,
-) -> Result<Vec<WorkLocation>, RepositoryError> {
+) -> Result<Vec<DiscoveredWorkLocation>, RepositoryError> {
     let mut workspace_roots = Vec::new();
     let max_depth = max_work_location_depth(&config.layout);
     for root in config.layout.configured_roots(environment)? {
@@ -360,7 +360,18 @@ pub(super) fn global_work_locations(
         }
     }
 
-    Ok(assign_work_location_keys(discovered))
+    Ok(discovered)
+}
+
+/// Builds the global work-location index used by shell completion and path resolution.
+pub(super) fn global_work_locations(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+) -> Result<Vec<WorkLocation>, RepositoryError> {
+    Ok(assign_work_location_keys(global_discovered_work_locations(
+        config,
+        environment,
+    )?))
 }
 
 pub(super) fn filter_work_locations_by_prefix(
@@ -416,14 +427,9 @@ pub(super) fn global_work_repositories(
     config: &WorkflowConfig,
     environment: &RuntimeEnvironment,
 ) -> Result<Vec<WorkRepository>, RepositoryError> {
-    Ok(global_work_locations(config, environment)?
-        .into_iter()
-        .filter(|location| !location.key.contains('@'))
-        .map(|location| WorkRepository {
-            key: location.key,
-            root: location.root,
-        })
-        .collect())
+    Ok(assign_work_repository_keys(
+        global_discovered_work_locations(config, environment)?,
+    ))
 }
 
 pub(super) fn filter_work_repositories_by_prefix(
@@ -839,23 +845,56 @@ fn matching_work_repositories<'a>(
     repositories: &'a [WorkRepository],
     pattern: &str,
 ) -> Result<Vec<&'a WorkRepository>, RepositoryError> {
+    let pattern = pattern.trim();
     if contains_glob_meta(pattern) {
-        let matcher = Glob::new(pattern)
-            .map_err(|source| RepositoryError::InvalidRepositoryFilter {
-                pattern: pattern.to_owned(),
-                message: source.to_string(),
-            })?
-            .compile_matcher();
+        let matchers = repository_filter_matchers(pattern)?;
         Ok(repositories
             .iter()
-            .filter(|repository| matcher.is_match(&repository.key))
+            .filter(|repository| repository_matches_glob(repository, &matchers))
             .collect())
     } else {
         Ok(repositories
             .iter()
-            .filter(|repository| repository.key.starts_with(pattern))
+            .filter(|repository| {
+                repository_filter_labels(repository).any(|label| label.contains(pattern))
+            })
             .collect())
     }
+}
+
+fn repository_matches_glob(repository: &WorkRepository, matchers: &[GlobMatcher]) -> bool {
+    repository_filter_labels(repository)
+        .any(|label| matchers.iter().any(|matcher| matcher.is_match(&label)))
+}
+
+fn repository_filter_matchers(pattern: &str) -> Result<Vec<GlobMatcher>, RepositoryError> {
+    let mut patterns = vec![pattern.to_owned()];
+    if !pattern.starts_with("**/") {
+        patterns.push(format!("**/{pattern}"));
+    }
+
+    patterns
+        .into_iter()
+        .map(|candidate| {
+            Glob::new(&candidate)
+                .map_err(|source| RepositoryError::InvalidRepositoryFilter {
+                    pattern: pattern.to_owned(),
+                    message: source.to_string(),
+                })
+                .map(|glob| glob.compile_matcher())
+        })
+        .collect()
+}
+
+fn repository_filter_labels(repository: &WorkRepository) -> impl Iterator<Item = String> + '_ {
+    [
+        repository.key.clone(),
+        format!(
+            "{}/{}/{}",
+            repository.identity.host, repository.identity.owner, repository.identity.repo
+        ),
+    ]
+    .into_iter()
 }
 
 fn contains_glob_meta(pattern: &str) -> bool {
@@ -942,20 +981,7 @@ fn discovered_work_location(
 
 fn assign_work_location_keys(locations: Vec<DiscoveredWorkLocation>) -> Vec<WorkLocation> {
     let identities = unique_identities(&locations);
-    let repo_counts = identities
-        .iter()
-        .fold(BTreeMap::new(), |mut counts, identity| {
-            *counts.entry(identity.repo.clone()).or_insert(0) += 1;
-            counts
-        });
-    let owner_repo_counts = identities
-        .iter()
-        .fold(BTreeMap::new(), |mut counts, identity| {
-            *counts
-                .entry(format!("{}/{}", identity.owner, identity.repo))
-                .or_insert(0) += 1;
-            counts
-        });
+    let (repo_counts, owner_repo_counts) = repo_key_counts(&identities);
 
     let mut keyed = locations
         .into_iter()
@@ -975,6 +1001,44 @@ fn assign_work_location_keys(locations: Vec<DiscoveredWorkLocation>) -> Vec<Work
     keyed.sort_by_key(work_location_sort_key);
     keyed.dedup();
     keyed
+}
+
+fn assign_work_repository_keys(locations: Vec<DiscoveredWorkLocation>) -> Vec<WorkRepository> {
+    let identities = unique_identities(&locations);
+    let (repo_counts, owner_repo_counts) = repo_key_counts(&identities);
+    let mut keyed = locations
+        .into_iter()
+        .filter(|location| location.workspace.is_none())
+        .map(|location| WorkRepository {
+            key: repo_key(&location.identity, &repo_counts, &owner_repo_counts),
+            root: location.root,
+            identity: location.identity,
+        })
+        .collect::<Vec<_>>();
+
+    keyed.sort_by_key(work_repository_sort_key);
+    keyed.dedup();
+    keyed
+}
+
+fn repo_key_counts(
+    identities: &[RepositoryIdentity],
+) -> (BTreeMap<String, usize>, BTreeMap<String, usize>) {
+    let repo_counts = identities
+        .iter()
+        .fold(BTreeMap::new(), |mut counts, identity| {
+            *counts.entry(identity.repo.clone()).or_insert(0) += 1;
+            counts
+        });
+    let owner_repo_counts = identities
+        .iter()
+        .fold(BTreeMap::new(), |mut counts, identity| {
+            *counts
+                .entry(format!("{}/{}", identity.owner, identity.repo))
+                .or_insert(0) += 1;
+            counts
+        });
+    (repo_counts, owner_repo_counts)
 }
 
 fn unique_identities(locations: &[DiscoveredWorkLocation]) -> Vec<RepositoryIdentity> {
@@ -1030,6 +1094,10 @@ fn work_location_sort_key(location: &WorkLocation) -> (String, u8, String) {
         u8::from(workspace.is_some()),
         location.key.clone(),
     )
+}
+
+fn work_repository_sort_key(repository: &WorkRepository) -> String {
+    repository.key.clone()
 }
 
 fn max_work_location_depth(layout: &LayoutConfig) -> usize {

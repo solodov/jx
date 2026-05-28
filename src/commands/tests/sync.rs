@@ -170,6 +170,55 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_all_filter_matches_owner_repo_suffix_in_provider_path() {
+    // Verifies: `sync --all` filters match inside provider/owner/repo identities, not just compact keys.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[layout]
+default_root = "~/projects"
+
+[layout.default]
+path = "{owner}/{repo}"
+"#,
+    );
+    let selected = workspace.create_jj_workspace("projects/solodov/foo");
+    let skipped = workspace.create_jj_workspace("projects/other/bar");
+    for (root, owner, name) in [(&selected, "solodov", "foo"), (&skipped, "other", "bar")] {
+        TestWorkspace::write_git_config_at(
+            root,
+            &format!(
+                r#"
+[remote "origin"]
+    url = https://github.com/{owner}/{name}.git
+"#,
+            ),
+        );
+    }
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        origin_push_access_roots: Some(BTreeSet::from([selected.clone(), skipped])),
+        clean_status_repos: vec!["foo".to_owned(), "bar".to_owned()],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "sync", "--all", "solodov/*"],
+        &environment,
+        &services,
+    )
+    .expect("filtered global sync succeeds");
+
+    assert_eq!(
+        services.fetch_origin_roots.borrow().as_slice(),
+        std::slice::from_ref(&selected)
+    );
+    assert_eq!(services.push_tracked_roots.borrow().as_slice(), [selected]);
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/solodov/foo\n");
+}
+
+#[test]
 fn sync_all_reports_local_work_when_tracked_push_has_nothing_to_sync() {
     // Verifies: Global sync does not call a repo up to date when unpushed jj work remains.
     let workspace = TestWorkspace::new();

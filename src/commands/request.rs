@@ -159,6 +159,7 @@ pub(super) struct SyncRequest {
     pub(super) repo: bool,
     pub(super) stack: bool,
     pub(super) revision: Option<String>,
+    pub(super) repo_filters: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,12 +227,7 @@ impl CommandRequest {
                 revision: revision(matches),
                 tracked: matches.get_flag("tracked"),
             })),
-            Some(("sync", matches)) => Ok(Self::Sync(SyncRequest {
-                all: matches.get_flag("all"),
-                repo: matches.get_flag("repo"),
-                stack: matches.get_flag("stack"),
-                revision: revision(matches),
-            })),
+            Some(("sync", matches)) => Ok(Self::Sync(sync_request(matches)?)),
             Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
                 command: WorkflowCommand::PullRequest,
                 task_id: task_id(matches),
@@ -392,6 +388,42 @@ fn sources(matches: &ArgMatches) -> Vec<String> {
         .into_iter()
         .flatten()
         .cloned()
+        .collect()
+}
+
+fn sync_request(matches: &ArgMatches) -> Result<SyncRequest, clap::Error> {
+    let all = matches.get_flag("all");
+    let targets = sync_targets(matches);
+    let revision = if all {
+        None
+    } else {
+        if targets.len() > 1 {
+            return Err(clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "jx sync accepts only one revision unless --all is set",
+            ));
+        }
+        targets.first().cloned()
+    };
+    let repo_filters = if all { targets } else { Vec::new() };
+
+    Ok(SyncRequest {
+        all,
+        repo: matches.get_flag("repo"),
+        stack: matches.get_flag("stack"),
+        revision,
+        repo_filters,
+    })
+}
+
+fn sync_targets(matches: &ArgMatches) -> Vec<String> {
+    matches
+        .get_many::<String>("target")
+        .into_iter()
+        .flatten()
+        .map(|target| target.trim())
+        .filter(|target| !target.is_empty())
+        .map(str::to_owned)
         .collect()
 }
 
@@ -734,7 +766,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("sync")
                 .about("Fetch origin and push repository, stack, or selected bookmark state")
                 .long_about(
-                    "Fetch origin and push repository, stack, or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Use -s/--stack to sync every bookmark in the current pull-request stack. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync every eligible primary repository from configured layout roots without prompting.",
+                    "Fetch origin and push repository, stack, or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Use -s/--stack to sync every bookmark in the current pull-request stack. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync eligible primary repositories from configured layout roots without prompting; optional repository globs filter provider/owner/repo identities, so `solodov/*` matches `github.com/solodov/foo`.",
                 )
                 .arg(sync_all_arg())
                 .arg(sync_repo_arg())
@@ -982,8 +1014,8 @@ fn sync_all_arg() -> Arg {
         .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
-        .conflicts_with_all(["repo", "stack", "revision"])
-        .help("Sync every eligible primary repository in configured layout roots")
+        .conflicts_with_all(["repo", "stack"])
+        .help("Sync every eligible primary repository in configured layout roots, optionally filtered by provider/owner/repo globs")
 }
 
 fn sync_repo_arg() -> Arg {
@@ -991,7 +1023,7 @@ fn sync_repo_arg() -> Arg {
         .short('r')
         .long("repo")
         .action(ArgAction::SetTrue)
-        .conflicts_with_all(["all", "stack", "revision"])
+        .conflicts_with_all(["all", "stack", "target"])
         .help("Sync all tracked bookmarks in the current repository")
 }
 
@@ -1000,15 +1032,16 @@ fn sync_stack_arg() -> Arg {
         .short('s')
         .long("stack")
         .action(ArgAction::SetTrue)
-        .conflicts_with_all(["all", "repo", "revision"])
+        .conflicts_with_all(["all", "repo", "target"])
         .help("Sync every bookmark in the current pull-request stack")
 }
 
 fn sync_revision_arg() -> Arg {
-    Arg::new("revision")
-        .value_name("COMMIT_OR_BOOKMARK")
-        .conflicts_with_all(["all", "repo", "stack"])
-        .help("Sync one bookmarked jj revision or local bookmark instead of repository state")
+    Arg::new("target")
+        .value_name("COMMIT_OR_BOOKMARK_OR_REPO_GLOB")
+        .num_args(0..)
+        .conflicts_with_all(["repo", "stack"])
+        .help("Sync one bookmarked jj revision, or filter provider/owner/repo identities when --all is set")
 }
 
 fn repository_arg_definition() -> Arg {

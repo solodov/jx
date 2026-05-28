@@ -159,14 +159,15 @@ fn sync_help_explains_fetch_then_push_without_loading_repo() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
     assert!(stdout.contains("Fetch origin and push repository, stack, or selected bookmark state"));
-    assert!(stdout.contains("COMMIT_OR_BOOKMARK"));
-    assert!(stdout.contains("instead of repository state"));
+    assert!(stdout.contains("COMMIT_OR_BOOKMARK_OR_REPO_GLOB"));
+    assert!(stdout.contains("filter provider/owner/repo identities"));
     assert!(stdout.contains("--repo"));
     assert!(stdout.contains("Sync all tracked bookmarks in the current repository"));
     assert!(stdout.contains("--stack"));
     assert!(stdout.contains("Sync every bookmark in the current pull-request stack"));
     assert!(stdout.contains("--all"));
     assert!(stdout.contains("Sync every eligible primary repository"));
+    assert!(stdout.contains("provider/owner/repo globs"));
     assert!(!stdout.contains("current workspace is safe for global mutation"));
     assert!(output.stderr.is_empty());
 }
