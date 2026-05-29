@@ -231,6 +231,20 @@ pub(super) trait CommandServices {
         context: &RepositoryContext,
     ) -> Result<Vec<LocalStackBranch>, JjError>;
 
+    /// Reads the local stack selected for PR publishing.
+    fn stack_publish_facts(
+        &self,
+        context: &RepositoryContext,
+        selection: &StackPublishSelection,
+    ) -> Result<StackPublishFacts, JjError>;
+
+    /// Reads the local stack neighbourhood selected for read-only planning.
+    fn stack_plan_facts(
+        &self,
+        context: &RepositoryContext,
+        selection: &StackPlanSelection,
+    ) -> Result<StackPlanFacts, JjError>;
+
     /// Ensures the selected PR bookmark points at the selected jj commit.
     fn ensure_bookmark(
         &self,
@@ -239,12 +253,36 @@ pub(super) trait CommandServices {
         target_commit_id: &str,
     ) -> Result<BookmarkUpdate, JjError>;
 
+    /// Ensures selected PR bookmarks point at their selected jj commits.
+    fn ensure_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        targets: &[(String, String)],
+    ) -> Result<Vec<BookmarkUpdate>, JjError> {
+        targets
+            .iter()
+            .map(|(branch, commit_id)| self.ensure_bookmark(context, branch, commit_id))
+            .collect()
+    }
+
     /// Pushes the selected bookmark through the jj Git transport boundary.
     fn push_bookmark(
         &self,
         context: &RepositoryContext,
         branch: &str,
     ) -> Result<PushOutcome, JjError>;
+
+    /// Pushes selected bookmarks through the jj Git transport boundary.
+    fn push_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        branches: &[String],
+    ) -> Result<Vec<PushOutcome>, JjError> {
+        branches
+            .iter()
+            .map(|branch| self.push_bookmark(context, branch))
+            .collect()
+    }
 
     /// Optionally prepares sync by advancing the local trunk bookmark to current work.
     fn advance_trunk_for_sync(
@@ -657,6 +695,22 @@ impl CommandServices for ProductionServices<'_> {
         JjWorkspace::load(context.workspace_root.clone())?.local_stack_branches()
     }
 
+    fn stack_publish_facts(
+        &self,
+        context: &RepositoryContext,
+        selection: &StackPublishSelection,
+    ) -> Result<StackPublishFacts, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.stack_publish_facts(selection)
+    }
+
+    fn stack_plan_facts(
+        &self,
+        context: &RepositoryContext,
+        selection: &StackPlanSelection,
+    ) -> Result<StackPlanFacts, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.stack_plan_facts(selection)
+    }
+
     fn ensure_bookmark(
         &self,
         context: &RepositoryContext,
@@ -666,12 +720,28 @@ impl CommandServices for ProductionServices<'_> {
         JjWorkspace::load(context.workspace_root.clone())?.ensure_bookmark(branch, target_commit_id)
     }
 
+    fn ensure_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        targets: &[(String, String)],
+    ) -> Result<Vec<BookmarkUpdate>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.ensure_bookmarks(targets)
+    }
+
     fn push_bookmark(
         &self,
         context: &RepositoryContext,
         branch: &str,
     ) -> Result<PushOutcome, JjError> {
         JjWorkspace::load(context.workspace_root.clone())?.push_bookmark(branch)
+    }
+
+    fn push_bookmarks(
+        &self,
+        context: &RepositoryContext,
+        branches: &[String],
+    ) -> Result<Vec<PushOutcome>, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.push_bookmarks(branches)
     }
 
     fn advance_trunk_for_sync(

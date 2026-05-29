@@ -25,7 +25,7 @@ the checkout at `root/path`. `jx work` uses the same identity to place managed
 workspaces at `root/workspace_dir/path/name`, keeping primary checkouts visible
 while parallel work stays under the hidden workspace directory. Task workspaces
 created with `jx work add --task-id` prefix that workspace name with the task id
-and store the task id in workspace-local metadata for `jx pr`. `jx sync` can use
+and store the task id in workspace-local metadata for `jx stack publish`. `jx sync` can use
 the same layout in reverse to initialize a local jj/Git repository and infer
 private GitHub repository creation when a layout path has no repo or remotes.
 Without config, `owner/repo` uses the built-in GitHub source and clones to
@@ -116,8 +116,8 @@ at the exact configured path; tracked parent directories are allowed for nested
 paths. If post-create setup fails, `jx` reports the failure without rolling back
 the created jj workspace, and shell integration does not enter it.
 
-Event handlers run configured PR automation while `jx pr` prepares, creates, or
-updates a pull request. Handlers can update the selected commit title, add
+Event handlers run configured PR automation while `jx stack publish` prepares,
+creates, or updates pull requests. Handlers can update the selected commit title, add
 labels, or ask the command layer to open the PR in an operator browser. `when`
 uses a small GitHub-search-like AND query with `has:task`, `is:draft`,
 `is:ready`, `has:reviewers`, `label:name`, and `-term` negation:
@@ -148,7 +148,7 @@ run = "open_pull_request"
 
 Matching rule handlers compose after base handlers. A matching rule can disable a
 previous handler with `id = "..."` and `enabled = false`. Use
-`jx pr --no-event-handlers` to disable all configured handlers for one run.
+`jx stack publish --no-event-handlers` to disable all configured handlers for one run.
 Default output reports handlers that changed PR or commit state, plus browser
 open attempts; no-op matches are kept quiet. Prepare effects appear in the PR
 preview, and create/update effects appear after publishing. `prepend_task_id`

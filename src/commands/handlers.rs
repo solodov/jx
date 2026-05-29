@@ -35,14 +35,7 @@ pub(super) fn handle_request(
             handle_work(request, environment, services, progress, &prompts)?
         }
         CommandRequest::Stack(request) => {
-            return handle_stack(
-                request,
-                environment,
-                services,
-                progress,
-                prompts.pull_request_selector,
-                output,
-            );
+            return handle_stack(request, environment, services, progress, &prompts, output);
         }
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::Open(request) => handle_open(request, environment, services)?,
@@ -107,113 +100,18 @@ pub(super) fn handle_request(
         CommandRequest::Sync(request) => {
             return handle_sync(request, environment, services, progress, &prompts, output);
         }
-        CommandRequest::Workflow {
-            command,
-            task_id,
-            no_task_id,
-            commit,
-            labels,
-            reviewers,
-            draft,
-            no_event_handlers,
-        } => {
+        CommandRequest::Check => {
             let context = RepositoryContext::discover(environment)?;
-            match command {
-                WorkflowCommand::Check => {
-                    let _ = labels;
-                    let workspace = services.workspace_facts(&context, None)?;
-                    let report = services.check_readiness(&context, workspace)?;
-                    render_check(&report, environment.current_dir(), output.color)?
-                }
-                WorkflowCommand::PullRequest => {
-                    let task_id = match (task_id, no_task_id) {
-                        (Some(task_id), _) => Some(task_id),
-                        (None, true) => None,
-                        (None, false) => read_workspace_metadata(&context.workspace_root)?.task_id,
-                    };
-                    progress.status("Planning pull request…");
-                    let publish_options = PullRequestPublishOptions {
-                        event_handlers: !no_event_handlers,
-                    };
-                    let mut selected_revision = commit;
-                    let mut workspace =
-                        services.workspace_facts(&context, selected_revision.as_deref())?;
-                    let mut prepare_effects = Vec::new();
-                    let prepare_report = domain::prepare_pull_request_change(
-                        &context,
-                        &workspace,
-                        task_id.as_deref(),
-                        publish_options,
-                    );
-                    if prepare_report.changed {
-                        let rewrite = services.rewrite_commit_description(
-                            &context,
-                            &workspace.target_change.commit_id,
-                            &prepare_report.description,
-                        )?;
-                        selected_revision = Some(rewrite.commit_id);
-                        workspace =
-                            services.workspace_facts(&context, selected_revision.as_deref())?;
-                    }
-                    prepare_effects.extend(prepare_report.event_effects);
-                    let status = services
-                        .workspace_status(environment.current_dir(), io::stderr().is_terminal())?;
-                    let mut plan =
-                        services.pull_request_plan(&context, workspace, task_id, labels, draft)?;
-                    progress.finish();
-                    prompts
-                        .pull_request_previewer
-                        .show_preview(&plan, &status, &prepare_effects);
-                    plan.reviewers = match prompts
-                        .reviewer_selector
-                        .select_reviewers(&plan.reviewer_candidates, &reviewers)
-                    {
-                        Ok(reviewers) => reviewers,
-                        Err(ReviewerSelectionError::Cancelled) => {
-                            return Ok(CommandResult::success("cancelled\n".to_owned()));
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-
-                    if !prompts.pull_request_confirmer.confirm_pull_request(&plan)? {
-                        return Ok(CommandResult::success("cancelled\n".to_owned()));
-                    }
-
-                    progress.status("Creating bookmark…");
-                    let bookmark_update = services.ensure_bookmark(
-                        &context,
-                        &plan.bookmark.branch,
-                        &plan.target_commit_id,
-                    )?;
-                    progress.status("Pushing branch…");
-                    let push = services.push_bookmark(&context, &plan.bookmark.branch)?;
-                    progress.status("Publishing pull request…");
-                    let report = services.publish_pull_request(
-                        &context,
-                        plan,
-                        bookmark_update,
-                        push,
-                        publish_options,
-                    )?;
-                    progress.status("Updating pull request stack…");
-                    let manager = PullRequestStackManager::new(&context, services);
-                    let stack_update = manager.update_after_publish(&report)?;
-                    progress.finish();
-                    render_pull_request_with_effects(
-                        &report,
-                        &stack_update,
-                        services,
-                        output.color,
-                    )?
-                }
-            }
+            let workspace = services.workspace_facts(&context, None)?;
+            let report = services.check_readiness(&context, workspace)?;
+            render_check(&report, environment.current_dir(), output.color)?
         }
     };
 
     Ok(CommandResult::success(stdout))
 }
 
-fn render_pull_request_with_effects(
+pub(super) fn render_pull_request_with_effects(
     report: &PullRequestReport,
     stack_update: &PullRequestStackPublishUpdate,
     services: &dyn CommandServices,
@@ -264,7 +162,7 @@ fn render_pull_request_with_effects(
     Ok(output)
 }
 
-fn added_labels_summary(labels: &[String]) -> String {
+pub(super) fn added_labels_summary(labels: &[String]) -> String {
     match labels {
         [] => "added labels".to_owned(),
         [label] => format!("added label {label}"),

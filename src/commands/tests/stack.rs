@@ -5,17 +5,234 @@ fn stack_help_describes_cached_display_and_live_refresh() {
     // Verifies: Stack help distinguishes local cached display from GitHub-backed refresh.
     let help = help_output(["jx", "stack", "--help"]);
 
-    assert!(help.contains("Show, move, or refresh repo-local pull request stack state"));
+    assert!(help.contains("Show, move, publish, or refresh repo-local pull request stack state"));
     assert!(help.contains(".jx/stack.toml"));
     assert!(help.contains("without contacting GitHub"));
-    assert!(help.contains("open GitHub PRs authored by you"));
+    assert!(help.contains("create or update pull requests"));
     assert!(help.contains("--onto"));
     assert!(help.contains("--trunk"));
     assert!(help.contains("--no-sync"));
     assert!(help.contains("show"));
     assert!(help.contains("refresh"));
+    assert!(help.contains("plan"));
+    assert!(help.contains("publish"));
     assert!(!help.contains("track"));
     assert!(!help.contains("reset"));
+}
+
+#[test]
+fn stack_plan_renders_neighbourhood_tree_without_github_mutations() {
+    // Verifies: stack plan shows selected and context commits in tree order without publishing.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let mut root = workspace_facts();
+    root.target_change.short_commit_id = "aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    let mut left = workspace_facts();
+    left.target_change.short_commit_id = "bbbbbbbb".to_owned();
+    left.target_change.description = "Left change".to_owned();
+    let mut right = workspace_facts();
+    right.target_change.short_commit_id = "cccccccc".to_owned();
+    right.target_change.description = "Right change".to_owned();
+    let services = FakeServices {
+        stack_plan_facts: Some(StackPlanFacts {
+            trunk: root.trunk.clone(),
+            nodes: vec![
+                crate::jj::StackPlanNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPlanNodeFacts {
+                    workspace: left,
+                    parent_index: Some(0),
+                },
+                crate::jj::StackPlanNodeFacts {
+                    workspace: right,
+                    parent_index: Some(0),
+                },
+            ],
+            selected_indexes: vec![1, 2],
+            anchor_index: None,
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "plan", "-r", "left | right"],
+        &environment,
+        &services,
+    )
+    .expect("stack plan succeeds");
+
+    assert_eq!(
+        services.stack_plan_selections.borrow().as_slice(),
+        [StackPlanSelection::ExplicitRevisions {
+            revisions: vec!["left | right".to_owned()]
+        }]
+    );
+    assert_eq!(
+        result.stdout,
+        "Stack plan: 3 commits, 2 selected\nBase: main @ 11112222\nRoot: aaaaaaaa Root change\n\n◯ aaaaaaaa Root change  context\n├─ ◉ bbbbbbbb Left change  selected\n└─ ◉ cccccccc Right change  selected\n\nSelected revisions share one stack root. Publish would create/update PRs for selected rows.\n"
+    );
+    assert!(services.sync_pull_request_pushes.borrow().is_empty());
+}
+
+#[test]
+fn stack_publish_without_revision_publishes_inferred_stack() {
+    // Verifies: stack publish expands the working-copy stack when no explicit revset is supplied.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let root_pr =
+        pull_request_choice_record(42, "Root change", "example-user/00-aaaaaaaa", "main", false);
+    let child_pr = pull_request_choice_record(
+        43,
+        "Child change",
+        "example-user/01-bbbbbbbb",
+        "example-user/00-aaaaaaaa",
+        false,
+    );
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+        }),
+        sync_pull_requests: vec![root_pr, child_pr],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "publish"], &environment, &services)
+        .expect("stack publishes");
+
+    assert_eq!(
+        services.stack_publish_selections.borrow().first(),
+        Some(&StackPublishSelection::InferredStack { anchor: None })
+    );
+    assert_eq!(
+        services.sync_pull_request_pushes.borrow()[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_base.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("example-user/00-aaaaaaaa", Some("main")),
+            ("example-user/01-bbbbbbbb", Some("example-user/00-aaaaaaaa")),
+        ]
+    );
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created {}\nCreated {}\nStack: refreshed stack context on {}, {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(43),
+            example_pull_request_link(42),
+            example_pull_request_link(43),
+        )
+    );
+}
+
+#[test]
+fn stack_publish_revision_publishes_explicit_subset_only() {
+    // Verifies: -r selects the publish set instead of expanding to the whole stack.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = Some("topic/root".to_owned());
+    child.stack_index = 1;
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![1],
+            anchor_index: None,
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("selected change publishes");
+
+    assert_eq!(
+        services.stack_publish_selections.borrow().first(),
+        Some(&StackPublishSelection::ExplicitRevisions {
+            revisions: vec!["@".to_owned()]
+        })
+    );
+    assert_eq!(
+        services.sync_pull_request_pushes.borrow()[0].bookmarks[0]
+            .pull_request_base
+            .as_deref(),
+        Some("topic/root")
+    );
+    assert_eq!(
+        result.stdout,
+        format!("Created {}\n", example_pull_request_link(42))
+    );
 }
 
 #[test]

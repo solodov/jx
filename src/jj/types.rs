@@ -83,6 +83,55 @@ pub struct WorkspaceFacts {
     pub stack_index: usize,
 }
 
+/// Revisions that define which stack changes should be published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StackPublishSelection {
+    /// Publish the full local stack containing the selected anchor, or the working copy.
+    InferredStack { anchor: Option<String> },
+    /// Publish exactly the commits matched by the supplied jj revsets.
+    ExplicitRevisions { revisions: Vec<String> },
+}
+
+/// Local jj facts for a stack publish operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPublishFacts {
+    pub nodes: Vec<StackPublishNodeFacts>,
+    pub publish_indexes: Vec<usize>,
+    pub anchor_index: Option<usize>,
+}
+
+/// One change in the local stack containing the publish selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPublishNodeFacts {
+    pub workspace: WorkspaceFacts,
+    pub parent_index: Option<usize>,
+}
+
+/// Revisions that define a read-only stack plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StackPlanSelection {
+    /// Show the local stack neighbourhood containing the selected anchor, or the working copy.
+    InferredStack { anchor: Option<String> },
+    /// Show the neighbourhood for exactly the commits matched by the supplied jj revsets.
+    ExplicitRevisions { revisions: Vec<String> },
+}
+
+/// Local jj facts for a read-only stack plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPlanFacts {
+    pub trunk: TrunkSummary,
+    pub nodes: Vec<StackPlanNodeFacts>,
+    pub selected_indexes: Vec<usize>,
+    pub anchor_index: Option<usize>,
+}
+
+/// One change in the local stack neighbourhood.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPlanNodeFacts {
+    pub workspace: WorkspaceFacts,
+    pub parent_index: Option<usize>,
+}
+
 /// Local cached remote-trunk facts used by `jx remote-status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusWorkspaceFacts {

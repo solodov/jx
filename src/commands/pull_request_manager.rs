@@ -107,21 +107,32 @@ impl<'a> PullRequestStackManager<'a> {
         Ok(PullRequestStackSyncSelection { branches, metadata })
     }
 
-    /// Upserts a newly published PR and syncs stack context for every PR in its component.
-    pub(super) fn update_after_publish(
+    /// Upserts newly published stack PRs and syncs stack context once for their component.
+    pub(super) fn update_after_stack_publish(
         &self,
-        report: &PullRequestReport,
+        reports: &[PullRequestReport],
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
-        let mut seed_pull_requests = Vec::new();
-        if let Some(base_pull_request) = &report.base_pull_request {
-            seed_pull_requests.push(base_pull_request.clone());
-        }
-        seed_pull_requests.push(report.pull_request.clone());
+        let Some(selection) = reports
+            .first()
+            .map(|report| PullRequestStackSelection::pull_request(report.pull_request.number))
+        else {
+            return Ok(PullRequestStackPublishUpdate::default());
+        };
 
-        self.sync_stack_component(
-            PullRequestStackSelection::pull_request(report.pull_request.number),
-            &seed_pull_requests,
-        )
+        let mut seed_pull_requests = Vec::new();
+        let mut seen = BTreeSet::new();
+        for report in reports {
+            if let Some(base_pull_request) = &report.base_pull_request {
+                if seen.insert(base_pull_request.number) {
+                    seed_pull_requests.push(base_pull_request.clone());
+                }
+            }
+            if seen.insert(report.pull_request.number) {
+                seed_pull_requests.push(report.pull_request.clone());
+            }
+        }
+
+        self.sync_stack_component(selection, &seed_pull_requests)
     }
 
     /// Syncs PR descriptions using the currently stored stack metadata.
@@ -177,8 +188,7 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
         seed_pull_requests: &[PullRequestRecord],
     ) -> Result<StackMetadata, CommandError> {
-        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
-        let metadata = self.apply_local_stack_metadata(metadata)?;
+        let metadata = self.apply_local_stack_metadata(self.read_metadata()?)?;
         let metadata = upsert_stack_metadata_pull_requests(seed_pull_requests, &metadata);
         let metadata = self.apply_local_stack_metadata(metadata)?;
         self.write_metadata(&metadata)?;

@@ -90,6 +90,244 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
 }
 
 #[test]
+fn stack_plan_facts_include_branching_neighbourhood() {
+    // Verifies: stack plan allows sibling branches under a shared stack root.
+    let fixture = TestWorkspace::new("stack-plan-neighbourhood");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, left_id, right_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let stack_root = write_child(tx.repo_mut(), &trunk, "root change").await;
+        let left = write_child(tx.repo_mut(), &stack_root, "left change").await;
+        let right = write_child(tx.repo_mut(), &stack_root, "right change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), left.id().clone())
+            .expect("set current working-copy change");
+
+        let left_id = left.id().hex();
+        let right_id = right.id().hex();
+        let repo = tx
+            .commit("arrange stack plan neighbourhood")
+            .await
+            .expect("commit");
+        (workspace, repo, left_id, right_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_plan_facts(&StackPlanSelection::ExplicitRevisions {
+            revisions: vec![format!("{left_id} | {right_id}")],
+        })
+        .expect("stack plan facts load");
+
+    assert_eq!(facts.selected_indexes, vec![1, 2]);
+    assert_eq!(facts.nodes[0].parent_index, None);
+    assert_eq!(facts.nodes[1].parent_index, Some(0));
+    assert_eq!(facts.nodes[2].parent_index, Some(0));
+    assert_eq!(
+        facts.nodes[0].workspace.target_change.description,
+        "root change"
+    );
+    assert_eq!(
+        facts.nodes[1].workspace.target_change.description,
+        "left change"
+    );
+    assert_eq!(
+        facts.nodes[2].workspace.target_change.description,
+        "right change"
+    );
+}
+
+#[test]
+fn stack_plan_facts_reject_multiple_selected_roots() {
+    // Verifies: explicit stack plans must still target one common root.
+    let fixture = TestWorkspace::new("stack-plan-multiple-roots");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, left_id, right_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let left = write_child(tx.repo_mut(), &trunk, "left change").await;
+        let right = write_child(tx.repo_mut(), &trunk, "right change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), left.id().clone())
+            .expect("set current working-copy change");
+
+        let left_id = left.id().hex();
+        let right_id = right.id().hex();
+        let repo = tx
+            .commit("arrange stack plan multiple roots")
+            .await
+            .expect("commit");
+        (workspace, repo, left_id, right_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let error = subject
+        .stack_plan_facts(&StackPlanSelection::ExplicitRevisions {
+            revisions: vec![left_id, right_id],
+        })
+        .expect_err("multi-root plan is rejected");
+
+    assert!(matches!(error, JjError::StackPublishMultipleStacks));
+}
+
+#[test]
+fn stack_publish_facts_infer_full_linear_stack_around_current() {
+    // Verifies: stack publish without -r expands ancestors and descendants around the working copy.
+    let fixture = TestWorkspace::new("stack-publish-inferred");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let parent = write_child(tx.repo_mut(), &trunk, "parent change").await;
+        let current = write_child(tx.repo_mut(), &parent, "current change").await;
+        let _child = write_child(tx.repo_mut(), &current, "child change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange inferred stack publish")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_publish_facts(&StackPublishSelection::InferredStack { anchor: None })
+        .expect("stack publish facts load");
+
+    assert_eq!(facts.publish_indexes, vec![0, 1, 2]);
+    assert_eq!(facts.anchor_index, Some(1));
+    assert_eq!(facts.nodes[0].parent_index, None);
+    assert_eq!(facts.nodes[1].parent_index, Some(0));
+    assert_eq!(facts.nodes[2].parent_index, Some(1));
+    assert_eq!(
+        facts.nodes[0].workspace.target_change.description,
+        "parent change"
+    );
+    assert_eq!(
+        facts.nodes[1].workspace.target_change.description,
+        "current change"
+    );
+    assert_eq!(
+        facts.nodes[2].workspace.target_change.description,
+        "child change"
+    );
+}
+
+#[test]
+fn stack_publish_facts_keep_explicit_revset_subset() {
+    // Verifies: explicit revsets select the publish subset without filling stack gaps.
+    let fixture = TestWorkspace::new("stack-publish-explicit");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, parent_id, child_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let parent = write_child(tx.repo_mut(), &trunk, "parent change").await;
+        let middle = write_child(tx.repo_mut(), &parent, "middle change").await;
+        let child = write_child(tx.repo_mut(), &middle, "child change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), child.id().clone())
+            .expect("set current working-copy change");
+
+        let parent_id = parent.id().hex();
+        let child_id = child.id().hex();
+        let repo = tx
+            .commit("arrange explicit stack publish")
+            .await
+            .expect("commit");
+        (workspace, repo, parent_id, child_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_publish_facts(&StackPublishSelection::ExplicitRevisions {
+            revisions: vec![format!("{parent_id} | {child_id}")],
+        })
+        .expect("stack publish facts load");
+
+    assert_eq!(facts.publish_indexes, vec![0, 2]);
+    assert_eq!(facts.anchor_index, None);
+    assert_eq!(
+        facts.nodes[0].workspace.target_change.description,
+        "parent change"
+    );
+    assert_eq!(
+        facts.nodes[1].workspace.target_change.description,
+        "middle change"
+    );
+    assert_eq!(
+        facts.nodes[2].workspace.target_change.description,
+        "child change"
+    );
+}
+
+#[test]
+fn stack_publish_facts_reject_multiple_selected_stacks() {
+    // Verifies: one publish invocation cannot span unrelated stack roots yet.
+    let fixture = TestWorkspace::new("stack-publish-multiple-stacks");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, left_id, right_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let left = write_child(tx.repo_mut(), &trunk, "left change").await;
+        let right = write_child(tx.repo_mut(), &trunk, "right change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), left.id().clone())
+            .expect("set current working-copy change");
+
+        let left_id = left.id().hex();
+        let right_id = right.id().hex();
+        let repo = tx
+            .commit("arrange multi-stack publish")
+            .await
+            .expect("commit");
+        (workspace, repo, left_id, right_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let error = subject
+        .stack_publish_facts(&StackPublishSelection::ExplicitRevisions {
+            revisions: vec![left_id, right_id],
+        })
+        .expect_err("multi-stack publish is rejected");
+
+    assert!(matches!(error, JjError::StackPublishMultipleStacks));
+}
+
+#[test]
 fn stack_move_reports_ambiguous_bookmark_fragments() {
     // Verifies: Bookmark fragment fallback fails safely when the best fragment match is ambiguous.
     let fixture = TestWorkspace::new("stack-move-ambiguous-fragment");

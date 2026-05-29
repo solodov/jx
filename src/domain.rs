@@ -3,7 +3,7 @@
 //! Command handlers load repository context and integration boundaries, then
 //! delegate to this module for deterministic readiness, per-remote freshness,
 //! bookmark, push, sync, and pull-request decisions. `check`, `remote-status`,
-//! `fetch`, push planning, sync guards, and pull-request planning are implemented
+//! `fetch`, push planning, sync guards, and stack PR planning are implemented
 //! here so they can be tested with fake jj/GitHub boundaries.
 
 use std::collections::{BTreeMap, BTreeSet};

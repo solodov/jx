@@ -1,12 +1,5 @@
 use super::*;
 
-/// Workflow command names supported by the CLI surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowCommand {
-    Check,
-    PullRequest,
-}
-
 /// Repository facts safe for concise command rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositorySummary {
@@ -46,7 +39,7 @@ pub struct GitHubReadiness {
     pub can_push: bool,
 }
 
-/// Planned same-repository bookmark intent for `jx pull-request`.
+/// Planned same-repository bookmark intent for stack PR publishing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkReport {
     pub repository: RepositorySummary,
@@ -182,7 +175,7 @@ pub struct SyncReport {
     pub pull_requests: Vec<PullRequestRecord>,
 }
 
-/// Pull-request mutation applied by `jx pull-request`.
+/// Pull-request mutation applied by stack PR publishing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullRequestAction {
     Created,

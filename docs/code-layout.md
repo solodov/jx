@@ -136,8 +136,9 @@ for navigation and workspace management.
   continuing bootstrap. Pass a jj revision or bookmark to sync one bookmarked
   target instead, use `jx sync --repo` to force repository mode explicitly, or
   use `jx sync --all` to conservatively sync every eligible primary repository.
-- `jx pr` uses an explicit `--task-id` when present; otherwise it can read the
-  task id stored in workspace-local metadata created by `jx work add --task-id`.
+- `jx stack publish` uses an explicit `--task-id` when present; otherwise it can
+  read the task id stored in workspace-local metadata created by
+  `jx work add --task-id`.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
   completion prefers current-repository jj workspace names, `trunk`/`root`
   aliases, and same-repository layout keys before other global work locations;
@@ -178,8 +179,8 @@ task_id = "ABC-123"
 ```
 
 The visible workspace name makes completion entries such as `repo@ABC-123-fix`
-scannable. The metadata file remains the source of truth for `jx pr`, so the
-workspace name is not parsed for task information.
+scannable. The metadata file remains the source of truth for `jx stack publish`,
+so the workspace name is not parsed for task information.
 
 ## All-repository fetch and sync
 

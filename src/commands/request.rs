@@ -17,16 +17,7 @@ pub(super) enum CommandRequest {
     RebaseOnTrunk(RebaseOnTrunkRequest),
     Push(PushRequest),
     Sync(SyncRequest),
-    Workflow {
-        command: WorkflowCommand,
-        task_id: Option<String>,
-        no_task_id: bool,
-        commit: Option<String>,
-        labels: Vec<String>,
-        reviewers: Vec<ReviewerTarget>,
-        draft: bool,
-        no_event_handlers: bool,
-    },
+    Check,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +56,24 @@ pub(super) enum StackRequest {
         target: StackMoveTarget,
         no_sync: bool,
     },
+    Plan(StackPlanRequest),
+    Publish(StackPublishRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StackPublishRequest {
+    pub(super) revisions: Vec<String>,
+    pub(super) task_id: Option<String>,
+    pub(super) no_task_id: bool,
+    pub(super) labels: Vec<String>,
+    pub(super) reviewers: Vec<ReviewerTarget>,
+    pub(super) draft: bool,
+    pub(super) no_event_handlers: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StackPlanRequest {
+    pub(super) revisions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,16 +203,7 @@ impl CommandRequest {
             Some(("status" | "st", _)) => Ok(Self::Status),
             Some(("prev-commit" | "prev", _)) => Ok(Self::PreviousCommit),
             Some(("next-commit" | "next", _)) => Ok(Self::NextCommit),
-            Some(("check", _)) => Ok(Self::Workflow {
-                command: WorkflowCommand::Check,
-                task_id: None,
-                no_task_id: false,
-                commit: None,
-                labels: Vec::new(),
-                reviewers: Vec::new(),
-                draft: false,
-                no_event_handlers: false,
-            }),
+            Some(("check", _)) => Ok(Self::Check),
             Some(("remote-status" | "rs", matches)) => {
                 Ok(Self::RemoteStatus(RemoteStatusRequest {
                     all: matches.get_flag("all"),
@@ -228,16 +228,6 @@ impl CommandRequest {
                 tracked: matches.get_flag("tracked"),
             })),
             Some(("sync", matches)) => Ok(Self::Sync(sync_request(matches)?)),
-            Some(("pull-request" | "pr", matches)) => Ok(Self::Workflow {
-                command: WorkflowCommand::PullRequest,
-                task_id: task_id(matches),
-                no_task_id: matches.get_flag("no-task-id"),
-                commit: commit(matches),
-                labels: labels(matches),
-                reviewers: reviewers(matches)?,
-                draft: matches.get_flag("draft"),
-                no_event_handlers: matches.get_flag("no-event-handlers"),
-            }),
             None => Ok(Self::Log),
             _ => unreachable!("clap rejects unknown subcommands"),
         }
@@ -314,7 +304,27 @@ fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
     match matches.subcommand() {
         Some(("show", _)) => Ok(StackRequest::Show),
         Some(("refresh", _)) => Ok(StackRequest::Refresh),
+        Some(("plan", matches)) => Ok(StackRequest::Plan(stack_plan_request(matches))),
+        Some(("publish", matches)) => Ok(StackRequest::Publish(stack_publish_request(matches)?)),
         _ => Ok(StackRequest::Show),
+    }
+}
+
+fn stack_publish_request(matches: &ArgMatches) -> Result<StackPublishRequest, clap::Error> {
+    Ok(StackPublishRequest {
+        revisions: revisions(matches),
+        task_id: task_id(matches),
+        no_task_id: matches.get_flag("no-task-id"),
+        labels: labels(matches),
+        reviewers: reviewers(matches)?,
+        draft: matches.get_flag("draft"),
+        no_event_handlers: matches.get_flag("no-event-handlers"),
+    })
+}
+
+fn stack_plan_request(matches: &ArgMatches) -> StackPlanRequest {
+    StackPlanRequest {
+        revisions: revisions(matches),
     }
 }
 
@@ -371,8 +381,15 @@ fn task_id(matches: &ArgMatches) -> Option<String> {
     matches.get_one::<String>("task-id").cloned()
 }
 
-fn commit(matches: &ArgMatches) -> Option<String> {
-    matches.get_one::<String>("commit").cloned()
+fn revisions(matches: &ArgMatches) -> Vec<String> {
+    matches
+        .get_many::<String>("revision")
+        .into_iter()
+        .flatten()
+        .map(|revision| revision.trim())
+        .filter(|revision| !revision.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn open_pr_selector(matches: &ArgMatches) -> Option<String> {
@@ -773,26 +790,14 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(sync_stack_arg())
                 .arg(sync_revision_arg()),
         )
-        .subcommand(
-            ClapCommand::new("pull-request")
-                .visible_alias("pr")
-                .about("Publish or update a GitHub pull request for a jj change")
-                .arg(task_id_arg())
-                .arg(no_task_id_arg())
-                .arg(commit_arg())
-                .arg(label_arg())
-                .arg(reviewer_arg())
-                .arg(draft_arg())
-                .arg(no_event_handlers_arg()),
-        )
 }
 
 fn stack_command() -> ClapCommand {
     ClapCommand::new("stack")
         .visible_alias("stk")
-        .about("Show, move, or refresh repo-local pull request stack state")
+        .about("Show, move, publish, or refresh repo-local pull request stack state")
         .long_about(
-            "Show, move, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+            "Show, move, publish, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish exactly the selected revset. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
         )
         .args_conflicts_with_subcommands(true)
         .group(
@@ -818,6 +823,29 @@ fn stack_command() -> ClapCommand {
                 .long_about(
                     "Rebuild repo-local stack state from local PR bookmarks and open GitHub pull requests authored by you.\n\nThe command reads local PR bookmark heads, looks up matching open GitHub PRs for the authenticated login, refreshes durable PR-number metadata for stored ancestors, applies local jj ancestry, writes .jx/stack.toml, syncs affected PR bases/descriptions, and prints the resulting stack. It does not push branches or create, close, or delete pull requests.",
                 ),
+        )
+        .subcommand(
+            ClapCommand::new("plan")
+                .about("Preview the local stack neighbourhood for publishing")
+                .long_about(
+                    "Preview the local stack neighbourhood for publishing without contacting GitHub or mutating local state.\n\nWithout -r/--revision, jx plans the neighbourhood containing the working copy. With one or more -r/--revision revsets, jx shows the common-root neighbourhood and marks exactly the selected changes. Selected revisions must share one stack root.",
+                )
+                .arg(stack_plan_revision_arg()),
+        )
+        .subcommand(
+            ClapCommand::new("publish")
+                .visible_alias("pub")
+                .about("Publish or update GitHub pull requests for a local stack")
+                .long_about(
+                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection.",
+                )
+                .arg(stack_publish_revision_arg())
+                .arg(task_id_arg())
+                .arg(no_task_id_arg())
+                .arg(label_arg())
+                .arg(reviewer_arg())
+                .arg(draft_arg())
+                .arg(no_event_handlers_arg()),
         )
 }
 
@@ -924,12 +952,22 @@ fn no_task_id_arg() -> Arg {
         .help("Ignore workspace metadata task IDs when generating a pull request bookmark")
 }
 
-fn commit_arg() -> Arg {
-    Arg::new("commit")
-        .short('c')
-        .long("commit")
-        .value_name("COMMIT")
-        .help("Publish a specific jj revision instead of the working copy")
+fn stack_publish_revision_arg() -> Arg {
+    Arg::new("revision")
+        .short('r')
+        .long("revision")
+        .value_name("REVSET")
+        .action(ArgAction::Append)
+        .help("Publish exactly the selected jj revset; repeat for multiple revsets")
+}
+
+fn stack_plan_revision_arg() -> Arg {
+    Arg::new("revision")
+        .short('r')
+        .long("revision")
+        .value_name("REVSET")
+        .action(ArgAction::Append)
+        .help("Plan exactly the selected jj revset; repeat for multiple revsets")
 }
 
 fn open_commit_arg() -> Arg {
@@ -1174,7 +1212,6 @@ fn label_arg() -> Arg {
 
 fn reviewer_arg() -> Arg {
     Arg::new("reviewer")
-        .short('r')
         .long("reviewer")
         .value_name("REVIEWER")
         .action(ArgAction::Append)

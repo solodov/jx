@@ -17,7 +17,7 @@ fn pull_request_accepts_short_task_id_flag_and_renders_published_pr() {
     let services = FakeServices::default();
 
     let result = run_with_args_and_services(
-        ["jx", "pull-request", "-t", "ABC-123"],
+        ["jx", "stack", "publish", "-r", "@", "-t", "ABC-123"],
         &environment,
         &services,
     )
@@ -45,8 +45,12 @@ fn pull_request_records_published_pr_in_stack_state() {
     );
     let services = FakeServices::default();
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -133,8 +137,12 @@ fn pull_request_refreshes_stack_context_for_published_stack_component() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -224,8 +232,12 @@ fn pull_request_preserves_stored_parent_when_base_pr_is_missing() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -289,14 +301,70 @@ run = "prepend_task_id"
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         services.description_rewrites.borrow().as_slice(),
         &[(
             "a1b2c3d4e5f6".to_owned(),
             "ABC-123: Example title\n\nDetailed body".to_owned()
+        )]
+    );
+    assert_eq!(
+        result.stdout,
+        format!("Created {}\n", example_pull_request_link(42))
+    );
+}
+
+#[test]
+fn stack_pub_task_id_flag_updates_commit_title_before_planning() {
+    // Verifies: `stack pub -t` supplies task context to prepare handlers for explicit revsets.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.event_handlers]]
+id = "prepend-task"
+on = "pull_request.prepare"
+when = "has:task"
+run = "prepend_task_id"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut fake_workspace = workspace_facts();
+    fake_workspace.target_change.description = "Example title\n\nDetailed body".to_owned();
+    let services = FakeServices {
+        workspace: fake_workspace,
+        expected_task_id: Some(Some("FOO-1234".to_owned())),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "pub", "-r", "@", "-t", "FOO-1234"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
+
+    assert_eq!(
+        services.description_rewrites.borrow().as_slice(),
+        &[(
+            "a1b2c3d4e5f6".to_owned(),
+            "FOO-1234: Example title\n\nDetailed body".to_owned()
         )]
     );
     assert_eq!(
@@ -339,8 +407,12 @@ fn pull_request_opens_created_pr_when_event_handler_requests_it() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -390,8 +462,12 @@ fn pull_request_hides_noop_event_effects_by_default() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -425,7 +501,7 @@ fn pull_request_no_event_handlers_suppresses_event_effects() {
     };
 
     let result = run_with_args_and_services(
-        ["jx", "pull-request", "--no-event-handlers"],
+        ["jx", "stack", "publish", "-r", "@", "--no-event-handlers"],
         &environment,
         &services,
     )
@@ -464,8 +540,12 @@ fn pull_request_infers_task_id_from_workspace_metadata() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pr"], &environment, &services)
-        .expect("pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -499,8 +579,12 @@ fn pull_request_no_task_id_ignores_workspace_metadata() {
         ..FakeServices::default()
     };
 
-    run_with_args_and_services(["jx", "pr", "--no-task-id"], &environment, &services)
-        .expect("pull request publishes without task id");
+    run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@", "--no-task-id"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes without task id");
 }
 
 #[test]
@@ -529,8 +613,12 @@ fn pull_request_task_id_flag_overrides_workspace_metadata() {
         ..FakeServices::default()
     };
 
-    run_with_args_and_services(["jx", "pr", "--task-id", "XYZ-9"], &environment, &services)
-        .expect("pull request publishes");
+    run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@", "--task-id", "XYZ-9"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
 }
 
 #[test]
@@ -555,7 +643,10 @@ fn pull_request_accepts_repeated_label_flags() {
     let result = run_with_args_and_services(
         [
             "jx",
-            "pull-request",
+            "stack",
+            "publish",
+            "-r",
+            "@",
             "--label",
             "bug",
             "-l",
@@ -593,8 +684,12 @@ fn pull_request_renders_updated_pr_url() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request updates");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request updates");
 
     assert_eq!(
         result.stdout,
@@ -621,8 +716,12 @@ fn pull_request_falls_back_to_number_when_github_omits_url() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pull-request"], &environment, &services)
-        .expect("pull request publishes without html url");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes without html url");
 
     assert_eq!(
         result.stdout,
@@ -631,8 +730,8 @@ fn pull_request_falls_back_to_number_when_github_omits_url() {
 }
 
 #[test]
-fn pr_alias_accepts_commit_flag_and_plans_that_commit() {
-    // Verifies: The PR alias accepts a revision flag and plans the selected commit.
+fn stack_publish_revision_flag_plans_that_commit() {
+    // Verifies: Stack publish accepts an explicit revision and plans the selected commit.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -647,11 +746,11 @@ fn pr_alias_accepts_commit_flag_and_plans_that_commit() {
     let services = FakeServices::default();
 
     let result = run_with_args_and_services(
-        ["jx", "pr", "-c", "deadbeef", "-t", "ABC-123"],
+        ["jx", "stack", "publish", "-r", "deadbeef", "-t", "ABC-123"],
         &environment,
         &services,
     )
-    .expect("pr publishes selected commit");
+    .expect("stack publish publishes selected commit");
 
     assert_eq!(
         result.stdout,
@@ -684,8 +783,11 @@ fn pull_request_accepts_repeated_reviewer_flags() {
     let result = run_with_args_and_reviewer_selector(
         [
             "jx",
-            "pull-request",
+            "stack",
+            "publish",
             "-r",
+            "@",
+            "--reviewer",
             "example-reviewer",
             "--reviewer",
             "ExampleOrg/frontend",
@@ -721,8 +823,12 @@ fn pull_request_respects_draft_flag() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "pr", "--draft"], &environment, &services)
-        .expect("draft pull request publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@", "--draft"],
+        &environment,
+        &services,
+    )
+    .expect("draft pull request publishes");
 
     assert_eq!(
         result.stdout,
@@ -747,7 +853,7 @@ fn pull_request_reviewer_selection_can_be_cancelled() {
     let services = FakeServices::default();
 
     let result = run_with_args_and_prompts(
-        ["jx", "pull-request"],
+        ["jx", "stack", "publish", "-r", "@"],
         &environment,
         &services,
         &CancellingReviewerSelector,
@@ -776,7 +882,7 @@ fn pull_request_can_be_cancelled_after_planning() {
     let confirmer = FixedPullRequestConfirmer { confirmed: false };
 
     let result = run_with_args_and_prompts(
-        ["jx", "pull-request"],
+        ["jx", "stack", "publish", "-r", "@"],
         &environment,
         &services,
         &SelectAllReviewers,
@@ -794,7 +900,15 @@ fn pull_request_rejects_invalid_cli_reviewer() {
     let services = FakeServices::default();
 
     let error = run_with_args_and_services(
-        ["jx", "pull-request", "--reviewer", "bad/reviewer/name"],
+        [
+            "jx",
+            "stack",
+            "publish",
+            "-r",
+            "@",
+            "--reviewer",
+            "bad/reviewer/name",
+        ],
         &environment,
         &services,
     )
@@ -835,7 +949,7 @@ fn pull_request_uses_interactively_selected_reviewers() {
     let selector = FixedReviewerSelector { selected };
 
     let result = run_with_args_and_reviewer_selector(
-        ["jx", "pull-request"],
+        ["jx", "stack", "publish", "-r", "@"],
         &environment,
         &services,
         &selector,
@@ -891,7 +1005,7 @@ fn pull_request_previews_before_reviewer_selection() {
     };
 
     let result = run_with_args_and_progress(
-        ["jx", "pull-request"],
+        ["jx", "stack", "publish", "-r", "@"],
         &environment,
         &services,
         &NoProgress,

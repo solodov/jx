@@ -36,7 +36,7 @@ use crate::{
         PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions, PullRequestReport,
         PullRequestStackNode, PullRequestStackRow, PullRequestStackSelection,
         PullRequestStackSnapshot, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
-        StatusReport, SyncReport, TrackedPushReport, WorkflowCommand, WorkflowError,
+        StatusReport, SyncReport, TrackedPushReport, WorkflowError,
     },
     github::{
         GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
@@ -48,7 +48,8 @@ use crate::{
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
         JjWorkspace, LocalStackBranch, PipeDiffTool, PushOutcome, PushedBookmarkSummary,
-        RebaseOnTrunkOutcome, StackMoveOutcome, StackMoveTarget, StatusWorkspaceFacts,
+        RebaseOnTrunkOutcome, StackMoveOutcome, StackMoveTarget, StackPlanFacts,
+        StackPlanSelection, StackPublishFacts, StackPublishSelection, StatusWorkspaceFacts,
         SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
         WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
     },

@@ -363,6 +363,10 @@ struct FakeServices {
     stack_move: StackMoveOutcome,
     stack_move_targets: std::cell::RefCell<Vec<StackMoveTarget>>,
     local_stack_branches: std::cell::RefCell<Vec<Vec<LocalStackBranch>>>,
+    stack_publish_facts: Option<StackPublishFacts>,
+    stack_publish_selections: std::cell::RefCell<Vec<StackPublishSelection>>,
+    stack_plan_facts: Option<StackPlanFacts>,
+    stack_plan_selections: std::cell::RefCell<Vec<StackPlanSelection>>,
     bookmark_update: BookmarkUpdate,
     push: PushOutcome,
     advance_trunk: AdvanceTrunkOutcome,
@@ -373,6 +377,7 @@ struct FakeServices {
     sync_pull_request_pushes: std::cell::RefCell<Vec<TrackedPushOutcome>>,
     sync_pull_request_metadata: std::cell::RefCell<Vec<StackMetadata>>,
     pull_request_action: PullRequestAction,
+    published_pull_request_count: std::cell::Cell<u64>,
     pull_request_url: Option<String>,
     pull_request_event_effects: Vec<domain::PullRequestEventEffect>,
     existing_pull_request: Option<PullRequestRecord>,
@@ -531,6 +536,10 @@ impl Default for FakeServices {
             },
             stack_move_targets: std::cell::RefCell::new(Vec::new()),
             local_stack_branches: std::cell::RefCell::new(Vec::new()),
+            stack_publish_facts: None,
+            stack_publish_selections: std::cell::RefCell::new(Vec::new()),
+            stack_plan_facts: None,
+            stack_plan_selections: std::cell::RefCell::new(Vec::new()),
             bookmark_update: BookmarkUpdate {
                 branch: "example-user/abc-123-02-zzzzzzzz".to_owned(),
                 created: true,
@@ -584,6 +593,7 @@ impl Default for FakeServices {
             sync_pull_request_pushes: std::cell::RefCell::new(Vec::new()),
             sync_pull_request_metadata: std::cell::RefCell::new(Vec::new()),
             pull_request_action: PullRequestAction::Created,
+            published_pull_request_count: std::cell::Cell::new(0),
             pull_request_url: Some(
                 "https://github.com/example-owner/example-repo/pull/42".to_owned(),
             ),
@@ -1032,6 +1042,60 @@ impl CommandServices for FakeServices {
         }
     }
 
+    fn stack_publish_facts(
+        &self,
+        _context: &RepositoryContext,
+        selection: &StackPublishSelection,
+    ) -> Result<StackPublishFacts, JjError> {
+        self.stack_publish_selections
+            .borrow_mut()
+            .push(selection.clone());
+        Ok(self.stack_publish_facts.clone().unwrap_or_else(|| {
+            let mut workspace = self.workspace.clone();
+            if let Some((_, description)) = self.description_rewrites.borrow().last() {
+                workspace.target_change.commit_id = "feedfacecafebeef".to_owned();
+                workspace.target_change.short_commit_id = "feedface".to_owned();
+                workspace.target_change.description = description.clone();
+            }
+            StackPublishFacts {
+                nodes: vec![crate::jj::StackPublishNodeFacts {
+                    workspace,
+                    parent_index: None,
+                }],
+                publish_indexes: vec![0],
+                anchor_index: match selection {
+                    StackPublishSelection::InferredStack { .. } => Some(0),
+                    StackPublishSelection::ExplicitRevisions { .. } => None,
+                },
+            }
+        }))
+    }
+
+    fn stack_plan_facts(
+        &self,
+        _context: &RepositoryContext,
+        selection: &StackPlanSelection,
+    ) -> Result<StackPlanFacts, JjError> {
+        self.stack_plan_selections
+            .borrow_mut()
+            .push(selection.clone());
+        Ok(self
+            .stack_plan_facts
+            .clone()
+            .unwrap_or_else(|| StackPlanFacts {
+                trunk: self.workspace.trunk.clone(),
+                nodes: vec![crate::jj::StackPlanNodeFacts {
+                    workspace: self.workspace.clone(),
+                    parent_index: None,
+                }],
+                selected_indexes: vec![0],
+                anchor_index: match selection {
+                    StackPlanSelection::InferredStack { .. } => Some(0),
+                    StackPlanSelection::ExplicitRevisions { .. } => None,
+                },
+            }))
+    }
+
     fn ensure_bookmark(
         &self,
         _context: &RepositoryContext,
@@ -1204,6 +1268,14 @@ impl CommandServices for FakeServices {
             assert_eq!(plan.draft, expected);
         }
 
+        let number = 42 + self.published_pull_request_count.get();
+        self.published_pull_request_count
+            .set(self.published_pull_request_count.get() + 1);
+        let html_url = self.pull_request_url.clone().map(|url| {
+            url.strip_suffix("/42")
+                .map_or(url.clone(), |prefix| format!("{prefix}/{number}"))
+        });
+
         Ok(PullRequestReport {
             repository: plan.repository,
             task_id: plan.task_id,
@@ -1212,12 +1284,12 @@ impl CommandServices for FakeServices {
             push,
             action: self.pull_request_action,
             pull_request: PullRequestRecord {
-                number: 42,
+                number,
                 title: plan.title,
                 body: (!plan.body.is_empty()).then_some(plan.body),
                 head_branch: plan.head.branch.clone(),
                 base_branch: plan.base.clone(),
-                html_url: self.pull_request_url.clone(),
+                html_url,
                 draft: plan.draft,
                 merged: false,
             },

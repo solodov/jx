@@ -4,46 +4,75 @@ impl JjWorkspace {
     /// Pushes `branch` to fixed `origin` and updates jj's remote bookmark view.
     pub fn push_bookmark(&mut self, branch: &str) -> Result<PushOutcome, JjError> {
         self.ensure_git_backed()?;
+        let branches = [branch.to_owned()];
+        self.push_bookmarks(&branches)
+            .map(|mut outcomes| outcomes.remove(0))
+    }
 
-        let bookmark = RefName::new(branch);
-        let targets = self.local_and_origin_bookmark_targets(bookmark);
-        if targets.local_target.has_conflict() {
-            return Err(JjError::ConflictedBookmark {
-                branch: branch.to_owned(),
+    /// Pushes selected branches to fixed `origin` with one Git transport mutation.
+    pub fn push_bookmarks(&mut self, branches: &[String]) -> Result<Vec<PushOutcome>, JjError> {
+        self.ensure_git_backed()?;
+
+        let mut outcomes = Vec::new();
+        let mut updates = Vec::new();
+        for branch in branches {
+            let bookmark = RefName::new(branch);
+            let targets = self.local_and_origin_bookmark_targets(bookmark);
+            if targets.local_target.has_conflict() {
+                return Err(JjError::ConflictedBookmark {
+                    branch: branch.clone(),
+                });
+            }
+            if targets.local_target.as_normal().is_none() {
+                return Err(JjError::MissingLocalBookmark {
+                    branch: branch.clone(),
+                });
+            }
+
+            let Some(update) = classify_push_bookmark_update(
+                bookmark.to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
+                targets,
+                true,
+                false,
+            )?
+            else {
+                outcomes.push(PushOutcome {
+                    branch: branch.clone(),
+                    pushed_refs: 0,
+                    pushed_commits: Vec::new(),
+                });
+                continue;
+            };
+
+            let update = (RefNameBuf::from(branch.as_str()), update);
+            let pushed_commits = self.pushed_commits_for_updates(std::slice::from_ref(&update))?;
+            outcomes.push(PushOutcome {
+                branch: branch.clone(),
+                pushed_refs: 1,
+                pushed_commits,
             });
-        }
-        if targets.local_target.as_normal().is_none() {
-            return Err(JjError::MissingLocalBookmark {
-                branch: branch.to_owned(),
-            });
+            updates.push(update);
         }
 
-        let Some(update) = classify_push_bookmark_update(
-            bookmark.to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
-            targets,
-            true,
-            false,
-        )?
-        else {
-            return Ok(PushOutcome {
-                branch: branch.to_owned(),
-                pushed_refs: 0,
-                pushed_commits: Vec::new(),
-            });
-        };
-        let updates = vec![(RefNameBuf::from(branch), update)];
-        let pushed_commits = self.pushed_commits_for_updates(&updates)?;
+        if updates.is_empty() {
+            return Ok(outcomes);
+        }
+
         let push_stats = self.push_origin_bookmark_updates(
             updates,
-            format!("jx push {branch}"),
-            branch.to_owned(),
+            "jx stack publish push branches".to_owned(),
+            "stack publish branches".to_owned(),
         )?;
+        let mut pushed = push_stats.pushed.len();
+        for outcome in &mut outcomes {
+            if outcome.pushed_refs == 0 {
+                continue;
+            }
+            outcome.pushed_refs = usize::from(pushed > 0);
+            pushed = pushed.saturating_sub(1);
+        }
 
-        Ok(PushOutcome {
-            branch: branch.to_owned(),
-            pushed_refs: push_stats.pushed.len(),
-            pushed_commits,
-        })
+        Ok(outcomes)
     }
 
     /// Pushes all tracked fixed-origin bookmarks, including local deletions.

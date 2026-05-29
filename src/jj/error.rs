@@ -185,6 +185,14 @@ pub enum JjError {
     Render { message: String },
     #[error("Could not compute stack index: {message}")]
     NonLinearStack { message: String },
+    #[error("Selected revisions do not include any stack commits to publish")]
+    EmptyStackPublishSelection,
+    #[error(
+        "Selected revisions span multiple stacks; narrow the revset or publish one stack at a time"
+    )]
+    StackPublishMultipleStacks,
+    #[error("Selected revisions do not form a single linear stack; narrow the revset or publish one stack at a time")]
+    StackPublishNonLinearSelection,
 }
 
 pub(super) fn workspace_config_command_error(

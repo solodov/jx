@@ -7,10 +7,10 @@ after a parent bookmark disappears or a parent PR merges.
 
 That local model drives the user-facing workflows:
 
-- `jx pr` publishes or updates a PR, records it in stack metadata, and syncs the
-  generated stack context for the affected stack component.
+- `jx stack publish` publishes or updates PRs, records them in stack metadata,
+  and syncs generated stack context for the affected stack component.
 - `jx stack` shows stored stack state, opens stored PRs interactively, refreshes
-  metadata from local bookmarks and GitHub, or moves the current stack.
+  metadata from local bookmarks and GitHub, publishes PRs, or moves the current stack.
 - `jx sync -s` pushes the current stack component and updates PR descriptions
   from the same stack metadata.
 
@@ -45,12 +45,14 @@ syncing, or moving stacks.
 
 ## Publish a stack
 
-Create commits and bookmarks with your normal jj flow, then publish each PR with
-`jx pr`. When a published PR belongs to a stack, `jx` updates every known PR in
-that connected component so GitHub descriptions show the same stack tree.
+Create commits with your normal jj flow, then publish the local stack with
+`jx stack publish`. When published PRs belong to a stack, `jx` updates every
+known PR in that connected component so GitHub descriptions show the same stack
+tree.
 
 ```sh
-jx pr                 # publish or update the current change
+jx stack publish      # publish or update the stack containing the working copy
+jx stack publish -r @ # publish or update only the selected change
 jx stack              # show the locally stored stack
 jx sync -s            # push/sync the current stack component later
 ```

@@ -173,11 +173,13 @@ fn workspace_status_renderer_renders_markdown_description_without_preview_indent
 
 #[test]
 fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
-    // Verifies: PR preview omits commit headers while keeping description, changed files, and metadata.
+    // Verifies: PR preview omits commit headers while keeping description, planned changed files, and metadata.
     let mut plan = preview_plan();
     plan.labels = vec!["bug".to_owned(), "help wanted".to_owned()];
     plan.base_pull_request = Some(existing_pull_request(false));
-    let status = workspace_status();
+    plan.changed_files = vec!["src/main.rs".to_owned(), "src/lib.rs".to_owned()];
+    let mut status = workspace_status();
+    status.change_lines = vec!["M stale-current-workspace-file.rs".to_owned()];
     let prepare_effects = [PullRequestEventEffect {
         event: crate::repository::RepoEvent::PullRequestPrepare,
         handler_id: Some("prepend-task".to_owned()),
@@ -191,7 +193,7 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     assert_eq!(
         preview,
         format!(
-            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n\nLabels: bug, help wanted\n",
+            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  src/main.rs\n  src/lib.rs\n\nLabels: bug, help wanted\n",
             example_bookmark_link("example-user/02-zzzzzzzz"),
             example_pull_request_link(7),
         )

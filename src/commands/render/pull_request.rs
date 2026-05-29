@@ -52,7 +52,7 @@ pub(in crate::commands) fn render_pull_request_preview_for_width(
 
 fn render_pull_request_preview_with_style_for_width(
     plan: &PullRequestPlan,
-    status: &WorkspaceStatus,
+    _status: &WorkspaceStatus,
     prepare_effects: &[PullRequestEventEffect],
     color: bool,
     terminal_width: usize,
@@ -75,8 +75,7 @@ fn render_pull_request_preview_with_style_for_width(
         &render_pull_request_description_preview(plan, content_width),
     ));
 
-    let mut change_lines = status.change_lines.clone();
-    change_lines.extend(status.extra_lines.clone());
+    let change_lines = pull_request_preview_changed_files(plan);
     if !change_lines.is_empty() {
         blocks.push(indent_non_empty_lines(&change_lines.join("\n")));
     }
@@ -116,6 +115,10 @@ fn indent_non_empty_lines(value: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn pull_request_preview_changed_files(plan: &PullRequestPlan) -> Vec<String> {
+    plan.changed_files.clone()
 }
 
 fn pull_request_preview_header(plan: &PullRequestPlan) -> String {

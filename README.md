@@ -97,7 +97,7 @@ scanning, while `jx` stores the task id as workspace-local metadata:
 
 ```sh
 jx work add fix-auth --task-id ABC-123
-jx pr
+jx stack publish
 ```
 
 Later, PR publishing can use that metadata when planning generated bookmark
@@ -113,8 +113,8 @@ and bookmarks, and syncs GitHub PR bases and generated stack context from that
 local state. That keeps stack edits, PR publishing, interactive opening, and
 repository sync on one model instead of separate shell steps.
 
-Use `jx stack` for the stack command group, `jx pr` for publishing/updating PRs,
-and `jx sync` for pushing synchronized bookmark state. See
+Use `jx stack` for stack display, movement, and PR publishing, and `jx sync` for
+pushing synchronized bookmark state. See
 [stack management](docs/stack-management.md) for examples and operational notes.
 
 ## Workflow at a glance
@@ -146,7 +146,6 @@ Publish and manage PR stacks:
 
 ```sh
 jx push
-jx pr
 jx stack
 ```
 
@@ -157,7 +156,6 @@ For better ergonomics, expose the same workflows through `jj` aliases in
 [aliases]
 st = ["util", "exec", "--", "jx", "status"]
 dx = ["util", "exec", "--", "jx", "diff"]
-pr = ["util", "exec", "--", "jx", "pr"]
 stack = ["util", "exec", "--", "jx", "stack"]
 sync = ["util", "exec", "--", "jx", "sync"]
 push = ["util", "exec", "--", "jx", "push"]

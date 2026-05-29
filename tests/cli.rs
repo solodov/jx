@@ -34,7 +34,7 @@ fn root_help_uses_operator_facing_command_descriptions() {
     assert!(stdout.contains("Rebase jj source revisions onto origin trunk"));
     assert!(stdout.contains("Push a selected jj change or tracked bookmark state"));
     assert!(stdout.contains("Fetch origin and push repository, stack, or selected bookmark state"));
-    assert!(stdout.contains("Publish or update a GitHub pull request for a jj change"));
+    assert!(stdout.contains("Show, move, publish, or refresh repo-local pull request stack state"));
     assert!(output.stderr.is_empty());
 }
 
@@ -173,22 +173,40 @@ fn sync_help_explains_fetch_then_push_without_loading_repo() {
 }
 
 #[test]
-fn pull_request_help_documents_task_id_and_commit_without_loading_repo() {
-    // Verifies: Pull request help documents task and revision flags without loading repository state.
+fn stack_plan_help_documents_revision_without_loading_repo() {
+    // Verifies: Stack plan help documents read-only neighbourhood planning.
     let output = Command::new(env!("CARGO_BIN_EXE_jx"))
-        .args(["pull-request", "--help"])
+        .args(["stack", "plan", "--help"])
         .output()
         .expect("run jx binary");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
-    assert!(stdout.contains("Publish or update a GitHub pull request for a jj change"));
+    assert!(stdout.contains("Preview the local stack neighbourhood for publishing"));
+    assert!(stdout.contains("without contacting GitHub"));
+    assert!(stdout.contains("mutating local"));
+    assert!(stdout.contains("--revision"));
+    assert!(stdout.contains("Plan exactly the selected jj revset"));
+    assert!(stdout.contains("REVSET"));
+}
+
+#[test]
+fn stack_publish_help_documents_task_id_and_revision_without_loading_repo() {
+    // Verifies: Stack publish help documents task and revision flags without loading repository state.
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(["stack", "publish", "--help"])
+        .output()
+        .expect("run jx binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(stdout.contains("Publish or update GitHub pull requests for a local stack"));
     assert!(stdout.contains("--task-id"));
     assert!(stdout.contains("Associate a task identifier with generated workspace or PR bookmark"));
     assert!(stdout.contains("TASK_ID"));
-    assert!(stdout.contains("--commit"));
-    assert!(stdout.contains("Publish a specific jj revision instead of the working copy"));
-    assert!(stdout.contains("COMMIT"));
+    assert!(stdout.contains("--revision"));
+    assert!(stdout.contains("Publish exactly the selected jj revset"));
+    assert!(stdout.contains("REVSET"));
 }
 
 #[test]

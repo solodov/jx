@@ -10,7 +10,7 @@
 //! configuration remains authoritative.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},

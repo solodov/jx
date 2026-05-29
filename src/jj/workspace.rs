@@ -63,6 +63,25 @@ impl JjWorkspace {
         revision: &str,
         diagnostics_source: &'static str,
     ) -> Result<Commit, JjError> {
+        let mut commits = self.resolve_revisions(revision, diagnostics_source)?;
+        let first = commits.pop().ok_or_else(|| JjError::RevisionNotFound {
+            revision: revision.trim().to_owned(),
+        })?;
+        if !commits.is_empty() {
+            return Err(JjError::AmbiguousRevision {
+                revision: revision.trim().to_owned(),
+            });
+        }
+
+        Ok(first)
+    }
+
+    /// Resolves a user-supplied jj revset to zero or more commits.
+    pub(super) fn resolve_revisions(
+        &self,
+        revision: &str,
+        diagnostics_source: &'static str,
+    ) -> Result<Vec<Commit>, JjError> {
         let revision = revision.trim();
         if revision.is_empty() {
             return Err(JjError::Revision {
@@ -110,24 +129,14 @@ impl JjWorkspace {
             &id_prefix_context,
             expression,
         );
-        let mut commits = evaluator
-            .evaluate_to_commits()
-            .map_err(|error| revision_error(revision, error))?;
-        let first = pollster::block_on(commits.try_next())
-            .map_err(|error| revision_error(revision, error))?
-            .ok_or_else(|| JjError::RevisionNotFound {
-                revision: revision.to_owned(),
-            })?;
-        if pollster::block_on(commits.try_next())
-            .map_err(|error| revision_error(revision, error))?
-            .is_some()
-        {
-            return Err(JjError::AmbiguousRevision {
-                revision: revision.to_owned(),
-            });
-        }
-
-        Ok(first)
+        let commits = pollster::block_on(
+            evaluator
+                .evaluate_to_commits()
+                .map_err(|error| revision_error(revision, error))?
+                .try_collect::<Vec<_>>(),
+        )
+        .map_err(|error| revision_error(revision, error))?;
+        Ok(commits)
     }
 
     pub(super) fn resolve_trunk(&self, target: &Commit) -> Result<(String, Commit), JjError> {

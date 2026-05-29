@@ -15,7 +15,7 @@ origin:
 
 Build a shared pull-request stack abstraction that becomes the single model for stack-aware PR workflows. Today stack state, GitHub PR lookup, selector hierarchy, PR publishing, stack syncing, and PR body rendering each assemble related data in slightly different ways. The intended direction is to introduce a durable stack snapshot/model plus a command-side manager that merges local `.jx/stack.toml`, jj bookmark facts, and GitHub PR records into one consistent view.
 
-After the change, `jx pr`, `jx open pr -i`, `jx stack`, `jx sync -s`, and generated PR description stack blocks should all operate from the same stack model. This should make stack state maintenance automatic when publishing PRs, preserve merged/disappeared parents, and let interactive PR selection show stack state rather than only live open PR hierarchy.
+After the change, `jx stack publish`, `jx open pr -i`, `jx stack`, `jx sync -s`, and generated PR description stack blocks should all operate from the same stack model. This should make stack state maintenance automatic when publishing PRs, preserve merged/disappeared parents, and let interactive PR selection show stack state rather than only live open PR hierarchy.
 
 Key design choice: keep the pure stack model separate from orchestration. The domain model should own tree/component ordering, status derivation, and metadata merge/upsert behavior. A command-side pull request manager should own IO and integration boundaries: reading/writing stack metadata, asking jj for local bookmark facts, and asking GitHub for live PR records.
 
@@ -24,7 +24,7 @@ Key design choice: keep the pure stack model separate from orchestration. The do
 - [x] 1. Establish a canonical pull-request stack snapshot model
 - [x] 2. Move tree/component logic into the stack domain layer
 - [x] 3. Create a command-side pull request manager for IO and service orchestration
-- [x] 4. Make jx pr maintain stack state as part of publishing
+- [x] 4. Make jx stack publish maintain stack state as part of publishing
 - [x] 5. Make jx open pr -i select from the stack snapshot
 - [x] 6. Unify stack rendering for jx stack, jx sync -s, and PR descriptions
 - [x] 7. Add GitHub refresh support for durable PR numbers
@@ -49,15 +49,15 @@ The important boundary improvement is that command handlers and renderers should
 
 Add a manager-like abstraction that sits above `CommandServices` and below command handlers. It should load stack metadata from the repo root, gather local PR bookmark candidates from jj, refresh live GitHub PR records, and return canonical snapshots. It should also own write-back decisions such as upserting published PRs and preserving stale-but-useful ancestors.
 
-This manager should not become a second domain layer. Its job is integration: metadata IO, service calls, and converting external facts into the stack snapshot. Keeping this boundary explicit should prevent `jx pr`, `jx open`, `jx stack`, and `jx sync` from each inventing a slightly different GitHub/metadata workflow.
+This manager should not become a second domain layer. Its job is integration: metadata IO, service calls, and converting external facts into the stack snapshot. Keeping this boundary explicit should prevent `jx stack publish`, `jx open`, `jx stack`, and `jx sync` from each inventing a slightly different GitHub/metadata workflow.
 
-### Phase 4: Make jx pr maintain stack state as part of publishing
+### Phase 4: Make jx stack publish maintain stack state as part of publishing
 
-After creating or updating a PR, `jx pr` should upsert the resulting PR into stack metadata using the planned head/base relationship. If the new PR belongs to a stack, the manager should refresh the affected component and sync generated stack context across all relevant PR descriptions, including roots. This makes PR body stack context a rendered output of local stack state, not a source of truth.
+After creating or updating a PR, `jx stack publish` should upsert the resulting PR into stack metadata using the planned head/base relationship. If the new PR belongs to a stack, the manager should refresh the affected component and sync generated stack context across all relevant PR descriptions, including roots. This makes PR body stack context a rendered output of local stack state, not a source of truth.
 
 Risks:
 - Publishing a PR against a base branch whose PR is missing or merged needs clear behavior: preserve existing parent metadata when known, otherwise record the base branch without inventing a parent PR.
-- Updating multiple PR descriptions after `jx pr` may surprise users if not reflected in output; the command summary should make the effect visible without becoming noisy.
+- Updating multiple PR descriptions after `jx stack publish` may surprise users if not reflected in output; the command summary should make the effect visible without becoming noisy.
 
 ### Phase 5: Make jx open pr -i select from the stack snapshot
 
@@ -83,7 +83,7 @@ Risk: GitHub API state for closed/unmerged PRs may need careful mapping into the
 
 Build a shared pull-request stack abstraction that becomes the single model for stack-aware PR workflows. Today stack state, GitHub PR lookup, selector hierarchy, PR publishing, stack syncing, and PR body rendering each assemble related data in slightly different ways. The intended direction is to introduce a durable stack snapshot/model plus a command-side manager that merges local `.jx/stack.toml`, jj bookmark facts, and GitHub PR records into one consistent view.
 
-After the change, `jx pr`, `jx open pr -i`, `jx stack`, `jx sync -s`, and generated PR description stack blocks should all operate from the same stack model. This should make stack state maintenance automatic when publishing PRs, preserve merged/disappeared parents, and let interactive PR selection show stack state rather than only live open PR hierarchy.
+After the change, `jx stack publish`, `jx open pr -i`, `jx stack`, `jx sync -s`, and generated PR description stack blocks should all operate from the same stack model. This should make stack state maintenance automatic when publishing PRs, preserve merged/disappeared parents, and let interactive PR selection show stack state rather than only live open PR hierarchy.
 
 Key design choice: keep the pure stack model separate from orchestration. The domain model should own tree/component ordering, status derivation, and metadata merge/upsert behavior. A command-side pull request manager should own IO and integration boundaries: reading/writing stack metadata, asking jj for local bookmark facts, and asking GitHub for live PR records.
 
@@ -107,15 +107,15 @@ Key design choice: keep the pure stack model separate from orchestration. The do
 
    Add a manager-like abstraction that sits above `CommandServices` and below command handlers. It should load stack metadata from the repo root, gather local PR bookmark candidates from jj, refresh live GitHub PR records, and return canonical snapshots. It should also own write-back decisions such as upserting published PRs and preserving stale-but-useful ancestors.
 
-   This manager should not become a second domain layer. Its job is integration: metadata IO, service calls, and converting external facts into the stack snapshot. Keeping this boundary explicit should prevent `jx pr`, `jx open`, `jx stack`, and `jx sync` from each inventing a slightly different GitHub/metadata workflow.
+   This manager should not become a second domain layer. Its job is integration: metadata IO, service calls, and converting external facts into the stack snapshot. Keeping this boundary explicit should prevent `jx stack publish`, `jx open`, `jx stack`, and `jx sync` from each inventing a slightly different GitHub/metadata workflow.
 
-4. **Make `jx pr` maintain stack state as part of publishing**
+4. **Make `jx stack publish` maintain stack state as part of publishing**
 
-   After creating or updating a PR, `jx pr` should upsert the resulting PR into stack metadata using the planned head/base relationship. If the new PR belongs to a stack, the manager should refresh the affected component and sync generated stack context across all relevant PR descriptions, including roots. This makes PR body stack context a rendered output of local stack state, not a source of truth.
+   After creating or updating a PR, `jx stack publish` should upsert the resulting PR into stack metadata using the planned head/base relationship. If the new PR belongs to a stack, the manager should refresh the affected component and sync generated stack context across all relevant PR descriptions, including roots. This makes PR body stack context a rendered output of local stack state, not a source of truth.
 
    Risks:
    - Publishing a PR against a base branch whose PR is missing or merged needs clear behavior: preserve existing parent metadata when known, otherwise record the base branch without inventing a parent PR.
-   - Updating multiple PR descriptions after `jx pr` may surprise users if not reflected in output; the command summary should make the effect visible without becoming noisy.
+   - Updating multiple PR descriptions after `jx stack publish` may surprise users if not reflected in output; the command summary should make the effect visible without becoming noisy.
 
 5. **Make `jx open pr -i` select from the stack snapshot**
 
