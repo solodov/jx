@@ -129,6 +129,7 @@ fn pull_request_refreshes_stack_context_for_published_stack_component() {
         html_url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
         draft: false,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     };
     let services = FakeServices {
         workspace: facts,
@@ -228,6 +229,7 @@ fn pull_request_preserves_stored_parent_when_base_pr_is_missing() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }],
         ..FakeServices::default()
     };
@@ -894,6 +896,38 @@ fn pull_request_can_be_cancelled_after_planning() {
 }
 
 #[test]
+fn yes_flag_confirms_pull_request_publish() {
+    // Verifies: Batch confirmation mode proceeds through PR confirmations even without prompt input.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices::default();
+    let confirmer = FixedPullRequestConfirmer { confirmed: false };
+
+    let result = run_with_args_and_prompts(
+        ["jx", "stack", "publish", "-r", "@", "--yes"],
+        &environment,
+        &services,
+        &SelectAllReviewers,
+        &confirmer,
+    )
+    .expect("yes flag confirms pull request publishing");
+
+    assert_eq!(
+        result.stdout,
+        format!("Created {}\n", example_pull_request_link(42))
+    );
+}
+
+#[test]
 fn pull_request_rejects_invalid_cli_reviewer() {
     // Verifies: Reviewer flags use the same user/team shape as config reviewers.
     let environment = RuntimeEnvironment::new("/workspace", []);
@@ -915,6 +949,54 @@ fn pull_request_rejects_invalid_cli_reviewer() {
     .expect_err("invalid reviewer is rejected during parsing");
 
     assert!(matches!(error, CommandError::Usage(_)));
+}
+
+#[test]
+fn stack_publish_preselects_existing_and_cli_reviewers() {
+    // Verifies: existing PR reviewers and CLI reviewers are selected by default for stack publish.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut existing = existing_pull_request(false);
+    existing.reviewers = ReviewerSelection::new(["existing-reviewer"], ["platform"]);
+    let services = FakeServices {
+        existing_pull_request: Some(existing),
+        expected_reviewers: Some(ReviewerSelection::new(
+            ["cli-reviewer", "existing-reviewer"],
+            ["platform"],
+        )),
+        pull_request_action: PullRequestAction::Updated,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_reviewer_selector(
+        [
+            "jx",
+            "stack",
+            "publish",
+            "-r",
+            "@",
+            "--reviewer",
+            "cli-reviewer",
+        ],
+        &environment,
+        &services,
+        &CheckedReviewerSelector,
+    )
+    .expect("pull request publishes with existing reviewers selected");
+
+    assert_eq!(
+        result.stdout,
+        format!("Updated {}\n", example_pull_request_link(42))
+    );
 }
 
 #[test]

@@ -1,0 +1,12 @@
+{
+  "permanentGrants": {
+    "structuredToolWritePaths": [],
+    "bashReadRoots": [
+      "~/.local/state/jx"
+    ],
+    "bashWriteRoots": [
+      "~/.local/state/jx"
+    ],
+    "bashDomains": []
+  }
+}

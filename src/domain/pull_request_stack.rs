@@ -1,5 +1,21 @@
 use super::*;
 
+/// Builds a read-only health report for a pull-request stack snapshot.
+pub fn pull_request_stack_status_report(
+    context: &RepositoryContext,
+    snapshot: PullRequestStackSnapshot,
+    statuses: Vec<PullRequestStatusRecord>,
+) -> PullRequestStackStatusReport {
+    PullRequestStackStatusReport {
+        repository: repository_summary(context),
+        snapshot,
+        statuses: statuses
+            .into_iter()
+            .map(|status| (status.number, status))
+            .collect(),
+    }
+}
+
 /// Renderer-agnostic view of the repository's pull-request stack state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PullRequestStackSnapshot {
@@ -419,6 +435,98 @@ pub fn refresh_stack_metadata_pull_requests(
     StackMetadata { version: 1, nodes }
 }
 
+/// Refreshes cached PR status facts, drops closed PR nodes, and prunes completed trees.
+pub fn maintain_stack_metadata_pull_request_statuses(
+    statuses: &[PullRequestStatusRecord],
+    existing_metadata: &StackMetadata,
+) -> StackMetadata {
+    let refreshed = refresh_stack_metadata_pull_request_statuses(statuses, existing_metadata);
+    let without_closed = prune_closed_stack_metadata_nodes(statuses, &refreshed);
+    prune_merged_stack_metadata_trees(&without_closed)
+}
+
+/// Refreshes durable stack metadata from read-only PR status facts matched by pull-request number.
+pub fn refresh_stack_metadata_pull_request_statuses(
+    statuses: &[PullRequestStatusRecord],
+    existing_metadata: &StackMetadata,
+) -> StackMetadata {
+    let statuses_by_number = statuses
+        .iter()
+        .map(|status| (status.number, status))
+        .collect::<BTreeMap<_, _>>();
+    let mut nodes = existing_metadata
+        .nodes
+        .iter()
+        .map(|node| {
+            match node
+                .pull_request
+                .and_then(|number| statuses_by_number.get(&number))
+            {
+                Some(status) => refreshed_stack_metadata_node_from_status(node, status),
+                None => node.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
+/// Drops closed PR nodes while keeping any still-open descendants visible as roots.
+pub fn prune_closed_stack_metadata_nodes(
+    statuses: &[PullRequestStatusRecord],
+    metadata: &StackMetadata,
+) -> StackMetadata {
+    let closed_numbers = statuses
+        .iter()
+        .filter(|status| status.closed)
+        .map(|status| status.number)
+        .collect::<BTreeSet<_>>();
+    if closed_numbers.is_empty() {
+        return metadata.clone();
+    }
+
+    let removed_branches = metadata
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.pull_request
+                .is_some_and(|number| closed_numbers.contains(&number))
+        })
+        .map(|node| node.branch.clone())
+        .collect::<BTreeSet<_>>();
+    if removed_branches.is_empty() {
+        return metadata.clone();
+    }
+
+    let mut nodes = metadata
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.pull_request
+                .is_none_or(|number| !closed_numbers.contains(&number))
+        })
+        .cloned()
+        .map(|mut node| {
+            if node
+                .parent_branch
+                .as_ref()
+                .is_some_and(|parent| removed_branches.contains(parent))
+                || node
+                    .parent_pull_request
+                    .is_some_and(|number| closed_numbers.contains(&number))
+            {
+                node.parent_branch = None;
+                node.parent_pull_request = None;
+            }
+            node
+        })
+        .collect::<Vec<_>>();
+    sort_stack_metadata_nodes(&mut nodes);
+
+    StackMetadata { version: 1, nodes }
+}
+
 /// Drops stack components whose stored PR nodes are all merged.
 pub fn prune_merged_stack_metadata_trees(metadata: &StackMetadata) -> StackMetadata {
     let snapshot = PullRequestStackSnapshot::from_metadata(
@@ -623,6 +731,23 @@ fn refreshed_stack_metadata_node(
         url: pull_request.html_url.clone(),
         draft: pull_request.draft,
         merged: pull_request.merged,
+    }
+}
+
+fn refreshed_stack_metadata_node_from_status(
+    node: &StackMetadataNode,
+    status: &PullRequestStatusRecord,
+) -> StackMetadataNode {
+    StackMetadataNode {
+        branch: node.branch.clone(),
+        base_branch: node.base_branch.clone(),
+        parent_branch: node.parent_branch.clone(),
+        pull_request: Some(status.number),
+        parent_pull_request: node.parent_pull_request,
+        title: status.title.clone(),
+        url: status.url.clone(),
+        draft: status.draft,
+        merged: status.merged,
     }
 }
 

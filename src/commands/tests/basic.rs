@@ -36,6 +36,82 @@ fn st_alias_runs_status() {
 }
 
 #[test]
+fn command_run_perf_span_records_successful_commands() {
+    // Verifies: top-level tracing captures the parsed command and dispatch phases.
+    let workspace = TestWorkspace::new();
+    let log_path = workspace.home.join("jx-perf.log");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("JX_PERF_LOG".to_owned(), log_path.display().to_string())],
+    );
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "status"], &environment, &services)
+        .expect("status succeeds");
+
+    assert_eq!(result.stdout, expected_workspace_status());
+    let events = read_perf_events(&log_path);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event["op"], "command.run");
+    assert_eq!(event["status"], "ok");
+    assert_eq!(event["command"], "status");
+    assert_eq!(event["command_path"], "status");
+    assert_eq!(event["arg_count"], 1);
+    assert_eq!(event["exit_code"], 0);
+    assert_eq!(
+        perf_step_names(event),
+        ["parse_args", "build_request", "handle_request"]
+    );
+}
+
+#[test]
+fn command_run_perf_span_records_command_errors() {
+    // Verifies: failed dispatch still emits command identity, exit code, and error text.
+    let workspace = TestWorkspace::new();
+    let log_path = workspace.home.join("jx-perf.log");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("JX_PERF_LOG".to_owned(), log_path.display().to_string())],
+    );
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(["jx", "fetch"], &environment, &services)
+        .expect_err("fetch needs an origin remote");
+
+    assert!(matches!(error, CommandError::Repository(_)));
+    let events = read_perf_events(&log_path);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event["op"], "command.run");
+    assert_eq!(event["status"], "error");
+    assert_eq!(event["command"], "fetch");
+    assert_eq!(event["command_path"], "fetch");
+    assert_eq!(event["exit_code"], 1);
+    assert!(event["err"]
+        .as_str()
+        .expect("error text is recorded")
+        .contains("fixed `origin` remote is missing"));
+}
+
+fn read_perf_events(path: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .expect("perf log is written")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("perf event is json"))
+        .collect()
+}
+
+fn perf_step_names(event: &serde_json::Value) -> Vec<&str> {
+    event["steps"]
+        .as_array()
+        .expect("steps are recorded")
+        .iter()
+        .map(|step| step["name"].as_str().expect("step name is a string"))
+        .collect()
+}
+
+#[test]
 fn prev_commit_renders_navigation_graph() {
     // Verifies: Commit navigation replaces jj's edit/status output with the focused graph.
     let environment = RuntimeEnvironment::new("/workspace", []);

@@ -504,6 +504,7 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
         html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
         draft: false,
         merged: true,
+        reviewers: ReviewerSelection::default(),
     };
     let environment = RuntimeEnvironment::new(workspace.path(), []);
     let services = FakeServices {
@@ -667,6 +668,7 @@ fn sync_prunes_completed_stack_tree_after_refresh() {
                     ),
                     draft: false,
                     merged: true,
+                    reviewers: ReviewerSelection::default(),
                 },
             ),
             (
@@ -682,6 +684,7 @@ fn sync_prunes_completed_stack_tree_after_refresh() {
                     ),
                     draft: false,
                     merged: true,
+                    reviewers: ReviewerSelection::default(),
                 },
             ),
         ]),
@@ -1077,6 +1080,7 @@ fn sync_links_pull_requests_under_changed_bookmarks() {
                 ),
                 draft: false,
                 merged: false,
+                reviewers: ReviewerSelection::default(),
             },
             PullRequestRecord {
                 number: 1200,
@@ -1089,6 +1093,7 @@ fn sync_links_pull_requests_under_changed_bookmarks() {
                 ),
                 draft: false,
                 merged: false,
+                reviewers: ReviewerSelection::default(),
             },
         ],
         ..FakeServices::default()

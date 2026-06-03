@@ -7,7 +7,7 @@
 //! behind one integration boundary so later workflow phases can compose GitHub
 //! behavior without depending on octocrab directly.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use octocrab::{models, params, Octocrab};
@@ -23,7 +23,13 @@ mod types;
 
 pub use client::*;
 #[cfg(test)]
-use client::{map_comparison_status, CompareCommitsResponse, CompareCommitsStatus};
+use client::{
+    map_comparison_status, map_graphql_pull_request_status, pull_request_status_query,
+    CompareCommitsResponse, CompareCommitsStatus, GraphQlPullRequestStatus,
+    GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
+    GraphQlPullRequestStatusCommits, GraphQlRequestedReviewer, GraphQlReviewRequestNode,
+    GraphQlReviewRequests, GraphQlStatusCheckRollup,
+};
 pub use error::*;
 pub use reviewers::*;
 use reviewers::{difference, normalize_names};

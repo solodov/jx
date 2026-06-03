@@ -143,6 +143,70 @@ fn deserializes_minimal_compare_response() {
 }
 
 #[test]
+fn maps_pull_request_status_rollup_and_review_decision() {
+    // Verifies: GraphQL PR status facts collapse to stable jx check/review labels.
+    let status = map_graphql_pull_request_status(GraphQlPullRequestStatus {
+        number: 42,
+        title: "Example change".to_owned(),
+        url: "https://github.com/example-owner/example-repo/pull/42".to_owned(),
+        head_ref_name: "topic/example".to_owned(),
+        base_ref_name: "main".to_owned(),
+        is_draft: false,
+        merged: false,
+        closed: false,
+        review_decision: Some("CHANGES_REQUESTED".to_owned()),
+        review_requests: GraphQlReviewRequests {
+            total_count: 1,
+            nodes: vec![GraphQlReviewRequestNode {
+                requested_reviewer: Some(GraphQlRequestedReviewer {
+                    type_name: "User".to_owned(),
+                    login: Some("reviewer-one".to_owned()),
+                }),
+            }],
+        },
+        commits: GraphQlPullRequestStatusCommits {
+            nodes: vec![GraphQlPullRequestStatusCommitNode {
+                commit: GraphQlPullRequestStatusCommit {
+                    oid: "aaaabbbbccccdddd".to_owned(),
+                    status_check_rollup: Some(GraphQlStatusCheckRollup {
+                        state: "FAILURE".to_owned(),
+                    }),
+                },
+            }],
+        },
+    });
+
+    assert_eq!(status.check_status, PullRequestCheckStatus::Failing);
+    assert_eq!(
+        status.review_status,
+        PullRequestReviewStatus::ChangesRequested
+    );
+    assert_eq!(
+        status.requested_reviewers.users,
+        ["reviewer-one".to_owned()]
+    );
+    assert_eq!(
+        status.latest_commit_oid.as_deref(),
+        Some("aaaabbbbccccdddd")
+    );
+}
+
+#[test]
+fn pull_request_status_query_batches_numbers_with_aliases() {
+    // Verifies: stack status can fetch several PRs in one GraphQL request.
+    let query = pull_request_status_query(&[41, 42]);
+
+    assert!(query.contains("pr0: pullRequest(number: 41)"));
+    assert!(query.contains("pr1: pullRequest(number: 42)"));
+    assert!(query.contains("statusCheckRollup"));
+    assert!(query.contains("reviewDecision"));
+    assert!(query.contains("reviewRequests"));
+    assert!(query.contains("totalCount"));
+    assert!(query.contains("requestedReviewer"));
+    assert!(!query.contains("slug"));
+}
+
+#[test]
 fn maps_compare_status_to_domain_status() {
     // Verifies: GitHub compare status strings map to stable domain states.
     assert_eq!(

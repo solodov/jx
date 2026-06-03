@@ -116,7 +116,8 @@ async fn sync_pull_request_metadata(
         .await?)
 }
 
-fn pull_request_body_with_stack_context(
+/// Returns a PR body with generated stack context matching stack sync behavior.
+pub fn pull_request_body_with_stack_context(
     body: &str,
     metadata: &StackMetadata,
     current: &PullRequestRecord,

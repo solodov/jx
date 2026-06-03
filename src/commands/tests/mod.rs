@@ -4,12 +4,15 @@ use crate::{
         BookmarkAction, BookmarkPlan, CheckWorkspaceSummary, ForkStatusComparison, GitHubReadiness,
         PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
-    github::{PullRequestHead, PullRequestRecord, ReviewerSelection},
+    github::{
+        PullRequestCheckStatus, PullRequestHead, PullRequestRecord, PullRequestReviewStatus,
+        PullRequestStatusRecord, ReviewerSelection,
+    },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebaseOnTrunkOutcome,
-        RebasedCommitSummary, StatusRemoteFacts, StatusWorkspaceFacts, TrackedPushOutcome,
-        TrunkSummary, WorkspaceAddOptions, WorkspaceEntry, WorkspaceRemoveOptions, WorkspaceStatus,
-        WorkspaceVisibility,
+        RebasedCommitSummary, StackPublishMetrics, StatusRemoteFacts, StatusWorkspaceFacts,
+        TrackedPushOutcome, TrunkSummary, WorkspaceAddOptions, WorkspaceEntry,
+        WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
     },
     repository::StackMetadataNode,
 };
@@ -172,6 +175,7 @@ fn pull_request_choice_record(
         html_url: None,
         draft,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     }
 }
 
@@ -293,6 +297,7 @@ fn existing_pull_request(draft: bool) -> PullRequestRecord {
         html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
         draft,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     }
 }
 
@@ -316,6 +321,7 @@ fn preview_plan() -> PullRequestPlan {
         title: "example change".to_owned(),
         body: String::new(),
         changed_files: vec!["src/main.rs".to_owned()],
+        change_lines: vec!["M src/main.rs".to_owned()],
         base: "main".to_owned(),
         base_pull_request: None,
         head: PullRequestHead::same_repository("example-owner", "example-user/02-zzzzzzzz"),
@@ -350,6 +356,8 @@ struct FakeServices {
     pull_request_head_calls: std::cell::RefCell<Vec<String>>,
     pull_requests_by_number: BTreeMap<u64, PullRequestRecord>,
     pull_request_number_calls: std::cell::RefCell<Vec<u64>>,
+    pull_request_statuses: BTreeMap<u64, PullRequestStatusRecord>,
+    pull_request_status_calls: std::cell::RefCell<Vec<Vec<u64>>>,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
@@ -364,6 +372,7 @@ struct FakeServices {
     stack_move_targets: std::cell::RefCell<Vec<StackMoveTarget>>,
     local_stack_branches: std::cell::RefCell<Vec<Vec<LocalStackBranch>>>,
     stack_publish_facts: Option<StackPublishFacts>,
+    stack_publish_facts_by_revision: BTreeMap<String, StackPublishFacts>,
     stack_publish_selections: std::cell::RefCell<Vec<StackPublishSelection>>,
     stack_plan_facts: Option<StackPlanFacts>,
     stack_plan_selections: std::cell::RefCell<Vec<StackPlanSelection>>,
@@ -386,6 +395,7 @@ struct FakeServices {
     expected_task_id: Option<Option<String>>,
     expected_labels: Vec<String>,
     expected_draft: Option<bool>,
+    expected_drafts: Option<Vec<bool>>,
     expected_clone: Option<(String, PathBuf)>,
     expected_init_repository: Option<PathBuf>,
     init_repository_calls: std::cell::Cell<usize>,
@@ -475,6 +485,8 @@ impl Default for FakeServices {
             pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             pull_requests_by_number: BTreeMap::new(),
             pull_request_number_calls: std::cell::RefCell::new(Vec::new()),
+            pull_request_statuses: BTreeMap::new(),
+            pull_request_status_calls: std::cell::RefCell::new(Vec::new()),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             origin_push_access_roots: None,
@@ -537,6 +549,7 @@ impl Default for FakeServices {
             stack_move_targets: std::cell::RefCell::new(Vec::new()),
             local_stack_branches: std::cell::RefCell::new(Vec::new()),
             stack_publish_facts: None,
+            stack_publish_facts_by_revision: BTreeMap::new(),
             stack_publish_selections: std::cell::RefCell::new(Vec::new()),
             stack_plan_facts: None,
             stack_plan_selections: std::cell::RefCell::new(Vec::new()),
@@ -604,6 +617,7 @@ impl Default for FakeServices {
             expected_task_id: None,
             expected_labels: Vec::new(),
             expected_draft: None,
+            expected_drafts: None,
             expected_clone: None,
             expected_init_repository: None,
             init_repository_calls: std::cell::Cell::new(0),
@@ -991,6 +1005,20 @@ impl CommandServices for FakeServices {
         Ok(self.pull_requests_by_number.get(&number).cloned())
     }
 
+    fn pull_request_statuses(
+        &self,
+        _context: &RepositoryContext,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
+        self.pull_request_status_calls
+            .borrow_mut()
+            .push(numbers.to_vec());
+        Ok(numbers
+            .iter()
+            .filter_map(|number| self.pull_request_statuses.get(number).cloned())
+            .collect())
+    }
+
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.opened_urls.borrow_mut().push(url.to_owned());
         Ok(())
@@ -1050,6 +1078,13 @@ impl CommandServices for FakeServices {
         self.stack_publish_selections
             .borrow_mut()
             .push(selection.clone());
+        if let StackPublishSelection::ExplicitRevisions { revisions } = selection {
+            if let [revision] = revisions.as_slice() {
+                if let Some(facts) = self.stack_publish_facts_by_revision.get(revision) {
+                    return Ok(facts.clone());
+                }
+            }
+        }
         Ok(self.stack_publish_facts.clone().unwrap_or_else(|| {
             let mut workspace = self.workspace.clone();
             if let Some((_, description)) = self.description_rewrites.borrow().last() {
@@ -1067,6 +1102,7 @@ impl CommandServices for FakeServices {
                     StackPublishSelection::InferredStack { .. } => Some(0),
                     StackPublishSelection::ExplicitRevisions { .. } => None,
                 },
+                metrics: StackPublishMetrics::default(),
             }
         }))
     }
@@ -1200,7 +1236,7 @@ impl CommandServices for FakeServices {
         workspace: WorkspaceFacts,
         task_id: Option<String>,
         labels: Vec<String>,
-        draft: bool,
+        readiness: PullRequestReadiness,
     ) -> Result<PullRequestPlan, WorkflowError> {
         if let Some(expected) = &self.expected_task_id {
             assert_eq!(&task_id, expected);
@@ -1224,6 +1260,8 @@ impl CommandServices for FakeServices {
 
         let (title, body) = fake_pull_request_description(&workspace.target_change.description);
 
+        let draft = readiness.desired_draft(self.existing_pull_request.as_ref());
+
         Ok(PullRequestPlan {
             repository: self.check.repository.clone(),
             task_id,
@@ -1235,6 +1273,7 @@ impl CommandServices for FakeServices {
             title,
             body,
             changed_files: workspace.changed_files,
+            change_lines: workspace.change_lines,
             base: workspace
                 .nearest_ancestor_bookmark
                 .clone()
@@ -1264,7 +1303,10 @@ impl CommandServices for FakeServices {
             assert_eq!(&plan.reviewers, expected);
         }
         assert_eq!(plan.labels, self.expected_labels);
-        if let Some(expected) = self.expected_draft {
+        let publish_index = self.published_pull_request_count.get() as usize;
+        if let Some(expected) = &self.expected_drafts {
+            assert_eq!(plan.draft, expected[publish_index]);
+        } else if let Some(expected) = self.expected_draft {
             assert_eq!(plan.draft, expected);
         }
 
@@ -1292,6 +1334,7 @@ impl CommandServices for FakeServices {
                 html_url,
                 draft: plan.draft,
                 merged: false,
+                reviewers: ReviewerSelection::default(),
             },
             base: plan.base,
             base_pull_request: plan.base_pull_request,
@@ -1363,6 +1406,7 @@ fn workspace_facts() -> WorkspaceFacts {
         local_bookmarks_at_target: Vec::new(),
         nearest_ancestor_bookmark: Some("example-user/01-ancestor".to_owned()),
         changed_files: vec!["src/main.rs".to_owned()],
+        change_lines: vec!["M src/main.rs".to_owned()],
         stack_index: 2,
     }
 }
@@ -1470,8 +1514,11 @@ impl TestWorkspace {
         self.root.clone()
     }
 
-    fn home_environment(&self) -> [(String, String); 1] {
-        [("HOME".to_owned(), self.home.to_string_lossy().into_owned())]
+    fn home_environment(&self) -> [(String, String); 2] {
+        [
+            ("HOME".to_owned(), self.home.to_string_lossy().into_owned()),
+            ("JX_PERF_LOG".to_owned(), "off".to_owned()),
+        ]
     }
 
     fn write_file(&self, relative_path: &str, contents: &str) {

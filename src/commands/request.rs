@@ -58,6 +58,21 @@ pub(super) enum StackRequest {
     },
     Plan(StackPlanRequest),
     Publish(StackPublishRequest),
+    Status(StackStatusRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StackStatusRequest {
+    pub(super) all: bool,
+    pub(super) repo_filters: Vec<String>,
+    pub(super) parallelism: usize,
+    pub(super) format: StackStatusFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StackStatusFormat {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,8 +82,15 @@ pub(super) struct StackPublishRequest {
     pub(super) no_task_id: bool,
     pub(super) labels: Vec<String>,
     pub(super) reviewers: Vec<ReviewerTarget>,
-    pub(super) draft: bool,
+    pub(super) ready: Vec<StackPublishReadinessSelector>,
+    pub(super) draft: Vec<StackPublishReadinessSelector>,
     pub(super) no_event_handlers: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StackPublishReadinessSelector {
+    All,
+    Revisions(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +254,231 @@ impl CommandRequest {
             _ => unreachable!("clap rejects unknown subcommands"),
         }
     }
+
+    pub(super) fn perf_attrs(&self) -> Vec<PerfAttr> {
+        let command_path = self.command_path();
+        let mut attrs = vec![
+            perf_attr(
+                "command",
+                command_path
+                    .split_once('.')
+                    .map_or(command_path, |(command, _)| command),
+            ),
+            perf_attr("command_path", command_path),
+        ];
+        if let Some((_, subcommand)) = command_path.split_once('.') {
+            attrs.push(perf_attr("subcommand", subcommand));
+        }
+
+        match self {
+            Self::Log | Self::Status | Self::PreviousCommit | Self::NextCommit | Self::Check => {}
+            Self::Diff(request) => attrs.extend([
+                perf_attr("has_revision", request.revision.is_some()),
+                perf_attr("path_count", request.paths.len()),
+                perf_attr("no_tests", request.no_tests),
+                perf_attr("has_tool", request.tool.is_some()),
+                perf_attr("tool_arg_count", request.tool_args.len()),
+            ]),
+            Self::Clone(request) => {
+                attrs.extend([perf_attr("has_destination", request.destination.is_some())])
+            }
+            Self::Work(request) => add_work_perf_attrs(&mut attrs, request),
+            Self::Stack(request) => add_stack_perf_attrs(&mut attrs, request),
+            Self::Shell(ShellRequest::Init(request)) => {
+                attrs.extend([perf_attr("shell", shell_kind_name(request.shell))])
+            }
+            Self::Open(request) => add_open_perf_attrs(&mut attrs, request),
+            Self::RemoteStatus(request) => attrs.extend([
+                perf_attr("all", request.all),
+                perf_attr("has_repository", request.repository.is_some()),
+                perf_attr("repo_filter_count", request.repo_filters.len()),
+                perf_attr("changed", request.changed),
+                perf_attr("parallelism", request.parallelism),
+                perf_attr("format", remote_status_format_name(request.format)),
+            ]),
+            Self::Fetch(request) => attrs.extend([
+                perf_attr("all", request.all),
+                perf_attr("has_repository", request.repository.is_some()),
+            ]),
+            Self::RebaseOnTrunk(request) => {
+                attrs.extend([perf_attr("source_count", request.sources.len())])
+            }
+            Self::Push(request) => attrs.extend([
+                perf_attr("has_revision", request.revision.is_some()),
+                perf_attr("tracked", request.tracked),
+            ]),
+            Self::Sync(request) => attrs.extend([
+                perf_attr("mode", sync_mode(request)),
+                perf_attr("all", request.all),
+                perf_attr("repo", request.repo),
+                perf_attr("stack", request.stack),
+                perf_attr("has_revision", request.revision.is_some()),
+                perf_attr("repo_filter_count", request.repo_filters.len()),
+            ]),
+        }
+        attrs
+    }
+
+    fn command_path(&self) -> &'static str {
+        match self {
+            Self::Log => "log",
+            Self::Status => "status",
+            Self::PreviousCommit => "prev-commit",
+            Self::NextCommit => "next-commit",
+            Self::Diff(_) => "diff",
+            Self::Clone(_) => "clone",
+            Self::Work(WorkRequest::Add(_)) => "work.add",
+            Self::Work(WorkRequest::List(_)) => "work.list",
+            Self::Work(WorkRequest::Complete(_)) => "work.complete",
+            Self::Work(WorkRequest::Root(_)) => "work.root",
+            Self::Work(WorkRequest::Trunk(_)) => "work.trunk",
+            Self::Work(WorkRequest::Delete(_)) => "work.delete",
+            Self::Stack(StackRequest::Show) => "stack.show",
+            Self::Stack(StackRequest::Open { .. }) => "stack.open",
+            Self::Stack(StackRequest::Refresh) => "stack.refresh",
+            Self::Stack(StackRequest::Move { .. }) => "stack.move",
+            Self::Stack(StackRequest::Plan(_)) => "stack.plan",
+            Self::Stack(StackRequest::Publish(_)) => "stack.publish",
+            Self::Stack(StackRequest::Status(_)) => "stack.status",
+            Self::Shell(ShellRequest::Init(_)) => "shell.init",
+            Self::Open(OpenRequest {
+                target: OpenTarget::Repository,
+                ..
+            }) => "open.repository",
+            Self::Open(OpenRequest {
+                target: OpenTarget::PullRequest { .. },
+                ..
+            }) => "open.pr",
+            Self::Open(OpenRequest {
+                target: OpenTarget::PullRequests { .. },
+                ..
+            }) => "open.prs",
+            Self::RemoteStatus(_) => "remote-status",
+            Self::Fetch(_) => "fetch",
+            Self::RebaseOnTrunk(_) => "rebase-on-trunk",
+            Self::Push(_) => "push",
+            Self::Sync(_) => "sync",
+            Self::Check => "check",
+        }
+    }
+}
+
+fn add_work_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &WorkRequest) {
+    match request {
+        WorkRequest::Add(request) => attrs.extend([
+            perf_attr("has_revision", request.revision.is_some()),
+            perf_attr("has_task_id", request.task_id.is_some()),
+            perf_attr("shell_cd_target", request.shell_cd_target),
+        ]),
+        WorkRequest::List(request) => attrs.extend([
+            perf_attr("all", request.all),
+            perf_attr("has_prefix", !request.prefix.is_empty()),
+        ]),
+        WorkRequest::Complete(request) => attrs.extend([
+            perf_attr("has_prefix", !request.prefix.is_empty()),
+            perf_attr("repositories", request.repositories),
+            perf_attr("workspaces", request.workspaces),
+            perf_attr("navigation", request.navigation),
+        ]),
+        WorkRequest::Root(request) => attrs.extend([perf_attr("navigation", request.navigation)]),
+        WorkRequest::Trunk(request) => {
+            attrs.extend([perf_attr("shell_cd_target", request.shell_cd_target)])
+        }
+        WorkRequest::Delete(request) => attrs.extend([
+            perf_attr("has_name", request.name.is_some()),
+            perf_attr("shell_cd_target", request.shell_cd_target),
+        ]),
+    }
+}
+
+fn add_stack_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &StackRequest) {
+    match request {
+        StackRequest::Show | StackRequest::Refresh => {}
+        StackRequest::Open { print } => attrs.extend([perf_attr("print", *print)]),
+        StackRequest::Move { target, no_sync } => attrs.extend([
+            perf_attr("target", stack_move_target_name(target)),
+            perf_attr("no_sync", *no_sync),
+        ]),
+        StackRequest::Plan(request) => attrs.extend([
+            perf_attr("revision_count", request.revisions.len()),
+            perf_attr("explicit_revisions", !request.revisions.is_empty()),
+        ]),
+        StackRequest::Publish(request) => attrs.extend([
+            perf_attr("revision_count", request.revisions.len()),
+            perf_attr("explicit_revisions", !request.revisions.is_empty()),
+            perf_attr("has_task_id", request.task_id.is_some()),
+            perf_attr("no_task_id", request.no_task_id),
+            perf_attr("label_count", request.labels.len()),
+            perf_attr("reviewer_arg_count", request.reviewers.len()),
+            perf_attr("ready_selector_count", request.ready.len()),
+            perf_attr("draft_selector_count", request.draft.len()),
+            perf_attr("event_handlers", !request.no_event_handlers),
+        ]),
+        StackRequest::Status(request) => attrs.extend([
+            perf_attr("all", request.all),
+            perf_attr("repo_filter_count", request.repo_filters.len()),
+            perf_attr("parallelism", request.parallelism),
+            perf_attr("format", stack_status_format_name(request.format)),
+        ]),
+    }
+}
+
+fn stack_status_format_name(format: StackStatusFormat) -> &'static str {
+    match format {
+        StackStatusFormat::Human => "human",
+        StackStatusFormat::Json => "json",
+    }
+}
+
+fn add_open_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &OpenRequest) {
+    attrs.extend([
+        perf_attr("has_repository", request.repository.is_some()),
+        perf_attr("repo_filter_count", request.repo_filters.len()),
+        perf_attr("print", request.print),
+    ]);
+    match &request.target {
+        OpenTarget::Repository => {}
+        OpenTarget::PullRequest { selector } => {
+            attrs.extend([perf_attr("has_selector", selector.is_some())]);
+        }
+        OpenTarget::PullRequests { all } => {
+            attrs.extend([perf_attr("all", *all)]);
+        }
+    }
+}
+
+fn stack_move_target_name(target: &StackMoveTarget) -> &'static str {
+    match target {
+        StackMoveTarget::Onto(_) => "onto",
+        StackMoveTarget::Trunk => "trunk",
+    }
+}
+
+fn shell_kind_name(shell: ShellKind) -> &'static str {
+    match shell {
+        ShellKind::Bash => "bash",
+    }
+}
+
+fn remote_status_format_name(format: RemoteStatusFormat) -> &'static str {
+    match format {
+        RemoteStatusFormat::Human => "human",
+        RemoteStatusFormat::Json => "json",
+    }
+}
+
+fn sync_mode(request: &SyncRequest) -> &'static str {
+    if request.all {
+        "all"
+    } else if request.repo {
+        "repo"
+    } else if request.stack {
+        "stack"
+    } else if request.revision.is_some() {
+        "revision"
+    } else {
+        "tracked"
+    }
 }
 
 fn required_arg(matches: &ArgMatches, name: &str) -> String {
@@ -306,6 +553,7 @@ fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
         Some(("refresh", _)) => Ok(StackRequest::Refresh),
         Some(("plan", matches)) => Ok(StackRequest::Plan(stack_plan_request(matches))),
         Some(("publish", matches)) => Ok(StackRequest::Publish(stack_publish_request(matches)?)),
+        Some(("status", matches)) => Ok(StackRequest::Status(stack_status_request(matches)?)),
         _ => Ok(StackRequest::Show),
     }
 }
@@ -317,9 +565,45 @@ fn stack_publish_request(matches: &ArgMatches) -> Result<StackPublishRequest, cl
         no_task_id: matches.get_flag("no-task-id"),
         labels: labels(matches),
         reviewers: reviewers(matches)?,
-        draft: matches.get_flag("draft"),
+        ready: readiness_selectors(matches, "ready"),
+        draft: readiness_selectors(matches, "draft"),
         no_event_handlers: matches.get_flag("no-event-handlers"),
     })
+}
+
+fn stack_status_request(matches: &ArgMatches) -> Result<StackStatusRequest, clap::Error> {
+    Ok(StackStatusRequest {
+        all: matches.get_flag("all"),
+        repo_filters: stack_status_repo_filters(matches),
+        parallelism: stack_status_parallelism(matches)?,
+        format: stack_status_format(matches),
+    })
+}
+
+fn stack_status_repo_filters(matches: &ArgMatches) -> Vec<String> {
+    matches
+        .get_many::<String>("repository-filter")
+        .into_iter()
+        .flatten()
+        .map(|filter| filter.trim())
+        .filter(|filter| !filter.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn readiness_selectors(matches: &ArgMatches, name: &str) -> Vec<StackPublishReadinessSelector> {
+    matches
+        .get_many::<String>(name)
+        .into_iter()
+        .flatten()
+        .map(|value| {
+            if value.is_empty() {
+                StackPublishReadinessSelector::All
+            } else {
+                StackPublishReadinessSelector::Revisions(value.clone())
+            }
+        })
+        .collect()
 }
 
 fn stack_plan_request(matches: &ArgMatches) -> StackPlanRequest {
@@ -485,6 +769,32 @@ fn remote_status_format(matches: &ArgMatches) -> RemoteStatusFormat {
     }
 }
 
+fn stack_status_parallelism(matches: &ArgMatches) -> Result<usize, clap::Error> {
+    let parallelism = *matches
+        .get_one::<usize>("jobs")
+        .expect("clap applies the stack-status jobs default");
+    if parallelism == 0 {
+        return Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "stack status jobs must be at least 1",
+        ));
+    }
+
+    Ok(parallelism)
+}
+
+fn stack_status_format(matches: &ArgMatches) -> StackStatusFormat {
+    match matches
+        .get_one::<String>("format")
+        .map(String::as_str)
+        .expect("clap applies the stack-status format default")
+    {
+        "human" => StackStatusFormat::Human,
+        "json" => StackStatusFormat::Json,
+        _ => unreachable!("clap rejects unsupported stack-status formats"),
+    }
+}
+
 fn revision(matches: &ArgMatches) -> Option<String> {
     matches.get_one::<String>("revision").cloned()
 }
@@ -636,6 +946,7 @@ pub(super) fn cli() -> ClapCommand {
         .about("Small, opinionated extensions for everyday jj workflows")
         .arg_required_else_help(false)
         .subcommand_required(false)
+        .arg(yes_arg())
         .subcommand(
             ClapCommand::new("diff")
                 .about("Show a jj diff")
@@ -797,7 +1108,7 @@ fn stack_command() -> ClapCommand {
         .visible_alias("stk")
         .about("Show, move, publish, or refresh repo-local pull request stack state")
         .long_about(
-            "Show, move, publish, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish exactly the selected revset. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+            "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to fetch GitHub check and review summaries for the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish exactly the selected revset. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
         )
         .args_conflicts_with_subcommands(true)
         .group(
@@ -825,6 +1136,17 @@ fn stack_command() -> ClapCommand {
                 ),
         )
         .subcommand(
+            ClapCommand::new("status")
+                .about("Show GitHub check and review status for pull request stacks")
+                .long_about(
+                    "Show GitHub check and review status for pull request stacks while keeping remote state unchanged.\n\nBy default, jx reads the current repository's stored .jx/stack.toml stack, fetches a batched GitHub status summary for its pull requests, refreshes cached PR state, removes closed PRs, and prunes fully merged cached stack trees. Use -a/--all to scan configured primary repositories that have stack metadata; optional positional filters match repository keys and provider/owner/repo identities, for example `example-owner/*` or `service-*`.",
+                )
+                .arg(stack_status_all_arg())
+                .arg(stack_status_jobs_arg())
+                .arg(stack_status_format_arg())
+                .arg(stack_status_repo_filter_arg()),
+        )
+        .subcommand(
             ClapCommand::new("plan")
                 .about("Preview the local stack neighbourhood for publishing")
                 .long_about(
@@ -837,16 +1159,26 @@ fn stack_command() -> ClapCommand {
                 .visible_alias("pub")
                 .about("Publish or update GitHub pull requests for a local stack")
                 .long_about(
-                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection.",
+                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection. Omit readiness flags to preserve existing PR readiness; use --ready or --draft for the full publish set, or --ready=REVSET / --draft=REVSET for a subset of published revisions.",
                 )
                 .arg(stack_publish_revision_arg())
                 .arg(task_id_arg())
                 .arg(no_task_id_arg())
                 .arg(label_arg())
                 .arg(reviewer_arg())
+                .arg(ready_arg())
                 .arg(draft_arg())
                 .arg(no_event_handlers_arg()),
         )
+}
+
+fn yes_arg() -> Arg {
+    Arg::new("yes")
+        .short('y')
+        .long("yes")
+        .global(true)
+        .action(ArgAction::SetTrue)
+        .help("Answer yes to confirmation prompts")
 }
 
 fn clone_repository_arg() -> Arg {
@@ -1018,6 +1350,41 @@ fn stack_no_sync_arg() -> Arg {
         .long("no-sync")
         .action(ArgAction::SetTrue)
         .help("Update local stack state without pushing branches or updating GitHub PRs")
+}
+
+fn stack_status_all_arg() -> Arg {
+    Arg::new("all")
+        .short('a')
+        .long("all")
+        .action(ArgAction::SetTrue)
+        .help("Check pull request stack status across configured primary repositories")
+}
+
+fn stack_status_jobs_arg() -> Arg {
+    Arg::new("jobs")
+        .short('j')
+        .long("jobs")
+        .value_name("N")
+        .default_value("8")
+        .value_parser(clap::value_parser!(usize))
+        .help("Limit concurrent GitHub status checks for --all")
+}
+
+fn stack_status_format_arg() -> Arg {
+    Arg::new("format")
+        .long("format")
+        .value_name("FORMAT")
+        .default_value("human")
+        .value_parser(["human", "json"])
+        .help("Select stack status output format")
+}
+
+fn stack_status_repo_filter_arg() -> Arg {
+    Arg::new("repository-filter")
+        .value_name("REPO_GLOB")
+        .num_args(0..)
+        .requires("all")
+        .help("Filter provider/owner/repo identities when --all is set")
 }
 
 fn source_arg() -> Arg {
@@ -1218,12 +1585,27 @@ fn reviewer_arg() -> Arg {
         .help("Request a GitHub user or org/team reviewer; repeat for multiple reviewers")
 }
 
+fn ready_arg() -> Arg {
+    Arg::new("ready")
+        .long("ready")
+        .value_name("REVSET")
+        .num_args(0..=1)
+        .require_equals(true)
+        .default_missing_value("")
+        .action(ArgAction::Append)
+        .help("Mark all published pull requests, or only REVSET, ready for review")
+}
+
 fn draft_arg() -> Arg {
     Arg::new("draft")
         .short('d')
         .long("draft")
-        .action(ArgAction::SetTrue)
-        .help("Create a draft pull request when no open pull request exists")
+        .value_name("REVSET")
+        .num_args(0..=1)
+        .require_equals(true)
+        .default_missing_value("")
+        .action(ArgAction::Append)
+        .help("Mark all published pull requests, or only REVSET, as draft")
 }
 
 fn no_event_handlers_arg() -> Arg {

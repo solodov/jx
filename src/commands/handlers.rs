@@ -988,7 +988,7 @@ fn global_sync_existing_origin(
     }
     let push = services.push_syncable_tracked(&context)?;
     changed |= tracked_push_changed(&push.pushed);
-    let manager = PullRequestStackManager::new(&context, services);
+    let manager = PullRequestStackManager::new(&context, services, PerfLog::disabled());
     let _ = manager.sync_pull_requests(&push.pushed)?;
 
     if let Some(detail) = sync_conflict_detail(&fetch, &push) {
@@ -1079,6 +1079,209 @@ fn fetch_has_conflicts(fetch: &FetchOutcome) -> bool {
         .any(|commit| commit.has_conflict)
 }
 
+fn record_sync_result(span: &mut PerfSpan, result: &Result<CommandResult, CommandError>) {
+    match result {
+        Ok(result) => {
+            span.set([perf_attr("exit_code", u64::from(result.exit_code))]);
+            if result.exit_code != 0 {
+                span.record_error(format!("exit code {}", result.exit_code));
+            }
+        }
+        Err(error) => {
+            span.set([perf_attr("exit_code", 1_u64)]);
+            span.record_error(error);
+        }
+    }
+}
+
+fn fetch_result_attrs(result: &Result<FetchOutcome, JjError>) -> Vec<PerfAttr> {
+    match result {
+        Ok(fetch) => vec![
+            perf_attr("changed_remote_bookmarks", fetch.changed_remote_bookmarks),
+            perf_attr("changed_remote_tags", fetch.changed_remote_tags),
+            perf_attr("abandoned_commits", fetch.abandoned_commits),
+            perf_attr("rebased_trunk_children", fetch.rebased_trunk_children),
+            perf_attr("rebased_descendants", fetch.rebased_descendants),
+            perf_attr("skipped_trunk_children", fetch.skipped_trunk_children),
+            perf_attr("current_repaired", fetch.current_repaired),
+            perf_attr("rebased_commit_count", fetch.rebased_commits.len()),
+            perf_attr(
+                "conflicted_rebased_commit_count",
+                fetch_conflict_count(fetch),
+            ),
+            perf_attr("empty_rebased_commit_count", fetch_empty_count(fetch)),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn fetch_conflict_count(fetch: &FetchOutcome) -> usize {
+    fetch
+        .rebased_commits
+        .iter()
+        .filter(|commit| commit.has_conflict)
+        .count()
+}
+
+fn fetch_empty_count(fetch: &FetchOutcome) -> usize {
+    fetch
+        .rebased_commits
+        .iter()
+        .filter(|commit| commit.is_empty)
+        .count()
+}
+
+fn advance_trunk_result_attrs(result: &Result<AdvanceTrunkOutcome, JjError>) -> Vec<PerfAttr> {
+    match result {
+        Ok(advance) => vec![
+            perf_attr("branch", &advance.branch),
+            perf_attr("current_updated", advance.current_updated),
+            perf_attr(
+                "changed",
+                advance.old_short_commit_id != advance.new_short_commit_id,
+            ),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn sync_selection_result_attrs(
+    result: &Result<PullRequestStackSyncSelection, CommandError>,
+) -> Vec<PerfAttr> {
+    match result {
+        Ok(selection) => vec![
+            perf_attr("branch_count", selection.branches.len()),
+            perf_attr("metadata_node_count", selection.metadata.nodes.len()),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn sync_push_outcome_result_attrs<E>(result: &Result<SyncPushOutcome, E>) -> Vec<PerfAttr> {
+    match result {
+        Ok(push) => vec![
+            perf_attr("pushed_ref_count", push.pushed.pushed_refs),
+            perf_attr("bookmark_count", push.pushed.bookmarks.len()),
+            perf_attr("pushed_commit_count", push.pushed.pushed_commits.len()),
+            perf_attr(
+                "skipped_conflicted_count",
+                push.skipped_conflicted_bookmarks.len(),
+            ),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn sync_push_metrics_result_attrs(
+    result: &Result<SyncPushMetricsOutcome, JjError>,
+) -> Vec<PerfAttr> {
+    match result {
+        Ok(outcome) => sync_push_metric_attrs(&outcome.metrics),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn pull_request_records_result_attrs<E>(
+    result: &Result<Vec<PullRequestRecord>, E>,
+) -> Vec<PerfAttr> {
+    match result {
+        Ok(pull_requests) => vec![perf_attr("pull_request_count", pull_requests.len())],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn record_sync_push_metrics(span: &mut PerfSpan, metrics: &SyncPushMetrics) {
+    let attrs = sync_push_metric_attrs(metrics);
+    record_sync_push_metric_step(
+        span,
+        "tracked_origin_bookmark_updates",
+        metrics.tracked_origin_bookmark_updates_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "split_conflicted_updates",
+        metrics.split_conflicted_updates_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "push_tracked_updates",
+        metrics.push_tracked_updates_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "tracked_push_trunk",
+        metrics.tracked_push_trunk_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "pushed_bookmark_summaries",
+        metrics.pushed_bookmark_summaries_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "pushed_commits_for_updates",
+        metrics.pushed_commits_for_updates_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "git_push_refs",
+        metrics.git_push_refs_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "export_git_refs",
+        metrics.export_git_refs_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "commit_transaction",
+        metrics.commit_transaction_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(
+        span,
+        "unchanged_tracked_bookmark_summaries",
+        metrics.unchanged_tracked_bookmark_summaries_us,
+        attrs.clone(),
+    );
+    record_sync_push_metric_step(span, "total", metrics.total_us, attrs);
+}
+
+fn sync_push_metric_attrs(metrics: &SyncPushMetrics) -> Vec<PerfAttr> {
+    vec![
+        perf_attr("tracked_update_count", metrics.tracked_update_count),
+        perf_attr("pushable_update_count", metrics.pushable_update_count),
+        perf_attr("skipped_conflicted_count", metrics.skipped_conflicted_count),
+        perf_attr("pushed_ref_count", metrics.pushed_ref_count),
+        perf_attr("pushed_bookmark_count", metrics.pushed_bookmark_count),
+        perf_attr("unchanged_bookmark_count", metrics.unchanged_bookmark_count),
+        perf_attr("pushed_commit_count", metrics.pushed_commit_count),
+        perf_attr("jj_total_us", metrics.total_us),
+    ]
+}
+
+fn record_sync_push_metric_step(
+    span: &mut PerfSpan,
+    phase: &str,
+    duration_us: u64,
+    attrs: Vec<PerfAttr>,
+) {
+    span.record_step_us(
+        format!("push_syncable_tracked.{phase}"),
+        duration_us,
+        attrs,
+        None::<&CommandError>,
+    );
+}
+
 fn sync_current_stack(
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
@@ -1086,16 +1289,55 @@ fn sync_current_stack(
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
     let context = RepositoryContext::discover(environment)?;
+    let mut span = PerfLog::from_environment(environment).start(
+        "sync.current_stack",
+        [perf_attr("repo", context.origin.github.slug())],
+    );
+    let result =
+        sync_current_stack_traced(context, environment, services, progress, output, &mut span);
+    record_sync_result(&mut span, &result);
+    span.end();
+    result
+}
+
+fn sync_current_stack_traced(
+    context: RepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+    span: &mut PerfSpan,
+) -> Result<CommandResult, CommandError> {
     progress.status("Fetching origin…");
-    let fetch = services.fetch_origin(&context)?;
-    let manager = PullRequestStackManager::new(&context, services);
+    let fetch = span.measure_with_result_attrs(
+        "fetch_origin",
+        Vec::new(),
+        || services.fetch_origin(&context),
+        fetch_result_attrs,
+    )?;
+    let manager =
+        PullRequestStackManager::new(&context, services, PerfLog::from_environment(environment));
     progress.status("Selecting stack bookmarks…");
-    let selection = sync_stack_selection(&manager)?;
+    let selection = span.measure_with_result_attrs(
+        "select_stack_bookmarks",
+        Vec::new(),
+        || sync_stack_selection(&manager),
+        sync_selection_result_attrs,
+    )?;
     progress.status("Pushing stack bookmarks…");
-    let push = push_syncable_stack_branches(&context, services, &selection.branches)?;
+    let push = span.measure_with_result_attrs(
+        "push_stack_bookmarks",
+        [perf_attr("branch_count", selection.branches.len())],
+        || push_syncable_stack_branches(&context, services, &selection.branches),
+        sync_push_outcome_result_attrs,
+    )?;
     progress.status("Syncing pull request descriptions…");
-    let pull_requests =
-        manager.sync_pull_requests_with_metadata(&push.pushed, &selection.metadata)?;
+    let pull_requests = span.measure_with_result_attrs(
+        "sync_pull_requests",
+        [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
+        || manager.sync_pull_requests_with_metadata(&push.pushed, &selection.metadata),
+        pull_request_records_result_attrs,
+    )?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
@@ -1172,13 +1414,59 @@ fn sync_selected_revision(
         }
         Err(error) => return Err(error.into()),
     };
+    let mut span = PerfLog::from_environment(environment).start(
+        "sync.selected_revision",
+        [
+            perf_attr("repo", context.origin.github.slug()),
+            perf_attr("has_revision", revision.is_some()),
+        ],
+    );
+    let result = sync_selected_revision_traced(
+        revision,
+        context,
+        environment,
+        services,
+        progress,
+        output,
+        &mut span,
+    );
+    record_sync_result(&mut span, &result);
+    span.end();
+    result
+}
+
+fn sync_selected_revision_traced(
+    revision: Option<&str>,
+    context: RepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+    span: &mut PerfSpan,
+) -> Result<CommandResult, CommandError> {
     progress.status("Fetching origin…");
-    let fetch = services.fetch_origin(&context)?;
+    let fetch = span.measure_with_result_attrs(
+        "fetch_origin",
+        Vec::new(),
+        || services.fetch_origin(&context),
+        fetch_result_attrs,
+    )?;
     progress.status("Pushing selected bookmark…");
-    let push = services.push_syncable_revision(&context, revision)?;
+    let push = span.measure_with_result_attrs(
+        "push_syncable_revision",
+        Vec::new(),
+        || services.push_syncable_revision(&context, revision),
+        sync_push_outcome_result_attrs,
+    )?;
     progress.status("Syncing pull request description…");
-    let manager = PullRequestStackManager::new(&context, services);
-    let pull_requests = manager.sync_pull_requests(&push.pushed)?;
+    let manager =
+        PullRequestStackManager::new(&context, services, PerfLog::from_environment(environment));
+    let pull_requests = span.measure_with_result_attrs(
+        "sync_pull_requests",
+        [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
+        || manager.sync_pull_requests(&push.pushed),
+        pull_request_records_result_attrs,
+    )?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
@@ -1361,21 +1649,67 @@ fn sync_existing_origin(
     progress: &dyn ProgressSink,
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
+    let mut span = PerfLog::from_environment(environment).start(
+        "sync.current_repository",
+        [perf_attr("repo", context.origin.github.slug())],
+    );
+    let result =
+        sync_existing_origin_traced(context, environment, services, progress, output, &mut span);
+    record_sync_result(&mut span, &result);
+    span.end();
+    result
+}
+
+fn sync_existing_origin_traced(
+    context: RepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+    span: &mut PerfSpan,
+) -> Result<CommandResult, CommandError> {
     progress.status("Fetching origin…");
-    let fetch = services.fetch_origin(&context)?;
-    if context
+    let fetch = span.measure_with_result_attrs(
+        "fetch_origin",
+        Vec::new(),
+        || services.fetch_origin(&context),
+        fetch_result_attrs,
+    )?;
+    let advance_trunk = context
         .config
         .repo
-        .advance_trunk_enabled_for(&context.origin.github)
-    {
+        .advance_trunk_enabled_for(&context.origin.github);
+    span.set([perf_attr("advance_trunk", advance_trunk)]);
+    if advance_trunk {
         progress.status("Advancing trunk bookmark…");
-        services.advance_trunk_for_sync(&context)?;
+        span.measure_with_result_attrs(
+            "advance_trunk",
+            Vec::new(),
+            || services.advance_trunk_for_sync(&context),
+            advance_trunk_result_attrs,
+        )?;
     }
     progress.status("Pushing tracked bookmarks…");
-    let push = services.push_syncable_tracked(&context)?;
+    let push_step = span.start_step("push_syncable_tracked", Vec::new());
+    let push_result = services.push_syncable_tracked_with_metrics(&context);
+    if let Ok(outcome) = &push_result {
+        record_sync_push_metrics(span, &outcome.metrics);
+    }
+    span.finish_step(
+        push_step,
+        sync_push_metrics_result_attrs(&push_result),
+        push_result.as_ref().err(),
+    );
+    let push = push_result?.outcome;
     progress.status("Syncing pull request descriptions…");
-    let manager = PullRequestStackManager::new(&context, services);
-    let pull_requests = manager.sync_pull_requests(&push.pushed)?;
+    let manager =
+        PullRequestStackManager::new(&context, services, PerfLog::from_environment(environment));
+    let pull_requests = span.measure_with_result_attrs(
+        "sync_pull_requests",
+        [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
+        || manager.sync_pull_requests(&push.pushed),
+        pull_request_records_result_attrs,
+    )?;
     progress.finish();
     let report = domain::sync_report(&context, fetch, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {

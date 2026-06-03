@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct PullRequestStackManager<'a> {
     context: &'a RepositoryContext,
     services: &'a dyn CommandServices,
+    perf: PerfLog,
 }
 
 /// PRs whose generated stack context was refreshed after stack synchronization.
@@ -26,8 +27,16 @@ pub(super) struct PullRequestStackSyncSelection {
 }
 
 impl<'a> PullRequestStackManager<'a> {
-    pub(super) fn new(context: &'a RepositoryContext, services: &'a dyn CommandServices) -> Self {
-        Self { context, services }
+    pub(super) fn new(
+        context: &'a RepositoryContext,
+        services: &'a dyn CommandServices,
+        perf: PerfLog,
+    ) -> Self {
+        Self {
+            context,
+            services,
+            perf,
+        }
     }
 
     /// Loads the locally stored stack snapshot without requiring GitHub access.
@@ -36,6 +45,25 @@ impl<'a> PullRequestStackManager<'a> {
         selection: PullRequestStackSelection,
     ) -> Result<PullRequestStackSnapshot, CommandError> {
         self.snapshot_from_live_pull_requests(Vec::new(), selection)
+    }
+
+    /// Applies GitHub status facts to durable metadata and prunes completed cached trees.
+    pub(super) fn maintain_status_metadata(
+        &self,
+        statuses: &[PullRequestStatusRecord],
+    ) -> Result<PullRequestStackSnapshot, CommandError> {
+        let metadata = self.read_metadata()?;
+        let maintained = domain::maintain_stack_metadata_pull_request_statuses(statuses, &metadata);
+        if maintained != metadata {
+            self.write_metadata(&maintained)?;
+        }
+        let local_branches = self.local_pull_request_branches()?;
+        Ok(PullRequestStackSnapshot::from_metadata(
+            &maintained,
+            &local_branches,
+            &[],
+            PullRequestStackSelection::default(),
+        ))
     }
 
     /// Refreshes stack state and updates GitHub PR descriptions/bases from that state.
@@ -80,9 +108,41 @@ impl<'a> PullRequestStackManager<'a> {
 
     /// Refreshes durable stack metadata from local jj branch ancestry.
     pub(super) fn refresh_local_stack_metadata(&self) -> Result<StackMetadata, CommandError> {
-        let local_branches = self.services.local_stack_branches(self.context)?;
-        let metadata = apply_local_stack_branches(&local_branches, &self.read_metadata()?);
-        self.write_metadata(&metadata)?;
+        let mut span = self.perf.start(
+            "stack.refresh_local_metadata",
+            [perf_attr("repo", self.context.origin.github.slug())],
+        );
+        let result = self.refresh_local_stack_metadata_traced(&mut span);
+        if let Ok(metadata) = &result {
+            span.set([perf_attr("metadata_node_count", metadata.nodes.len())]);
+        }
+        if let Err(error) = &result {
+            span.record_error(error);
+        }
+        span.end();
+        result
+    }
+
+    fn refresh_local_stack_metadata_traced(
+        &self,
+        span: &mut PerfSpan,
+    ) -> Result<StackMetadata, CommandError> {
+        let metadata = span.measure_with_result_attrs(
+            "read_metadata",
+            Vec::new(),
+            || self.read_metadata(),
+            metadata_result_attrs,
+        )?;
+        let metadata = self.apply_local_stack_metadata_traced(
+            metadata,
+            span,
+            "refresh_local_stack_metadata.apply_local_stack_metadata",
+        )?;
+        span.measure(
+            "write_metadata",
+            [perf_attr("metadata_node_count", metadata.nodes.len())],
+            || self.write_metadata(&metadata),
+        )?;
         Ok(metadata)
     }
 
@@ -112,6 +172,29 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
         reports: &[PullRequestReport],
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
+        let mut span = self.perf.start(
+            "stack.update_after_publish",
+            [
+                perf_attr("repo", self.context.origin.github.slug()),
+                perf_attr("report_count", reports.len()),
+            ],
+        );
+        let result = self.update_after_stack_publish_traced(reports, &mut span);
+        if let Ok(update) = &result {
+            span.set([perf_attr("updated_pr_count", update.pull_requests.len())]);
+        }
+        if let Err(error) = &result {
+            span.record_error(error);
+        }
+        span.end();
+        result
+    }
+
+    fn update_after_stack_publish_traced(
+        &self,
+        reports: &[PullRequestReport],
+        span: &mut PerfSpan,
+    ) -> Result<PullRequestStackPublishUpdate, CommandError> {
         let Some(selection) = reports
             .first()
             .map(|report| PullRequestStackSelection::pull_request(report.pull_request.number))
@@ -131,8 +214,9 @@ impl<'a> PullRequestStackManager<'a> {
                 seed_pull_requests.push(report.pull_request.clone());
             }
         }
+        span.set([perf_attr("seed_pr_count", seed_pull_requests.len())]);
 
-        self.sync_stack_component(selection, &seed_pull_requests)
+        self.sync_stack_component(selection, &seed_pull_requests, span)
     }
 
     /// Syncs PR descriptions using the currently stored stack metadata.
@@ -151,8 +235,33 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
         selection: PullRequestStackSelection,
         seed_pull_requests: &[PullRequestRecord],
+        span: &mut PerfSpan,
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
-        let metadata = self.stack_metadata_with_local_and_seed_pull_requests(seed_pull_requests)?;
+        let local_branch_facts = span.measure_with_result_attrs(
+            "load_local_stack_branches",
+            [perf_attr("seed_pr_count", seed_pull_requests.len())],
+            || self.services.local_stack_branch_facts(self.context),
+            local_stack_branch_facts_result_attrs,
+        )?;
+        record_local_stack_branch_metrics(span, &local_branch_facts.metrics);
+        let local_branches = local_branch_facts.branches;
+        span.set([perf_attr("local_branch_count", local_branches.len())]);
+
+        let stack_metadata_step = span.start_step(
+            "stack_metadata_with_local_and_seed_prs",
+            [perf_attr("seed_pr_count", seed_pull_requests.len())],
+        );
+        let metadata_result = self.stack_metadata_with_local_and_seed_pull_requests(
+            seed_pull_requests,
+            &local_branches,
+            span,
+        );
+        span.finish_step(
+            stack_metadata_step,
+            metadata_result_attrs(&metadata_result),
+            metadata_result.as_ref().err(),
+        );
+        let metadata = metadata_result?;
         let snapshot = PullRequestStackSnapshot::from_metadata(
             &metadata,
             &[],
@@ -160,15 +269,35 @@ impl<'a> PullRequestStackManager<'a> {
             selection.clone(),
         );
         let component = snapshot.component_for_selection(selection.clone());
-        let component_pull_requests =
-            self.pull_requests_for_component(&component, seed_pull_requests)?;
+        span.set([perf_attr("component_node_count", component.nodes.len())]);
+        let component_pull_requests = span.measure(
+            "pull_requests_for_component",
+            [
+                perf_attr("component_node_count", component.nodes.len()),
+                perf_attr("seed_pr_count", seed_pull_requests.len()),
+            ],
+            || self.pull_requests_for_component(&component, seed_pull_requests),
+        )?;
+        span.set([perf_attr(
+            "component_pr_count",
+            component_pull_requests.len(),
+        )]);
         if component_pull_requests.is_empty() {
             return Ok(PullRequestStackPublishUpdate::default());
         }
 
         let metadata = refresh_stack_metadata_pull_requests(&component_pull_requests, &metadata);
-        let metadata = self.apply_local_stack_metadata(metadata)?;
-        self.write_metadata(&metadata)?;
+        let metadata = self.apply_local_stack_metadata_snapshot_traced(
+            metadata,
+            &local_branches,
+            span,
+            "component_metadata.apply_local_stack_metadata",
+        )?;
+        span.measure(
+            "write_metadata",
+            [perf_attr("metadata_node_count", metadata.nodes.len())],
+            || self.write_metadata(&metadata),
+        )?;
 
         let refreshed_snapshot = PullRequestStackSnapshot::from_metadata(
             &metadata,
@@ -177,21 +306,62 @@ impl<'a> PullRequestStackManager<'a> {
             selection.clone(),
         );
         let refreshed_component = refreshed_snapshot.component_for_selection(selection);
-        self.sync_available_pull_requests_for_snapshot(
-            &refreshed_component,
-            &component_pull_requests,
-            &metadata,
+        span.measure(
+            "sync_available_pull_requests",
+            [perf_attr(
+                "component_pr_count",
+                component_pull_requests.len(),
+            )],
+            || {
+                self.sync_available_pull_requests_for_snapshot(
+                    &refreshed_component,
+                    &component_pull_requests,
+                    &metadata,
+                )
+            },
         )
     }
 
     fn stack_metadata_with_local_and_seed_pull_requests(
         &self,
         seed_pull_requests: &[PullRequestRecord],
+        local_branches: &[LocalStackBranch],
+        span: &mut PerfSpan,
     ) -> Result<StackMetadata, CommandError> {
-        let metadata = self.apply_local_stack_metadata(self.read_metadata()?)?;
-        let metadata = upsert_stack_metadata_pull_requests(seed_pull_requests, &metadata);
-        let metadata = self.apply_local_stack_metadata(metadata)?;
-        self.write_metadata(&metadata)?;
+        let metadata = span.measure_with_result_attrs(
+            "stack_metadata.read_metadata",
+            Vec::new(),
+            || self.read_metadata(),
+            metadata_result_attrs,
+        )?;
+        let metadata = self.apply_local_stack_metadata_snapshot_traced(
+            metadata,
+            local_branches,
+            span,
+            "stack_metadata.apply_existing_local",
+        )?;
+        let metadata = span.measure_with_result_attrs(
+            "stack_metadata.upsert_seed_prs",
+            [perf_attr("seed_pr_count", seed_pull_requests.len())],
+            || {
+                Ok::<_, CommandError>(upsert_stack_metadata_pull_requests(
+                    seed_pull_requests,
+                    &metadata,
+                ))
+            },
+            metadata_result_attrs,
+        )?;
+        let metadata = self.apply_local_stack_metadata_snapshot_traced(
+            metadata,
+            local_branches,
+            span,
+            "stack_metadata.apply_seeded_local",
+        )?;
+        span.measure(
+            "stack_metadata.write_metadata",
+            [perf_attr("metadata_node_count", metadata.nodes.len())],
+            || self.write_metadata(&metadata),
+        )?;
         Ok(metadata)
     }
 
@@ -314,9 +484,28 @@ impl<'a> PullRequestStackManager<'a> {
         push: &TrackedPushOutcome,
         metadata: &StackMetadata,
     ) -> Result<Vec<PullRequestRecord>, CommandError> {
-        Ok(self
-            .services
-            .sync_pull_requests(self.context, push, metadata)?)
+        let mut span = self.perf.start(
+            "stack.sync_pull_requests",
+            [
+                perf_attr("repo", self.context.origin.github.slug()),
+                perf_attr("bookmark_count", push.bookmarks.len()),
+                perf_attr("metadata_node_count", metadata.nodes.len()),
+            ],
+        );
+        let result = span
+            .measure("sync_pull_requests", Vec::new(), || {
+                self.services
+                    .sync_pull_requests(self.context, push, metadata)
+            })
+            .map_err(CommandError::from);
+        if let Ok(pull_requests) = &result {
+            span.set([perf_attr("synced_pr_count", pull_requests.len())]);
+        }
+        if let Err(error) = &result {
+            span.record_error(error);
+        }
+        span.end();
+        result
     }
 
     fn sync_pull_requests_for_snapshot(
@@ -361,6 +550,78 @@ impl<'a> PullRequestStackManager<'a> {
         Ok(apply_local_stack_branches(&local_branches, &metadata))
     }
 
+    fn apply_local_stack_metadata_traced(
+        &self,
+        metadata: StackMetadata,
+        span: &mut PerfSpan,
+        step_name: &'static str,
+    ) -> Result<StackMetadata, CommandError> {
+        let metadata_node_count = metadata.nodes.len();
+        let step = span.start_step(
+            step_name,
+            [perf_attr("metadata_node_count", metadata_node_count)],
+        );
+        let result = self.apply_local_stack_metadata_traced_inner(metadata, span, step_name);
+        span.finish_step(step, metadata_result_attrs(&result), result.as_ref().err());
+        result
+    }
+
+    fn apply_local_stack_metadata_traced_inner(
+        &self,
+        metadata: StackMetadata,
+        span: &mut PerfSpan,
+        step_name: &'static str,
+    ) -> Result<StackMetadata, CommandError> {
+        let metadata_node_count = metadata.nodes.len();
+        let local_branches = span.measure_with_result_attrs(
+            format!("{step_name}.local_stack_branches"),
+            [perf_attr("metadata_node_count", metadata_node_count)],
+            || self.services.local_stack_branches(self.context),
+            local_stack_branch_result_attrs,
+        )?;
+        self.apply_local_stack_branches_snapshot(metadata, &local_branches, span, step_name)
+    }
+
+    fn apply_local_stack_metadata_snapshot_traced(
+        &self,
+        metadata: StackMetadata,
+        local_branches: &[LocalStackBranch],
+        span: &mut PerfSpan,
+        step_name: &'static str,
+    ) -> Result<StackMetadata, CommandError> {
+        let step = span.start_step(
+            step_name,
+            [
+                perf_attr("metadata_node_count", metadata.nodes.len()),
+                perf_attr("local_branch_count", local_branches.len()),
+                perf_attr("reused_local_branches", true),
+            ],
+        );
+        let result =
+            self.apply_local_stack_branches_snapshot(metadata, local_branches, span, step_name);
+        span.finish_step(step, metadata_result_attrs(&result), result.as_ref().err());
+        result
+    }
+
+    fn apply_local_stack_branches_snapshot(
+        &self,
+        metadata: StackMetadata,
+        local_branches: &[LocalStackBranch],
+        span: &mut PerfSpan,
+        step_name: &'static str,
+    ) -> Result<StackMetadata, CommandError> {
+        let metadata_node_count = metadata.nodes.len();
+        span.measure_with_result_attrs(
+            format!("{step_name}.apply_local_stack_branches"),
+            [
+                perf_attr("local_branch_count", local_branches.len()),
+                perf_attr("metadata_node_count", metadata_node_count),
+            ],
+            || Ok::<_, CommandError>(apply_local_stack_branches(local_branches, &metadata)),
+            metadata_result_attrs,
+        )
+    }
+
     fn refresh_metadata_by_number(
         &self,
         metadata: StackMetadata,
@@ -381,21 +642,14 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
         metadata: &StackMetadata,
     ) -> Result<Vec<PullRequestRecord>, CommandError> {
-        let mut pull_requests = Vec::new();
-        let mut seen_numbers = BTreeSet::new();
-        for number in metadata.nodes.iter().filter_map(|node| node.pull_request) {
-            if !seen_numbers.insert(number) {
-                continue;
-            }
-            let Some(pull_request) = self
-                .services
-                .find_pull_request_by_number(self.context, number)?
-            else {
-                continue;
-            };
-            pull_requests.push(pull_request);
-        }
-        Ok(pull_requests)
+        let numbers = metadata
+            .nodes
+            .iter()
+            .filter_map(|node| node.pull_request)
+            .collect::<Vec<_>>();
+        self.services
+            .find_pull_requests_by_numbers(self.context, &numbers)
+            .map_err(Into::into)
     }
 
     fn read_metadata(&self) -> Result<StackMetadata, CommandError> {
@@ -405,6 +659,103 @@ impl<'a> PullRequestStackManager<'a> {
     fn write_metadata(&self, metadata: &StackMetadata) -> Result<(), CommandError> {
         write_stack_metadata(&self.context.repository_root, metadata).map_err(Into::into)
     }
+}
+
+fn metadata_result_attrs(result: &Result<StackMetadata, CommandError>) -> Vec<PerfAttr> {
+    result
+        .as_ref()
+        .map(|metadata| vec![perf_attr("metadata_node_count", metadata.nodes.len())])
+        .unwrap_or_default()
+}
+
+fn local_stack_branch_result_attrs(
+    result: &Result<Vec<LocalStackBranch>, JjError>,
+) -> Vec<PerfAttr> {
+    result
+        .as_ref()
+        .map(|branches| vec![perf_attr("local_branch_count", branches.len())])
+        .unwrap_or_default()
+}
+
+fn local_stack_branch_facts_result_attrs(
+    result: &Result<LocalStackBranchFacts, JjError>,
+) -> Vec<PerfAttr> {
+    result
+        .as_ref()
+        .map(|facts| local_stack_branch_metric_attrs(&facts.metrics))
+        .unwrap_or_default()
+}
+
+fn local_stack_branch_metric_attrs(metrics: &LocalStackBranchMetrics) -> Vec<PerfAttr> {
+    vec![
+        perf_attr("local_branch_count", metrics.branch_count),
+        perf_attr("local_bookmark_count", metrics.local_bookmark_count),
+        perf_attr("normal_bookmark_count", metrics.normal_bookmark_count),
+        perf_attr(
+            "skipped_non_normal_bookmark_count",
+            metrics.skipped_non_normal_bookmark_count,
+        ),
+        perf_attr("loaded_commit_count", metrics.loaded_commit_count),
+        perf_attr("resolved_trunk_count", metrics.resolved_trunk_count),
+        perf_attr(
+            "skipped_missing_trunk_count",
+            metrics.skipped_missing_trunk_count,
+        ),
+        perf_attr("stack_path_count", metrics.stack_path_count),
+        perf_attr("skipped_non_linear_count", metrics.skipped_non_linear_count),
+        perf_attr("skipped_trunk_count", metrics.skipped_trunk_count),
+        perf_attr("jj_total_us", metrics.total_us),
+    ]
+}
+
+fn record_local_stack_branch_metrics(span: &mut PerfSpan, metrics: &LocalStackBranchMetrics) {
+    let attrs = local_stack_branch_metric_attrs(metrics);
+    record_local_stack_branch_metric_step(
+        span,
+        "enumerate_bookmarks",
+        metrics.enumerate_bookmarks_us,
+        attrs.clone(),
+    );
+    record_local_stack_branch_metric_step(
+        span,
+        "load_commit",
+        metrics.load_commit_us,
+        attrs.clone(),
+    );
+    record_local_stack_branch_metric_step(
+        span,
+        "resolve_trunk",
+        metrics.resolve_trunk_us,
+        attrs.clone(),
+    );
+    record_local_stack_branch_metric_step(
+        span,
+        "linear_stack_path",
+        metrics.linear_stack_path_us,
+        attrs.clone(),
+    );
+    record_local_stack_branch_metric_step(
+        span,
+        "nearest_ancestor_bookmark",
+        metrics.nearest_ancestor_bookmark_us,
+        attrs.clone(),
+    );
+    record_local_stack_branch_metric_step(span, "sort_dedup", metrics.sort_dedup_us, attrs.clone());
+    record_local_stack_branch_metric_step(span, "total", metrics.total_us, attrs);
+}
+
+fn record_local_stack_branch_metric_step(
+    span: &mut PerfSpan,
+    phase: &str,
+    duration_us: u64,
+    attrs: Vec<PerfAttr>,
+) {
+    span.record_step_us(
+        format!("local_stack_branches.{phase}"),
+        duration_us,
+        attrs,
+        None::<&CommandError>,
+    );
 }
 
 struct AuthoredStackMetadataRefresh {

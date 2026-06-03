@@ -7,7 +7,7 @@ pub async fn pull_request_plan(
     github: &dyn GitHubClient,
     task_id: Option<String>,
     labels: Vec<String>,
-    draft: bool,
+    readiness: PullRequestReadiness,
 ) -> Result<PullRequestPlan, WorkflowError> {
     let (title, body) = pull_request_description(&workspace)?;
     // Root PRs target trunk, while stacked PRs target the nearest bookmarked stack
@@ -27,7 +27,8 @@ pub async fn pull_request_plan(
     };
     let target_commit_id = workspace.target_change.commit_id.clone();
     let changed_files = workspace.changed_files.clone();
-    let reviewer_candidates = context
+    let change_lines = workspace.change_lines.clone();
+    let mut reviewer_candidates = context
         .config
         .repo
         .reviewer_candidates_for(&context.origin.github, &workspace.changed_files);
@@ -39,7 +40,16 @@ pub async fn pull_request_plan(
     let existing_pull_request = github
         .find_open_pull_request(&context.origin.github, &head)
         .await?;
-    let reviewers = reviewer_selection_from_candidates(&reviewer_candidates);
+    let existing_reviewers = existing_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.reviewers.clone())
+        .unwrap_or_default();
+    add_existing_reviewers_to_candidates(&mut reviewer_candidates, &existing_reviewers);
+    let reviewers = merge_reviewer_selections(
+        reviewer_selection_from_candidates(&reviewer_candidates),
+        existing_reviewers,
+    );
+    let draft = readiness.desired_draft(existing_pull_request.as_ref());
 
     Ok(PullRequestPlan {
         repository: bookmark_report.repository,
@@ -49,6 +59,7 @@ pub async fn pull_request_plan(
         title,
         body,
         changed_files,
+        change_lines,
         base,
         base_pull_request,
         head,
@@ -72,6 +83,55 @@ fn reviewer_selection_from_candidates(candidates: &[ReviewerCandidate]) -> Revie
     }
 
     ReviewerSelection::new(users, teams)
+}
+
+fn merge_reviewer_selections(
+    left: ReviewerSelection,
+    right: ReviewerSelection,
+) -> ReviewerSelection {
+    ReviewerSelection::new(
+        left.users.into_iter().chain(right.users),
+        left.teams.into_iter().chain(right.teams),
+    )
+}
+
+fn add_existing_reviewers_to_candidates(
+    candidates: &mut Vec<ReviewerCandidate>,
+    reviewers: &ReviewerSelection,
+) {
+    for login in &reviewers.users {
+        add_reviewer_candidate_reason(
+            candidates,
+            ReviewerTarget::user(login.clone()),
+            "already requested",
+        );
+    }
+    for slug in &reviewers.teams {
+        add_reviewer_candidate_reason(
+            candidates,
+            ReviewerTarget::team(slug.clone(), slug.clone()),
+            "already requested",
+        );
+    }
+}
+
+fn add_reviewer_candidate_reason(
+    candidates: &mut Vec<ReviewerCandidate>,
+    target: ReviewerTarget,
+    reason: impl Into<String>,
+) {
+    let reason = reason.into();
+    if let Some(candidate) = candidates
+        .iter_mut()
+        .find(|candidate| candidate.target.matches_identity(&target))
+    {
+        if !candidate.reasons.contains(&reason) {
+            candidate.reasons.push(reason);
+        }
+        return;
+    }
+
+    candidates.push(ReviewerCandidate::new(target, vec![reason]));
 }
 
 /// Applies pre-planning PR handlers to the selected change description.
@@ -144,7 +204,7 @@ pub async fn publish_pull_request(
     github: &dyn GitHubClient,
 ) -> Result<PullRequestReport, WorkflowError> {
     let existing = plan.existing_pull_request.clone();
-    let (action, pull_request) = if let Some(existing) = existing {
+    let (action, mut pull_request) = if let Some(existing) = existing {
         let request = PullRequestUpdate {
             title: Some(plan.title.clone()),
             body: Some(plan.body.clone()),
@@ -169,6 +229,18 @@ pub async fn publish_pull_request(
 
         (PullRequestAction::Created, pull_request)
     };
+
+    if action == PullRequestAction::Updated && pull_request.draft != plan.draft {
+        pull_request = if plan.draft {
+            github
+                .convert_pull_request_to_draft(&context.origin.github, pull_request.number)
+                .await?
+        } else {
+            github
+                .mark_pull_request_ready(&context.origin.github, pull_request.number)
+                .await?
+        };
+    }
 
     let event_handlers = if options.event_handlers {
         context

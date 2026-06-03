@@ -47,7 +47,7 @@ impl RuntimeEnvironment {
             .map(Path::new)
     }
 
-    pub(super) fn variable(&self, name: &str) -> Option<&str> {
+    pub(crate) fn variable(&self, name: &str) -> Option<&str> {
         self.variables.get(name).map(String::as_str)
     }
 }

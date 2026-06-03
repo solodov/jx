@@ -1,5 +1,7 @@
 use super::*;
 
+const MIN_DIALOGUER_TERMINAL_ROWS: usize = 3;
+
 pub(super) struct PromptHandlers<'a> {
     pub(super) pull_request_previewer: &'a dyn PullRequestPreviewer,
     pub(super) pull_request_selector: &'a dyn PullRequestSelector,
@@ -86,6 +88,8 @@ impl PullRequestSelector for TerminalPullRequestSelector {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(PullRequestSelectionError::NonInteractive);
         }
+        ensure_dialoguer_prompt_space()
+            .map_err(|source| PullRequestSelectionError::Read { source })?;
         if choices.is_empty() {
             return Err(PullRequestSelectionError::NoPullRequests);
         }
@@ -193,6 +197,7 @@ fn pull_request_record_from_stack_node(node: &PullRequestStackNode) -> Option<Pu
         html_url: pull_request.url.clone(),
         draft: node.draft,
         merged: node.merged,
+        reviewers: ReviewerSelection::default(),
     })
 }
 
@@ -210,6 +215,16 @@ pub enum PullRequestConfirmationError {
     NonInteractive,
     #[error("Could not read pull request confirmation: {source}")]
     Read { source: dialoguer::Error },
+}
+
+fn ensure_dialoguer_prompt_space() -> Result<(), dialoguer::Error> {
+    let rows = dialoguer::console::Term::stderr().size().0 as usize;
+    if rows < MIN_DIALOGUER_TERMINAL_ROWS {
+        return Err(dialoguer::Error::from(io::Error::other(format!(
+            "terminal is too short for interactive prompts ({rows} rows; need at least {MIN_DIALOGUER_TERMINAL_ROWS}); resize and retry"
+        ))));
+    }
+    Ok(())
 }
 
 /// Plain, low-noise prompt theme for reviewer and confirmation selectors.
@@ -278,13 +293,15 @@ impl PullRequestConfirmer for TerminalPullRequestConfirmer {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(PullRequestConfirmationError::NonInteractive);
         }
+        ensure_dialoguer_prompt_space()
+            .map_err(|source| PullRequestConfirmationError::Read { source })?;
 
         eprintln!();
         let theme = PlainPromptTheme;
-        let selected = Select::with_theme(&theme)
+        let confirmed = Confirm::with_theme(&theme)
             .with_prompt(pull_request_confirmation_prompt(plan))
-            .items(["Yes", "No"])
-            .default(1)
+            .default(false)
+            .show_default(false)
             .report(false)
             .interact_opt()
             .map_err(|source| {
@@ -292,7 +309,7 @@ impl PullRequestConfirmer for TerminalPullRequestConfirmer {
                 PullRequestConfirmationError::Read { source }
             })?;
 
-        Ok(selected == Some(0))
+        Ok(confirmed.unwrap_or(false))
     }
 }
 
@@ -301,6 +318,18 @@ pub(super) struct AlwaysConfirmPullRequest;
 
 #[cfg(test)]
 impl PullRequestConfirmer for AlwaysConfirmPullRequest {
+    fn confirm_pull_request(
+        &self,
+        _plan: &PullRequestPlan,
+    ) -> Result<bool, PullRequestConfirmationError> {
+        Ok(true)
+    }
+}
+
+/// Shared non-interactive yes implementation for explicit batch confirmation mode.
+pub(super) struct YesConfirmer;
+
+impl PullRequestConfirmer for YesConfirmer {
     fn confirm_pull_request(
         &self,
         _plan: &PullRequestPlan,
@@ -329,20 +358,21 @@ impl PushConfirmer for TerminalPushConfirmer {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(PushConfirmationError::NonInteractive);
         }
+        ensure_dialoguer_prompt_space().map_err(|source| PushConfirmationError::Read { source })?;
 
         eprintln!();
         let theme = PlainPromptTheme;
-        let selected = Select::with_theme(&theme)
+        let confirmed = Confirm::with_theme(&theme)
             .with_prompt(push_confirmation_prompt(plan))
-            .items(["Yes", "No"])
-            .default(1)
+            .default(false)
+            .show_default(false)
             .interact_opt()
             .map_err(|source| {
                 restore_terminal_cursor();
                 PushConfirmationError::Read { source }
             })?;
 
-        Ok(selected == Some(0))
+        Ok(confirmed.unwrap_or(false))
     }
 }
 
@@ -351,6 +381,12 @@ pub(super) struct AlwaysConfirmPush;
 
 #[cfg(test)]
 impl PushConfirmer for AlwaysConfirmPush {
+    fn confirm_push(&self, _plan: &PushPlan) -> Result<bool, PushConfirmationError> {
+        Ok(true)
+    }
+}
+
+impl PushConfirmer for YesConfirmer {
     fn confirm_push(&self, _plan: &PushPlan) -> Result<bool, PushConfirmationError> {
         Ok(true)
     }
@@ -382,15 +418,17 @@ impl RepositoryInitializationConfirmer for TerminalRepositoryInitializationConfi
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(RepositoryInitializationConfirmationError::NonInteractive);
         }
+        ensure_dialoguer_prompt_space()
+            .map_err(|source| RepositoryInitializationConfirmationError::Read { source })?;
 
         let theme = PlainPromptTheme;
-        let selected = Select::with_theme(&theme)
+        let confirmed = Confirm::with_theme(&theme)
             .with_prompt(format!(
                 "Initialize jj repository at {}?",
                 workspace_root.display()
             ))
-            .items(["Yes", "No"])
-            .default(1)
+            .default(false)
+            .show_default(false)
             .report(false)
             .interact_opt()
             .map_err(|source| {
@@ -398,7 +436,7 @@ impl RepositoryInitializationConfirmer for TerminalRepositoryInitializationConfi
                 RepositoryInitializationConfirmationError::Read { source }
             })?;
 
-        Ok(selected == Some(0))
+        Ok(confirmed.unwrap_or(false))
     }
 }
 
@@ -407,6 +445,15 @@ pub(super) struct AlwaysConfirmRepositoryInitialization;
 
 #[cfg(test)]
 impl RepositoryInitializationConfirmer for AlwaysConfirmRepositoryInitialization {
+    fn confirm_repository_initialization(
+        &self,
+        _workspace_root: &Path,
+    ) -> Result<bool, RepositoryInitializationConfirmationError> {
+        Ok(true)
+    }
+}
+
+impl RepositoryInitializationConfirmer for YesConfirmer {
     fn confirm_repository_initialization(
         &self,
         _workspace_root: &Path,
@@ -456,12 +503,14 @@ impl RepositoryCreationConfirmer for TerminalRepositoryCreationConfirmer {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(RepositoryCreationConfirmationError::NonInteractive);
         }
+        ensure_dialoguer_prompt_space()
+            .map_err(|source| RepositoryCreationConfirmationError::Read { source })?;
 
         let theme = PlainPromptTheme;
-        let selected = Select::with_theme(&theme)
+        let confirmed = Confirm::with_theme(&theme)
             .with_prompt(format!("Create private {} repository?", plan.remote_url))
-            .items(["Yes", "No"])
-            .default(1)
+            .default(false)
+            .show_default(false)
             .report(false)
             .interact_opt()
             .map_err(|source| {
@@ -469,7 +518,7 @@ impl RepositoryCreationConfirmer for TerminalRepositoryCreationConfirmer {
                 RepositoryCreationConfirmationError::Read { source }
             })?;
 
-        Ok(selected == Some(0))
+        Ok(confirmed.unwrap_or(false))
     }
 }
 
@@ -478,6 +527,15 @@ pub(super) struct AlwaysConfirmRepositoryCreation;
 
 #[cfg(test)]
 impl RepositoryCreationConfirmer for AlwaysConfirmRepositoryCreation {
+    fn confirm_repository_creation(
+        &self,
+        _plan: &RepositoryBootstrapPlan,
+    ) -> Result<bool, RepositoryCreationConfirmationError> {
+        Ok(true)
+    }
+}
+
+impl RepositoryCreationConfirmer for YesConfirmer {
     fn confirm_repository_creation(
         &self,
         _plan: &RepositoryBootstrapPlan,
@@ -527,12 +585,14 @@ impl WorkspaceRemoveConfirmer for TerminalWorkspaceRemoveConfirmer {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(WorkspaceRemoveConfirmationError::NonInteractive);
         }
+        ensure_dialoguer_prompt_space()
+            .map_err(|source| WorkspaceRemoveConfirmationError::Read { source })?;
 
         let theme = PlainPromptTheme;
-        let selected = Select::with_theme(&theme)
+        let confirmed = Confirm::with_theme(&theme)
             .with_prompt(workspace_remove_confirmation_prompt(workspace))
-            .items(["Yes", "No"])
-            .default(1)
+            .default(false)
+            .show_default(false)
             .report(false)
             .interact_opt()
             .map_err(|source| {
@@ -540,7 +600,7 @@ impl WorkspaceRemoveConfirmer for TerminalWorkspaceRemoveConfirmer {
                 WorkspaceRemoveConfirmationError::Read { source }
             })?;
 
-        Ok(selected == Some(0))
+        Ok(confirmed.unwrap_or(false))
     }
 }
 
@@ -549,6 +609,15 @@ pub(super) struct AlwaysConfirmWorkspaceRemove;
 
 #[cfg(test)]
 impl WorkspaceRemoveConfirmer for AlwaysConfirmWorkspaceRemove {
+    fn confirm_workspace_remove(
+        &self,
+        _workspace: &WorkspaceEntry,
+    ) -> Result<bool, WorkspaceRemoveConfirmationError> {
+        Ok(true)
+    }
+}
+
+impl WorkspaceRemoveConfirmer for YesConfirmer {
     fn confirm_workspace_remove(
         &self,
         _workspace: &WorkspaceEntry,
@@ -586,7 +655,10 @@ impl ReviewerSelector for TerminalReviewerSelector {
             return Ok(ReviewerSelection::default());
         }
 
-        if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        if !io::stdin().is_terminal()
+            || !io::stderr().is_terminal()
+            || ensure_dialoguer_prompt_space().is_err()
+        {
             return Ok(selection_from_choices(
                 choices.iter().filter(|choice| choice.checked),
             ));
@@ -605,7 +677,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
             .with_prompt("Reviewers:")
             .items(&labels)
             .defaults(&defaults)
-            .clear(false)
+            .clear(true)
             .report(false)
             .interact_opt()
             .map_err(|source| {
@@ -614,7 +686,12 @@ impl ReviewerSelector for TerminalReviewerSelector {
             })?
             .ok_or(ReviewerSelectionError::Cancelled)?;
 
-        Ok(selection_from_indexes(&choices, &selected))
+        let selected_reviewers = selection_from_indexes(&choices, &selected);
+        eprintln!(
+            "Reviewers: {}",
+            reviewer_selection_summary(&choices, &selected)
+        );
+        Ok(selected_reviewers)
     }
 }
 
@@ -662,7 +739,10 @@ pub(super) fn reviewer_choices(
     let mut choices: Vec<ReviewerChoice> = Vec::new();
 
     for target in preselected {
-        if choices.iter().any(|choice| &choice.target == target) {
+        if choices
+            .iter()
+            .any(|choice| choice.target.matches_identity(target))
+        {
             continue;
         }
         choices.push(ReviewerChoice {
@@ -675,7 +755,7 @@ pub(super) fn reviewer_choices(
     for candidate in candidates {
         if let Some(choice) = choices
             .iter_mut()
-            .find(|choice| choice.target == candidate.target)
+            .find(|choice| choice.target.matches_identity(&candidate.target))
         {
             for reason in &candidate.reasons {
                 if !choice.reasons.contains(reason) {
@@ -730,6 +810,19 @@ pub(super) fn selection_from_indexes(
     selected: &[usize],
 ) -> ReviewerSelection {
     selection_from_choices(selected.iter().filter_map(|index| choices.get(*index)))
+}
+
+fn reviewer_selection_summary(choices: &[ReviewerChoice], selected: &[usize]) -> String {
+    let names = selected
+        .iter()
+        .filter_map(|index| choices.get(*index))
+        .map(|choice| choice.target.display_name().to_owned())
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join(", ")
+    }
 }
 
 /// Restores cursor visibility before the process exits from an interrupt.

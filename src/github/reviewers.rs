@@ -44,6 +44,15 @@ impl ReviewerTarget {
             Self::Team { name, .. } => name,
         }
     }
+
+    /// Returns true when two targets identify the same GitHub reviewer identity.
+    pub fn matches_identity(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::User { login: left }, Self::User { login: right }) => left == right,
+            (Self::Team { slug: left, .. }, Self::Team { slug: right, .. }) => left == right,
+            _ => false,
+        }
+    }
 }
 
 fn is_valid_reviewer_component(name: &str) -> bool {

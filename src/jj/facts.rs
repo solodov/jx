@@ -186,7 +186,7 @@ impl JjWorkspace {
         let local_bookmarks_at_target = self.local_bookmarks_for_commit(target.id());
         let nearest_ancestor_bookmark = self.nearest_ancestor_bookmark(&trunk, &stack_path);
         let stack_index = stack_path.len().saturating_sub(1);
-        let changed_files = changed_files_for_commit(self.repo.as_ref(), &target)?;
+        let changed = changed_file_facts_for_commit(self.repo.as_ref(), &target)?;
 
         Ok(WorkspaceFacts {
             workspace_root: self.workspace_root(),
@@ -201,7 +201,8 @@ impl JjWorkspace {
             local_bookmarks,
             local_bookmarks_at_target,
             nearest_ancestor_bookmark,
-            changed_files,
+            changed_files: changed.files,
+            change_lines: changed.lines,
             stack_index,
         })
     }
@@ -218,6 +219,7 @@ impl JjWorkspace {
             });
         };
         let target_commit_id = target.id().hex();
+        let changed = changed_file_facts_for_commit(self.repo.as_ref(), &target)?;
 
         Ok(WorkspaceFacts {
             workspace_root: self.workspace_root(),
@@ -232,7 +234,8 @@ impl JjWorkspace {
             local_bookmarks,
             local_bookmarks_at_target,
             nearest_ancestor_bookmark: None,
-            changed_files: changed_files_for_commit(self.repo.as_ref(), &target)?,
+            changed_files: changed.files,
+            change_lines: changed.lines,
             stack_index: 0,
         })
     }
@@ -307,10 +310,15 @@ pub(super) fn select_trunk_candidate_with_hint(
     }
 }
 
-pub(super) fn changed_files_for_commit(
+pub(super) struct ChangedFileFacts {
+    pub(super) files: Vec<String>,
+    pub(super) lines: Vec<String>,
+}
+
+pub(super) fn changed_file_facts_for_commit(
     repo: &dyn jj_lib::repo::Repo,
     commit: &Commit,
-) -> Result<Vec<String>, JjError> {
+) -> Result<ChangedFileFacts, JjError> {
     pollster::block_on(async {
         let parent_tree = commit
             .parent_tree(repo)
@@ -319,18 +327,27 @@ pub(super) fn changed_files_for_commit(
                 message: error.to_string(),
             })?;
         let target_tree = commit.tree();
-        let mut changed_files = Vec::new();
+        let mut changed = Vec::new();
         let mut diff_stream = parent_tree.diff_stream(&target_tree, &EverythingMatcher);
 
         while let Some(entry) = diff_stream.next().await {
-            entry.values.map_err(|error| JjError::Backend {
+            let values = entry.values.map_err(|error| JjError::Backend {
                 message: error.to_string(),
             })?;
-            changed_files.push(entry.path.as_internal_file_string().to_owned());
+            let path = entry.path.as_internal_file_string().to_owned();
+            let status = if values.before.is_absent() {
+                "A"
+            } else if values.after.is_absent() {
+                "D"
+            } else {
+                "M"
+            };
+            changed.push((path.clone(), format!("{status} {path}")));
         }
-        changed_files.sort();
-        changed_files.dedup();
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed.dedup_by(|left, right| left.0 == right.0);
+        let (files, lines) = changed.into_iter().unzip();
 
-        Ok(changed_files)
+        Ok(ChangedFileFacts { files, lines })
     })
 }

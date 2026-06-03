@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 impl JjWorkspace {
     /// Pushes `branch` to fixed `origin` and updates jj's remote bookmark view.
@@ -11,11 +12,25 @@ impl JjWorkspace {
 
     /// Pushes selected branches to fixed `origin` with one Git transport mutation.
     pub fn push_bookmarks(&mut self, branches: &[String]) -> Result<Vec<PushOutcome>, JjError> {
+        Ok(self.push_bookmarks_with_metrics(branches)?.outcomes)
+    }
+
+    /// Pushes selected branches and returns jj-internal timings for performance tracing.
+    pub fn push_bookmarks_with_metrics(
+        &mut self,
+        branches: &[String],
+    ) -> Result<PushBookmarksOutcome, JjError> {
         self.ensure_git_backed()?;
+        let total = Instant::now();
+        let mut metrics = PushBookmarksMetrics {
+            branch_count: branches.len(),
+            ..PushBookmarksMetrics::default()
+        };
 
         let mut outcomes = Vec::new();
         let mut updates = Vec::new();
         for branch in branches {
+            let started = Instant::now();
             let bookmark = RefName::new(branch);
             let targets = self.local_and_origin_bookmark_targets(bookmark);
             if targets.local_target.has_conflict() {
@@ -29,13 +44,16 @@ impl JjWorkspace {
                 });
             }
 
-            let Some(update) = classify_push_bookmark_update(
+            let update = classify_push_bookmark_update(
                 bookmark.to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
                 targets,
                 true,
                 false,
-            )?
-            else {
+            )?;
+            metrics.classify_updates_us += duration_us(started.elapsed());
+
+            let Some(update) = update else {
+                metrics.no_op_branch_count += 1;
                 outcomes.push(PushOutcome {
                     branch: branch.clone(),
                     pushed_refs: 0,
@@ -43,9 +61,13 @@ impl JjWorkspace {
                 });
                 continue;
             };
+            metrics.update_count += 1;
 
             let update = (RefNameBuf::from(branch.as_str()), update);
+            let started = Instant::now();
             let pushed_commits = self.pushed_commits_for_updates(std::slice::from_ref(&update))?;
+            metrics.pushed_commits_for_updates_us += duration_us(started.elapsed());
+            metrics.pushed_commit_count += pushed_commits.len();
             outcomes.push(PushOutcome {
                 branch: branch.clone(),
                 pushed_refs: 1,
@@ -55,14 +77,17 @@ impl JjWorkspace {
         }
 
         if updates.is_empty() {
-            return Ok(outcomes);
+            metrics.total_us = duration_us(total.elapsed());
+            return Ok(PushBookmarksOutcome { outcomes, metrics });
         }
 
-        let push_stats = self.push_origin_bookmark_updates(
+        let push_stats = self.push_origin_bookmark_updates_with_metrics(
             updates,
             "jx stack publish push branches".to_owned(),
             "stack publish branches".to_owned(),
+            &mut metrics,
         )?;
+        metrics.pushed_ref_count = push_stats.pushed.len();
         let mut pushed = push_stats.pushed.len();
         for outcome in &mut outcomes {
             if outcome.pushed_refs == 0 {
@@ -72,7 +97,8 @@ impl JjWorkspace {
             pushed = pushed.saturating_sub(1);
         }
 
-        Ok(outcomes)
+        metrics.total_us = duration_us(total.elapsed());
+        Ok(PushBookmarksOutcome { outcomes, metrics })
     }
 
     /// Pushes all tracked fixed-origin bookmarks, including local deletions.
@@ -88,26 +114,68 @@ impl JjWorkspace {
 
     /// Pushes tracked bookmarks whose push ranges do not contain conflicted commits.
     pub fn push_syncable_tracked(&mut self) -> Result<SyncPushOutcome, JjError> {
+        Ok(self.push_syncable_tracked_with_metrics()?.outcome)
+    }
+
+    /// Pushes syncable tracked bookmarks and returns jj-internal timings.
+    pub fn push_syncable_tracked_with_metrics(
+        &mut self,
+    ) -> Result<SyncPushMetricsOutcome, JjError> {
         self.ensure_git_backed()?;
+        let total = Instant::now();
+        let mut metrics = SyncPushMetrics::default();
+
+        let started = Instant::now();
         let updates = self.tracked_origin_bookmark_updates()?;
-        let split = self.split_conflicted_tracked_bookmark_updates(updates)?;
-        let mut pushed = self.push_tracked_updates(
+        metrics.tracked_origin_bookmark_updates_us = duration_us(started.elapsed());
+        metrics.tracked_update_count = updates.len();
+
+        let started = Instant::now();
+        let trunk = self.tracked_push_trunk();
+        metrics.tracked_push_trunk_us = duration_us(started.elapsed());
+
+        let started = Instant::now();
+        let split = self.split_conflicted_tracked_bookmark_updates_with_trunk_id(
+            updates,
+            trunk.as_ref().map(|trunk| &trunk.id),
+        )?;
+        metrics.split_conflicted_updates_us = duration_us(started.elapsed());
+        metrics.pushable_update_count = split.pushable.len();
+        metrics.skipped_conflicted_count = split.skipped_conflicted.len();
+
+        let started = Instant::now();
+        let mut pushed = self.push_tracked_updates_with_metrics_and_trunk(
             split.pushable,
             "jx sync push tracked bookmarks".to_owned(),
             "tracked bookmarks".to_owned(),
+            trunk.as_ref(),
+            &mut metrics,
         )?;
+        metrics.push_tracked_updates_us = duration_us(started.elapsed());
+
         let pushed_branches = pushed
             .bookmarks
             .iter()
             .map(|bookmark| bookmark.branch.clone())
             .collect::<BTreeSet<_>>();
-        pushed
-            .bookmarks
-            .extend(self.unchanged_tracked_bookmark_summaries(&pushed_branches)?);
+        let started = Instant::now();
+        let unchanged =
+            self.unchanged_tracked_bookmark_summaries_with_trunk(&pushed_branches, trunk.as_ref())?;
+        metrics.unchanged_tracked_bookmark_summaries_us = duration_us(started.elapsed());
+        metrics.unchanged_bookmark_count = unchanged.len();
+        pushed.bookmarks.extend(unchanged);
 
-        Ok(SyncPushOutcome {
-            pushed,
-            skipped_conflicted_bookmarks: split.skipped_conflicted,
+        metrics.pushed_ref_count = pushed.pushed_refs;
+        metrics.pushed_bookmark_count = pushed.bookmarks.len();
+        metrics.pushed_commit_count = pushed.pushed_commits.len();
+        metrics.total_us = duration_us(total.elapsed());
+
+        Ok(SyncPushMetricsOutcome {
+            outcome: SyncPushOutcome {
+                pushed,
+                skipped_conflicted_bookmarks: split.skipped_conflicted,
+            },
+            metrics,
         })
     }
 
@@ -233,6 +301,17 @@ impl JjWorkspace {
         tx_description: String,
         error_branch: String,
     ) -> Result<TrackedPushOutcome, JjError> {
+        let mut metrics = SyncPushMetrics::default();
+        self.push_tracked_updates_with_metrics(updates, tx_description, error_branch, &mut metrics)
+    }
+
+    fn push_tracked_updates_with_metrics(
+        &mut self,
+        updates: Vec<BookmarkPushUpdate>,
+        tx_description: String,
+        error_branch: String,
+        metrics: &mut SyncPushMetrics,
+    ) -> Result<TrackedPushOutcome, JjError> {
         if updates.is_empty() {
             return Ok(TrackedPushOutcome {
                 pushed_refs: 0,
@@ -241,16 +320,57 @@ impl JjWorkspace {
             });
         }
 
+        let started = Instant::now();
         let trunk = self.tracked_push_trunk();
+        metrics.tracked_push_trunk_us += duration_us(started.elapsed());
+        self.push_tracked_updates_with_metrics_and_trunk(
+            updates,
+            tx_description,
+            error_branch,
+            trunk.as_ref(),
+            metrics,
+        )
+    }
+
+    fn push_tracked_updates_with_metrics_and_trunk(
+        &mut self,
+        updates: Vec<BookmarkPushUpdate>,
+        tx_description: String,
+        error_branch: String,
+        trunk: Option<&TrackedPushTrunk>,
+        metrics: &mut SyncPushMetrics,
+    ) -> Result<TrackedPushOutcome, JjError> {
+        if updates.is_empty() {
+            return Ok(TrackedPushOutcome {
+                pushed_refs: 0,
+                bookmarks: Vec::new(),
+                pushed_commits: Vec::new(),
+            });
+        }
+
+        let started = Instant::now();
         let bookmarks = pushed_bookmark_summaries(
             self.repo.as_ref(),
             &updates,
-            trunk.as_ref(),
+            trunk,
             self.workspace.workspace_name(),
         )?;
+        metrics.pushed_bookmark_summaries_us += duration_us(started.elapsed());
+
+        let started = Instant::now();
         let pushed_commits = self.pushed_commits_for_updates(&updates)?;
-        let push_stats =
-            self.push_origin_bookmark_updates(updates, tx_description, error_branch)?;
+        metrics.pushed_commits_for_updates_us += duration_us(started.elapsed());
+
+        let mut transport_metrics = PushBookmarksMetrics::default();
+        let push_stats = self.push_origin_bookmark_updates_with_metrics(
+            updates,
+            tx_description,
+            error_branch,
+            &mut transport_metrics,
+        )?;
+        metrics.git_push_refs_us += transport_metrics.git_push_refs_us;
+        metrics.export_git_refs_us += transport_metrics.export_git_refs_us;
+        metrics.commit_transaction_us += transport_metrics.commit_transaction_us;
 
         Ok(TrackedPushOutcome {
             pushed_refs: push_stats.pushed.len(),
@@ -286,19 +406,17 @@ impl JjWorkspace {
         Ok(updates)
     }
 
-    fn unchanged_tracked_bookmark_summaries(
+    fn unchanged_tracked_bookmark_summaries_with_trunk(
         &self,
         exclude: &BTreeSet<String>,
+        trunk: Option<&TrackedPushTrunk>,
     ) -> Result<Vec<PushedBookmarkSummary>, JjError> {
-        let trunk = self.tracked_push_trunk();
-        let updates = self.unchanged_tracked_origin_bookmark_updates(
-            exclude,
-            trunk.as_ref().map(|trunk| &trunk.id),
-        );
+        let updates =
+            self.unchanged_tracked_origin_bookmark_updates(exclude, trunk.map(|trunk| &trunk.id));
         pushed_bookmark_summaries(
             self.repo.as_ref(),
             &updates,
-            trunk.as_ref(),
+            trunk,
             self.workspace.workspace_name(),
         )
     }
@@ -337,13 +455,21 @@ impl JjWorkspace {
         updates: Vec<BookmarkPushUpdate>,
     ) -> Result<SyncableBookmarkUpdates, JjError> {
         let trunk_id = self.tracked_push_trunk_id();
+        self.split_conflicted_tracked_bookmark_updates_with_trunk_id(updates, trunk_id.as_ref())
+    }
+
+    fn split_conflicted_tracked_bookmark_updates_with_trunk_id(
+        &self,
+        updates: Vec<BookmarkPushUpdate>,
+        trunk_id: Option<&CommitId>,
+    ) -> Result<SyncableBookmarkUpdates, JjError> {
         let mut pushable = Vec::new();
         let mut skipped_conflicted = Vec::new();
 
         for (name, update) in updates {
             let conflicted_commits = self.conflicted_commits_for_update(
                 &update,
-                trunk_id.as_ref(),
+                trunk_id,
                 self.workspace.workspace_name(),
             )?;
             if conflicted_commits.is_empty() {
@@ -469,27 +595,35 @@ impl JjWorkspace {
         Ok(commits)
     }
 
-    pub(super) fn push_origin_bookmark_updates(
+    fn push_origin_bookmark_updates_with_metrics(
         &mut self,
         updates: Vec<BookmarkPushUpdate>,
         tx_description: String,
         error_branch: String,
+        metrics: &mut PushBookmarksMetrics,
     ) -> Result<git::GitPushStats, JjError> {
         let mut tx = self.repo.start_transaction();
+        let started = Instant::now();
         let push_stats = push_origin_bookmark_updates(tx.repo_mut(), updates, &error_branch)?;
+        metrics.git_push_refs_us += duration_us(started.elapsed());
         if !push_stats.all_ok() {
             return Err(JjError::PushRejected {
                 branch: error_branch,
                 message: push_rejection_message(&push_stats),
             });
         }
-        export_git_refs(tx.repo_mut())?;
 
+        let started = Instant::now();
+        export_git_refs(tx.repo_mut())?;
+        metrics.export_git_refs_us += duration_us(started.elapsed());
+
+        let started = Instant::now();
         let repo = pollster::block_on(tx.commit(tx_description)).map_err(|error| {
             JjError::Transaction {
                 message: error.to_string(),
             }
         })?;
+        metrics.commit_transaction_us += duration_us(started.elapsed());
         self.repo = repo;
 
         Ok(push_stats)
@@ -804,6 +938,10 @@ pub(super) fn push_origin_bookmark_updates(
         branch: error_branch.to_owned(),
         message: error.to_string(),
     })
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 pub(super) fn push_rejection_message(stats: &git::GitPushStats) -> String {

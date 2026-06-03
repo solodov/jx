@@ -75,7 +75,7 @@ fn render_pull_request_preview_with_style_for_width(
         &render_pull_request_description_preview(plan, content_width),
     ));
 
-    let change_lines = pull_request_preview_changed_files(plan);
+    let change_lines = pull_request_preview_change_lines(plan, color);
     if !change_lines.is_empty() {
         blocks.push(indent_non_empty_lines(&change_lines.join("\n")));
     }
@@ -88,11 +88,13 @@ fn render_pull_request_preview_with_style_for_width(
         blocks.push(metadata.join("\n"));
     }
 
-    format!("{}\n", blocks.join("\n\n"))
+    format!("{}\n\n", blocks.join("\n\n"))
 }
 
 const PREVIEW_CONTENT_INDENT: &str = "  ";
 const LOG_LINE_STYLE: &str = "\x1b[2m\x1b[38;5;244m";
+const FILE_CHANGE_STYLE: &str = "\x1b[38;5;6m";
+const FILE_CHANGE_RESET_STYLE: &str = "\x1b[39m";
 const RESET_STYLE: &str = "\x1b[0m";
 
 pub(in crate::commands) fn style_log_line(line: &str, color: bool) -> String {
@@ -117,8 +119,19 @@ fn indent_non_empty_lines(value: &str) -> String {
         .join("\n")
 }
 
-fn pull_request_preview_changed_files(plan: &PullRequestPlan) -> Vec<String> {
-    plan.changed_files.clone()
+fn pull_request_preview_change_lines(plan: &PullRequestPlan, color: bool) -> Vec<String> {
+    plan.change_lines
+        .iter()
+        .map(|line| style_file_change_line(line, color))
+        .collect()
+}
+
+fn style_file_change_line(line: &str, color: bool) -> String {
+    if color {
+        format!("{FILE_CHANGE_STYLE}{line}{FILE_CHANGE_RESET_STYLE}")
+    } else {
+        line.to_owned()
+    }
 }
 
 fn pull_request_preview_header(plan: &PullRequestPlan) -> String {
@@ -126,10 +139,11 @@ fn pull_request_preview_header(plan: &PullRequestPlan) -> String {
     let base = pull_request_preview_base(plan);
     match &plan.existing_pull_request {
         Some(existing) => {
-            let verb = if existing.draft {
-                "Updating draft"
-            } else {
-                "Updating"
+            let verb = match (existing.draft, plan.draft) {
+                (true, false) => "Updating and marking ready",
+                (false, true) => "Updating and marking draft",
+                (_, true) => "Updating draft",
+                _ => "Updating",
             };
             format!(
                 "{verb} {}: {head} → {base}",
@@ -205,14 +219,15 @@ pub(in crate::commands) fn pull_request_event_effect_is_default_visible(
 
 /// Builds the final confirmation prompt from planned create/update and draft state.
 pub(in crate::commands) fn pull_request_confirmation_prompt(plan: &PullRequestPlan) -> String {
-    let (verb, draft) = match &plan.existing_pull_request {
-        Some(existing) => ("Update", existing.draft),
-        None => ("Create", plan.draft),
-    };
-    if draft {
-        format!("{verb} draft?")
-    } else {
-        format!("{verb}?")
+    match &plan.existing_pull_request {
+        Some(existing) => match (existing.draft, plan.draft) {
+            (true, false) => "Update and mark ready?".to_owned(),
+            (false, true) => "Update and mark draft?".to_owned(),
+            (_, true) => "Update draft?".to_owned(),
+            _ => "Update?".to_owned(),
+        },
+        None if plan.draft => "Create draft?".to_owned(),
+        None => "Create?".to_owned(),
     }
 }
 

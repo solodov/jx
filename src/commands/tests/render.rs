@@ -12,6 +12,7 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
         html_url: None,
         draft: false,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     };
     let draft = PullRequestRecord {
         number: 43,
@@ -22,6 +23,7 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
         html_url: None,
         draft: true,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     };
 
     assert_eq!(pull_request_choice_label(&ready), "◯ #42     Ready change");
@@ -178,6 +180,7 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     plan.labels = vec!["bug".to_owned(), "help wanted".to_owned()];
     plan.base_pull_request = Some(existing_pull_request(false));
     plan.changed_files = vec!["src/main.rs".to_owned(), "src/lib.rs".to_owned()];
+    plan.change_lines = vec!["M src/main.rs".to_owned(), "A src/lib.rs".to_owned()];
     let mut status = workspace_status();
     status.change_lines = vec!["M stale-current-workspace-file.rs".to_owned()];
     let prepare_effects = [PullRequestEventEffect {
@@ -193,16 +196,30 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     assert_eq!(
         preview,
         format!(
-            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  src/main.rs\n  src/lib.rs\n\nLabels: bug, help wanted\n",
+            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n  A src/lib.rs\n\nLabels: bug, help wanted\n\n",
             example_bookmark_link("example-user/02-zzzzzzzz"),
             example_pull_request_link(7),
         )
     );
+    let colored = render_pull_request_preview_with_style(&plan, &status, &prepare_effects, true);
+    assert!(colored.contains("\x1b[38;5;6mM src/main.rs\x1b[39m"));
     assert_eq!(pull_request_confirmation_prompt(&plan), "Create?");
     plan.draft = true;
     assert_eq!(pull_request_confirmation_prompt(&plan), "Create draft?");
+    plan.draft = false;
     plan.existing_pull_request = Some(existing_pull_request(false));
     assert_eq!(pull_request_confirmation_prompt(&plan), "Update?");
+    plan.existing_pull_request = Some(existing_pull_request(true));
+    assert_eq!(
+        pull_request_confirmation_prompt(&plan),
+        "Update and mark ready?"
+    );
+    plan.draft = true;
+    plan.existing_pull_request = Some(existing_pull_request(false));
+    assert_eq!(
+        pull_request_confirmation_prompt(&plan),
+        "Update and mark draft?"
+    );
     plan.existing_pull_request = Some(existing_pull_request(true));
     assert_eq!(pull_request_confirmation_prompt(&plan), "Update draft?");
 }

@@ -21,7 +21,7 @@ use std::{
 };
 
 use clap::{error::ErrorKind, Arg, ArgAction, ArgGroup, ArgMatches, Command as ClapCommand};
-use dialoguer::{theme::Theme, MultiSelect, Select};
+use dialoguer::{theme::Theme, Confirm, MultiSelect, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use jj_cli::formatter::{Formatter, PlainTextFormatter};
 use termimad::MadSkin;
@@ -33,13 +33,15 @@ use crate::{
         refresh_stack_metadata_pull_requests, stack_metadata_from_pull_requests,
         upsert_stack_metadata_pull_requests, BookmarkAction, CheckReport, FetchReport,
         ForkStatusReport, ForkStatusState, PullRequestAction, PullRequestEventEffect,
-        PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions, PullRequestReport,
-        PullRequestStackNode, PullRequestStackRow, PullRequestStackSelection,
-        PullRequestStackSnapshot, PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport,
+        PullRequestEventEffectKind, PullRequestPlan, PullRequestPublishOptions,
+        PullRequestReadiness, PullRequestReport, PullRequestStackNode, PullRequestStackRow,
+        PullRequestStackSelection, PullRequestStackSnapshot, PullRequestStackStatusReport,
+        PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport, RepositorySummary,
         StatusReport, SyncReport, TrackedPushReport, WorkflowError,
     },
     github::{
-        GitHubClient, OctocrabGitHubClient, PullRequestHead, PullRequestRecord, RepositoryCreation,
+        GitHubClient, OctocrabGitHubClient, PullRequestCheckStatus, PullRequestHead,
+        PullRequestRecord, PullRequestReviewStatus, PullRequestStatusRecord, RepositoryCreation,
         ReviewerCandidate, ReviewerSelection, ReviewerTarget,
     },
     jj::{
@@ -47,10 +49,12 @@ use crate::{
         run_jj_git_clone, run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome,
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
-        JjWorkspace, LocalStackBranch, PipeDiffTool, PushOutcome, PushedBookmarkSummary,
-        RebaseOnTrunkOutcome, StackMoveOutcome, StackMoveTarget, StackPlanFacts,
-        StackPlanSelection, StackPublishFacts, StackPublishSelection, StatusWorkspaceFacts,
-        SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
+        JjWorkspace, LocalStackBranch, LocalStackBranchFacts, LocalStackBranchMetrics,
+        PipeDiffTool, PushBookmarksMetrics, PushBookmarksOutcome, PushOutcome,
+        PushedBookmarkSummary, RebaseOnTrunkOutcome, StackMoveOutcome, StackMoveTarget,
+        StackPlanFacts, StackPlanSelection, StackPublishFacts, StackPublishSelection,
+        StatusWorkspaceFacts, SyncPushMetrics, SyncPushMetricsOutcome, SyncPushOutcome,
+        TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
         WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
     },
     repository::{
@@ -63,6 +67,7 @@ use crate::{
 };
 
 mod handlers;
+mod perf;
 mod progress;
 mod prompts;
 mod pull_request_manager;
@@ -74,6 +79,7 @@ mod stack;
 mod work;
 
 use handlers::*;
+use perf::*;
 use progress::*;
 use prompts::*;
 pub use prompts::{
@@ -88,6 +94,8 @@ use services::*;
 use shell::*;
 use stack::*;
 use work::*;
+
+static YES_CONFIRMER: YesConfirmer = YesConfirmer;
 
 const SHELL_CD_TARGET_PREFIX: &str = "__jx_cd_target=";
 
@@ -458,9 +466,100 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let matches = cli().try_get_matches_from(args)?;
-    let request = CommandRequest::from_matches(&matches)?;
-    handle_request(request, environment, services, progress, prompts, output)
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    let perf = PerfLog::from_environment(environment);
+    let mut span = perf.start(
+        "command.run",
+        [
+            perf_attr("arg_count", args.len().saturating_sub(1)),
+            perf_attr("color", output.color),
+        ],
+    );
+
+    let parse_step = span.start_step("parse_args", Vec::new());
+    let matches = cli().try_get_matches_from(args);
+    let parse_error = matches
+        .as_ref()
+        .err()
+        .filter(|error| clap_exit_code(error) != 0);
+    span.finish_step(parse_step, Vec::new(), parse_error);
+    let matches = match matches {
+        Ok(matches) => matches,
+        Err(error) => {
+            record_clap_error(&mut span, &error);
+            return Err(error.into());
+        }
+    };
+
+    let yes = matches.get_flag("yes");
+    span.set([perf_attr("yes", yes)]);
+    let prompts = if yes {
+        PromptHandlers {
+            pull_request_previewer: prompts.pull_request_previewer,
+            pull_request_selector: prompts.pull_request_selector,
+            reviewer_selector: prompts.reviewer_selector,
+            pull_request_confirmer: &YES_CONFIRMER,
+            push_confirmer: &YES_CONFIRMER,
+            repository_initialization_confirmer: &YES_CONFIRMER,
+            repository_creation_confirmer: &YES_CONFIRMER,
+            workspace_remove_confirmer: &YES_CONFIRMER,
+        }
+    } else {
+        prompts
+    };
+
+    let request_step = span.start_step("build_request", Vec::new());
+    let request = CommandRequest::from_matches(&matches);
+    let request_error = request
+        .as_ref()
+        .err()
+        .filter(|error| clap_exit_code(error) != 0);
+    span.finish_step(request_step, Vec::new(), request_error);
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => {
+            record_clap_error(&mut span, &error);
+            return Err(error.into());
+        }
+    };
+    span.set(request.perf_attrs());
+
+    let result = span.measure("handle_request", Vec::new(), || {
+        handle_request(request, environment, services, progress, prompts, output)
+    });
+    record_command_result(&mut span, &result);
+    result
+}
+
+fn record_command_result(span: &mut PerfSpan, result: &Result<CommandResult, CommandError>) {
+    match result {
+        Ok(result) => {
+            span.set([perf_attr("exit_code", u64::from(result.exit_code))]);
+            if result.exit_code != 0 {
+                span.record_error(format!("exit code {}", result.exit_code));
+            }
+        }
+        Err(CommandError::Usage(error)) => record_clap_error(span, error),
+        Err(error) => {
+            span.set([perf_attr("exit_code", 1_u64)]);
+            span.record_error(error);
+        }
+    }
+}
+
+fn record_clap_error(span: &mut PerfSpan, error: &clap::Error) {
+    let exit_code = clap_exit_code(error);
+    span.set([
+        perf_attr("exit_code", u64::from(exit_code)),
+        perf_attr("error_kind", format!("{:?}", error.kind())),
+    ]);
+    if exit_code != 0 {
+        span.record_error(error);
+    }
+}
+
+fn clap_exit_code(error: &clap::Error) -> u8 {
+    u8::try_from(error.exit_code()).unwrap_or(1)
 }
 
 #[cfg(test)]

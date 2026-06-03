@@ -66,12 +66,12 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
     });
     let subject = JjWorkspace { workspace, repo };
 
-    let branches = subject
-        .local_stack_branches()
-        .expect("local stack branches load");
+    let facts = subject
+        .local_stack_branch_facts()
+        .expect("local stack branch facts load");
 
     assert_eq!(
-        branches,
+        facts.branches,
         vec![
             LocalStackBranch {
                 branch: "topic/child".to_owned(),
@@ -87,6 +87,11 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
             },
         ]
     );
+    assert_eq!(facts.metrics.branch_count, 2);
+    assert_eq!(facts.metrics.local_bookmark_count, 2);
+    assert_eq!(facts.metrics.normal_bookmark_count, 2);
+    assert_eq!(facts.metrics.resolved_trunk_count, 1);
+    assert_eq!(facts.metrics.stack_path_count, 2);
 }
 
 #[test]
@@ -233,6 +238,12 @@ fn stack_publish_facts_infer_full_linear_stack_around_current() {
         facts.nodes[2].workspace.target_change.description,
         "child change"
     );
+    assert_eq!(facts.metrics.target_resolution_count, 1);
+    assert_eq!(facts.metrics.resolved_trunk_count, 1);
+    assert_eq!(facts.metrics.stack_path_count, 1);
+    assert_eq!(facts.metrics.collected_child_count, 1);
+    assert_eq!(facts.metrics.loaded_child_count, 1);
+    assert_eq!(facts.metrics.workspace_fact_count, 3);
 }
 
 #[test]
@@ -286,6 +297,10 @@ fn stack_publish_facts_keep_explicit_revset_subset() {
         facts.nodes[2].workspace.target_change.description,
         "child change"
     );
+    assert_eq!(facts.metrics.resolved_revision_count, 2);
+    assert_eq!(facts.metrics.resolved_trunk_count, 2);
+    assert_eq!(facts.metrics.stack_path_count, 2);
+    assert_eq!(facts.metrics.workspace_fact_count, 3);
 }
 
 #[test]

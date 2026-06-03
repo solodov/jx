@@ -33,6 +33,11 @@ pub enum GitHubError {
         status: u16,
         message: String,
     },
+    #[error("Could not {operation} through GitHub GraphQL: {message}")]
+    GraphQl {
+        operation: &'static str,
+        message: String,
+    },
     #[error("Could not {operation} through GitHub: {source}")]
     Api {
         operation: &'static str,

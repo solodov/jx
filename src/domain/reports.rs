@@ -71,6 +71,7 @@ pub struct PullRequestPlan {
     pub title: String,
     pub body: String,
     pub changed_files: Vec<String>,
+    pub change_lines: Vec<String>,
     pub base: String,
     pub base_pull_request: Option<PullRequestRecord>,
     pub head: PullRequestHead,
@@ -79,6 +80,38 @@ pub struct PullRequestPlan {
     pub existing_pull_request: Option<PullRequestRecord>,
     pub reviewer_candidates: Vec<ReviewerCandidate>,
     pub(crate) reviewers: ReviewerSelection,
+}
+
+/// Operator intent for the final GitHub pull-request readiness state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PullRequestReadiness {
+    /// Preserve readiness for existing PRs and create new PRs as ready.
+    #[default]
+    Preserve,
+    /// Ensure the PR is ready for review after publishing.
+    Ready,
+    /// Ensure the PR is draft after publishing.
+    Draft,
+}
+
+impl PullRequestReadiness {
+    /// Returns the desired final draft bit for a planned create or update.
+    pub fn desired_draft(self, existing: Option<&PullRequestRecord>) -> bool {
+        match self {
+            Self::Preserve => existing.is_some_and(|pull_request| pull_request.draft),
+            Self::Ready => false,
+            Self::Draft => true,
+        }
+    }
+
+    /// Stable lowercase label for perf traces and diagnostics.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preserve => "preserve",
+            Self::Ready => "ready",
+            Self::Draft => "draft",
+        }
+    }
 }
 
 /// Result of selecting, pushing, and creating or updating a pull request.
@@ -173,6 +206,14 @@ pub struct SyncReport {
     pub push: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
     pub pull_requests: Vec<PullRequestRecord>,
+}
+
+/// Read-only health summary for the locally tracked pull-request stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestStackStatusReport {
+    pub repository: RepositorySummary,
+    pub snapshot: PullRequestStackSnapshot,
+    pub statuses: BTreeMap<u64, PullRequestStatusRecord>,
 }
 
 /// Pull-request mutation applied by stack PR publishing.

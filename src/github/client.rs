@@ -62,6 +62,29 @@ pub trait GitHubClient: Send + Sync {
         number: u64,
     ) -> Result<Option<PullRequestRecord>, GitHubError>;
 
+    /// Finds several pull requests by durable repository-local PR number in batches when supported.
+    async fn find_pull_requests_by_numbers(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+        let mut pull_requests = Vec::new();
+        for number in unique_pull_request_numbers(numbers) {
+            if let Some(pull_request) = self.find_pull_request_by_number(repository, number).await?
+            {
+                pull_requests.push(pull_request);
+            }
+        }
+        Ok(pull_requests)
+    }
+
+    /// Loads read-only status facts for several repository-local pull requests in batches.
+    async fn pull_request_statuses(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, GitHubError>;
+
     /// Creates a pull request from domain input.
     async fn create_pull_request(
         &self,
@@ -75,6 +98,20 @@ pub trait GitHubClient: Send + Sync {
         repository: &GitHubRepository,
         number: u64,
         request: PullRequestUpdate,
+    ) -> Result<PullRequestRecord, GitHubError>;
+
+    /// Marks an existing draft pull request ready for review.
+    async fn mark_pull_request_ready(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<PullRequestRecord, GitHubError>;
+
+    /// Converts an existing ready pull request back to draft.
+    async fn convert_pull_request_to_draft(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
     ) -> Result<PullRequestRecord, GitHubError>;
 
     /// Lists labels currently attached to a pull request's backing issue.
@@ -169,6 +206,146 @@ impl OctocrabGitHubClient {
             };
             page = next_page;
         }
+    }
+
+    async fn set_pull_request_draft_state(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+        draft: bool,
+    ) -> Result<PullRequestRecord, GitHubError> {
+        let operation = if draft {
+            "convert pull request to draft"
+        } else {
+            "mark pull request ready"
+        };
+        let pull_request_id = self
+            .pull_request_graphql_id(repository, number, operation)
+            .await?;
+        let variables = PullRequestReadinessVariables {
+            pull_request_id: &pull_request_id,
+        };
+
+        if draft {
+            let data: ConvertPullRequestToDraftData = self
+                .graphql(CONVERT_PULL_REQUEST_TO_DRAFT_MUTATION, variables, operation)
+                .await?;
+            Ok(map_graphql_pull_request(
+                data.convert_pull_request_to_draft.pull_request,
+            ))
+        } else {
+            let data: MarkPullRequestReadyData = self
+                .graphql(MARK_PULL_REQUEST_READY_MUTATION, variables, operation)
+                .await?;
+            Ok(map_graphql_pull_request(
+                data.mark_pull_request_ready_for_review.pull_request,
+            ))
+        }
+    }
+
+    async fn pull_request_graphql_id(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+        operation: &'static str,
+    ) -> Result<String, GitHubError> {
+        let number = i64::try_from(number).map_err(|_| GitHubError::GraphQl {
+            operation,
+            message: "pull request number is too large for GitHub GraphQL".to_owned(),
+        })?;
+        let variables = PullRequestIdVariables {
+            owner: &repository.owner,
+            name: &repository.name,
+            number,
+        };
+        let data: PullRequestIdQueryData = self
+            .graphql(PULL_REQUEST_ID_QUERY, variables, operation)
+            .await?;
+        data.repository
+            .and_then(|repository| repository.pull_request)
+            .map(|pull_request| pull_request.id)
+            .ok_or_else(|| GitHubError::GraphQl {
+                operation,
+                message: format!("pull request #{number} was not found"),
+            })
+    }
+
+    async fn graphql<T, V>(
+        &self,
+        query: &str,
+        variables: V,
+        operation: &'static str,
+    ) -> Result<T, GitHubError>
+    where
+        T: for<'de> Deserialize<'de>,
+        V: Serialize,
+    {
+        let response: GraphQlResponse<T> = self
+            .crab
+            .post("/graphql", Some(&GraphQlRequest { query, variables }))
+            .await
+            .map_err(|source| api_error(operation, source))?;
+        response.into_data(operation)
+    }
+
+    async fn pull_requests_by_numbers_chunk(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+        if numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = pull_request_record_query(numbers);
+        let variables = PullRequestsByNumberVariables {
+            owner: &repository.owner,
+            name: &repository.name,
+        };
+        let data: PullRequestsByNumberQueryData = self
+            .graphql(&query, variables, "load pull requests by number")
+            .await?;
+        let repository = data.repository.ok_or_else(|| GitHubError::GraphQl {
+            operation: "load pull requests by number",
+            message: "repository was not found".to_owned(),
+        })?;
+
+        Ok(numbers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| repository.get(&pull_request_record_alias(index)))
+            .filter_map(|pull_request| pull_request.clone())
+            .map(map_graphql_pull_request)
+            .collect())
+    }
+
+    async fn pull_request_statuses_chunk(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
+        if numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = pull_request_status_query(numbers);
+        let variables = PullRequestStatusesVariables {
+            owner: &repository.owner,
+            name: &repository.name,
+        };
+        let data: PullRequestStatusesQueryData = self
+            .graphql(&query, variables, "load pull request statuses")
+            .await?;
+        let repository = data.repository.ok_or_else(|| GitHubError::GraphQl {
+            operation: "load pull request statuses",
+            message: "repository was not found".to_owned(),
+        })?;
+
+        Ok(numbers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| repository.get(&pull_request_status_alias(index)))
+            .filter_map(|pull_request| pull_request.clone())
+            .map(map_graphql_pull_request_status)
+            .collect())
     }
 
     /// Builds an authenticated octocrab client from a token value.
@@ -398,6 +575,33 @@ impl GitHubClient for OctocrabGitHubClient {
         }
     }
 
+    async fn find_pull_requests_by_numbers(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+        let mut pull_requests = Vec::new();
+        for chunk in unique_pull_request_numbers(numbers).chunks(PULL_REQUEST_RECORD_BATCH_SIZE) {
+            pull_requests.extend(
+                self.pull_requests_by_numbers_chunk(repository, chunk)
+                    .await?,
+            );
+        }
+        Ok(pull_requests)
+    }
+
+    async fn pull_request_statuses(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
+        let mut statuses = Vec::new();
+        for chunk in unique_pull_request_numbers(numbers).chunks(PULL_REQUEST_STATUS_BATCH_SIZE) {
+            statuses.extend(self.pull_request_statuses_chunk(repository, chunk).await?);
+        }
+        Ok(statuses)
+    }
+
     async fn create_pull_request(
         &self,
         repository: &GitHubRepository,
@@ -445,6 +649,24 @@ impl GitHubClient for OctocrabGitHubClient {
             .map_err(|source| api_error("update pull request", source))?;
 
         Ok(map_pull_request(pull))
+    }
+
+    async fn mark_pull_request_ready(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<PullRequestRecord, GitHubError> {
+        self.set_pull_request_draft_state(repository, number, false)
+            .await
+    }
+
+    async fn convert_pull_request_to_draft(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<PullRequestRecord, GitHubError> {
+        self.set_pull_request_draft_state(repository, number, true)
+            .await
     }
 
     async fn pull_request_labels(
@@ -539,6 +761,342 @@ impl GitHubClient for OctocrabGitHubClient {
     }
 }
 
+const PULL_REQUEST_ID_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+    }
+  }
+}
+"#;
+
+const MARK_PULL_REQUEST_READY_MUTATION: &str = r#"
+mutation($pullRequestId: ID!) {
+  markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+    pullRequest {
+      number
+      title
+      body
+      headRefName
+      baseRefName
+      url
+      isDraft
+      merged
+    }
+  }
+}
+"#;
+
+const CONVERT_PULL_REQUEST_TO_DRAFT_MUTATION: &str = r#"
+mutation($pullRequestId: ID!) {
+  convertPullRequestToDraft(input: { pullRequestId: $pullRequestId }) {
+    pullRequest {
+      number
+      title
+      body
+      headRefName
+      baseRefName
+      url
+      isDraft
+      merged
+    }
+  }
+}
+"#;
+
+const PULL_REQUEST_RECORD_BATCH_SIZE: usize = 50;
+const PULL_REQUEST_STATUS_BATCH_SIZE: usize = 50;
+
+pub(super) fn pull_request_record_query(numbers: &[u64]) -> String {
+    let fields = numbers
+        .iter()
+        .enumerate()
+        .map(|(index, number)| {
+            format!(
+                "    {}: pullRequest(number: {number}) {{\n      ...PullRequestRecordFields\n    }}",
+                pull_request_record_alias(index)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"query($owner: String!, $name: String!) {{
+  repository(owner: $owner, name: $name) {{
+{fields}
+  }}
+}}
+
+fragment PullRequestRecordFields on PullRequest {{
+  number
+  title
+  body
+  headRefName
+  baseRefName
+  url
+  isDraft
+  merged
+}}
+"#
+    )
+}
+
+fn pull_request_record_alias(index: usize) -> String {
+    format!("pr{index}")
+}
+
+pub(super) fn pull_request_status_query(numbers: &[u64]) -> String {
+    let fields = numbers
+        .iter()
+        .enumerate()
+        .map(|(index, number)| {
+            format!(
+                "    {}: pullRequest(number: {number}) {{\n      ...PullRequestStatusFields\n    }}",
+                pull_request_status_alias(index)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"query($owner: String!, $name: String!) {{
+  repository(owner: $owner, name: $name) {{
+{fields}
+  }}
+}}
+
+fragment PullRequestStatusFields on PullRequest {{
+  number
+  title
+  url
+  headRefName
+  baseRefName
+  isDraft
+  merged
+  closed
+  reviewDecision
+  reviewRequests(first: 100) {{
+    totalCount
+    nodes {{
+      requestedReviewer {{
+        __typename
+        ... on User {{
+          login
+        }}
+      }}
+    }}
+  }}
+  commits(last: 1) {{
+    nodes {{
+      commit {{
+        oid
+        statusCheckRollup {{
+          state
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    )
+}
+
+fn pull_request_status_alias(index: usize) -> String {
+    format!("pr{index}")
+}
+
+fn unique_pull_request_numbers(numbers: &[u64]) -> Vec<u64> {
+    let mut seen = BTreeSet::new();
+    numbers
+        .iter()
+        .copied()
+        .filter(|number| seen.insert(*number))
+        .collect()
+}
+
+#[derive(Debug, Serialize)]
+struct GraphQlRequest<'a, V> {
+    query: &'a str,
+    variables: V,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlResponse<T> {
+    data: Option<T>,
+    #[serde(default)]
+    errors: Vec<GraphQlError>,
+}
+
+impl<T> GraphQlResponse<T> {
+    fn into_data(self, operation: &'static str) -> Result<T, GitHubError> {
+        if !self.errors.is_empty() {
+            return Err(GitHubError::GraphQl {
+                operation,
+                message: self
+                    .errors
+                    .into_iter()
+                    .map(|error| error.message)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            });
+        }
+        self.data.ok_or_else(|| GitHubError::GraphQl {
+            operation,
+            message: "missing GraphQL data".to_owned(),
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlError {
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PullRequestIdVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+    number: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestIdQueryData {
+    repository: Option<PullRequestIdRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestIdRepository {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<PullRequestIdNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestIdNode {
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PullRequestReadinessVariables<'a> {
+    #[serde(rename = "pullRequestId")]
+    pull_request_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct PullRequestsByNumberVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestsByNumberQueryData {
+    repository: Option<BTreeMap<String, Option<GraphQlPullRequest>>>,
+}
+
+#[derive(Debug, Serialize)]
+struct PullRequestStatusesVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestStatusesQueryData {
+    repository: Option<BTreeMap<String, Option<GraphQlPullRequestStatus>>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlPullRequestStatus {
+    pub(super) number: u64,
+    pub(super) title: String,
+    pub(super) url: String,
+    #[serde(rename = "headRefName")]
+    pub(super) head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    pub(super) base_ref_name: String,
+    #[serde(rename = "isDraft")]
+    pub(super) is_draft: bool,
+    pub(super) merged: bool,
+    pub(super) closed: bool,
+    #[serde(rename = "reviewDecision")]
+    pub(super) review_decision: Option<String>,
+    #[serde(rename = "reviewRequests")]
+    pub(super) review_requests: GraphQlReviewRequests,
+    pub(super) commits: GraphQlPullRequestStatusCommits,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlPullRequestStatusCommits {
+    pub(super) nodes: Vec<GraphQlPullRequestStatusCommitNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlPullRequestStatusCommitNode {
+    pub(super) commit: GraphQlPullRequestStatusCommit,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlPullRequestStatusCommit {
+    pub(super) oid: String,
+    #[serde(rename = "statusCheckRollup")]
+    pub(super) status_check_rollup: Option<GraphQlStatusCheckRollup>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlStatusCheckRollup {
+    pub(super) state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarkPullRequestReadyData {
+    #[serde(rename = "markPullRequestReadyForReview")]
+    mark_pull_request_ready_for_review: PullRequestMutationPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConvertPullRequestToDraftData {
+    #[serde(rename = "convertPullRequestToDraft")]
+    convert_pull_request_to_draft: PullRequestMutationPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestMutationPayload {
+    #[serde(rename = "pullRequest")]
+    pull_request: GraphQlPullRequest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GraphQlPullRequest {
+    number: u64,
+    title: String,
+    body: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
+    url: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    merged: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewRequests {
+    #[serde(rename = "totalCount")]
+    pub(super) total_count: usize,
+    pub(super) nodes: Vec<GraphQlReviewRequestNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewRequestNode {
+    #[serde(rename = "requestedReviewer")]
+    pub(super) requested_reviewer: Option<GraphQlRequestedReviewer>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlRequestedReviewer {
+    #[serde(rename = "__typename")]
+    pub(super) type_name: String,
+    pub(super) login: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthenticatedUserResponse {
     login: String,
@@ -594,6 +1152,17 @@ pub(super) enum CompareCommitsStatus {
 }
 
 fn map_pull_request(pull: models::pulls::PullRequest) -> PullRequestRecord {
+    let reviewers = ReviewerSelection::new(
+        pull.requested_reviewers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|user| user.login),
+        pull.requested_teams
+            .unwrap_or_default()
+            .into_iter()
+            .map(|team| team.slug),
+    );
+
     PullRequestRecord {
         number: pull.number,
         title: pull.title.unwrap_or_default(),
@@ -603,7 +1172,90 @@ fn map_pull_request(pull: models::pulls::PullRequest) -> PullRequestRecord {
         html_url: pull.html_url.map(|url| url.to_string()),
         draft: pull.draft.unwrap_or(false),
         merged: pull.merged.unwrap_or(false) || pull.merged_at.is_some(),
+        reviewers,
     }
+}
+
+fn map_graphql_pull_request(pull: GraphQlPullRequest) -> PullRequestRecord {
+    PullRequestRecord {
+        number: pull.number,
+        title: pull.title,
+        body: (!pull.body.is_empty()).then_some(pull.body),
+        head_branch: pull.head_ref_name,
+        base_branch: pull.base_ref_name,
+        html_url: Some(pull.url),
+        draft: pull.is_draft,
+        merged: pull.merged,
+        reviewers: ReviewerSelection::default(),
+    }
+}
+
+pub(super) fn map_graphql_pull_request_status(
+    pull: GraphQlPullRequestStatus,
+) -> PullRequestStatusRecord {
+    let requested_reviewer_count = pull.review_requests.total_count;
+    let requested_reviewers = reviewer_selection_from_graphql(pull.review_requests.nodes);
+    let latest_commit = pull
+        .commits
+        .nodes
+        .into_iter()
+        .last()
+        .map(|node| node.commit);
+    let check_status = latest_commit
+        .as_ref()
+        .and_then(|commit| commit.status_check_rollup.as_ref())
+        .map_or(PullRequestCheckStatus::Missing, |rollup| {
+            map_check_status(&rollup.state)
+        });
+    let review_status = map_review_status(
+        pull.review_decision.as_deref(),
+        requested_reviewer_count > 0,
+    );
+
+    PullRequestStatusRecord {
+        number: pull.number,
+        title: pull.title,
+        url: Some(pull.url),
+        head_branch: pull.head_ref_name,
+        base_branch: pull.base_ref_name,
+        draft: pull.is_draft,
+        merged: pull.merged,
+        closed: pull.closed,
+        check_status,
+        review_status,
+        requested_reviewers,
+        latest_commit_oid: latest_commit.map(|commit| commit.oid),
+    }
+}
+
+fn map_check_status(state: &str) -> PullRequestCheckStatus {
+    match state {
+        "SUCCESS" => PullRequestCheckStatus::Passing,
+        "FAILURE" | "ERROR" => PullRequestCheckStatus::Failing,
+        "PENDING" | "EXPECTED" => PullRequestCheckStatus::Pending,
+        _ => PullRequestCheckStatus::Unknown,
+    }
+}
+
+fn map_review_status(decision: Option<&str>, has_review_requests: bool) -> PullRequestReviewStatus {
+    match decision {
+        Some("APPROVED") => PullRequestReviewStatus::Approved,
+        Some("CHANGES_REQUESTED") => PullRequestReviewStatus::ChangesRequested,
+        Some("REVIEW_REQUIRED") => PullRequestReviewStatus::ReviewRequired,
+        Some(_) => PullRequestReviewStatus::Unknown,
+        None if has_review_requests => PullRequestReviewStatus::ReviewRequested,
+        None => PullRequestReviewStatus::NotReviewed,
+    }
+}
+
+fn reviewer_selection_from_graphql(nodes: Vec<GraphQlReviewRequestNode>) -> ReviewerSelection {
+    let mut users = Vec::new();
+    for node in nodes.into_iter().filter_map(|node| node.requested_reviewer) {
+        if node.type_name.as_str() == "User" {
+            users.extend(node.login);
+        }
+    }
+    ReviewerSelection::new(users, Vec::<String>::new())
 }
 
 pub(super) fn map_comparison_status(status: CompareCommitsStatus) -> ComparisonStatus {

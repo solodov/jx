@@ -173,6 +173,15 @@ paths = ["foo/bar/**", "bar/bux/*.py"]
 reviewers = ["work-reviewer", "ExampleOrg/frontend"]
 ```
 
+## Performance tracing
+
+Stack publishing writes best-effort JSONL performance spans to
+`~/.local/state/jx/jx-perf.log`, or `$XDG_STATE_HOME/jx/jx-perf.log` when
+`XDG_STATE_HOME` is set. Set `JX_PERF_LOG=/path/to/jx-perf.log` to override the
+path, or `JX_PERF_LOG=off` to disable tracing for one command. The log records
+command phase timings such as publish planning, GitHub PR publishing, and stack
+metadata refresh/sync.
+
 ## Shell integration
 
 `jx shell init bash` prints optional shell integration for `eval`. The generated

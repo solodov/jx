@@ -79,6 +79,37 @@ fn push_can_be_cancelled_before_creating_generated_bookmark() {
 }
 
 #[test]
+fn yes_flag_confirms_push_bookmark_creation() {
+    // Verifies: Batch confirmation mode proceeds through push confirmation prompts.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+    let confirmer = FixedPushConfirmer { confirmed: false };
+
+    let result = run_with_args_and_push_confirmer(
+        ["jx", "push", "--yes"],
+        &environment,
+        &services,
+        &confirmer,
+    )
+    .expect("yes flag confirms push");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Pushed: {} -> a1b2c3d4 (created bookmark)\n",
+            example_bookmark_link("push-zzzzzzzz")
+        )
+    );
+}
+
+#[test]
 fn push_tracked_pushes_tracked_bookmarks_and_deletions() {
     // Verifies: Tracked push reports both moved and deleted tracked bookmarks.
     let workspace = TestWorkspace::new();

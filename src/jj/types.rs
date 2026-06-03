@@ -79,6 +79,8 @@ pub struct WorkspaceFacts {
     pub nearest_ancestor_bookmark: Option<String>,
     /// Repo-root-relative file paths changed by the selected jj commit.
     pub changed_files: Vec<String>,
+    /// Status-style changed-file lines for operator-facing previews.
+    pub change_lines: Vec<String>,
     /// Zero-based index of the selected change on the linear path after trunk.
     pub stack_index: usize,
 }
@@ -98,6 +100,29 @@ pub struct StackPublishFacts {
     pub nodes: Vec<StackPublishNodeFacts>,
     pub publish_indexes: Vec<usize>,
     pub anchor_index: Option<usize>,
+    pub metrics: StackPublishMetrics,
+}
+
+/// Counters and timings captured while deriving stack publish facts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StackPublishMetrics {
+    pub target_resolution_count: usize,
+    pub resolved_revision_count: usize,
+    pub resolved_trunk_count: usize,
+    pub stack_path_count: usize,
+    pub collected_child_count: usize,
+    pub loaded_child_count: usize,
+    pub workspace_fact_count: usize,
+    pub node_count: usize,
+    pub publish_count: usize,
+    pub target_resolution_us: u64,
+    pub resolve_revisions_us: u64,
+    pub resolve_trunk_us: u64,
+    pub linear_stack_path_us: u64,
+    pub collect_child_ids_us: u64,
+    pub load_child_commit_us: u64,
+    pub workspace_facts_us: u64,
+    pub total_us: u64,
 }
 
 /// One change in the local stack containing the publish selection.
@@ -245,6 +270,48 @@ pub struct LocalStackBranch {
     pub title: String,
 }
 
+/// Local branch ancestry plus jj-internal timings for performance tracing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalStackBranchFacts {
+    pub branches: Vec<LocalStackBranch>,
+    pub metrics: LocalStackBranchMetrics,
+}
+
+impl LocalStackBranchFacts {
+    pub fn from_branches(branches: Vec<LocalStackBranch>) -> Self {
+        let branch_count = branches.len();
+        Self {
+            branches,
+            metrics: LocalStackBranchMetrics {
+                branch_count,
+                ..LocalStackBranchMetrics::default()
+            },
+        }
+    }
+}
+
+/// Counters and timings captured while deriving local stack branch ancestry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalStackBranchMetrics {
+    pub local_bookmark_count: usize,
+    pub normal_bookmark_count: usize,
+    pub skipped_non_normal_bookmark_count: usize,
+    pub loaded_commit_count: usize,
+    pub resolved_trunk_count: usize,
+    pub skipped_missing_trunk_count: usize,
+    pub stack_path_count: usize,
+    pub skipped_non_linear_count: usize,
+    pub skipped_trunk_count: usize,
+    pub branch_count: usize,
+    pub enumerate_bookmarks_us: u64,
+    pub load_commit_us: u64,
+    pub resolve_trunk_us: u64,
+    pub linear_stack_path_us: u64,
+    pub nearest_ancestor_bookmark_us: u64,
+    pub sort_dedup_us: u64,
+    pub total_us: u64,
+}
+
 /// Result of ensuring a planned bookmark points at the selected jj change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkUpdate {
@@ -260,6 +327,48 @@ pub struct PushOutcome {
     pub pushed_commits: Vec<PushedCommitSummary>,
 }
 
+/// Bulk bookmark push outcome plus jj-internal phase timings for performance tracing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushBookmarksOutcome {
+    pub outcomes: Vec<PushOutcome>,
+    pub metrics: PushBookmarksMetrics,
+}
+
+impl PushBookmarksOutcome {
+    pub fn from_outcomes(outcomes: Vec<PushOutcome>) -> Self {
+        let mut metrics = PushBookmarksMetrics {
+            branch_count: outcomes.len(),
+            ..PushBookmarksMetrics::default()
+        };
+        for outcome in &outcomes {
+            if outcome.pushed_refs == 0 {
+                metrics.no_op_branch_count += 1;
+            } else {
+                metrics.update_count += 1;
+                metrics.pushed_ref_count += outcome.pushed_refs;
+            }
+            metrics.pushed_commit_count += outcome.pushed_commits.len();
+        }
+        Self { outcomes, metrics }
+    }
+}
+
+/// Counters and timings captured while pushing selected bookmarks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PushBookmarksMetrics {
+    pub branch_count: usize,
+    pub update_count: usize,
+    pub no_op_branch_count: usize,
+    pub pushed_ref_count: usize,
+    pub pushed_commit_count: usize,
+    pub classify_updates_us: u64,
+    pub pushed_commits_for_updates_us: u64,
+    pub git_push_refs_us: u64,
+    pub export_git_refs_us: u64,
+    pub commit_transaction_us: u64,
+    pub total_us: u64,
+}
+
 /// Result of pushing tracked bookmark state to fixed `origin`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedPushOutcome {
@@ -273,6 +382,49 @@ pub struct TrackedPushOutcome {
 pub struct SyncPushOutcome {
     pub pushed: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
+}
+
+/// Sync push outcome plus jj-internal phase timings for performance tracing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncPushMetricsOutcome {
+    pub outcome: SyncPushOutcome,
+    pub metrics: SyncPushMetrics,
+}
+
+impl SyncPushMetricsOutcome {
+    pub fn from_outcome(outcome: SyncPushOutcome) -> Self {
+        let metrics = SyncPushMetrics {
+            pushed_ref_count: outcome.pushed.pushed_refs,
+            pushed_bookmark_count: outcome.pushed.bookmarks.len(),
+            pushed_commit_count: outcome.pushed.pushed_commits.len(),
+            skipped_conflicted_count: outcome.skipped_conflicted_bookmarks.len(),
+            ..SyncPushMetrics::default()
+        };
+        Self { outcome, metrics }
+    }
+}
+
+/// Counters and timings captured while pushing syncable tracked bookmarks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncPushMetrics {
+    pub tracked_update_count: usize,
+    pub pushable_update_count: usize,
+    pub skipped_conflicted_count: usize,
+    pub pushed_ref_count: usize,
+    pub pushed_bookmark_count: usize,
+    pub unchanged_bookmark_count: usize,
+    pub pushed_commit_count: usize,
+    pub tracked_origin_bookmark_updates_us: u64,
+    pub split_conflicted_updates_us: u64,
+    pub push_tracked_updates_us: u64,
+    pub tracked_push_trunk_us: u64,
+    pub pushed_bookmark_summaries_us: u64,
+    pub pushed_commits_for_updates_us: u64,
+    pub git_push_refs_us: u64,
+    pub export_git_refs_us: u64,
+    pub commit_transaction_us: u64,
+    pub unchanged_tracked_bookmark_summaries_us: u64,
+    pub total_us: u64,
 }
 
 /// One tracked bookmark skipped by sync because its push range contains conflicts.

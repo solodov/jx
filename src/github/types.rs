@@ -1,3 +1,5 @@
+use super::ReviewerSelection;
+
 /// GitHub repository identity parsed from the fixed origin URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRepository {
@@ -145,6 +147,72 @@ pub struct PullRequestRecord {
     pub html_url: Option<String>,
     pub draft: bool,
     pub merged: bool,
+    pub reviewers: ReviewerSelection,
+}
+
+/// Read-only status facts for a pull request in a stack triage view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestStatusRecord {
+    pub number: u64,
+    pub title: String,
+    pub url: Option<String>,
+    pub head_branch: String,
+    pub base_branch: String,
+    pub draft: bool,
+    pub merged: bool,
+    pub closed: bool,
+    pub check_status: PullRequestCheckStatus,
+    pub review_status: PullRequestReviewStatus,
+    pub requested_reviewers: ReviewerSelection,
+    pub latest_commit_oid: Option<String>,
+}
+
+/// Summary of the latest commit's GitHub check rollup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestCheckStatus {
+    Passing,
+    Failing,
+    Pending,
+    Missing,
+    Unknown,
+}
+
+impl PullRequestCheckStatus {
+    /// Stable lowercase label for CLI and JSON output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Passing => "passing",
+            Self::Failing => "failing",
+            Self::Pending => "pending",
+            Self::Missing => "missing",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Summary of GitHub's review decision and outstanding review requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestReviewStatus {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+    ReviewRequested,
+    NotReviewed,
+    Unknown,
+}
+
+impl PullRequestReviewStatus {
+    /// Stable lowercase label for CLI and JSON output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes_requested",
+            Self::ReviewRequired => "review_required",
+            Self::ReviewRequested => "review_requested",
+            Self::NotReviewed => "not_reviewed",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// Domain input for creating a pull request.

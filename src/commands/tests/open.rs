@@ -214,6 +214,7 @@ fn open_pr_prints_first_candidate_with_pull_request() {
                 html_url: Some("https://github.com/example-owner/example-repo/pull/24".to_owned()),
                 draft: false,
                 merged: false,
+                reviewers: ReviewerSelection::default(),
             },
         )]),
         ..Default::default()
@@ -267,6 +268,7 @@ fn open_pr_accepts_positional_commit_or_bookmark_selector() {
                 ),
                 draft: false,
                 merged: false,
+                reviewers: ReviewerSelection::default(),
             },
         )]),
         ..Default::default()
@@ -316,6 +318,7 @@ fn open_pr_accepts_commit_option_as_selector() {
                 html_url: Some("https://github.com/example-owner/example-repo/pull/25".to_owned()),
                 draft: false,
                 merged: false,
+                reviewers: ReviewerSelection::default(),
             },
         )]),
         ..Default::default()

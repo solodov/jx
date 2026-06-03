@@ -5,7 +5,9 @@ fn stack_help_describes_cached_display_and_live_refresh() {
     // Verifies: Stack help distinguishes local cached display from GitHub-backed refresh.
     let help = help_output(["jx", "stack", "--help"]);
 
-    assert!(help.contains("Show, move, publish, or refresh repo-local pull request stack state"));
+    assert!(help.contains(
+        "Show, move, publish, status-check, or refresh repo-local pull request stack state"
+    ));
     assert!(help.contains(".jx/stack.toml"));
     assert!(help.contains("without contacting GitHub"));
     assert!(help.contains("create or update pull requests"));
@@ -14,10 +16,651 @@ fn stack_help_describes_cached_display_and_live_refresh() {
     assert!(help.contains("--no-sync"));
     assert!(help.contains("show"));
     assert!(help.contains("refresh"));
+    assert!(help.contains("status"));
     assert!(help.contains("plan"));
     assert!(help.contains("publish"));
     assert!(!help.contains("track"));
     assert!(!help.contains("reset"));
+}
+
+#[test]
+fn stack_status_renders_check_and_review_summary() {
+    // Verifies: stack status fetches batched GitHub health for locally tracked PR numbers.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                stack_status_node(101, "topic/root", "main", "Root change", false),
+                stack_status_node(102, "topic/child", "topic/root", "Child change", true),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/root".to_owned(), "topic/child".to_owned()],
+        pull_request_statuses: BTreeMap::from([
+            (
+                101,
+                stack_status_record(
+                    101,
+                    "Root change",
+                    "topic/root",
+                    "main",
+                    PullRequestCheckStatus::Passing,
+                    PullRequestReviewStatus::Approved,
+                    ReviewerSelection::default(),
+                ),
+            ),
+            (102, {
+                let mut status = stack_status_record(
+                    102,
+                    "Child change",
+                    "topic/child",
+                    "topic/root",
+                    PullRequestCheckStatus::Pending,
+                    PullRequestReviewStatus::ReviewRequested,
+                    ReviewerSelection::new(["reviewer-one"], ["platform"]),
+                );
+                status.draft = true;
+                status
+            }),
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert_eq!(
+        services.pull_request_status_calls.borrow().as_slice(),
+        &[vec![101, 102]]
+    );
+    assert!(result.stdout.contains("Root change"));
+    assert!(result.stdout.contains("ready"));
+    assert!(result.stdout.contains("checks passing"));
+    assert!(result.stdout.contains("approved"));
+    assert!(result.stdout.contains("Child change"));
+    assert!(result.stdout.contains("draft"));
+    assert!(result.stdout.contains("checks pending"));
+    assert!(result
+        .stdout
+        .contains("review requested: reviewer-one, team/platform"));
+}
+
+#[test]
+fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
+    // Verifies: status output focuses on actionable PRs while cleaning completed cached stacks.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                stack_status_node(201, "merged/done", "main", "Fully merged change", false),
+                stack_status_node(202, "mixed/root", "main", "Merged ancestor", false),
+                stack_status_node(203, "mixed/child", "mixed/root", "Open child", false),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut fully_merged = stack_status_record(
+        201,
+        "Fully merged change",
+        "merged/done",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    fully_merged.merged = true;
+    let mut merged_ancestor = stack_status_record(
+        202,
+        "Merged ancestor",
+        "mixed/root",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    merged_ancestor.merged = true;
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([
+            (201, fully_merged),
+            (202, merged_ancestor),
+            (
+                203,
+                stack_status_record(
+                    203,
+                    "Open child",
+                    "mixed/child",
+                    "mixed/root",
+                    PullRequestCheckStatus::Passing,
+                    PullRequestReviewStatus::Approved,
+                    ReviewerSelection::default(),
+                ),
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(!result.stdout.contains("Fully merged change"));
+    assert!(!result.stdout.contains("Merged ancestor"));
+    assert!(result.stdout.contains("Open child"));
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        metadata
+            .nodes
+            .iter()
+            .map(|node| (node.branch.as_str(), node.merged))
+            .collect::<Vec<_>>(),
+        vec![("mixed/root", true), ("mixed/child", false)]
+    );
+}
+
+#[test]
+fn stack_status_removes_closed_rows_from_cache_and_output() {
+    // Verifies: closed PRs are treated as stale stack cache entries, not actionable rows.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                stack_status_node(301, "closed/root", "main", "Closed root", false),
+                stack_status_node(302, "open/child", "closed/root", "Open child", false),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut closed = stack_status_record(
+        301,
+        "Closed root",
+        "closed/root",
+        "main",
+        PullRequestCheckStatus::Failing,
+        PullRequestReviewStatus::ReviewRequired,
+        ReviewerSelection::default(),
+    );
+    closed.closed = true;
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([
+            (301, closed),
+            (
+                302,
+                stack_status_record(
+                    302,
+                    "Open child",
+                    "open/child",
+                    "closed/root",
+                    PullRequestCheckStatus::Passing,
+                    PullRequestReviewStatus::Approved,
+                    ReviewerSelection::default(),
+                ),
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(!result.stdout.contains("Closed root"));
+    assert!(result.stdout.contains("Open child"));
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes.len(), 1);
+    assert_eq!(metadata.nodes[0].branch, "open/child");
+    assert_eq!(metadata.nodes[0].parent_branch, None);
+    assert_eq!(metadata.nodes[0].parent_pull_request, None);
+}
+
+#[test]
+fn stack_status_json_renders_machine_readable_pull_request_health() {
+    // Verifies: JSON output exposes stable labels for scripting without terminal formatting.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                103,
+                "topic/json",
+                "main",
+                "JSON change",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/json".to_owned()],
+        pull_request_statuses: BTreeMap::from([(
+            103,
+            stack_status_record(
+                103,
+                "JSON change",
+                "topic/json",
+                "main",
+                PullRequestCheckStatus::Failing,
+                PullRequestReviewStatus::ChangesRequested,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "status", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("stack status json succeeds");
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("valid json");
+
+    assert_eq!(value["command"], "stack-status");
+    assert_eq!(
+        value["repositories"][0]["repository"],
+        "example-owner/example-repo"
+    );
+    assert_eq!(value["repositories"][0]["pullRequests"][0]["number"], 103);
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["checkStatus"],
+        "failing"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["reviewStatus"],
+        "changes_requested"
+    );
+}
+
+#[test]
+fn stack_status_all_filters_configured_repositories() {
+    // Verifies: -a positional patterns match configured repository identities like jx sync -a.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let alpha = workspace.create_jj_workspace("projects/api-alpha");
+    let beta = workspace.create_jj_workspace("projects/web-beta");
+    TestWorkspace::write_git_config_at(
+        &alpha,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api-alpha.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &beta,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/web-beta.git
+"#,
+    );
+    write_stack_metadata(
+        &alpha,
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                201,
+                "topic/alpha",
+                "main",
+                "Alpha change",
+                false,
+            )],
+        },
+    )
+    .expect("alpha stack metadata writes");
+    write_stack_metadata(
+        &beta,
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                202,
+                "topic/beta",
+                "main",
+                "Beta change",
+                false,
+            )],
+        },
+    )
+    .expect("beta stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([(
+            201,
+            stack_status_record(
+                201,
+                "Alpha change",
+                "topic/alpha",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::Approved,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "status", "-a", "api-*"],
+        &environment,
+        &services,
+    )
+    .expect("filtered global stack status succeeds");
+
+    assert!(result.stdout.contains("Stack status: 1 repository checked"));
+    assert!(result.stdout.contains("api-alpha"));
+    assert!(result.stdout.contains("Alpha change"));
+    assert!(!result.stdout.contains("web-beta"));
+    assert_eq!(
+        services.pull_request_status_calls.borrow().as_slice(),
+        &[vec![201]]
+    );
+}
+
+#[test]
+fn stack_status_all_skips_repositories_pruned_to_empty_stack_state() {
+    // Verifies: -a status cleans fully merged cached stacks and omits them from global output.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let merged_repo = workspace.create_jj_workspace("projects/api-merged");
+    let open_repo = workspace.create_jj_workspace("projects/api-open");
+    TestWorkspace::write_git_config_at(
+        &merged_repo,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api-merged.git
+"#,
+    );
+    TestWorkspace::write_git_config_at(
+        &open_repo,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api-open.git
+"#,
+    );
+    write_stack_metadata(
+        &merged_repo,
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                401,
+                "topic/merged",
+                "main",
+                "Merged change",
+                false,
+            )],
+        },
+    )
+    .expect("merged stack metadata writes");
+    write_stack_metadata(
+        &open_repo,
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                402,
+                "topic/open",
+                "main",
+                "Open change",
+                false,
+            )],
+        },
+    )
+    .expect("open stack metadata writes");
+    let mut merged = stack_status_record(
+        401,
+        "Merged change",
+        "topic/merged",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    merged.merged = true;
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([
+            (401, merged),
+            (
+                402,
+                stack_status_record(
+                    402,
+                    "Open change",
+                    "topic/open",
+                    "main",
+                    PullRequestCheckStatus::Passing,
+                    PullRequestReviewStatus::Approved,
+                    ReviewerSelection::default(),
+                ),
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "status", "-a", "api-*"],
+        &environment,
+        &services,
+    )
+    .expect("global stack status succeeds");
+
+    assert!(result.stdout.contains(
+        "Stack status: 2 repositories checked, 1 repository with stacks, 1 pull request"
+    ));
+    assert!(!result.stdout.contains("api-merged"));
+    assert!(result.stdout.contains("api-open"));
+    assert_eq!(
+        read_stack_metadata(&merged_repo).expect("merged metadata reads"),
+        StackMetadata::default()
+    );
+}
+
+#[test]
+fn stack_status_records_perf_steps() {
+    // Verifies: stack status emits timing spans from its first implementation.
+    let workspace = TestWorkspace::new();
+    let perf_log = workspace.path().join("perf/stack-status.jsonl");
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                301,
+                "topic/perf",
+                "main",
+                "Perf change",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("JX_PERF_LOG".to_owned(), perf_log.display().to_string())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/perf".to_owned()],
+        pull_request_statuses: BTreeMap::from([(
+            301,
+            stack_status_record(
+                301,
+                "Perf change",
+                "topic/perf",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::Approved,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+    let log = fs::read_to_string(perf_log).expect("perf log writes");
+    let event = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("perf event json"))
+        .find(|event| event["op"] == "stack.status")
+        .expect("stack status span is logged");
+
+    assert_eq!(event["op"], "stack.status");
+    assert_eq!(event["pr_count"], 1);
+    let steps = event["steps"].as_array().expect("steps");
+    assert!(steps
+        .iter()
+        .any(|step| step["name"] == "load_stack_snapshot"));
+    assert!(steps
+        .iter()
+        .any(|step| step["name"] == "fetch_github_status"));
+    assert!(steps
+        .iter()
+        .any(|step| step["name"] == "maintain_stack_metadata"));
+    assert!(steps.iter().any(|step| step["name"] == "render"));
+}
+
+fn stack_status_node(
+    number: u64,
+    branch: &str,
+    base_branch: &str,
+    title: &str,
+    draft: bool,
+) -> StackMetadataNode {
+    StackMetadataNode {
+        branch: branch.to_owned(),
+        base_branch: base_branch.to_owned(),
+        parent_branch: (base_branch != "main").then(|| base_branch.to_owned()),
+        pull_request: Some(number),
+        parent_pull_request: None,
+        title: title.to_owned(),
+        url: Some(format!(
+            "https://github.com/example-owner/example-repo/pull/{number}"
+        )),
+        draft,
+        merged: false,
+    }
+}
+
+fn stack_status_record(
+    number: u64,
+    title: &str,
+    branch: &str,
+    base_branch: &str,
+    check_status: PullRequestCheckStatus,
+    review_status: PullRequestReviewStatus,
+    requested_reviewers: ReviewerSelection,
+) -> PullRequestStatusRecord {
+    PullRequestStatusRecord {
+        number,
+        title: title.to_owned(),
+        url: Some(format!(
+            "https://github.com/example-owner/example-repo/pull/{number}"
+        )),
+        head_branch: branch.to_owned(),
+        base_branch: base_branch.to_owned(),
+        draft: false,
+        merged: false,
+        closed: false,
+        check_status,
+        review_status,
+        requested_reviewers,
+        latest_commit_oid: Some(format!("commit-{number}")),
+    }
+}
+
+#[test]
+fn stack_publish_existing_plans_include_projected_stack_context() {
+    // Verifies: existing stacked PR updates can write the final stack-context body during publish.
+    let mut root = preview_plan();
+    root.title = "Root change".to_owned();
+    root.body = "Root body".to_owned();
+    root.bookmark.branch = "topic/root".to_owned();
+    root.head = PullRequestHead::same_repository("example-owner", "topic/root");
+    root.existing_pull_request = Some(pull_request_choice_record(
+        1,
+        "Root change",
+        "topic/root",
+        "main",
+        false,
+    ));
+
+    let mut child = preview_plan();
+    child.title = "Child change".to_owned();
+    child.body = "Child body".to_owned();
+    child.bookmark.branch = "topic/child".to_owned();
+    child.head = PullRequestHead::same_repository("example-owner", "topic/child");
+    child.base = "topic/root".to_owned();
+    child.existing_pull_request = Some(pull_request_choice_record(
+        2,
+        "Child change",
+        "topic/child",
+        "topic/root",
+        false,
+    ));
+
+    let mut plans = vec![root, child];
+    add_projected_stack_context_to_existing_plans(&mut plans);
+
+    assert!(plans[0].body.contains("<!-- jx-stack:start -->"));
+    assert!(plans[0].body.contains("#1 Root change"));
+    assert!(plans[0].body.contains("#2 Child change"));
+    assert!(plans[1].body.contains("<!-- jx-stack:start -->"));
+    assert!(plans[1].body.contains("#1 Root change"));
+    assert!(plans[1].body.contains("#2 Child change"));
 }
 
 #[test]
@@ -132,6 +775,7 @@ fn stack_publish_without_revision_publishes_inferred_stack() {
             ],
             publish_indexes: vec![0, 1],
             anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
         }),
         sync_pull_requests: vec![root_pr, child_pr],
         ..FakeServices::default()
@@ -171,6 +815,287 @@ fn stack_publish_without_revision_publishes_inferred_stack() {
 }
 
 #[test]
+fn stack_publish_ignores_empty_commits_in_selected_stack() {
+    // Verifies: empty commits do not block publishing non-empty stack descendants.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut empty_root = workspace_facts();
+    empty_root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    empty_root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    empty_root.target_change.description = "Empty root".to_owned();
+    empty_root.target_change.is_empty = true;
+    empty_root.changed_files = Vec::new();
+    empty_root.local_bookmarks_at_target = vec!["example-user/empty-root".to_owned()];
+    empty_root.nearest_ancestor_bookmark = None;
+    empty_root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = Some("example-user/empty-root".to_owned());
+    child.stack_index = 1;
+    let child_pr = pull_request_choice_record(
+        42,
+        "Child change",
+        "example-user/01-bbbbbbbb",
+        "main",
+        false,
+    );
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: empty_root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        sync_pull_requests: vec![child_pr],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "publish"], &environment, &services)
+        .expect("stack publishes non-empty child");
+
+    assert_eq!(services.published_pull_request_count.get(), 1);
+    assert_eq!(
+        services.sync_pull_request_pushes.borrow()[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_base.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("example-user/01-bbbbbbbb", Some("main"))]
+    );
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created {}\nStack: refreshed stack context on {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(42),
+        )
+    );
+}
+
+#[test]
+fn stack_publish_readiness_selectors_can_create_mixed_ready_draft_stack() {
+    // Verifies: readiness revsets assign final ready/draft state within the published stack.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let facts = StackPublishFacts {
+        nodes: vec![
+            crate::jj::StackPublishNodeFacts {
+                workspace: root,
+                parent_index: None,
+            },
+            crate::jj::StackPublishNodeFacts {
+                workspace: child,
+                parent_index: Some(0),
+            },
+        ],
+        publish_indexes: vec![0, 1],
+        anchor_index: Some(1),
+        metrics: StackPublishMetrics::default(),
+    };
+    let mut ready_root_facts = facts.clone();
+    ready_root_facts.publish_indexes = vec![0];
+    ready_root_facts.anchor_index = None;
+    let services = FakeServices {
+        stack_publish_facts: Some(facts),
+        stack_publish_facts_by_revision: BTreeMap::from([("root".to_owned(), ready_root_facts)]),
+        expected_drafts: Some(vec![false, true]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        ["jx", "stack", "publish", "--draft", "--ready=root"],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes with mixed readiness");
+
+    assert_eq!(services.published_pull_request_count.get(), 2);
+    assert_eq!(
+        services.stack_publish_selections.borrow().as_slice(),
+        &[
+            StackPublishSelection::InferredStack { anchor: None },
+            StackPublishSelection::ExplicitRevisions {
+                revisions: vec!["root".to_owned()],
+            },
+        ]
+    );
+}
+
+#[test]
+fn stack_publish_rejects_overlapping_readiness_selectors() {
+    // Verifies: contradictory ready/draft revsets fail before any publishing mutation.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut selected = workspace_facts();
+    selected.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    let facts = StackPublishFacts {
+        nodes: vec![crate::jj::StackPublishNodeFacts {
+            workspace: selected,
+            parent_index: None,
+        }],
+        publish_indexes: vec![0],
+        anchor_index: Some(0),
+        metrics: StackPublishMetrics::default(),
+    };
+    let services = FakeServices {
+        stack_publish_facts: Some(facts.clone()),
+        stack_publish_facts_by_revision: BTreeMap::from([("selected".to_owned(), facts)]),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        [
+            "jx",
+            "stack",
+            "publish",
+            "--ready=selected",
+            "--draft=selected",
+        ],
+        &environment,
+        &services,
+    )
+    .expect_err("overlapping readiness is rejected");
+
+    assert!(error
+        .to_string()
+        .contains("--ready and --draft selectors overlap"));
+    assert_eq!(services.published_pull_request_count.get(), 0);
+}
+
+#[test]
+fn stack_publish_writes_perf_trace_for_publish_and_stack_update() {
+    // Verifies: stack publish emits structured timings for the command and stack update phases.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let log_path = workspace.path().join("jx-perf.log");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            ("GH_TOKEN".to_owned(), "placeholder-token".to_owned()),
+            ("JX_PERF_LOG".to_owned(), log_path.display().to_string()),
+        ],
+    );
+    let services = FakeServices::default();
+
+    run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes");
+
+    let events = fs::read_to_string(&log_path).expect("perf log writes");
+    let events = events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("perf line is json"))
+        .collect::<Vec<_>>();
+    let publish = events
+        .iter()
+        .find(|event| event["op"] == "stack.publish")
+        .expect("stack publish span is logged");
+    assert_eq!(publish["repo"], "example-owner/example-repo");
+    assert_eq!(publish["explicit_revisions"], true);
+    assert!(publish["duration_us"].as_u64().is_some());
+    let step_names = publish["steps"]
+        .as_array()
+        .expect("publish steps are logged")
+        .iter()
+        .filter_map(|step| step["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(step_names.contains(&"load_publish_stack"));
+    assert!(step_names.contains(&"stack_publish_facts.resolve_trunk"));
+    assert!(step_names.contains(&"stack_publish_facts.workspace_facts"));
+    assert!(step_names.contains(&"plan_pull_requests"));
+    assert!(step_names.contains(&"pull_request_plan"));
+    assert!(step_names.contains(&"publish_pull_request"));
+    assert!(step_names.contains(&"update_stack"));
+    let update = events
+        .iter()
+        .find(|event| event["op"] == "stack.update_after_publish")
+        .expect("stack update span is logged");
+    let update_step_names = update["steps"]
+        .as_array()
+        .expect("update steps are logged")
+        .iter()
+        .filter_map(|step| step["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(update_step_names.contains(&"load_local_stack_branches"));
+    assert!(update_step_names.contains(&"local_stack_branches.resolve_trunk"));
+    assert!(update_step_names.contains(&"local_stack_branches.linear_stack_path"));
+    assert!(update_step_names
+        .contains(&"stack_metadata.apply_existing_local.apply_local_stack_branches"));
+    assert!(
+        update_step_names.contains(&"stack_metadata.apply_seeded_local.apply_local_stack_branches")
+    );
+    assert!(update_step_names
+        .contains(&"component_metadata.apply_local_stack_metadata.apply_local_stack_branches"));
+    assert!(!update_step_names
+        .iter()
+        .any(|name| name.ends_with(".local_stack_branches")));
+    assert!(events
+        .iter()
+        .any(|event| event["op"] == "stack.sync_pull_requests"));
+}
+
+#[test]
 fn stack_publish_revision_publishes_explicit_subset_only() {
     // Verifies: -r selects the publish set instead of expanding to the whole stack.
     let workspace = TestWorkspace::new();
@@ -206,6 +1131,7 @@ fn stack_publish_revision_publishes_explicit_subset_only() {
             ],
             publish_indexes: vec![1],
             anchor_index: None,
+            metrics: StackPublishMetrics::default(),
         }),
         ..FakeServices::default()
     };
@@ -960,6 +1886,7 @@ fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
         html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
         draft: false,
         merged: true,
+        reviewers: ReviewerSelection::default(),
     };
     let environment = RuntimeEnvironment::new(
         workspace.path(),

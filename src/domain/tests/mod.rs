@@ -61,6 +61,7 @@ fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {
         html_url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
         draft: true,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     };
 
     let snapshot = PullRequestStackSnapshot::from_metadata(
@@ -100,6 +101,7 @@ fn pull_request_stack_snapshot_adds_live_prs_missing_from_metadata() {
         html_url: None,
         draft: false,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     };
     let child = PullRequestRecord {
         number: 11,
@@ -110,6 +112,7 @@ fn pull_request_stack_snapshot_adds_live_prs_missing_from_metadata() {
         html_url: None,
         draft: false,
         merged: false,
+        reviewers: ReviewerSelection::default(),
     };
 
     let snapshot = PullRequestStackSnapshot::from_metadata(
@@ -156,6 +159,7 @@ fn pull_request_stack_snapshot_refreshes_stored_node_by_pull_request_number() {
         html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
         draft: true,
         merged: true,
+        reviewers: ReviewerSelection::default(),
     };
 
     let snapshot = PullRequestStackSnapshot::from_metadata(
@@ -246,6 +250,145 @@ fn pull_request_stack_prunes_only_fully_merged_components() {
             .collect::<Vec<_>>(),
         vec!["mixed/root", "mixed/child"]
     );
+}
+
+#[test]
+fn pull_request_stack_status_maintenance_removes_closed_nodes() {
+    // Verifies: closed PRs leave the local stack cache while still-open descendants remain visible.
+    let metadata = StackMetadata {
+        version: 1,
+        nodes: vec![
+            StackMetadataNode {
+                branch: "closed/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Closed root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+            StackMetadataNode {
+                branch: "open/child".to_owned(),
+                base_branch: "closed/root".to_owned(),
+                parent_branch: Some("closed/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Open child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+        ],
+    };
+    let mut closed = pull_request_status(10, "Closed root", false);
+    closed.closed = true;
+
+    let maintained = maintain_stack_metadata_pull_request_statuses(
+        &[closed, pull_request_status(11, "Open child", false)],
+        &metadata,
+    );
+
+    assert_eq!(maintained.nodes.len(), 1);
+    assert_eq!(maintained.nodes[0].branch, "open/child");
+    assert_eq!(maintained.nodes[0].parent_branch, None);
+    assert_eq!(maintained.nodes[0].parent_pull_request, None);
+}
+
+#[test]
+fn pull_request_stack_status_maintenance_prunes_newly_merged_components() {
+    // Verifies: status refresh can remove completed cached trees without a separate stack refresh.
+    let metadata = StackMetadata {
+        version: 1,
+        nodes: vec![
+            StackMetadataNode {
+                branch: "merged/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Cached root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+            StackMetadataNode {
+                branch: "merged/child".to_owned(),
+                base_branch: "merged/root".to_owned(),
+                parent_branch: Some("merged/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Cached child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+            StackMetadataNode {
+                branch: "mixed/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(20),
+                parent_pull_request: None,
+                title: "Mixed root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+            StackMetadataNode {
+                branch: "mixed/child".to_owned(),
+                base_branch: "mixed/root".to_owned(),
+                parent_branch: Some("mixed/root".to_owned()),
+                pull_request: Some(21),
+                parent_pull_request: Some(20),
+                title: "Mixed child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            },
+        ],
+    };
+
+    let maintained = maintain_stack_metadata_pull_request_statuses(
+        &[
+            pull_request_status(10, "Merged root", true),
+            pull_request_status(11, "Merged child", true),
+            pull_request_status(20, "Live mixed root", true),
+            pull_request_status(21, "Live mixed child", false),
+        ],
+        &metadata,
+    );
+
+    assert_eq!(
+        maintained
+            .nodes
+            .iter()
+            .map(|node| (node.branch.as_str(), node.title.as_str(), node.merged))
+            .collect::<Vec<_>>(),
+        vec![
+            ("mixed/root", "Live mixed root", true),
+            ("mixed/child", "Live mixed child", false),
+        ]
+    );
+}
+
+fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestStatusRecord {
+    PullRequestStatusRecord {
+        number,
+        title: title.to_owned(),
+        url: Some(format!(
+            "https://github.com/example-owner/example-repo/pull/{number}"
+        )),
+        head_branch: format!("topic/{number}"),
+        base_branch: "main".to_owned(),
+        draft: false,
+        merged,
+        closed: false,
+        check_status: crate::github::PullRequestCheckStatus::Passing,
+        review_status: crate::github::PullRequestReviewStatus::Approved,
+        requested_reviewers: ReviewerSelection::default(),
+        latest_commit_oid: None,
+    }
 }
 
 #[test]
@@ -843,7 +986,7 @@ fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
         &github,
         Some("ABC-123".to_owned()),
         vec!["bug".to_owned(), "help wanted".to_owned()],
-        true,
+        PullRequestReadiness::Draft,
     ))
     .expect("PR plan is derived");
 
@@ -873,6 +1016,46 @@ fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
 }
 
 #[test]
+fn pull_request_plan_merges_existing_requested_reviewers() {
+    // Verifies: existing PR reviewers stay selected while computed reviewers remain available.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Existing PR".to_owned(),
+            body: None,
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+            merged: false,
+            reviewers: ReviewerSelection::new(["already-reviewer"], ["platform"]),
+        }),
+        ..FakeGitHub::default()
+    };
+
+    let plan = pollster::block_on(pull_request_plan(
+        &context_with_reviewers(&["computed-reviewer"]),
+        workspace_facts(),
+        &github,
+        None,
+        Vec::new(),
+        PullRequestReadiness::Preserve,
+    ))
+    .expect("PR plan is derived");
+
+    assert_eq!(
+        plan.reviewers,
+        ReviewerSelection::new(["already-reviewer", "computed-reviewer"], ["platform"])
+    );
+    let existing = plan
+        .reviewer_candidates
+        .iter()
+        .find(|candidate| candidate.target.display_name() == "already-reviewer")
+        .expect("existing reviewer is offered");
+    assert_eq!(existing.reasons, ["already requested".to_owned()]);
+}
+
+#[test]
 fn pull_request_plan_uses_trunk_branch_when_no_ancestor_bookmark_exists() {
     // Verifies: Pull request planning still uses trunk when no stack ancestor bookmark exists.
     let github = FakeGitHub::default();
@@ -885,7 +1068,7 @@ fn pull_request_plan_uses_trunk_branch_when_no_ancestor_bookmark_exists() {
         &github,
         None,
         Vec::new(),
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
 
@@ -905,7 +1088,7 @@ fn pull_request_plan_rejects_empty_or_undescribed_changes() {
         &github,
         None,
         Vec::new(),
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect_err("empty changes do not create PR state");
 
@@ -920,7 +1103,7 @@ fn pull_request_plan_rejects_empty_or_undescribed_changes() {
         &github,
         None,
         Vec::new(),
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect_err("description is required");
 
@@ -971,7 +1154,7 @@ fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
         &github,
         Some("ABC-123".to_owned()),
         Vec::new(),
-        true,
+        PullRequestReadiness::Draft,
     ))
     .expect("PR plan is derived");
 
@@ -1017,7 +1200,7 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
         &create_github,
         None,
         vec!["bug".to_owned(), "help wanted".to_owned()],
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
 
@@ -1051,6 +1234,7 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1061,7 +1245,7 @@ fn publish_pull_request_applies_requested_labels_to_created_or_updated_pr() {
         &update_github,
         None,
         vec!["release-note".to_owned()],
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
 
@@ -1106,7 +1290,7 @@ fn publish_pull_request_runs_created_event_handlers_against_cli_labels() {
         &github,
         None,
         vec!["seed".to_owned()],
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
 
@@ -1161,6 +1345,7 @@ fn publish_pull_request_runs_updated_event_handlers_against_existing_and_cli_lab
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         pull_request_labels: vec!["existing".to_owned()],
         ..FakeGitHub::default()
@@ -1186,7 +1371,7 @@ fn publish_pull_request_runs_updated_event_handlers_against_existing_and_cli_lab
         &github,
         None,
         vec!["cli".to_owned()],
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
 
@@ -1227,7 +1412,7 @@ fn publish_pull_request_can_disable_event_handlers() {
         &github,
         None,
         vec!["cli".to_owned()],
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
 
@@ -1263,6 +1448,7 @@ fn publish_pull_request_updates_existing_pr_without_unconfigured_reviewers() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1275,7 +1461,7 @@ fn publish_pull_request_updates_existing_pr_without_unconfigured_reviewers() {
         &github,
         None,
         Vec::new(),
-        false,
+        PullRequestReadiness::Preserve,
     ))
     .expect("PR plan is derived");
     assert_eq!(
@@ -1307,6 +1493,99 @@ fn publish_pull_request_updates_existing_pr_without_unconfigured_reviewers() {
 }
 
 #[test]
+fn publish_pull_request_applies_requested_readiness_to_existing_prs() {
+    // Verifies: explicit ready/draft intent changes existing PR readiness after metadata updates.
+    let draft_github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Old title".to_owned(),
+            body: Some("Old body".to_owned()),
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: true,
+            merged: false,
+            reviewers: ReviewerSelection::default(),
+        }),
+        ..FakeGitHub::default()
+    };
+    let mark_ready_calls = draft_github.mark_ready_calls.clone();
+    let context = context();
+    let ready_plan = pollster::block_on(pull_request_plan(
+        &context,
+        workspace_facts(),
+        &draft_github,
+        None,
+        Vec::new(),
+        PullRequestReadiness::Ready,
+    ))
+    .expect("PR plan is derived");
+
+    let ready_report = pollster::block_on(publish_pull_request(
+        &context,
+        ready_plan,
+        bookmark_update(),
+        push_outcome(),
+        PullRequestPublishOptions::default(),
+        &draft_github,
+    ))
+    .expect("PR is marked ready");
+
+    assert!(!ready_report.pull_request.draft);
+    assert_eq!(
+        mark_ready_calls
+            .lock()
+            .expect("mark ready calls")
+            .as_slice(),
+        &[7]
+    );
+
+    let ready_github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 8,
+            title: "Old title".to_owned(),
+            body: Some("Old body".to_owned()),
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/8".to_owned()),
+            draft: false,
+            merged: false,
+            reviewers: ReviewerSelection::default(),
+        }),
+        ..FakeGitHub::default()
+    };
+    let convert_draft_calls = ready_github.convert_draft_calls.clone();
+    let draft_plan = pollster::block_on(pull_request_plan(
+        &context,
+        workspace_facts(),
+        &ready_github,
+        None,
+        Vec::new(),
+        PullRequestReadiness::Draft,
+    ))
+    .expect("PR plan is derived");
+
+    let draft_report = pollster::block_on(publish_pull_request(
+        &context,
+        draft_plan,
+        bookmark_update(),
+        push_outcome(),
+        PullRequestPublishOptions::default(),
+        &ready_github,
+    ))
+    .expect("PR is marked draft");
+
+    assert!(draft_report.pull_request.draft);
+    assert_eq!(
+        convert_draft_calls
+            .lock()
+            .expect("convert draft calls")
+            .as_slice(),
+        &[8]
+    );
+}
+
+#[test]
 fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_base() {
     // Verifies: Sync updates only existing PR title/body from the pushed local commit description.
     let github = FakeGitHub {
@@ -1319,6 +1598,7 @@ fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_b
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1381,6 +1661,7 @@ fn sync_pull_requests_updates_stack_base_without_rewriting_matching_description(
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1474,6 +1755,7 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1532,6 +1814,7 @@ fn sync_pull_requests_removes_stack_context_for_untracked_pr() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1585,6 +1868,7 @@ fn sync_pull_requests_clears_body_for_title_only_descriptions() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1640,6 +1924,7 @@ fn sync_pull_requests_skips_title_only_update_when_github_body_is_absent() {
             html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
             draft: false,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         }),
         ..FakeGitHub::default()
     };
@@ -1829,6 +2114,7 @@ fn workspace_facts() -> WorkspaceFacts {
         local_bookmarks_at_target: Vec::new(),
         nearest_ancestor_bookmark: Some("example-user/01-ancestor".to_owned()),
         changed_files: vec!["src/main.rs".to_owned()],
+        change_lines: vec!["M src/main.rs".to_owned()],
         stack_index: 2,
     }
 }
@@ -1876,6 +2162,7 @@ impl FakeCompareFailure {
 type CompareCalls = Arc<Mutex<Vec<(String, String)>>>;
 type CreateCalls = Arc<Mutex<Vec<PullRequestCreate>>>;
 type UpdateCalls = Arc<Mutex<Vec<(u64, PullRequestUpdate)>>>;
+type ReadinessCalls = Arc<Mutex<Vec<u64>>>;
 type LabelCalls = Arc<Mutex<Vec<(u64, Vec<String>)>>>;
 type ReviewerCalls = Arc<Mutex<Vec<(u64, ReviewerSelection)>>>;
 
@@ -1891,11 +2178,34 @@ struct FakeGitHub {
     open_pull_request: Option<PullRequestRecord>,
     create_calls: CreateCalls,
     update_calls: UpdateCalls,
+    mark_ready_calls: ReadinessCalls,
+    convert_draft_calls: ReadinessCalls,
     label_calls: LabelCalls,
     label_result: LabelApplyResult,
     pull_request_labels: Vec<String>,
     reviewer_calls: ReviewerCalls,
     reviewer_result: ReviewerSyncResult,
+}
+
+impl FakeGitHub {
+    fn readiness_pull_request(&self, number: u64, draft: bool) -> PullRequestRecord {
+        let mut pull_request = self.open_pull_request.clone().unwrap_or(PullRequestRecord {
+            number,
+            title: "updated title".to_owned(),
+            body: None,
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some(format!(
+                "https://github.com/example-owner/example-repo/pull/{number}"
+            )),
+            draft,
+            merged: false,
+            reviewers: ReviewerSelection::default(),
+        });
+        pull_request.number = number;
+        pull_request.draft = draft;
+        pull_request
+    }
 }
 
 impl Default for FakeGitHub {
@@ -1926,6 +2236,8 @@ impl Default for FakeGitHub {
             open_pull_request: None,
             create_calls: Arc::new(Mutex::new(Vec::new())),
             update_calls: Arc::new(Mutex::new(Vec::new())),
+            mark_ready_calls: Arc::new(Mutex::new(Vec::new())),
+            convert_draft_calls: Arc::new(Mutex::new(Vec::new())),
             label_calls: Arc::new(Mutex::new(Vec::new())),
             label_result: LabelApplyResult::default(),
             pull_request_labels: Vec::new(),
@@ -2025,6 +2337,14 @@ impl GitHubClient for FakeGitHub {
             .filter(|pull_request| pull_request.number == number))
     }
 
+    async fn pull_request_statuses(
+        &self,
+        _repository: &GitHubRepository,
+        _numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
+        Ok(Vec::new())
+    }
+
     async fn create_pull_request(
         &self,
         _repository: &GitHubRepository,
@@ -2044,6 +2364,7 @@ impl GitHubClient for FakeGitHub {
             html_url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
             draft: request.draft,
             merged: false,
+            reviewers: ReviewerSelection::default(),
         })
     }
 
@@ -2058,18 +2379,57 @@ impl GitHubClient for FakeGitHub {
             .expect("update calls")
             .push((number, request.clone()));
 
+        let existing = self.open_pull_request.clone();
         Ok(PullRequestRecord {
             number,
-            title: request.title.unwrap_or_else(|| "updated title".to_owned()),
-            body: request.body,
-            head_branch: "example-user/02-a1b2c3d4".to_owned(),
-            base_branch: request.base.unwrap_or_else(|| "main".to_owned()),
+            title: request.title.unwrap_or_else(|| {
+                existing
+                    .as_ref()
+                    .map_or_else(|| "updated title".to_owned(), |pr| pr.title.clone())
+            }),
+            body: request
+                .body
+                .or_else(|| existing.as_ref().and_then(|pr| pr.body.clone())),
+            head_branch: existing.as_ref().map_or_else(
+                || "example-user/02-a1b2c3d4".to_owned(),
+                |pr| pr.head_branch.clone(),
+            ),
+            base_branch: request.base.unwrap_or_else(|| {
+                existing
+                    .as_ref()
+                    .map_or_else(|| "main".to_owned(), |pr| pr.base_branch.clone())
+            }),
             html_url: Some(format!(
                 "https://github.com/example-owner/example-repo/pull/{number}"
             )),
-            draft: false,
+            draft: existing.is_some_and(|pr| pr.draft),
             merged: false,
+            reviewers: ReviewerSelection::default(),
         })
+    }
+
+    async fn mark_pull_request_ready(
+        &self,
+        _repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<PullRequestRecord, GitHubError> {
+        self.mark_ready_calls
+            .lock()
+            .expect("mark ready calls")
+            .push(number);
+        Ok(self.readiness_pull_request(number, false))
+    }
+
+    async fn convert_pull_request_to_draft(
+        &self,
+        _repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<PullRequestRecord, GitHubError> {
+        self.convert_draft_calls
+            .lock()
+            .expect("convert draft calls")
+            .push(number);
+        Ok(self.readiness_pull_request(number, true))
     }
 
     async fn pull_request_labels(
