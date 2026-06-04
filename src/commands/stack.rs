@@ -249,7 +249,13 @@ impl StackStatusExecution<'_> {
             },
             stack_snapshot_result_attrs,
         )?;
-        let numbers = stack_status_pull_request_numbers(&snapshot);
+        let discovered_pull_requests = span.measure_with_result_attrs(
+            "discover_missing_pull_requests",
+            Vec::new(),
+            || stack_status_missing_pull_requests(self.services, self.context, &snapshot),
+            pull_request_discovery_result_attrs,
+        )?;
+        let numbers = stack_status_pull_request_numbers(&snapshot, &discovered_pull_requests);
         span.set([
             perf_attr("stack_node_count", snapshot.nodes.len()),
             perf_attr("pr_count", numbers.len()),
@@ -1541,14 +1547,43 @@ fn render_global_stack_status_output(
     }
 }
 
-fn stack_status_pull_request_numbers(snapshot: &PullRequestStackSnapshot) -> Vec<u64> {
+fn stack_status_pull_request_numbers(
+    snapshot: &PullRequestStackSnapshot,
+    discovered_pull_requests: &[PullRequestRecord],
+) -> Vec<u64> {
     let mut seen = BTreeSet::new();
     snapshot
         .nodes
         .iter()
         .filter_map(PullRequestStackNode::pull_request_number)
+        .chain(
+            discovered_pull_requests
+                .iter()
+                .map(|pull_request| pull_request.number),
+        )
         .filter(|number| seen.insert(*number))
         .collect()
+}
+
+fn stack_status_missing_pull_requests(
+    services: &dyn CommandServices,
+    context: &RepositoryContext,
+    snapshot: &PullRequestStackSnapshot,
+) -> Result<Vec<PullRequestRecord>, WorkflowError> {
+    let mut seen = BTreeSet::new();
+    let mut pull_requests = Vec::new();
+    for branch in snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.pull_request_number().is_none())
+        .map(|node| node.branch.as_str())
+        .filter(|branch| seen.insert((*branch).to_owned()))
+    {
+        if let Some(pull_request) = services.find_open_pull_request_for_head(context, branch)? {
+            pull_requests.push(pull_request);
+        }
+    }
+    Ok(pull_requests)
 }
 
 fn stack_snapshot_result_attrs(
@@ -1561,10 +1596,19 @@ fn stack_snapshot_result_attrs(
                 perf_attr("stack_node_count", snapshot.nodes.len()),
                 perf_attr(
                     "pr_count",
-                    stack_status_pull_request_numbers(snapshot).len(),
+                    stack_status_pull_request_numbers(snapshot, &[]).len(),
                 ),
             ]
         })
+        .unwrap_or_default()
+}
+
+fn pull_request_discovery_result_attrs(
+    result: &Result<Vec<PullRequestRecord>, WorkflowError>,
+) -> Vec<PerfAttr> {
+    result
+        .as_ref()
+        .map(|pull_requests| vec![perf_attr("discovered_pr_count", pull_requests.len())])
         .unwrap_or_default()
 }
 

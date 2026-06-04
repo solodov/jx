@@ -496,6 +496,7 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
                 | "path_reviewers"
                 | "reviewer_rules"
                 | "workspace_shared_paths"
+                | "stack_status"
                 | "rules"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
@@ -555,6 +556,7 @@ fn parse_repo_rule(
                 | "path_reviewers"
                 | "reviewer_rules"
                 | "workspace_shared_paths"
+                | "stack_status"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -601,6 +603,11 @@ fn parse_repo_policy(
         })
         .transpose()?
         .unwrap_or_default();
+    let stack_status = table
+        .get("stack_status")
+        .map(|value| parse_stack_status_config(file, &format!("{key_prefix}.stack_status"), value))
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(RepoPolicyConfig {
         advance_trunk,
@@ -608,7 +615,88 @@ fn parse_repo_policy(
         reviewers,
         reviewer_rules,
         workspace_shared_paths,
+        stack_status,
     })
+}
+
+fn parse_stack_status_config(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<RepoStackStatusConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "review_gate_checks") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}.{name}"),
+            });
+        }
+    }
+
+    let review_gate_checks = table
+        .get("review_gate_checks")
+        .map(|value| parse_review_gate_checks(file, &format!("{key}.review_gate_checks"), value))
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(RepoStackStatusConfig { review_gate_checks })
+}
+
+fn parse_review_gate_checks(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<ReviewGateCheckConfig>, RepositoryError> {
+    let Some(rules) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_review_gate_check(file, key, index, value))
+        .collect()
+}
+
+fn parse_review_gate_check(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<ReviewGateCheckConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "name") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let name = required_non_empty_string(file, table, &format!("{key}[{index}].name"))?;
+    Glob::new(&name).map_err(|source| RepositoryError::InvalidConfig {
+        file: file.to_owned(),
+        message: format!("`{key}[{index}].name` must be a valid check-name glob: {source}"),
+    })?;
+
+    Ok(ReviewGateCheckConfig { name })
 }
 
 fn parse_policy_path_reviewers(

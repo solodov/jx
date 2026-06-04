@@ -7,14 +7,97 @@ pub fn pull_request_stack_status_report(
     statuses: Vec<PullRequestStatusRecord>,
     trunk: Option<RemoteStatusReport>,
 ) -> PullRequestStackStatusReport {
+    let stack_status_config = context.config.repo.stack_status_for(&context.origin.github);
     PullRequestStackStatusReport {
         repository: repository_summary(context),
         snapshot,
         statuses: statuses
             .into_iter()
+            .map(|status| apply_stack_status_config(status, &stack_status_config))
             .map(|status| (status.number, status))
             .collect(),
         trunk,
+    }
+}
+
+fn apply_stack_status_config(
+    mut status: PullRequestStatusRecord,
+    config: &RepoStackStatusConfig,
+) -> PullRequestStatusRecord {
+    if config.review_gate_checks.is_empty() || status.checks.is_empty() {
+        return status;
+    }
+
+    let checks = latest_checks_by_name(&status.checks);
+    let mut found_failing_review_gate = false;
+    let remaining_checks = checks
+        .iter()
+        .filter(|check| {
+            let is_review_gate_failure = check.status == PullRequestCheckStatus::Failing
+                && config
+                    .review_gate_checks
+                    .iter()
+                    .any(|rule| rule.matches(&check.name));
+            found_failing_review_gate |= is_review_gate_failure;
+            !is_review_gate_failure
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    status.checks = checks;
+
+    if found_failing_review_gate {
+        status.check_status = aggregate_check_status(&remaining_checks);
+        status.review_status = review_status_with_review_gate(status.review_status);
+    }
+    status
+}
+
+/// Collapses duplicate rollup contexts so superseded failures do not outvote newer results.
+fn latest_checks_by_name(checks: &[PullRequestCheck]) -> Vec<PullRequestCheck> {
+    let mut latest = Vec::<PullRequestCheck>::new();
+    for check in checks {
+        if let Some(existing) = latest
+            .iter_mut()
+            .find(|existing| existing.name == check.name)
+        {
+            *existing = check.clone();
+        } else {
+            latest.push(check.clone());
+        }
+    }
+    latest
+}
+
+fn aggregate_check_status(checks: &[PullRequestCheck]) -> PullRequestCheckStatus {
+    if checks.is_empty() {
+        return PullRequestCheckStatus::Missing;
+    }
+    if checks
+        .iter()
+        .any(|check| check.status == PullRequestCheckStatus::Failing)
+    {
+        return PullRequestCheckStatus::Failing;
+    }
+    if checks
+        .iter()
+        .any(|check| check.status == PullRequestCheckStatus::Pending)
+    {
+        return PullRequestCheckStatus::Pending;
+    }
+    if checks
+        .iter()
+        .any(|check| check.status == PullRequestCheckStatus::Unknown)
+    {
+        return PullRequestCheckStatus::Unknown;
+    }
+    PullRequestCheckStatus::Passing
+}
+
+fn review_status_with_review_gate(status: PullRequestReviewStatus) -> PullRequestReviewStatus {
+    match status {
+        PullRequestReviewStatus::ChangesRequested => PullRequestReviewStatus::ChangesRequested,
+        _ => PullRequestReviewStatus::ReviewRequested,
     }
 }
 
@@ -447,7 +530,7 @@ pub fn maintain_stack_metadata_pull_request_statuses(
     prune_merged_stack_metadata_trees(&without_closed)
 }
 
-/// Refreshes durable stack metadata from read-only PR status facts matched by pull-request number.
+/// Refreshes durable stack metadata from read-only PR status facts matched by PR number or branch.
 pub fn refresh_stack_metadata_pull_request_statuses(
     statuses: &[PullRequestStatusRecord],
     existing_metadata: &StackMetadata,
@@ -456,14 +539,19 @@ pub fn refresh_stack_metadata_pull_request_statuses(
         .iter()
         .map(|status| (status.number, status))
         .collect::<BTreeMap<_, _>>();
+    let statuses_by_head_branch = statuses
+        .iter()
+        .map(|status| (status.head_branch.as_str(), status))
+        .collect::<BTreeMap<_, _>>();
     let mut nodes = existing_metadata
         .nodes
         .iter()
         .map(|node| {
-            match node
+            let status = node
                 .pull_request
-                .and_then(|number| statuses_by_number.get(&number))
-            {
+                .and_then(|number| statuses_by_number.get(&number).copied())
+                .or_else(|| statuses_by_head_branch.get(node.branch.as_str()).copied());
+            match status {
                 Some(status) => refreshed_stack_metadata_node_from_status(node, status),
                 None => node.clone(),
             }
@@ -789,7 +877,7 @@ fn pull_request_stack_rows(nodes: &[PullRequestStackNode]) -> Vec<PullRequestSta
     let mut unvisited = (0..nodes.len())
         .filter(|index| !tree.visited.contains(index))
         .collect::<Vec<_>>();
-    sort_stack_node_indexes(&mut unvisited, nodes);
+    sort_stack_root_indexes_newest_first(&mut unvisited, nodes, &tree.children);
     tree.append_roots(&unvisited);
 
     tree.rows
@@ -855,7 +943,7 @@ fn ordered_selected_stack_indexes(
                 .is_none_or(|parent| !selected.contains(&parent) || parent == *index)
         })
         .collect::<Vec<_>>();
-    sort_stack_node_indexes(&mut roots, nodes);
+    sort_stack_root_indexes_newest_first(&mut roots, nodes, &hierarchy.children);
 
     let mut ordered = Vec::new();
     append_selected_stack_indexes(&mut ordered, &roots, &hierarchy.children, selected);
@@ -901,7 +989,7 @@ impl StackHierarchy {
             }
         }
 
-        sort_stack_node_indexes(&mut roots, nodes);
+        sort_stack_root_indexes_newest_first(&mut roots, nodes, &children);
         for child_indexes in &mut children {
             sort_stack_node_indexes(child_indexes, nodes);
         }
@@ -995,6 +1083,45 @@ fn sort_stack_node_indexes(indexes: &mut [usize], nodes: &[PullRequestStackNode]
     indexes.sort_by(|left, right| {
         stack_node_sort_key(&nodes[*left]).cmp(&stack_node_sort_key(&nodes[*right]))
     });
+}
+
+fn sort_stack_root_indexes_newest_first(
+    indexes: &mut [usize],
+    nodes: &[PullRequestStackNode],
+    children: &[Vec<usize>],
+) {
+    indexes.sort_by(|left, right| {
+        stack_root_sort_key(*right, nodes, children)
+            .cmp(&stack_root_sort_key(*left, nodes, children))
+    });
+}
+
+fn stack_root_sort_key<'a>(
+    index: usize,
+    nodes: &'a [PullRequestStackNode],
+    children: &[Vec<usize>],
+) -> (u64, &'a str, &'a str) {
+    (
+        stack_newest_pull_request_number(index, nodes, children, &mut BTreeSet::new()).unwrap_or(0),
+        nodes[index].title.as_str(),
+        nodes[index].branch.as_str(),
+    )
+}
+
+fn stack_newest_pull_request_number(
+    index: usize,
+    nodes: &[PullRequestStackNode],
+    children: &[Vec<usize>],
+    visited: &mut BTreeSet<usize>,
+) -> Option<u64> {
+    if !visited.insert(index) {
+        return None;
+    }
+    children[index]
+        .iter()
+        .filter_map(|child| stack_newest_pull_request_number(*child, nodes, children, visited))
+        .chain(nodes[index].pull_request_number())
+        .max()
 }
 
 fn stack_node_sort_key(node: &PullRequestStackNode) -> (u8, u64, &str, &str) {

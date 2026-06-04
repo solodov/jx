@@ -150,6 +150,14 @@ pub struct PullRequestRecord {
     pub reviewers: ReviewerSelection,
 }
 
+/// GitHub label attached to a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestLabel {
+    pub name: String,
+    /// Six-digit RGB hex color as returned by GitHub, without a leading `#`.
+    pub color: String,
+}
+
 /// Read-only status facts for a pull request in a stack triage view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestStatusRecord {
@@ -162,8 +170,11 @@ pub struct PullRequestStatusRecord {
     pub merged: bool,
     pub closed: bool,
     pub check_status: PullRequestCheckStatus,
+    pub checks: Vec<PullRequestCheck>,
     pub review_status: PullRequestReviewStatus,
     pub requested_reviewers: ReviewerSelection,
+    pub approved_reviewers: Vec<String>,
+    pub labels: Vec<PullRequestLabel>,
     pub latest_commit_oid: Option<String>,
 }
 
@@ -188,6 +199,13 @@ impl PullRequestCheckStatus {
             Self::Unknown => "unknown",
         }
     }
+}
+
+/// One latest-commit check run or commit status context in GitHub's rollup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestCheck {
+    pub name: String,
+    pub status: PullRequestCheckStatus,
 }
 
 /// Summary of GitHub's review decision and outstanding review requests.

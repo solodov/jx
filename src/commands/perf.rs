@@ -425,7 +425,10 @@ mod tests {
         );
         let log = PerfLog::from_environment(&environment);
 
-        let mut span = log.start("stack.publish", [perf_attr("repo", "Faire/example")]);
+        let mut span = log.start(
+            "stack.publish",
+            [perf_attr("repo", "example-owner/example-repo")],
+        );
         span.measure(
             "update_stack",
             [perf_attr("component_nodes", 2_usize)],
@@ -439,7 +442,7 @@ mod tests {
         assert_eq!(event["event"], "perf");
         assert_eq!(event["op"], "stack.publish");
         assert_eq!(event["status"], "ok");
-        assert_eq!(event["repo"], "Faire/example");
+        assert_eq!(event["repo"], "example-owner/example-repo");
         assert_eq!(event["steps"][0]["name"], "update_stack");
         assert_eq!(event["steps"][0]["component_nodes"], 2);
         let _ = fs::remove_dir_all(root);

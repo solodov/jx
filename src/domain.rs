@@ -13,9 +13,9 @@ use thiserror::Error;
 use crate::{
     github::{
         CommitComparison, ComparisonStatus, GitHubClient, GitHubError, LabelApplyResult,
-        PullRequestCreate, PullRequestHead, PullRequestRecord, PullRequestStatusRecord,
-        PullRequestUpdate, RepositoryAccess, ReviewerCandidate, ReviewerSelection,
-        ReviewerSyncResult, ReviewerTarget,
+        PullRequestCheck, PullRequestCheckStatus, PullRequestCreate, PullRequestHead,
+        PullRequestRecord, PullRequestReviewStatus, PullRequestStatusRecord, PullRequestUpdate,
+        RepositoryAccess, ReviewerCandidate, ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
     },
     jj::{
         BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, RebaseOnTrunkOutcome,
@@ -24,8 +24,8 @@ use crate::{
     },
     repository::{
         GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,
-        RepoEventHandler, RepoEventHandlerRun, RepositoryContext, RepositoryError, StackMetadata,
-        StackMetadataNode,
+        RepoEventHandler, RepoEventHandlerRun, RepoStackStatusConfig, RepositoryContext,
+        RepositoryError, StackMetadata, StackMetadataNode,
     },
 };
 

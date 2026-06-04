@@ -61,6 +61,15 @@ impl RepoConfig {
         normalize_workspace_shared_path_set("jx config", "workspace_shared_paths", &paths)
     }
 
+    /// Returns effective stack status policy for this repository.
+    pub fn stack_status_for(&self, repository: &GitHubRepository) -> RepoStackStatusConfig {
+        let mut config = self.base.stack_status.clone();
+        for rule in self.matching_rules(repository) {
+            config.apply_layer(rule.policy.stack_status.clone());
+        }
+        config
+    }
+
     pub(super) fn validate(&self) -> Result<(), RepositoryError> {
         validate_workspace_shared_path_set(
             "jx config",
@@ -117,6 +126,7 @@ pub struct RepoPolicyConfig {
     pub reviewers: Vec<ReviewerTarget>,
     pub reviewer_rules: Vec<ReviewerPathRule>,
     pub workspace_shared_paths: Vec<String>,
+    pub stack_status: RepoStackStatusConfig,
 }
 
 impl RepoPolicyConfig {
@@ -131,6 +141,35 @@ impl RepoPolicyConfig {
             &mut self.workspace_shared_paths,
             &layer.workspace_shared_paths,
         );
+        self.stack_status.apply_layer(layer.stack_status);
+    }
+}
+
+/// Stack status behavior that can vary by repository policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoStackStatusConfig {
+    pub review_gate_checks: Vec<ReviewGateCheckConfig>,
+}
+
+impl RepoStackStatusConfig {
+    fn apply_layer(&mut self, layer: RepoStackStatusConfig) {
+        merge_review_gate_checks(&mut self.review_gate_checks, layer.review_gate_checks);
+    }
+}
+
+/// Check-name glob that reports approval requirements instead of test failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewGateCheckConfig {
+    pub name: String,
+}
+
+impl ReviewGateCheckConfig {
+    /// Returns whether this rule matches a GitHub check run or status context name.
+    pub fn matches(&self, check_name: &str) -> bool {
+        Glob::new(&self.name)
+            .ok()
+            .map(|glob| glob.compile_matcher().is_match(check_name))
+            .unwrap_or(false)
     }
 }
 
@@ -318,6 +357,21 @@ fn merge_workspace_shared_paths(target: &mut Vec<String>, paths: &[String]) {
     for path in paths {
         if seen.insert(path.clone()) {
             target.push(path.clone());
+        }
+    }
+}
+
+fn merge_review_gate_checks(
+    target: &mut Vec<ReviewGateCheckConfig>,
+    checks: Vec<ReviewGateCheckConfig>,
+) {
+    let mut seen = target
+        .iter()
+        .map(|check| check.name.clone())
+        .collect::<BTreeSet<_>>();
+    for check in checks {
+        if seen.insert(check.name.clone()) {
+            target.push(check);
         }
     }
 }

@@ -2,10 +2,12 @@
   "permanentGrants": {
     "structuredToolWritePaths": [],
     "bashReadRoots": [
-      "~/.local/state/jx"
+      "~/.local/state/jx",
+      "~/.config/jx",
     ],
     "bashWriteRoots": [
-      "~/.local/state/jx"
+      "~/.local/state/jx",
+      "~/.config/jx"
     ],
     "bashDomains": []
   }

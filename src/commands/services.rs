@@ -153,6 +153,13 @@ pub(super) trait CommandServices {
         author: &str,
     ) -> Result<Option<PullRequestRecord>, WorkflowError>;
 
+    /// Finds an open GitHub pull request for a same-repository bookmark head.
+    fn find_open_pull_request_for_head(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError>;
+
     /// Finds the most recent GitHub pull request for a same-repository bookmark head.
     fn find_pull_request_for_head(
         &self,
@@ -208,6 +215,11 @@ pub(super) trait CommandServices {
                 environment,
                 |context, numbers| {
                     self.pull_request_statuses(context, numbers)
+                        .map_err(CommandError::from)
+                        .map_err(|error| error.to_string())
+                },
+                |context, branch| {
+                    self.find_open_pull_request_for_head(context, branch)
                         .map_err(CommandError::from)
                         .map_err(|error| error.to_string())
                 },
@@ -1438,6 +1450,21 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn find_open_pull_request_for_head(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = self.traced_github_client(context)?;
+            let head = PullRequestHead::same_repository(&context.origin.github.owner, branch);
+
+            Ok(github
+                .find_open_pull_request(&context.origin.github, &head)
+                .await?)
+        })
+    }
+
     fn find_pull_request_for_head(
         &self,
         context: &RepositoryContext,
@@ -1800,6 +1827,10 @@ fn stack_status_entry_for_repository(
         &RepositoryContext,
         &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, String>,
+    mut resolve_pull_request: impl FnMut(
+        &RepositoryContext,
+        &str,
+    ) -> Result<Option<PullRequestRecord>, String>,
     fetch_trunk: impl FnOnce(&RepositoryContext) -> Result<Option<RemoteStatusReport>, String>,
 ) -> Option<GlobalStackStatusEntry> {
     let display_root = display_path(&repository.root, environment);
@@ -1830,13 +1861,20 @@ fn stack_status_entry_for_repository(
         }
     };
     let repository_identity = context.origin.github.clone();
-    let numbers = stack_status_numbers_from_metadata(&metadata);
+    let discovered_pull_requests =
+        stack_status_missing_pull_requests_from_metadata(&metadata, |branch| {
+            resolve_pull_request(&context, branch)
+        });
+    let numbers = discovered_pull_requests
+        .as_ref()
+        .map(|pull_requests| stack_status_numbers_from_metadata(&metadata, pull_requests))
+        .unwrap_or_else(|_| stack_status_numbers_from_metadata(&metadata, &[]));
     let statuses = if numbers.is_empty() {
         Ok(Vec::new())
     } else {
         fetch_statuses(&context, &numbers)
     };
-    let result = statuses.and_then(|statuses| {
+    let result = discovered_pull_requests.and(statuses).and_then(|statuses| {
         maintained_stack_status_report(&context, &repository.root, &metadata, statuses, || {
             fetch_trunk(&context)
         })
@@ -1925,13 +1963,6 @@ async fn production_global_stack_status_entry_traced(
     };
     let (context, metadata, status_workspace) = prepared;
     let repository_identity = context.origin.github.clone();
-    let numbers = stack_status_numbers_from_metadata(&metadata);
-    span.set([
-        perf_attr("repo", repository_identity.slug()),
-        perf_attr("metadata_node_count", metadata.nodes.len()),
-        perf_attr("pr_count", numbers.len()),
-    ]);
-
     let github =
         match OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
             .map_err(WorkflowError::from)
@@ -1954,6 +1985,42 @@ async fn production_global_stack_status_entry_traced(
                 });
             }
         };
+    let discover_step = span.start_step("discover_missing_pull_requests", Vec::new());
+    let discovered_pull_requests = async {
+        let mut pull_requests = Vec::new();
+        for branch in stack_status_missing_pull_request_branches_from_metadata(&metadata) {
+            let head = PullRequestHead::same_repository(&context.origin.github.owner, &branch);
+            if let Some(pull_request) = github
+                .find_open_pull_request(&context.origin.github, &head)
+                .await
+                .map_err(WorkflowError::from)
+                .map_err(CommandError::from)
+                .map_err(|error| error.to_string())?
+            {
+                pull_requests.push(pull_request);
+            }
+        }
+        Ok::<_, String>(pull_requests)
+    }
+    .await;
+    let discover_attrs = discovered_pull_requests
+        .as_ref()
+        .map(|pull_requests| vec![perf_attr("discovered_pr_count", pull_requests.len())])
+        .unwrap_or_default();
+    span.finish_step(
+        discover_step,
+        discover_attrs,
+        discovered_pull_requests.as_ref().err(),
+    );
+    let numbers = discovered_pull_requests
+        .as_ref()
+        .map(|pull_requests| stack_status_numbers_from_metadata(&metadata, pull_requests))
+        .unwrap_or_else(|_| stack_status_numbers_from_metadata(&metadata, &[]));
+    span.set([
+        perf_attr("repo", repository_identity.slug()),
+        perf_attr("metadata_node_count", metadata.nodes.len()),
+        perf_attr("pr_count", numbers.len()),
+    ]);
 
     let statuses_result = if numbers.is_empty() {
         Ok(Vec::new())
@@ -1975,7 +2042,7 @@ async fn production_global_stack_status_entry_traced(
         span.finish_step(fetch_step, status_attrs, statuses_result.as_ref().err());
         statuses_result
     };
-    let result = match statuses_result {
+    let result = match discovered_pull_requests.and(statuses_result) {
         Ok(statuses) => {
             let maintain_step = span.start_step(
                 "maintain_stack_metadata",
@@ -2110,13 +2177,48 @@ fn maintain_stack_status_metadata(
     Ok(Some(maintained))
 }
 
-fn stack_status_numbers_from_metadata(metadata: &StackMetadata) -> Vec<u64> {
+fn stack_status_numbers_from_metadata(
+    metadata: &StackMetadata,
+    discovered_pull_requests: &[PullRequestRecord],
+) -> Vec<u64> {
     let mut seen = BTreeSet::new();
     metadata
         .nodes
         .iter()
         .filter_map(|node| node.pull_request)
+        .chain(
+            discovered_pull_requests
+                .iter()
+                .map(|pull_request| pull_request.number),
+        )
         .filter(|number| seen.insert(*number))
+        .collect()
+}
+
+fn stack_status_missing_pull_requests_from_metadata(
+    metadata: &StackMetadata,
+    mut resolve_pull_request: impl FnMut(&str) -> Result<Option<PullRequestRecord>, String>,
+) -> Result<Vec<PullRequestRecord>, String> {
+    let mut pull_requests = Vec::new();
+    for branch in stack_status_missing_pull_request_branches_from_metadata(metadata) {
+        if let Some(pull_request) = resolve_pull_request(&branch)? {
+            pull_requests.push(pull_request);
+        }
+    }
+    Ok(pull_requests)
+}
+
+fn stack_status_missing_pull_request_branches_from_metadata(
+    metadata: &StackMetadata,
+) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    metadata
+        .nodes
+        .iter()
+        .filter(|node| node.pull_request.is_none())
+        .map(|node| node.branch.as_str())
+        .filter(|branch| seen.insert((*branch).to_owned()))
+        .map(str::to_owned)
         .collect()
 }
 

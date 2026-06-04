@@ -1,5 +1,17 @@
 use super::*;
 
+const BOLD_STYLE: &str = "\x1b[1m";
+const BLACK_BOLD_STYLE: &str = "\x1b[1m\x1b[30m";
+const DIM_STYLE: &str = "\x1b[2m";
+const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
+const DRAFT_TEXT_RGB: (u8, u8, u8) = (190, 184, 176);
+const GREEN_STYLE: &str = "\x1b[32m";
+const RED_BOLD_STYLE: &str = "\x1b[1m\x1b[31m";
+const YELLOW_STYLE: &str = "\x1b[33m";
+const CYAN_STYLE: &str = "\x1b[36m";
+const RESET_STYLE: &str = "\x1b[0m";
+const STACK_STATUS_PR_WIDTH: usize = 7;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands) struct GlobalStackStatusEntry {
     pub(in crate::commands) key: Option<String>,
@@ -32,18 +44,25 @@ pub(in crate::commands) fn render_stack_status(
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
-    let _ = color;
     Ok(render_plain_output(|formatter| {
         writeln!(
             formatter,
             "{}",
             stack_status_repository_header(
-                report.repository.github_slug_name(),
+                &report.repository.github_slug,
+                Some(&report.repository.github_url),
                 &current_dir.display().to_string(),
                 Some(report),
+                color,
             )
         )?;
-        write_stack_status_report(formatter, report, color, 0)
+        writeln!(formatter)?;
+        let wrote_stack = write_stack_status_report(formatter, report, color, 0)?;
+        if wrote_stack {
+            writeln!(formatter)?;
+            write_stack_status_legend(formatter, color, 0)?;
+        }
+        Ok(())
     }))
 }
 
@@ -53,7 +72,7 @@ pub(in crate::commands) fn render_global_stack_status(
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
-    let _ = (current_dir, color);
+    let _ = current_dir;
     Ok(render_plain_output(|formatter| {
         let stack_repositories = entries
             .iter()
@@ -86,26 +105,44 @@ pub(in crate::commands) fn render_global_stack_status(
 
         for entry in entries {
             writeln!(formatter)?;
-            let label = entry
-                .key
-                .as_deref()
-                .or_else(|| {
-                    entry
-                        .repository
-                        .as_ref()
-                        .map(|repository| repository.name.as_str())
-                })
-                .unwrap_or("repository");
+            let (label, url) = entry
+                .repository
+                .as_ref()
+                .map(|repository| (repository.slug(), Some(repository.https_url())))
+                .unwrap_or_else(|| {
+                    (
+                        entry.key.clone().unwrap_or_else(|| "repository".to_owned()),
+                        None,
+                    )
+                });
             let report = entry.result.as_ref().ok();
             writeln!(
                 formatter,
                 "{}",
-                stack_status_repository_header(label, &entry.display_root, report)
+                stack_status_repository_header(
+                    &label,
+                    url.as_deref(),
+                    &entry.display_root,
+                    report,
+                    color
+                )
             )?;
             match &entry.result {
-                Ok(report) => write_stack_status_report(formatter, report, color, 2)?,
+                Ok(report) => {
+                    writeln!(formatter)?;
+                    let _ = write_stack_status_report(formatter, report, color, 2)?;
+                }
                 Err(error) => writeln!(formatter, "  error: {error}")?,
             }
+        }
+
+        if entries
+            .iter()
+            .filter_map(|entry| entry.result.as_ref().ok())
+            .any(|report| visible_stack_status_node_count(report) > 0)
+        {
+            writeln!(formatter)?;
+            write_stack_status_legend(formatter, color, 0)?;
         }
 
         Ok(())
@@ -132,39 +169,331 @@ fn write_stack_status_report(
     report: &PullRequestStackStatusReport,
     color: bool,
     indent: usize,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let indent = " ".repeat(indent);
     let visible_snapshot = visible_stack_status_snapshot(report);
     if visible_snapshot.nodes.is_empty() {
         writeln!(formatter, "{indent}No stack state")?;
-        return Ok(());
+        return Ok(false);
     }
 
-    for row in visible_snapshot.rows() {
-        let pull_request_number = row.node.pull_request_number();
-        let status = pull_request_number.and_then(|number| report.statuses.get(&number));
-        let lifecycle = lifecycle_label(row.node, status);
-        let label = render_stack_row_label(row, color);
+    let rows = stack_status_table_rows(report, &visible_snapshot, color);
+    let pr_width = rows
+        .iter()
+        .map(|row| row.pr_visible_width)
+        .max()
+        .unwrap_or(0)
+        .max(STACK_STATUS_PR_WIDTH);
+    writeln!(
+        formatter,
+        "{indent}{:<pr_width$}  Chk  Rev  Title",
+        "PR",
+        pr_width = pr_width
+    )?;
+    for row in rows {
+        let pr_padding = " ".repeat(pr_width.saturating_sub(row.pr_visible_width));
+        let line = format!(
+            "{indent}{}{}  {}    {}    {}",
+            row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, row.title,
+        );
         writeln!(
             formatter,
-            "{indent}{label}  {lifecycle:<6}  {:<14}  {}",
-            check_label(status),
-            review_label(status),
+            "{}",
+            style_stack_status_row(line, row.draft, color)
         )?;
     }
-    Ok(())
+    Ok(true)
+}
+
+struct StackStatusTableRow {
+    pr_cell: String,
+    pr_visible_width: usize,
+    check_symbol: String,
+    review_symbol: String,
+    title: String,
+    draft: bool,
+}
+
+fn stack_status_table_rows(
+    report: &PullRequestStackStatusReport,
+    snapshot: &PullRequestStackSnapshot,
+    color: bool,
+) -> Vec<StackStatusTableRow> {
+    snapshot
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let pull_request_number = row.node.pull_request_number();
+            let status = pull_request_number.and_then(|number| report.statuses.get(&number));
+            let draft = stack_status_row_is_draft(row.node, status);
+            let pr_cell = stack_status_pr_cell(report, &row, status);
+            StackStatusTableRow {
+                pr_visible_width: pr_cell.visible_width,
+                pr_cell: pr_cell.rendered,
+                check_symbol: check_symbol(status, color && !draft),
+                review_symbol: review_symbol(status, color && !draft),
+                title: stack_status_title(&row, status, draft, color),
+                draft,
+            }
+        })
+        .collect()
+}
+
+struct StackStatusPrCell {
+    rendered: String,
+    visible_width: usize,
+}
+
+fn stack_status_pr_cell(
+    report: &PullRequestStackStatusReport,
+    row: &PullRequestStackRow<'_>,
+    status: Option<&PullRequestStatusRecord>,
+) -> StackStatusPrCell {
+    let target = row
+        .node
+        .pull_request_number()
+        .map(|number| format!("#{number}"))
+        .unwrap_or_else(|| row.node.branch.clone());
+    let rendered_target = row.node.pull_request_number().map_or_else(
+        || target.clone(),
+        |number| {
+            osc8_link(
+                &stack_status_pull_request_url(report, row.node, status, number),
+                &target,
+            )
+        },
+    );
+    StackStatusPrCell {
+        rendered: rendered_target,
+        visible_width: target.chars().count(),
+    }
+}
+
+fn compact_stack_prefix(prefix: &str) -> String {
+    prefix
+        .replace("│  ", "│ ")
+        .replace("   ", "  ")
+        .replace("├─ ", "├ ")
+        .replace("└─ ", "└ ")
+}
+
+fn stack_status_pull_request_url(
+    report: &PullRequestStackStatusReport,
+    node: &PullRequestStackNode,
+    status: Option<&PullRequestStatusRecord>,
+    number: u64,
+) -> String {
+    status
+        .and_then(|status| status.url.clone())
+        .or_else(|| {
+            node.pull_request
+                .as_ref()
+                .and_then(|pull_request| pull_request.url.clone())
+        })
+        .unwrap_or_else(|| format!("{}/pull/{number}", report.repository.github_url))
+}
+
+fn stack_status_row_is_draft(
+    node: &PullRequestStackNode,
+    status: Option<&PullRequestStatusRecord>,
+) -> bool {
+    status.map_or(node.draft, |status| status.draft)
+}
+
+fn stack_status_title(
+    row: &PullRequestStackRow<'_>,
+    status: Option<&PullRequestStatusRecord>,
+    draft: bool,
+    color: bool,
+) -> String {
+    let mut title = status
+        .map(|status| status.title.trim())
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| row.node.display_title())
+        .to_owned();
+    let label_chips = status
+        .map(|status| stack_status_label_chips(&status.labels, color, draft))
+        .unwrap_or_default();
+    if !label_chips.is_empty() {
+        title.push(' ');
+        title.push_str(&label_chips.join(stack_status_label_separator(color)));
+    }
+    let reviewer_tokens = status
+        .map(|status| stack_status_reviewer_tokens(status, color && !draft))
+        .unwrap_or_default();
+    if !reviewer_tokens.is_empty() {
+        title.push(' ');
+        title.push_str(&reviewer_tokens.join(", "));
+    }
+    let prefix = compact_stack_prefix(&row.prefix);
+    let symbol = if draft { "◌" } else { "◯" };
+    format!("{prefix}{symbol} {title}")
+}
+
+fn stack_status_label_chips(labels: &[PullRequestLabel], color: bool, draft: bool) -> Vec<String> {
+    labels
+        .iter()
+        .map(|label| stack_status_label_chip(label, color, draft))
+        .collect()
+}
+
+fn stack_status_label_separator(color: bool) -> &'static str {
+    if color {
+        ""
+    } else {
+        " "
+    }
+}
+
+fn stack_status_label_chip(label: &PullRequestLabel, color: bool, draft: bool) -> String {
+    if !color {
+        return plain_stack_status_label_chip(&label.name);
+    }
+    let (red, green, blue) = github_label_rgb(&label.color)
+        .map(|color| {
+            if draft {
+                pastel_github_label_rgb(color)
+            } else {
+                color
+            }
+        })
+        .unwrap_or_else(|| fallback_label_rgb(draft));
+    let (text_red, text_green, text_blue) = if draft {
+        draft_label_text_rgb()
+    } else {
+        github_label_text_rgb(red, green, blue)
+    };
+    let restore_style = if draft { DRAFT_ROW_STYLE } else { "" };
+    format!(
+        "\x1b[48;2;{red};{green};{blue}m\x1b[38;2;{text_red};{text_green};{text_blue}m {} {RESET_STYLE}{restore_style}",
+        label.name.as_str()
+    )
+}
+
+fn plain_stack_status_label_chip(name: &str) -> String {
+    format!("[{name}]")
+}
+
+fn pastel_github_label_rgb((red, green, blue): (u8, u8, u8)) -> (u8, u8, u8) {
+    const DRAFT_BLEND_TARGET: (u8, u8, u8) = (248, 246, 242);
+    const SOURCE_WEIGHT_PERCENT: u16 = 5;
+    (
+        blend_color_channel(red, DRAFT_BLEND_TARGET.0, SOURCE_WEIGHT_PERCENT),
+        blend_color_channel(green, DRAFT_BLEND_TARGET.1, SOURCE_WEIGHT_PERCENT),
+        blend_color_channel(blue, DRAFT_BLEND_TARGET.2, SOURCE_WEIGHT_PERCENT),
+    )
+}
+
+fn draft_label_text_rgb() -> (u8, u8, u8) {
+    DRAFT_TEXT_RGB
+}
+
+fn blend_color_channel(source: u8, target: u8, source_weight_percent: u16) -> u8 {
+    let target_weight_percent = 100 - source_weight_percent;
+    let value =
+        u16::from(source) * source_weight_percent + u16::from(target) * target_weight_percent + 50;
+    (value / 100) as u8
+}
+
+fn fallback_label_rgb(draft: bool) -> (u8, u8, u8) {
+    if draft {
+        (232, 228, 222)
+    } else {
+        (221, 221, 221)
+    }
+}
+
+fn github_label_rgb(color: &str) -> Option<(u8, u8, u8)> {
+    let color = color.trim().trim_start_matches('#');
+    if color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&color[0..2], 16).ok()?,
+        u8::from_str_radix(&color[2..4], 16).ok()?,
+        u8::from_str_radix(&color[4..6], 16).ok()?,
+    ))
+}
+
+fn github_label_text_rgb(red: u8, green: u8, blue: u8) -> (u8, u8, u8) {
+    if relative_luminance(red, green, blue) > 0.179 {
+        (0, 0, 0)
+    } else {
+        (255, 255, 255)
+    }
+}
+
+fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
+    0.2126 * luminance_channel(red)
+        + 0.7152 * luminance_channel(green)
+        + 0.0722 * luminance_channel(blue)
+}
+
+fn luminance_channel(value: u8) -> f64 {
+    let value = f64::from(value) / 255.0;
+    if value <= 0.03928 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn stack_status_reviewer_tokens(status: &PullRequestStatusRecord, color: bool) -> Vec<String> {
+    let approved = status
+        .approved_reviewers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut tokens = Vec::new();
+    for name in requested_reviewer_names(&status.requested_reviewers) {
+        if !approved.contains(name.as_str()) {
+            tokens.push(stack_status_reviewer_token(&name, false, color));
+        }
+    }
+    tokens.extend(
+        status
+            .approved_reviewers
+            .iter()
+            .map(|name| stack_status_reviewer_token(name, true, color)),
+    );
+    tokens
+}
+
+fn stack_status_reviewer_token(name: &str, approved: bool, color: bool) -> String {
+    if !color {
+        return name.to_owned();
+    }
+    let style = if approved {
+        GREEN_STYLE
+    } else {
+        BLACK_BOLD_STYLE
+    };
+    format!("{style}{name}{RESET_STYLE}")
+}
+
+fn requested_reviewer_names(reviewers: &ReviewerSelection) -> Vec<String> {
+    let mut names = reviewers.users.clone();
+    names.extend(reviewers.teams.iter().map(|team| format!("team/{team}")));
+    names
 }
 
 fn stack_status_repository_header(
     label: &str,
+    url: Option<&str>,
     display_root: &str,
     report: Option<&PullRequestStackStatusReport>,
+    color: bool,
 ) -> String {
-    let mut header = format!("{label}  {display_root}");
-    if let Some(trunk) = report.and_then(|report| report.trunk.as_ref()) {
-        header.push_str(&format!("  ({})", stack_status_trunk_summary(trunk)));
+    let label = url.map_or_else(|| label.to_owned(), |url| osc8_link(url, label));
+    let trunk = report
+        .and_then(|report| report.trunk.as_ref())
+        .map(|trunk| format!("  ({})", stack_status_trunk_summary(trunk)))
+        .unwrap_or_default();
+    if color {
+        format!("{BOLD_STYLE}{label}{RESET_STYLE}{DIM_STYLE}  {display_root}{trunk}{RESET_STYLE}")
+    } else {
+        format!("{label}  {display_root}{trunk}")
     }
-    header
 }
 
 fn stack_status_trunk_summary(trunk: &RemoteStatusReport) -> String {
@@ -296,40 +625,104 @@ fn lifecycle_label(
     }
 }
 
-fn check_label(status: Option<&PullRequestStatusRecord>) -> &'static str {
+fn check_symbol(status: Option<&PullRequestStatusRecord>, color: bool) -> String {
     match status.map(|status| status.check_status) {
-        Some(PullRequestCheckStatus::Passing) => "checks passing",
-        Some(PullRequestCheckStatus::Failing) => "checks failing",
-        Some(PullRequestCheckStatus::Pending) => "checks pending",
-        Some(PullRequestCheckStatus::Missing) => "checks missing",
-        Some(PullRequestCheckStatus::Unknown) => "checks unknown",
-        None => "checks unknown",
+        Some(PullRequestCheckStatus::Passing) => {
+            styled_stack_status_symbol("✓", SymbolStyle::Good, color)
+        }
+        Some(PullRequestCheckStatus::Failing) => {
+            styled_stack_status_symbol("✗", SymbolStyle::Bad, color)
+        }
+        Some(PullRequestCheckStatus::Pending) => {
+            styled_stack_status_symbol("◷", SymbolStyle::Warn, color)
+        }
+        Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => {
+            styled_stack_status_symbol("—", SymbolStyle::Muted, color)
+        }
     }
 }
 
-fn review_label(status: Option<&PullRequestStatusRecord>) -> String {
+fn review_symbol(status: Option<&PullRequestStatusRecord>, color: bool) -> String {
     let Some(status) = status else {
-        return "review unknown".to_owned();
+        return styled_stack_status_symbol("?", SymbolStyle::Warn, color);
     };
     match status.review_status {
-        PullRequestReviewStatus::Approved => "approved".to_owned(),
-        PullRequestReviewStatus::ChangesRequested => "changes requested".to_owned(),
-        PullRequestReviewStatus::ReviewRequired => "review required".to_owned(),
-        PullRequestReviewStatus::ReviewRequested => {
-            requested_reviewers_label(&status.requested_reviewers)
+        PullRequestReviewStatus::Approved => {
+            styled_stack_status_symbol("✓", SymbolStyle::Good, color)
         }
-        PullRequestReviewStatus::NotReviewed => "not reviewed".to_owned(),
-        PullRequestReviewStatus::Unknown => "review unknown".to_owned(),
+        PullRequestReviewStatus::ChangesRequested => {
+            styled_stack_status_symbol("!", SymbolStyle::Bad, color)
+        }
+        PullRequestReviewStatus::ReviewRequested => {
+            styled_stack_status_symbol("◷", SymbolStyle::Info, color)
+        }
+        PullRequestReviewStatus::ReviewRequired | PullRequestReviewStatus::Unknown => {
+            styled_stack_status_symbol("?", SymbolStyle::Warn, color)
+        }
+        PullRequestReviewStatus::NotReviewed => {
+            styled_stack_status_symbol("—", SymbolStyle::Muted, color)
+        }
     }
 }
 
-fn requested_reviewers_label(reviewers: &ReviewerSelection) -> String {
-    let mut names = reviewers.users.clone();
-    names.extend(reviewers.teams.iter().map(|team| format!("team/{team}")));
-    if names.is_empty() {
-        "review requested".to_owned()
+#[derive(Clone, Copy)]
+enum SymbolStyle {
+    Good,
+    Bad,
+    Warn,
+    Info,
+    Muted,
+}
+
+fn styled_stack_status_symbol(symbol: &str, style: SymbolStyle, color: bool) -> String {
+    if !color {
+        return symbol.to_owned();
+    }
+    let style = match style {
+        SymbolStyle::Good => GREEN_STYLE,
+        SymbolStyle::Bad => RED_BOLD_STYLE,
+        SymbolStyle::Warn => YELLOW_STYLE,
+        SymbolStyle::Info => CYAN_STYLE,
+        SymbolStyle::Muted => DIM_STYLE,
+    };
+    format!("{style}{symbol}{RESET_STYLE}")
+}
+
+fn style_stack_status_row(line: String, draft: bool, color: bool) -> String {
+    if color && draft {
+        format!("{DRAFT_ROW_STYLE}{line}{RESET_STYLE}")
     } else {
-        format!("review requested: {}", names.join(", "))
+        line
+    }
+}
+
+fn write_stack_status_legend(
+    formatter: &mut dyn Formatter,
+    color: bool,
+    indent: usize,
+) -> io::Result<()> {
+    let indent = " ".repeat(indent);
+    let lines = [
+        "Legend:",
+        "  Title: ◯ ready, ◌ draft; labels and reviewers follow title",
+        "  Chk: ✓ passing, ✗ failing, ◷ pending, — none/unknown",
+        "  Rev: ✓ approved, ! changes requested, ◷ waiting, ? required/unknown, — none",
+    ];
+    for line in lines {
+        writeln!(
+            formatter,
+            "{indent}{}",
+            style_stack_status_legend(line, color)
+        )?;
+    }
+    Ok(())
+}
+
+fn style_stack_status_legend(line: &str, color: bool) -> String {
+    if color {
+        format!("{DRAFT_ROW_STYLE}{line}{RESET_STYLE}")
+    } else {
+        line.to_owned()
     }
 }
 
@@ -447,13 +840,33 @@ struct StackStatusPullRequestJson {
     check_status: &'static str,
     review_status: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<StackStatusLabelJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     requested_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    approved_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     requested_teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_commit_oid: Option<String>,
     local: bool,
     current: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackStatusLabelJson {
+    name: String,
+    color: String,
+}
+
+impl From<&PullRequestLabel> for StackStatusLabelJson {
+    fn from(label: &PullRequestLabel) -> Self {
+        Self {
+            name: label.name.clone(),
+            color: label.color.clone(),
+        }
+    }
 }
 
 fn stack_status_pull_requests_json(
@@ -488,8 +901,20 @@ fn stack_status_pull_requests_json(
                 review_status: status
                     .map(|status| status.review_status.label())
                     .unwrap_or("unknown"),
+                labels: status
+                    .map(|status| {
+                        status
+                            .labels
+                            .iter()
+                            .map(StackStatusLabelJson::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 requested_users: status
                     .map(|status| status.requested_reviewers.users.clone())
+                    .unwrap_or_default(),
+                approved_users: status
+                    .map(|status| status.approved_reviewers.clone())
                     .unwrap_or_default(),
                 requested_teams: status
                     .map(|status| status.requested_reviewers.teams.clone())

@@ -29,15 +29,15 @@ fn pull_request_selection_formats_draft_state_as_color_only() {
     assert_eq!(pull_request_choice_label(&ready), "◯ #42     Ready change");
     assert_eq!(
         pull_request_choice_label(&draft),
-        "\x1b[2m\x1b[38;2;150;142;132m◌ #43     Work in progress\x1b[0m"
+        "\x1b[2m\x1b[38;2;190;184;176m◌ #43     Work in progress\x1b[0m"
     );
     assert!(!pull_request_choice_label(&draft).contains("draft "));
     assert!(!pull_request_choice_label(&ready).contains("topic/ready"));
 }
 
 #[test]
-fn pull_request_selection_renders_stack_tree_in_merge_order() {
-    // Verifies: PR choices show stack hierarchy and keep row selection mapped after sorting.
+fn pull_request_selection_renders_newest_stack_first_with_dependency_order() {
+    // Verifies: PR choices show newer stacks first while preserving parent-before-child order inside each stack.
     let pull_requests = vec![
         pull_request_choice_record(12, "Child 2", "topic/child-2", "topic/root", false),
         pull_request_choice_record(1, "Draft root", "topic/draft-root", "main", true),
@@ -64,19 +64,19 @@ fn pull_request_selection_renders_stack_tree_in_merge_order() {
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "◯ #2      Other root",
             "◯ #10     Root",
             "├─ ◯ #11     Child 1",
             "│  └─ ◯ #14     Child 11",
             "└─ ◯ #12     Child 2",
-            "\x1b[2m\x1b[38;2;150;142;132m◌ #1      Draft root\x1b[0m",
+            "◯ #2      Other root",
+            "\x1b[2m\x1b[38;2;190;184;176m◌ #1      Draft root\x1b[0m",
         ]
     );
     assert_eq!(
         rows.iter()
             .map(|row| row.pull_request.number)
             .collect::<Vec<_>>(),
-        vec![2, 10, 11, 14, 12, 1]
+        vec![10, 11, 14, 12, 2, 1]
     );
 }
 

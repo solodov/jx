@@ -48,9 +48,8 @@ fn stack_status_renders_check_and_review_summary() {
     let services = FakeServices {
         pull_request_bookmarks: vec!["topic/root".to_owned(), "topic/child".to_owned()],
         pull_request_statuses: BTreeMap::from([
-            (
-                101,
-                stack_status_record(
+            (101, {
+                let mut status = stack_status_record(
                     101,
                     "Root change",
                     "topic/root",
@@ -58,8 +57,20 @@ fn stack_status_renders_check_and_review_summary() {
                     PullRequestCheckStatus::Passing,
                     PullRequestReviewStatus::Approved,
                     ReviewerSelection::default(),
-                ),
-            ),
+                );
+                status.labels = vec![
+                    PullRequestLabel {
+                        name: "bug".to_owned(),
+                        color: "d73a4a".to_owned(),
+                    },
+                    PullRequestLabel {
+                        name: "help wanted".to_owned(),
+                        color: "008672".to_owned(),
+                    },
+                ];
+                status.approved_reviewers = vec!["reviewer-approved".to_owned()];
+                status
+            }),
             (102, {
                 let mut status = stack_status_record(
                     102,
@@ -71,6 +82,10 @@ fn stack_status_renders_check_and_review_summary() {
                     ReviewerSelection::new(["reviewer-one"], ["platform"]),
                 );
                 status.draft = true;
+                status.labels = vec![PullRequestLabel {
+                    name: "ui".to_owned(),
+                    color: "fbca04".to_owned(),
+                }];
                 status
             }),
         ]),
@@ -84,18 +99,282 @@ fn stack_status_renders_check_and_review_summary() {
         services.pull_request_status_calls.borrow().as_slice(),
         &[vec![101, 102]]
     );
-    assert!(result.stdout.contains("example-repo  "));
+    assert!(result.stdout.contains(&format!(
+        "{}  ",
+        osc8_link(
+            "https://github.com/example-owner/example-repo",
+            "example-owner/example-repo"
+        )
+    )));
     assert!(result.stdout.contains("(origin/main 3 commits behind)"));
-    assert!(result.stdout.contains("Root change"));
-    assert!(result.stdout.contains("ready"));
-    assert!(result.stdout.contains("checks passing"));
-    assert!(result.stdout.contains("approved"));
-    assert!(result.stdout.contains("Child change"));
-    assert!(result.stdout.contains("draft"));
-    assert!(result.stdout.contains("checks pending"));
+    assert!(result.stdout.contains("PR       Chk  Rev  Title"));
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ✓    ◯ Root change [bug] [help wanted] reviewer-approved",
+        stack_status_pull_request_cell(101)
+    )));
+    assert!(result.stdout.contains(&format!(
+        "{}  ◷    ◷    └ ◌ Child change [ui] reviewer-one, team/platform",
+        stack_status_pull_request_cell(102)
+    )));
+    assert!(result.stdout.contains("Legend:\n  Title: ◯ ready, ◌ draft"));
+    assert!(result.stdout.contains("labels and reviewers follow title"));
     assert!(result
         .stdout
-        .contains("review requested: reviewer-one, team/platform"));
+        .contains("Chk: ✓ passing, ✗ failing, ◷ pending"));
+    assert!(result
+        .stdout
+        .contains("Rev: ✓ approved, ! changes requested, ◷ waiting"));
+}
+
+#[test]
+fn stack_status_moves_configured_review_gate_failures_to_review_column() {
+    // Verifies: repo policy can classify approval-gate checks separately from test health.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.stack_status.review_gate_checks]]
+name = "approval gate"
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![stack_status_node(
+                120,
+                "topic/review-gate",
+                "main",
+                "Review gate change",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        120,
+        "Review gate change",
+        "topic/review-gate",
+        "main",
+        PullRequestCheckStatus::Failing,
+        PullRequestReviewStatus::NotReviewed,
+        ReviewerSelection::default(),
+    );
+    status.checks = vec![
+        // GitHub rollups can include stale duplicate contexts; the latest matching name wins.
+        PullRequestCheck {
+            name: "approval gate".to_owned(),
+            status: PullRequestCheckStatus::Failing,
+        },
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Failing,
+        },
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+    ];
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/review-gate".to_owned()],
+        pull_request_statuses: BTreeMap::from([(120, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ◷    ◯ Review gate change",
+        stack_status_pull_request_cell(120)
+    )));
+}
+
+#[test]
+fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
+    // Verifies: status repairs stack entries that know only the local branch, not the PR number.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![StackMetadataNode {
+                branch: "topic/branch-only-status".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: None,
+                parent_pull_request: None,
+                title: "Example branch-only status".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        451,
+        "Example branch-only status",
+        "topic/branch-only-status",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["example-reviewer"], std::iter::empty::<&str>()),
+    );
+    status.draft = true;
+    let services = FakeServices {
+        pull_requests_by_head: BTreeMap::from([(
+            "topic/branch-only-status".to_owned(),
+            pull_request_choice_record(
+                451,
+                "Example branch-only status",
+                "topic/branch-only-status",
+                "main",
+                true,
+            ),
+        )]),
+        pull_request_statuses: BTreeMap::from([(451, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert_eq!(
+        services.pull_request_head_calls.borrow().as_slice(),
+        ["topic/branch-only-status"]
+    );
+    assert_eq!(
+        services.pull_request_status_calls.borrow().as_slice(),
+        &[vec![451]]
+    );
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ◷    ◌ Example branch-only status example-reviewer",
+        stack_status_pull_request_cell(451)
+    )));
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes[0].pull_request, Some(451));
+}
+
+#[test]
+fn stack_status_colorizes_labels_with_github_backgrounds() {
+    // Verifies: colored stack status renders labels as GitHub-colored chips.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            nodes: vec![
+                stack_status_node(110, "topic/labeled", "main", "Labeled change", false),
+                stack_status_node(111, "topic/draft-label", "main", "Draft label", true),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut ready_status = stack_status_record(
+        110,
+        "Labeled change",
+        "topic/labeled",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    ready_status.labels = vec![
+        PullRequestLabel {
+            name: "bug".to_owned(),
+            color: "000000".to_owned(),
+        },
+        PullRequestLabel {
+            name: "docs".to_owned(),
+            color: "fbca04".to_owned(),
+        },
+    ];
+    ready_status.requested_reviewers =
+        ReviewerSelection::new(["reviewer-pending"], std::iter::empty::<&str>());
+    ready_status.approved_reviewers = vec!["reviewer-approved".to_owned()];
+    let mut draft_status = stack_status_record(
+        111,
+        "Draft label",
+        "topic/draft-label",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    draft_status.draft = true;
+    draft_status.labels = vec![PullRequestLabel {
+        name: "ui".to_owned(),
+        color: "d73a4a".to_owned(),
+    }];
+    draft_status.requested_reviewers =
+        ReviewerSelection::new(["draft-pending"], std::iter::empty::<&str>());
+    draft_status.approved_reviewers = vec!["draft-approved".to_owned()];
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/labeled".to_owned(), "topic/draft-label".to_owned()],
+        pull_request_statuses: BTreeMap::from([(110, ready_status), (111, draft_status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let prompts = PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+
+    let result = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        prompts,
+        OutputMode { color: true },
+    )
+    .expect("colored stack status succeeds");
+
+    assert!(result.stdout.contains(
+        "\x1b[48;2;0;0;0m\x1b[38;2;255;255;255m bug \x1b[0m\x1b[48;2;251;202;4m\x1b[38;2;0;0;0m docs \x1b[0m"
+    ));
+    assert!(result
+        .stdout
+        .contains("\x1b[1m\x1b[30mreviewer-pending\x1b[0m, \x1b[32mreviewer-approved\x1b[0m"));
+    assert!(result.stdout.contains(
+        "\x1b[48;2;246;237;234m\x1b[38;2;190;184;176m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
+    ));
+    assert!(result
+        .stdout
+        .contains("\x1b[2m\x1b[38;2;190;184;176mLegend:"));
+    assert!(!result.stdout.contains("[ui]"));
+    assert!(!result.stdout.contains("\x1b[1m\x1b[30mdraft-pending"));
+    assert!(!result.stdout.contains("\x1b[32mdraft-approved"));
 }
 
 #[test]
@@ -268,9 +547,8 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
     let environment = RuntimeEnvironment::new(workspace.path(), []);
     let services = FakeServices {
         pull_request_bookmarks: vec!["topic/json".to_owned()],
-        pull_request_statuses: BTreeMap::from([(
-            103,
-            stack_status_record(
+        pull_request_statuses: BTreeMap::from([(103, {
+            let mut status = stack_status_record(
                 103,
                 "JSON change",
                 "topic/json",
@@ -278,8 +556,13 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
                 PullRequestCheckStatus::Failing,
                 PullRequestReviewStatus::ChangesRequested,
                 ReviewerSelection::default(),
-            ),
-        )]),
+            );
+            status.labels = vec![PullRequestLabel {
+                name: "bug".to_owned(),
+                color: "d73a4a".to_owned(),
+            }];
+            status
+        })]),
         ..FakeServices::default()
     };
 
@@ -308,6 +591,14 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["reviewStatus"],
         "changes_requested"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["labels"][0]["name"],
+        "bug"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["labels"][0]["color"],
+        "d73a4a"
     );
 }
 
@@ -582,6 +873,15 @@ fn stack_status_records_perf_steps() {
     assert!(steps.iter().any(|step| step["name"] == "render"));
 }
 
+fn stack_status_pull_request_cell(number: u64) -> String {
+    let target = format!("#{number}");
+    format!(
+        "{}{}",
+        example_pull_request_link(number),
+        " ".repeat(7_usize.saturating_sub(target.chars().count()))
+    )
+}
+
 fn stack_status_node(
     number: u64,
     branch: &str,
@@ -625,8 +925,11 @@ fn stack_status_record(
         merged: false,
         closed: false,
         check_status,
+        checks: Vec::new(),
         review_status,
         requested_reviewers,
+        approved_reviewers: Vec::new(),
+        labels: Vec::new(),
         latest_commit_oid: Some(format!("commit-{number}")),
     }
 }
@@ -1307,7 +1610,7 @@ fn stack_interactive_opens_selected_cached_pull_request() {
         [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
     );
     let services = FakeServices::default();
-    let selector = RecordingPullRequestSelector::new(1);
+    let selector = RecordingPullRequestSelector::new(0);
 
     let result = run_with_args_and_pull_request_selector(
         ["jx", "stack", "-i"],
@@ -1324,8 +1627,8 @@ fn stack_interactive_opens_selected_cached_pull_request() {
     assert_eq!(
         selector.labels.borrow().as_slice(),
         &[vec![
+            "\x1b[2m\x1b[38;2;190;184;176m◌ #11     Chosen change\x1b[0m".to_owned(),
             "◯ #10     Older change".to_owned(),
-            "\x1b[2m\x1b[38;2;150;142;132m◌ #11     Chosen change\x1b[0m".to_owned(),
         ]]
     );
     assert_eq!(
@@ -1452,7 +1755,7 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
         open_pull_request_candidates: vec!["topic/child".to_owned()],
         ..Default::default()
     };
-    let selector = RecordingPullRequestSelector::new(1);
+    let selector = RecordingPullRequestSelector::new(2);
 
     let result = run_with_args_and_pull_request_selector(
         ["jx", "stack", "-i"],
@@ -1469,9 +1772,9 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
     assert_eq!(
         selector.labels.borrow().as_slice(),
         &[vec![
+            "\x1b[2m\x1b[38;2;190;184;176m◌ #12     Draft\x1b[0m".to_owned(),
             "✓ #10     Root".to_owned(),
             "└─ ◉ #11     Child".to_owned(),
-            "\x1b[2m\x1b[38;2;150;142;132m◌ #12     Draft\x1b[0m".to_owned(),
         ]]
     );
     assert_eq!(

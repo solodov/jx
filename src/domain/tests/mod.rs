@@ -297,6 +297,34 @@ fn pull_request_stack_status_maintenance_removes_closed_nodes() {
 }
 
 #[test]
+fn pull_request_stack_status_maintenance_attaches_branch_only_statuses() {
+    // Verifies: status refresh can repair stack nodes created before their PR number was cached.
+    let metadata = StackMetadata {
+        version: 1,
+        nodes: vec![StackMetadataNode {
+            branch: "topic/branch-only-status".to_owned(),
+            base_branch: "main".to_owned(),
+            parent_branch: None,
+            pull_request: None,
+            parent_pull_request: None,
+            title: "Local title".to_owned(),
+            url: None,
+            draft: false,
+            merged: false,
+        }],
+    };
+    let mut status = pull_request_status(451, "Example branch-only status", false);
+    status.head_branch = "topic/branch-only-status".to_owned();
+    status.draft = true;
+
+    let maintained = maintain_stack_metadata_pull_request_statuses(&[status], &metadata);
+
+    assert_eq!(maintained.nodes[0].pull_request, Some(451));
+    assert_eq!(maintained.nodes[0].title, "Example branch-only status");
+    assert!(maintained.nodes[0].draft);
+}
+
+#[test]
 fn pull_request_stack_status_maintenance_prunes_newly_merged_components() {
     // Verifies: status refresh can remove completed cached trees without a separate stack refresh.
     let metadata = StackMetadata {
@@ -385,8 +413,11 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         merged,
         closed: false,
         check_status: crate::github::PullRequestCheckStatus::Passing,
+        checks: Vec::new(),
         review_status: crate::github::PullRequestReviewStatus::Approved,
         requested_reviewers: ReviewerSelection::default(),
+        approved_reviewers: Vec::new(),
+        labels: Vec::new(),
         latest_commit_oid: None,
     }
 }

@@ -116,6 +116,20 @@ at the exact configured path; tracked parent directories are allowed for nested
 paths. If post-create setup fails, `jx` reports the failure without rolling back
 the created jj workspace, and shell integration does not enter it.
 
+Stack status can classify repository-specific approval gate checks separately
+from test health. A failed matching check is removed from the `Chk` aggregate and
+reported as waiting review instead, while remaining checks still decide whether
+`Chk` is passing, pending, or failing. `name` is a check run or status context
+name glob:
+
+```toml
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.stack_status.review_gate_checks]]
+name = "approval gate"
+```
+
 Event handlers run configured PR automation while `jx stack publish` prepares,
 creates, or updates pull requests. Handlers can update the selected commit title, add
 labels, or ask the command layer to open the PR in an operator browser. `when`

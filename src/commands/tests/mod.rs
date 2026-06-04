@@ -5,8 +5,9 @@ use crate::{
         PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
     github::{
-        LabelApplyResult, PullRequestCheckStatus, PullRequestHead, PullRequestRecord,
-        PullRequestReviewStatus, PullRequestStatusRecord, ReviewerSelection, ReviewerSyncResult,
+        LabelApplyResult, PullRequestCheck, PullRequestCheckStatus, PullRequestHead,
+        PullRequestLabel, PullRequestRecord, PullRequestReviewStatus, PullRequestStatusRecord,
+        ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebaseOnTrunkOutcome,
@@ -1022,6 +1023,17 @@ impl CommandServices for FakeServices {
             .authored_open_pull_requests_by_head
             .get(branch)
             .cloned())
+    }
+
+    fn find_open_pull_request_for_head(
+        &self,
+        _context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        self.pull_request_head_calls
+            .borrow_mut()
+            .push(branch.to_owned());
+        Ok(self.pull_requests_by_head.get(branch).cloned())
     }
 
     fn find_pull_request_for_head(

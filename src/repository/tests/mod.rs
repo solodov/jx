@@ -538,6 +538,43 @@ reviewers = ["docs-reviewer"]
 }
 
 #[test]
+fn stack_status_review_gate_checks_compose_for_matching_repo() {
+    // Verifies: Stack status check classification can be scoped by repository policy.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.stack_status.review_gate_checks]]
+name = "global approval"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.stack_status.review_gate_checks]]
+name = "repo approval*"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let stack_status = context.config.repo.stack_status_for(&context.origin.github);
+
+    assert_eq!(
+        stack_status.review_gate_checks,
+        vec![
+            ReviewGateCheckConfig {
+                name: "global approval".to_owned(),
+            },
+            ReviewGateCheckConfig {
+                name: "repo approval*".to_owned(),
+            },
+        ]
+    );
+    assert!(stack_status.review_gate_checks[1].matches("repo approval required"));
+}
+
+#[test]
 fn legacy_reviewer_rules_alias_still_loads_path_reviewers() {
     // Verifies: Existing config files keep working while new docs use path_reviewers.
     let workspace = TestWorkspace::new();

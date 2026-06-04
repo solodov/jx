@@ -885,12 +885,40 @@ fragment PullRequestStatusFields on PullRequest {{
       }}
     }}
   }}
+  labels(first: 100) {{
+    nodes {{
+      name
+      color
+    }}
+  }}
+  latestReviews(first: 100) {{
+    nodes {{
+      state
+      author {{
+        login
+      }}
+    }}
+  }}
   commits(last: 1) {{
     nodes {{
       commit {{
         oid
         statusCheckRollup {{
           state
+          contexts(first: 100) {{
+            nodes {{
+              __typename
+              ... on CheckRun {{
+                name
+                status
+                conclusion
+              }}
+              ... on StatusContext {{
+                context
+                state
+              }}
+            }}
+          }}
         }}
       }}
     }}
@@ -1019,6 +1047,9 @@ pub(super) struct GraphQlPullRequestStatus {
     pub(super) review_decision: Option<String>,
     #[serde(rename = "reviewRequests")]
     pub(super) review_requests: GraphQlReviewRequests,
+    pub(super) labels: GraphQlLabels,
+    #[serde(rename = "latestReviews")]
+    pub(super) latest_reviews: GraphQlLatestReviews,
     pub(super) commits: GraphQlPullRequestStatusCommits,
 }
 
@@ -1042,6 +1073,23 @@ pub(super) struct GraphQlPullRequestStatusCommit {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlStatusCheckRollup {
     pub(super) state: String,
+    pub(super) contexts: GraphQlStatusCheckContexts,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlStatusCheckContexts {
+    pub(super) nodes: Vec<GraphQlStatusCheckContextNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlStatusCheckContextNode {
+    #[serde(rename = "__typename")]
+    pub(super) type_name: String,
+    pub(super) name: Option<String>,
+    pub(super) context: Option<String>,
+    pub(super) status: Option<String>,
+    pub(super) conclusion: Option<String>,
+    pub(super) state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1095,6 +1143,33 @@ pub(super) struct GraphQlRequestedReviewer {
     #[serde(rename = "__typename")]
     pub(super) type_name: String,
     pub(super) login: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlLabels {
+    pub(super) nodes: Vec<GraphQlLabelNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlLabelNode {
+    pub(super) name: String,
+    pub(super) color: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlLatestReviews {
+    pub(super) nodes: Vec<GraphQlLatestReviewNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlLatestReviewNode {
+    pub(super) state: String,
+    pub(super) author: Option<GraphQlReviewAuthor>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewAuthor {
+    pub(super) login: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1195,6 +1270,8 @@ pub(super) fn map_graphql_pull_request_status(
 ) -> PullRequestStatusRecord {
     let requested_reviewer_count = pull.review_requests.total_count;
     let requested_reviewers = reviewer_selection_from_graphql(pull.review_requests.nodes);
+    let approved_reviewers = approved_reviewers_from_graphql(pull.latest_reviews.nodes);
+    let labels = labels_from_graphql(pull.labels.nodes);
     let latest_commit = pull
         .commits
         .nodes
@@ -1207,6 +1284,11 @@ pub(super) fn map_graphql_pull_request_status(
         .map_or(PullRequestCheckStatus::Missing, |rollup| {
             map_check_status(&rollup.state)
         });
+    let checks = latest_commit
+        .as_ref()
+        .and_then(|commit| commit.status_check_rollup.as_ref())
+        .map(|rollup| checks_from_graphql(rollup.contexts.nodes.clone()))
+        .unwrap_or_default();
     let review_status = map_review_status(
         pull.review_decision.as_deref(),
         requested_reviewer_count > 0,
@@ -1222,8 +1304,11 @@ pub(super) fn map_graphql_pull_request_status(
         merged: pull.merged,
         closed: pull.closed,
         check_status,
+        checks,
         review_status,
         requested_reviewers,
+        approved_reviewers,
+        labels,
         latest_commit_oid: latest_commit.map(|commit| commit.oid),
     }
 }
@@ -1237,11 +1322,59 @@ fn map_check_status(state: &str) -> PullRequestCheckStatus {
     }
 }
 
+fn checks_from_graphql(nodes: Vec<GraphQlStatusCheckContextNode>) -> Vec<PullRequestCheck> {
+    nodes.into_iter().filter_map(check_from_graphql).collect()
+}
+
+fn check_from_graphql(node: GraphQlStatusCheckContextNode) -> Option<PullRequestCheck> {
+    let name = match node.type_name.as_str() {
+        "CheckRun" => node.name,
+        "StatusContext" => node.context,
+        _ => node.name.or(node.context),
+    }?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let status = match node.type_name.as_str() {
+        "CheckRun" => map_check_run_status(node.status.as_deref(), node.conclusion.as_deref()),
+        "StatusContext" => node
+            .state
+            .as_deref()
+            .map_or(PullRequestCheckStatus::Unknown, map_check_status),
+        _ => PullRequestCheckStatus::Unknown,
+    };
+
+    Some(PullRequestCheck {
+        name: name.to_owned(),
+        status,
+    })
+}
+
+fn map_check_run_status(status: Option<&str>, conclusion: Option<&str>) -> PullRequestCheckStatus {
+    match status {
+        Some("COMPLETED") => match conclusion {
+            Some("SUCCESS" | "NEUTRAL" | "SKIPPED") => PullRequestCheckStatus::Passing,
+            Some(
+                "FAILURE" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" | "CANCELLED"
+                | "STALE",
+            ) => PullRequestCheckStatus::Failing,
+            Some(_) | None => PullRequestCheckStatus::Unknown,
+        },
+        Some("QUEUED" | "IN_PROGRESS" | "REQUESTED" | "WAITING" | "PENDING") => {
+            PullRequestCheckStatus::Pending
+        }
+        Some(_) | None => PullRequestCheckStatus::Unknown,
+    }
+}
+
 fn map_review_status(decision: Option<&str>, has_review_requests: bool) -> PullRequestReviewStatus {
     match decision {
         Some("APPROVED") => PullRequestReviewStatus::Approved,
         Some("CHANGES_REQUESTED") => PullRequestReviewStatus::ChangesRequested,
-        Some("REVIEW_REQUIRED") => PullRequestReviewStatus::ReviewRequired,
+        Some("REVIEW_REQUIRED") if has_review_requests => PullRequestReviewStatus::ReviewRequested,
+        Some("REVIEW_REQUIRED") => PullRequestReviewStatus::Unknown,
         Some(_) => PullRequestReviewStatus::Unknown,
         None if has_review_requests => PullRequestReviewStatus::ReviewRequested,
         None => PullRequestReviewStatus::NotReviewed,
@@ -1256,6 +1389,33 @@ fn reviewer_selection_from_graphql(nodes: Vec<GraphQlReviewRequestNode>) -> Revi
         }
     }
     ReviewerSelection::new(users, Vec::<String>::new())
+}
+
+fn approved_reviewers_from_graphql(nodes: Vec<GraphQlLatestReviewNode>) -> Vec<String> {
+    let mut reviewers = Vec::new();
+    let mut seen = BTreeSet::new();
+    for node in nodes {
+        if node.state == "APPROVED" {
+            let Some(author) = node.author else {
+                continue;
+            };
+            let login = author.login.trim();
+            if !login.is_empty() && seen.insert(login.to_owned()) {
+                reviewers.push(login.to_owned());
+            }
+        }
+    }
+    reviewers
+}
+
+fn labels_from_graphql(nodes: Vec<GraphQlLabelNode>) -> Vec<PullRequestLabel> {
+    nodes
+        .into_iter()
+        .map(|node| PullRequestLabel {
+            name: node.name,
+            color: node.color,
+        })
+        .collect()
 }
 
 pub(super) fn map_comparison_status(status: CompareCommitsStatus) -> ComparisonStatus {
