@@ -5,8 +5,8 @@ use crate::{
         PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
     github::{
-        PullRequestCheckStatus, PullRequestHead, PullRequestRecord, PullRequestReviewStatus,
-        PullRequestStatusRecord, ReviewerSelection,
+        LabelApplyResult, PullRequestCheckStatus, PullRequestHead, PullRequestRecord,
+        PullRequestReviewStatus, PullRequestStatusRecord, ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebaseOnTrunkOutcome,
@@ -378,6 +378,7 @@ struct FakeServices {
     stack_plan_selections: std::cell::RefCell<Vec<StackPlanSelection>>,
     bookmark_update: BookmarkUpdate,
     push: PushOutcome,
+    push_bookmark_calls: std::cell::RefCell<Vec<String>>,
     advance_trunk: AdvanceTrunkOutcome,
     advance_trunk_calls: std::cell::Cell<usize>,
     tracked_push: TrackedPushOutcome,
@@ -387,6 +388,7 @@ struct FakeServices {
     sync_pull_request_metadata: std::cell::RefCell<Vec<StackMetadata>>,
     pull_request_action: PullRequestAction,
     published_pull_request_count: std::cell::Cell<u64>,
+    metadata_only_pull_request_count: std::cell::Cell<u64>,
     pull_request_url: Option<String>,
     pull_request_event_effects: Vec<domain::PullRequestEventEffect>,
     existing_pull_request: Option<PullRequestRecord>,
@@ -565,6 +567,7 @@ impl Default for FakeServices {
                     description: "example change".to_owned(),
                 }],
             },
+            push_bookmark_calls: std::cell::RefCell::new(Vec::new()),
             advance_trunk: AdvanceTrunkOutcome {
                 branch: "main".to_owned(),
                 old_short_commit_id: "11112222".to_owned(),
@@ -607,6 +610,7 @@ impl Default for FakeServices {
             sync_pull_request_metadata: std::cell::RefCell::new(Vec::new()),
             pull_request_action: PullRequestAction::Created,
             published_pull_request_count: std::cell::Cell::new(0),
+            metadata_only_pull_request_count: std::cell::Cell::new(0),
             pull_request_url: Some(
                 "https://github.com/example-owner/example-repo/pull/42".to_owned(),
             ),
@@ -661,6 +665,41 @@ impl Default for FakeServices {
 }
 
 impl FakeServices {
+    fn assert_publish_plan(&self, plan: &PullRequestPlan, publish_index: usize) {
+        if let Some(expected) = &self.expected_reviewers {
+            assert_eq!(&plan.reviewers, expected);
+        }
+        assert_eq!(plan.labels, self.expected_labels);
+        if let Some(expected) = &self.expected_drafts {
+            assert_eq!(plan.draft, expected[publish_index]);
+        } else if let Some(expected) = self.expected_draft {
+            assert_eq!(plan.draft, expected);
+        }
+    }
+
+    fn pull_request_record_for_plan(
+        &self,
+        plan: &PullRequestPlan,
+        number: u64,
+    ) -> PullRequestRecord {
+        let html_url = self.pull_request_url.clone().map(|url| {
+            url.strip_suffix("/42")
+                .map_or(url.clone(), |prefix| format!("{prefix}/{number}"))
+        });
+
+        PullRequestRecord {
+            number,
+            title: plan.title.clone(),
+            body: (!plan.body.is_empty()).then_some(plan.body.clone()),
+            head_branch: plan.head.branch.clone(),
+            base_branch: plan.base.clone(),
+            html_url,
+            draft: plan.draft,
+            merged: false,
+            reviewers: ReviewerSelection::default(),
+        }
+    }
+
     fn fake_workspace_facts(&self, revision: Option<&str>) -> Result<WorkspaceFacts, JjError> {
         let mut workspace = self.workspace.clone();
         if revision.is_some() {
@@ -1148,6 +1187,9 @@ impl CommandServices for FakeServices {
         _context: &RepositoryContext,
         branch: &str,
     ) -> Result<PushOutcome, JjError> {
+        self.push_bookmark_calls
+            .borrow_mut()
+            .push(branch.to_owned());
         let mut push = self.push.clone();
         push.branch = branch.to_owned();
         Ok(push)
@@ -1299,24 +1341,12 @@ impl CommandServices for FakeServices {
         push: PushOutcome,
         options: PullRequestPublishOptions,
     ) -> Result<PullRequestReport, WorkflowError> {
-        if let Some(expected) = &self.expected_reviewers {
-            assert_eq!(&plan.reviewers, expected);
-        }
-        assert_eq!(plan.labels, self.expected_labels);
-        let publish_index = self.published_pull_request_count.get() as usize;
-        if let Some(expected) = &self.expected_drafts {
-            assert_eq!(plan.draft, expected[publish_index]);
-        } else if let Some(expected) = self.expected_draft {
-            assert_eq!(plan.draft, expected);
-        }
+        self.assert_publish_plan(&plan, self.published_pull_request_count.get() as usize);
 
         let number = 42 + self.published_pull_request_count.get();
         self.published_pull_request_count
             .set(self.published_pull_request_count.get() + 1);
-        let html_url = self.pull_request_url.clone().map(|url| {
-            url.strip_suffix("/42")
-                .map_or(url.clone(), |prefix| format!("{prefix}/{number}"))
-        });
+        let pull_request = self.pull_request_record_for_plan(&plan, number);
 
         Ok(PullRequestReport {
             repository: plan.repository,
@@ -1325,17 +1355,7 @@ impl CommandServices for FakeServices {
             bookmark_update,
             push,
             action: self.pull_request_action,
-            pull_request: PullRequestRecord {
-                number,
-                title: plan.title,
-                body: (!plan.body.is_empty()).then_some(plan.body),
-                head_branch: plan.head.branch.clone(),
-                base_branch: plan.base.clone(),
-                html_url,
-                draft: plan.draft,
-                merged: false,
-                reviewers: ReviewerSelection::default(),
-            },
+            pull_request,
             base: plan.base,
             base_pull_request: plan.base_pull_request,
             head: plan.head,
@@ -1346,6 +1366,56 @@ impl CommandServices for FakeServices {
             } else {
                 Vec::new()
             },
+        })
+    }
+
+    fn publish_pull_request_metadata_only(
+        &self,
+        _context: &RepositoryContext,
+        plan: PullRequestPlan,
+        bookmark_update: BookmarkUpdate,
+        push: PushOutcome,
+    ) -> Result<PullRequestReport, WorkflowError> {
+        self.assert_publish_plan(&plan, self.metadata_only_pull_request_count.get() as usize);
+
+        let number = plan
+            .existing_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.number)
+            .unwrap_or(42 + self.metadata_only_pull_request_count.get());
+        self.metadata_only_pull_request_count
+            .set(self.metadata_only_pull_request_count.get() + 1);
+        let mut pull_request = self.pull_request_record_for_plan(&plan, number);
+        if let Some(existing) = &plan.existing_pull_request {
+            pull_request.title = existing.title.clone();
+            pull_request.body = existing.body.clone();
+            pull_request.base_branch = existing.base_branch.clone();
+            pull_request.html_url = existing.html_url.clone();
+            pull_request.reviewers = existing.reviewers.clone();
+            pull_request.merged = existing.merged;
+        }
+
+        Ok(PullRequestReport {
+            repository: plan.repository,
+            task_id: plan.task_id,
+            bookmark: plan.bookmark,
+            bookmark_update,
+            push,
+            action: PullRequestAction::Updated,
+            pull_request,
+            base: plan.base,
+            base_pull_request: plan.base_pull_request,
+            head: plan.head,
+            labels: (!plan.labels.is_empty()).then_some(LabelApplyResult {
+                labels: plan.labels.clone(),
+            }),
+            reviewers: (!plan.reviewers.is_empty()).then_some(ReviewerSyncResult {
+                requested_users: plan.reviewers.users.clone(),
+                requested_teams: plan.reviewers.teams.clone(),
+                removed_users: Vec::new(),
+                removed_teams: Vec::new(),
+            }),
+            event_effects: Vec::new(),
         })
     }
 }

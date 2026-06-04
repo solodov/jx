@@ -905,6 +905,79 @@ fn stack_publish_ignores_empty_commits_in_selected_stack() {
 }
 
 #[test]
+fn stack_publish_updates_only_metadata_when_existing_branch_is_up_to_date() {
+    // Verifies: unchanged existing PRs can update reviewers, labels, and ready state without PR code updates.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let existing = PullRequestRecord {
+        number: 77,
+        title: "Existing title".to_owned(),
+        body: Some("Existing body".to_owned()),
+        head_branch: "example-user/02-zzzzzzzz".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/77".to_owned()),
+        draft: true,
+        merged: false,
+        reviewers: ReviewerSelection::new(["existing-reviewer"], std::iter::empty::<&str>()),
+    };
+    let services = FakeServices {
+        existing_pull_request: Some(existing),
+        push: PushOutcome {
+            branch: String::new(),
+            pushed_refs: 0,
+            pushed_commits: Vec::new(),
+        },
+        bookmark_update: BookmarkUpdate {
+            branch: String::new(),
+            created: false,
+        },
+        reviewer_candidates: vec![ReviewerCandidate::new(
+            ReviewerTarget::team("example-org/platform", "platform"),
+            vec!["matched 1 file".to_owned()],
+        )],
+        expected_draft: Some(false),
+        expected_labels: vec!["needs-review".to_owned()],
+        expected_reviewers: Some(ReviewerSelection::new(["existing-reviewer"], ["platform"])),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "stack",
+            "publish",
+            "--ready",
+            "--label",
+            "needs-review",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("metadata-only stack publish succeeds");
+
+    assert_eq!(services.published_pull_request_count.get(), 0);
+    assert_eq!(services.metadata_only_pull_request_count.get(), 1);
+    assert_eq!(
+        services.push_bookmark_calls.borrow().as_slice(),
+        &["example-user/02-zzzzzzzz".to_owned()]
+    );
+    assert!(services.sync_pull_request_pushes.borrow().is_empty());
+    assert_eq!(
+        result.stdout,
+        format!("Updated {}\n", example_pull_request_link(77))
+    );
+}
+
+#[test]
 fn stack_publish_readiness_selectors_can_create_mixed_ready_draft_stack() {
     // Verifies: readiness revsets assign final ready/draft state within the published stack.
     let workspace = TestWorkspace::new();

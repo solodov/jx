@@ -421,6 +421,15 @@ pub(super) trait CommandServices {
         push: PushOutcome,
         options: PullRequestPublishOptions,
     ) -> Result<PullRequestReport, WorkflowError>;
+
+    /// Updates only PR metadata when the selected branch already matches GitHub.
+    fn publish_pull_request_metadata_only(
+        &self,
+        context: &RepositoryContext,
+        plan: PullRequestPlan,
+        bookmark_update: BookmarkUpdate,
+        push: PushOutcome,
+    ) -> Result<PullRequestReport, WorkflowError>;
 }
 
 /// Production command boundary backed by real jj and GitHub clients.
@@ -1741,6 +1750,26 @@ impl CommandServices for ProductionServices<'_> {
             let github = self.traced_github_client(context)?;
             domain::publish_pull_request(context, plan, bookmark_update, push, options, &github)
                 .await
+        })
+    }
+
+    fn publish_pull_request_metadata_only(
+        &self,
+        context: &RepositoryContext,
+        plan: PullRequestPlan,
+        bookmark_update: BookmarkUpdate,
+        push: PushOutcome,
+    ) -> Result<PullRequestReport, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = self.traced_github_client(context)?;
+            domain::publish_pull_request_metadata_only(
+                context,
+                plan,
+                bookmark_update,
+                push,
+                &github,
+            )
+            .await
         })
     }
 }

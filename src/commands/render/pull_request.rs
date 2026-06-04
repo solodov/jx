@@ -88,7 +88,7 @@ fn render_pull_request_preview_with_style_for_width(
         blocks.push(metadata.join("\n"));
     }
 
-    format!("{}\n\n", blocks.join("\n\n"))
+    format!("{}\n", blocks.join("\n\n"))
 }
 
 const PREVIEW_CONTENT_INDENT: &str = "  ";

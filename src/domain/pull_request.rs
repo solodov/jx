@@ -326,6 +326,83 @@ pub async fn publish_pull_request(
     })
 }
 
+/// Updates only non-code pull-request metadata when the branch already matches GitHub.
+pub async fn publish_pull_request_metadata_only(
+    context: &RepositoryContext,
+    plan: PullRequestPlan,
+    bookmark_update: BookmarkUpdate,
+    push: PushOutcome,
+    github: &dyn GitHubClient,
+) -> Result<PullRequestReport, WorkflowError> {
+    let mut pull_request = plan
+        .existing_pull_request
+        .clone()
+        .ok_or(WorkflowError::MissingPullRequest)?;
+
+    if pull_request.draft != plan.draft {
+        pull_request = if plan.draft {
+            github
+                .convert_pull_request_to_draft(&context.origin.github, pull_request.number)
+                .await?
+        } else {
+            github
+                .mark_pull_request_ready(&context.origin.github, pull_request.number)
+                .await?
+        };
+    }
+
+    let existing_labels = if plan.labels.is_empty() {
+        Vec::new()
+    } else {
+        github
+            .pull_request_labels(&context.origin.github, pull_request.number)
+            .await?
+    };
+    let mut applied_labels = Vec::new();
+    let cli_labels = missing_labels(&existing_labels, plan.labels.clone());
+    let _ = apply_label_batch(
+        context,
+        github,
+        pull_request.number,
+        cli_labels,
+        &mut applied_labels,
+    )
+    .await?;
+    let labels = (!applied_labels.is_empty()).then_some(LabelApplyResult {
+        labels: applied_labels,
+    });
+
+    let reviewers = if plan.reviewers.is_empty() {
+        None
+    } else {
+        Some(
+            github
+                .sync_reviewers(
+                    &context.origin.github,
+                    pull_request.number,
+                    plan.reviewers.clone(),
+                )
+                .await?,
+        )
+    };
+
+    Ok(PullRequestReport {
+        repository: plan.repository,
+        task_id: plan.task_id,
+        bookmark: plan.bookmark,
+        bookmark_update,
+        push,
+        action: PullRequestAction::Updated,
+        pull_request,
+        base: plan.base,
+        base_pull_request: plan.base_pull_request,
+        head: plan.head,
+        labels,
+        reviewers,
+        event_effects: Vec::new(),
+    })
+}
+
 struct PullRequestPrepareSubject<'a> {
     task_id: Option<&'a str>,
     description: String,

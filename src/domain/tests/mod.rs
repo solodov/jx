@@ -1586,6 +1586,87 @@ fn publish_pull_request_applies_requested_readiness_to_existing_prs() {
 }
 
 #[test]
+fn publish_pull_request_metadata_only_skips_code_update_and_applies_allowed_metadata() {
+    // Verifies: metadata-only publish avoids title/body/base updates while applying safe PR metadata.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Old title".to_owned(),
+            body: Some("Old body".to_owned()),
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "legacy-base".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: true,
+            merged: false,
+            reviewers: ReviewerSelection::new(["existing-reviewer"], std::iter::empty::<&str>()),
+        }),
+        pull_request_labels: vec!["existing".to_owned()],
+        label_result: LabelApplyResult {
+            labels: vec!["needs-review".to_owned()],
+        },
+        reviewer_result: ReviewerSyncResult {
+            requested_users: vec!["reviewer-one".to_owned()],
+            requested_teams: vec!["platform".to_owned()],
+            removed_users: Vec::new(),
+            removed_teams: Vec::new(),
+        },
+        ..FakeGitHub::default()
+    };
+    let create_calls = github.create_calls.clone();
+    let update_calls = github.update_calls.clone();
+    let mark_ready_calls = github.mark_ready_calls.clone();
+    let label_calls = github.label_calls.clone();
+    let reviewer_calls = github.reviewer_calls.clone();
+    let context = context();
+    let mut plan = pollster::block_on(pull_request_plan(
+        &context,
+        workspace_facts(),
+        &github,
+        None,
+        vec!["existing".to_owned(), "needs-review".to_owned()],
+        PullRequestReadiness::Ready,
+    ))
+    .expect("PR plan is derived");
+    let reviewers = ReviewerSelection::new(["reviewer-one"], ["platform"]);
+    plan.reviewers = reviewers.clone();
+    let push = PushOutcome {
+        branch: plan.bookmark.branch.clone(),
+        pushed_refs: 0,
+        pushed_commits: Vec::new(),
+    };
+
+    let report = pollster::block_on(publish_pull_request_metadata_only(
+        &context,
+        plan,
+        bookmark_update(),
+        push,
+        &github,
+    ))
+    .expect("PR metadata is updated");
+
+    assert_eq!(report.action, PullRequestAction::Updated);
+    assert_eq!(report.pull_request.title, "Old title");
+    assert_eq!(report.pull_request.body.as_deref(), Some("Old body"));
+    assert_eq!(report.pull_request.base_branch, "legacy-base");
+    assert!(!report.pull_request.draft);
+    assert!(report.event_effects.is_empty());
+    assert!(create_calls.lock().expect("create calls").is_empty());
+    assert!(update_calls.lock().expect("update calls").is_empty());
+    assert_eq!(
+        mark_ready_calls.lock().expect("ready calls").as_slice(),
+        &[7]
+    );
+    assert_eq!(
+        label_calls.lock().expect("label calls").as_slice(),
+        &[(7, vec!["needs-review".to_owned()])]
+    );
+    assert_eq!(
+        reviewer_calls.lock().expect("reviewer calls").as_slice(),
+        &[(7, reviewers)]
+    );
+}
+
+#[test]
 fn sync_pull_requests_updates_description_without_touching_labels_reviewers_or_base() {
     // Verifies: Sync updates only existing PR title/body from the pushed local commit description.
     let github = FakeGitHub {

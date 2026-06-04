@@ -672,6 +672,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
             .iter()
             .map(|choice| choice.checked)
             .collect::<Vec<_>>();
+        eprintln!();
         let theme = PlainPromptTheme;
         let selected = MultiSelect::with_theme(&theme)
             .with_prompt("Reviewers:")

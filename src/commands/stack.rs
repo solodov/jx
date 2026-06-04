@@ -564,34 +564,58 @@ impl StackPublishExecution<'_> {
         let push_result = push_result?;
         record_push_bookmarks_metrics(span, &push_result.metrics);
         let pushes = push_result.outcomes;
+        let metadata_only = stack_publish_metadata_only(&plans, &pushes);
+        span.set([perf_attr("metadata_only", metadata_only)]);
 
-        self.progress.status("Publishing pull requests…");
+        self.progress.status(if metadata_only {
+            "Updating pull request metadata…"
+        } else {
+            "Publishing pull requests…"
+        });
         let mut reports = Vec::new();
+        let publish_step_name = if metadata_only {
+            "publish_pull_request_metadata_only"
+        } else {
+            "publish_pull_request"
+        };
         for ((plan, bookmark_update), push) in plans.into_iter().zip(bookmark_updates).zip(pushes) {
             let branch = plan.bookmark.branch.clone();
             reports.push(span.measure_with_result_attrs(
-                "publish_pull_request",
+                publish_step_name,
                 [perf_attr("branch", branch)],
                 || {
-                    self.services.publish_pull_request(
-                        self.context,
-                        plan,
-                        bookmark_update,
-                        push,
-                        publish_options,
-                    )
+                    if metadata_only {
+                        self.services.publish_pull_request_metadata_only(
+                            self.context,
+                            plan,
+                            bookmark_update,
+                            push,
+                        )
+                    } else {
+                        self.services.publish_pull_request(
+                            self.context,
+                            plan,
+                            bookmark_update,
+                            push,
+                            publish_options,
+                        )
+                    }
                 },
                 publish_pull_request_result_attrs,
             )?);
         }
         span.set([perf_attr("published_pr_count", reports.len())]);
 
-        self.progress.status("Updating pull request stack…");
-        let stack_update = span.measure(
-            "update_stack",
-            [perf_attr("report_count", reports.len())],
-            || self.manager.update_after_stack_publish(&reports),
-        )?;
+        let stack_update = if metadata_only {
+            PullRequestStackPublishUpdate::default()
+        } else {
+            self.progress.status("Updating pull request stack…");
+            span.measure(
+                "update_stack",
+                [perf_attr("report_count", reports.len())],
+                || self.manager.update_after_stack_publish(&reports),
+            )?
+        };
         span.set([perf_attr(
             "stack_update_pr_count",
             stack_update.pull_requests.len(),
@@ -822,6 +846,19 @@ impl StackPublishExecution<'_> {
         }
         Ok(indexes)
     }
+}
+
+fn stack_publish_metadata_only(plans: &[PullRequestPlan], pushes: &[PushOutcome]) -> bool {
+    !plans.is_empty()
+        && plans.len() == pushes.len()
+        && plans
+            .iter()
+            .all(|plan| plan.existing_pull_request.is_some())
+        && pushes.iter().all(stack_publish_push_is_no_op)
+}
+
+fn stack_publish_push_is_no_op(push: &PushOutcome) -> bool {
+    push.pushed_refs == 0 && push.pushed_commits.is_empty()
 }
 
 pub(super) fn add_projected_stack_context_to_existing_plans(plans: &mut [PullRequestPlan]) {

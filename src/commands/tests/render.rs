@@ -196,7 +196,7 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     assert_eq!(
         preview,
         format!(
-            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n  A src/lib.rs\n\nLabels: bug, help wanted\n\n",
+            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n  A src/lib.rs\n\nLabels: bug, help wanted\n",
             example_bookmark_link("example-user/02-zzzzzzzz"),
             example_pull_request_link(7),
         )
