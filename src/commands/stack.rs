@@ -273,7 +273,16 @@ impl StackStatusExecution<'_> {
             || self.manager.maintain_status_metadata(&statuses),
             stack_snapshot_result_attrs,
         )?;
-        let report = domain::pull_request_stack_status_report(self.context, snapshot, statuses);
+        let trunk = if snapshot.nodes.is_empty() {
+            None
+        } else {
+            self.progress.status("Loading trunk status…");
+            span.measure("fetch_trunk_status", Vec::new(), || {
+                stack_status_trunk_report(self.services, self.context)
+            })?
+        };
+        let report =
+            domain::pull_request_stack_status_report(self.context, snapshot, statuses, trunk);
         self.progress.finish();
 
         let stdout = span.measure(
@@ -293,6 +302,15 @@ impl StackStatusExecution<'_> {
         )?;
         Ok(CommandResult::success(stdout))
     }
+}
+
+fn stack_status_trunk_report(
+    services: &dyn CommandServices,
+    context: &RepositoryContext,
+) -> Result<Option<RemoteStatusReport>, CommandError> {
+    let workspace = services.status_workspace_facts(context)?;
+    let report = services.status_report(context, workspace)?;
+    Ok(domain::origin_status_report(context, report))
 }
 
 struct StackMoveExecution<'a> {

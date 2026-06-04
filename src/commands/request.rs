@@ -1137,9 +1137,9 @@ fn stack_command() -> ClapCommand {
         )
         .subcommand(
             ClapCommand::new("status")
-                .about("Show GitHub check and review status for pull request stacks")
+                .about("Show trunk, check, and review status for pull request stacks")
                 .long_about(
-                    "Show GitHub check and review status for pull request stacks while keeping remote state unchanged.\n\nBy default, jx reads the current repository's stored .jx/stack.toml stack, fetches a batched GitHub status summary for its pull requests, refreshes cached PR state, removes closed PRs, and prunes fully merged cached stack trees. Use -a/--all to scan configured primary repositories that have stack metadata; optional positional filters match repository keys and provider/owner/repo identities, for example `example-owner/*` or `service-*`.",
+                    "Show origin trunk freshness plus GitHub check and review status for pull request stacks while keeping remote state unchanged.\n\nBy default, jx reads the current repository's stored .jx/stack.toml stack, fetches a batched GitHub status summary for its pull requests, compares the local origin trunk with GitHub, refreshes cached PR state, removes closed PRs, and prunes fully merged cached stack trees. Use -a/--all to scan configured primary repositories that have stack metadata; optional positional filters match repository keys and provider/owner/repo identities, for example `example-owner/*` or `service-*`.",
                 )
                 .arg(stack_status_all_arg())
                 .arg(stack_status_jobs_arg())

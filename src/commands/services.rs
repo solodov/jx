@@ -203,12 +203,26 @@ pub(super) trait CommandServices {
         let mut entries = Vec::new();
 
         for (index, repository) in repositories.iter().enumerate() {
-            let entry =
-                stack_status_entry_for_repository(repository, environment, |context, numbers| {
+            let entry = stack_status_entry_for_repository(
+                repository,
+                environment,
+                |context, numbers| {
                     self.pull_request_statuses(context, numbers)
                         .map_err(CommandError::from)
                         .map_err(|error| error.to_string())
-                });
+                },
+                |context| {
+                    let workspace = self
+                        .status_workspace_facts(context)
+                        .map_err(CommandError::from)
+                        .map_err(|error| error.to_string())?;
+                    let report = self
+                        .status_report(context, workspace)
+                        .map_err(CommandError::from)
+                        .map_err(|error| error.to_string())?;
+                    Ok(domain::origin_status_report(context, report))
+                },
+            );
             if let Some(entry) = entry {
                 entries.push(entry);
             }
@@ -1757,6 +1771,7 @@ fn stack_status_entry_for_repository(
         &RepositoryContext,
         &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, String>,
+    fetch_trunk: impl FnOnce(&RepositoryContext) -> Result<Option<RemoteStatusReport>, String>,
 ) -> Option<GlobalStackStatusEntry> {
     let display_root = display_path(&repository.root, environment);
     let metadata = match read_stack_metadata(&repository.root) {
@@ -1793,7 +1808,9 @@ fn stack_status_entry_for_repository(
         fetch_statuses(&context, &numbers)
     };
     let result = statuses.and_then(|statuses| {
-        maintained_stack_status_report(&context, &repository.root, &metadata, statuses)
+        maintained_stack_status_report(&context, &repository.root, &metadata, statuses, || {
+            fetch_trunk(&context)
+        })
     });
     let result = match result {
         Ok(Some(report)) => Ok(report),
@@ -1877,7 +1894,7 @@ async fn production_global_stack_status_entry_traced(
             });
         }
     };
-    let (context, metadata) = prepared;
+    let (context, metadata, status_workspace) = prepared;
     let repository_identity = context.origin.github.clone();
     let numbers = stack_status_numbers_from_metadata(&metadata);
     span.set([
@@ -1886,6 +1903,29 @@ async fn production_global_stack_status_entry_traced(
         perf_attr("pr_count", numbers.len()),
     ]);
 
+    let github =
+        match OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
+            .map_err(WorkflowError::from)
+            .map_err(CommandError::from)
+            .map_err(|error| error.to_string())
+        {
+            Ok(github) => TracedGitHubClient {
+                inner: github,
+                perf: perf.clone(),
+                repo: repository_identity.slug(),
+                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            },
+            Err(error) => {
+                return Some(GlobalStackStatusEntry {
+                    key: Some(repository.key.clone()),
+                    root: repository.root.clone(),
+                    display_root,
+                    repository: Some(repository_identity),
+                    result: Err(error),
+                });
+            }
+        };
+
     let statuses_result = if numbers.is_empty() {
         Ok(Vec::new())
     } else {
@@ -1893,26 +1933,12 @@ async fn production_global_stack_status_entry_traced(
             "fetch_github_status",
             [perf_attr("pr_count", numbers.len())],
         );
-        let statuses_result = async {
-            let github =
-                OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
-                    .map_err(WorkflowError::from)
-                    .map_err(CommandError::from)
-                    .map_err(|error| error.to_string())?;
-            let github = TracedGitHubClient {
-                inner: github,
-                perf: perf.clone(),
-                repo: repository_identity.slug(),
-                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
-            };
-            github
-                .pull_request_statuses(&context.origin.github, &numbers)
-                .await
-                .map_err(WorkflowError::from)
-                .map_err(CommandError::from)
-                .map_err(|error| error.to_string())
-        }
-        .await;
+        let statuses_result = github
+            .pull_request_statuses(&context.origin.github, &numbers)
+            .await
+            .map_err(WorkflowError::from)
+            .map_err(CommandError::from)
+            .map_err(|error| error.to_string());
         let status_attrs = statuses_result
             .as_ref()
             .map(|statuses| vec![perf_attr("status_count", statuses.len())])
@@ -1926,24 +1952,47 @@ async fn production_global_stack_status_entry_traced(
                 "maintain_stack_metadata",
                 [perf_attr("status_count", statuses.len())],
             );
-            let result =
-                maintained_stack_status_report(&context, &repository.root, &metadata, statuses);
+            let maintained = maintain_stack_status_metadata(&repository.root, &metadata, &statuses);
             span.finish_step(
                 maintain_step,
-                result
+                maintained
                     .as_ref()
-                    .map(|report| {
+                    .map(|metadata| {
                         vec![perf_attr(
                             "metadata_node_count",
-                            report
-                                .as_ref()
-                                .map_or(0, |report| report.snapshot.nodes.len()),
+                            metadata.as_ref().map_or(0, |metadata| metadata.nodes.len()),
                         )]
                     })
                     .unwrap_or_default(),
-                result.as_ref().err(),
+                maintained.as_ref().err(),
             );
-            result
+            match maintained {
+                Ok(Some(maintained)) => {
+                    let trunk_step = span.start_step("fetch_trunk_status", Vec::new());
+                    let trunk_result = domain::status_report(&context, status_workspace, &github)
+                        .await
+                        .map(|report| domain::origin_status_report(&context, report))
+                        .map_err(CommandError::from)
+                        .map_err(|error| error.to_string());
+                    span.finish_step(trunk_step, Vec::new(), trunk_result.as_ref().err());
+                    match trunk_result {
+                        Ok(trunk) => {
+                            let snapshot = PullRequestStackSnapshot::from_metadata(
+                                &maintained,
+                                &[],
+                                &[],
+                                PullRequestStackSelection::default(),
+                            );
+                            Ok(Some(domain::pull_request_stack_status_report(
+                                &context, snapshot, statuses, trunk,
+                            )))
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Ok(None) => return None,
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error),
     };
@@ -1965,7 +2014,7 @@ async fn production_global_stack_status_entry_traced(
 async fn prepare_global_stack_status(
     root: PathBuf,
     environment: RuntimeEnvironment,
-) -> Result<Option<(RepositoryContext, StackMetadata)>, String> {
+) -> Result<Option<(RepositoryContext, StackMetadata, StatusWorkspaceFacts)>, String> {
     tokio::task::spawn_blocking(move || {
         let metadata = read_stack_metadata(&root).map_err(|error| error.to_string())?;
         if metadata.nodes.is_empty() {
@@ -1974,7 +2023,20 @@ async fn prepare_global_stack_status(
         let environment = environment.with_current_dir(&root);
         let context =
             RepositoryContext::discover(&environment).map_err(|error| error.to_string())?;
-        Ok(Some((context, metadata)))
+        let workspace = JjWorkspace::load(context.workspace_root.clone())
+            .map_err(CommandError::from)
+            .and_then(|workspace| {
+                workspace
+                    .status_facts(
+                        context
+                            .github_remotes
+                            .iter()
+                            .map(|remote| remote.name.as_str()),
+                    )
+                    .map_err(CommandError::from)
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Some((context, metadata, workspace)))
     })
     .await
     .map_err(|error| format!("stack status worker failed: {error}"))?
@@ -1985,15 +2047,13 @@ fn maintained_stack_status_report(
     root: &Path,
     metadata: &StackMetadata,
     statuses: Vec<PullRequestStatusRecord>,
+    fetch_trunk: impl FnOnce() -> Result<Option<RemoteStatusReport>, String>,
 ) -> Result<Option<PullRequestStackStatusReport>, String> {
-    let maintained = domain::maintain_stack_metadata_pull_request_statuses(&statuses, metadata);
-    if &maintained != metadata {
-        write_stack_metadata(root, &maintained).map_err(|error| error.to_string())?;
-    }
-    if maintained.nodes.is_empty() {
+    let Some(maintained) = maintain_stack_status_metadata(root, metadata, &statuses)? else {
         return Ok(None);
-    }
+    };
 
+    let trunk = fetch_trunk()?;
     let snapshot = PullRequestStackSnapshot::from_metadata(
         &maintained,
         &[],
@@ -2001,8 +2061,24 @@ fn maintained_stack_status_report(
         PullRequestStackSelection::default(),
     );
     Ok(Some(domain::pull_request_stack_status_report(
-        context, snapshot, statuses,
+        context, snapshot, statuses, trunk,
     )))
+}
+
+fn maintain_stack_status_metadata(
+    root: &Path,
+    metadata: &StackMetadata,
+    statuses: &[PullRequestStatusRecord],
+) -> Result<Option<StackMetadata>, String> {
+    let maintained = domain::maintain_stack_metadata_pull_request_statuses(statuses, metadata);
+    if &maintained != metadata {
+        write_stack_metadata(root, &maintained).map_err(|error| error.to_string())?;
+    }
+    if maintained.nodes.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(maintained))
 }
 
 fn stack_status_numbers_from_metadata(metadata: &StackMetadata) -> Vec<u64> {

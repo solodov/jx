@@ -32,8 +32,17 @@ pub(in crate::commands) fn render_stack_status(
     current_dir: &Path,
     color: bool,
 ) -> Result<String, JjError> {
-    let _ = (current_dir, color);
+    let _ = color;
     Ok(render_plain_output(|formatter| {
+        writeln!(
+            formatter,
+            "{}",
+            stack_status_repository_header(
+                report.repository.github_slug_name(),
+                &current_dir.display().to_string(),
+                Some(report),
+            )
+        )?;
         write_stack_status_report(formatter, report, color, 0)
     }))
 }
@@ -87,7 +96,12 @@ pub(in crate::commands) fn render_global_stack_status(
                         .map(|repository| repository.name.as_str())
                 })
                 .unwrap_or("repository");
-            writeln!(formatter, "{label}  {}", entry.display_root)?;
+            let report = entry.result.as_ref().ok();
+            writeln!(
+                formatter,
+                "{}",
+                stack_status_repository_header(label, &entry.display_root, report)
+            )?;
             match &entry.result {
                 Ok(report) => write_stack_status_report(formatter, report, color, 2)?,
                 Err(error) => writeln!(formatter, "  error: {error}")?,
@@ -139,6 +153,42 @@ fn write_stack_status_report(
         )?;
     }
     Ok(())
+}
+
+fn stack_status_repository_header(
+    label: &str,
+    display_root: &str,
+    report: Option<&PullRequestStackStatusReport>,
+) -> String {
+    let mut header = format!("{label}  {display_root}");
+    if let Some(trunk) = report.and_then(|report| report.trunk.as_ref()) {
+        header.push_str(&format!("  ({})", stack_status_trunk_summary(trunk)));
+    }
+    header
+}
+
+fn stack_status_trunk_summary(trunk: &RemoteStatusReport) -> String {
+    format!(
+        "{}/{} {}",
+        trunk.name,
+        trunk.branch,
+        stack_status_trunk_delta(trunk)
+    )
+}
+
+fn stack_status_trunk_delta(trunk: &RemoteStatusReport) -> String {
+    let github_ahead = trunk.comparison.github_ahead_by;
+    let local_ahead = trunk.comparison.github_behind_by + trunk.local_ahead_by;
+    match (github_ahead > 0, local_ahead > 0) {
+        (true, false) => format!("{} behind", commit_count_i64(github_ahead)),
+        (false, true) => format!("{} ahead", commit_count_i64(local_ahead)),
+        (true, true) => format!(
+            "diverged: {} behind, {} ahead",
+            commit_count_i64(github_ahead),
+            commit_count_i64(local_ahead),
+        ),
+        (false, false) => "up to date".to_owned(),
+    }
 }
 
 fn stack_status_report_needs_attention(report: &PullRequestStackStatusReport) -> bool {
@@ -321,6 +371,8 @@ struct StackStatusRepositoryJson {
     repository: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trunk: Option<StackStatusTrunkJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pull_requests: Vec<StackStatusPullRequestJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -334,12 +386,50 @@ impl From<&GlobalStackStatusEntry> for StackStatusRepositoryJson {
             root: entry.root.display().to_string(),
             repository: entry.repository.as_ref().map(GitHubRepository::slug),
             url: entry.repository.as_ref().map(GitHubRepository::https_url),
+            trunk: entry
+                .result
+                .as_ref()
+                .ok()
+                .and_then(|report| report.trunk.as_ref())
+                .map(StackStatusTrunkJson::from),
             pull_requests: entry
                 .result
                 .as_ref()
                 .map(stack_status_pull_requests_json)
                 .unwrap_or_default(),
             error: entry.result.as_ref().err().cloned(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackStatusTrunkJson {
+    remote: String,
+    branch: String,
+    url: String,
+    github_url: String,
+    local_trunk_sha: String,
+    local_trunk_short_sha: String,
+    local_ahead_by: i64,
+    state: &'static str,
+    github_ahead_by: i64,
+    github_behind_by: i64,
+}
+
+impl From<&RemoteStatusReport> for StackStatusTrunkJson {
+    fn from(trunk: &RemoteStatusReport) -> Self {
+        Self {
+            remote: trunk.name.clone(),
+            branch: trunk.branch.clone(),
+            url: trunk.url.clone(),
+            github_url: trunk.github_url.clone(),
+            local_trunk_sha: trunk.local_trunk_sha.clone(),
+            local_trunk_short_sha: trunk.local_trunk_short_sha.clone(),
+            local_ahead_by: trunk.local_ahead_by,
+            state: trunk.comparison.label(),
+            github_ahead_by: trunk.comparison.github_ahead_by,
+            github_behind_by: trunk.comparison.github_behind_by,
         }
     }
 }

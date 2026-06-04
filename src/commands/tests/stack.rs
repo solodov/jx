@@ -84,6 +84,8 @@ fn stack_status_renders_check_and_review_summary() {
         services.pull_request_status_calls.borrow().as_slice(),
         &[vec![101, 102]]
     );
+    assert!(result.stdout.contains("example-repo  "));
+    assert!(result.stdout.contains("(origin/main 3 commits behind)"));
     assert!(result.stdout.contains("Root change"));
     assert!(result.stdout.contains("ready"));
     assert!(result.stdout.contains("checks passing"));
@@ -294,6 +296,10 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
         value["repositories"][0]["repository"],
         "example-owner/example-repo"
     );
+    assert_eq!(value["repositories"][0]["trunk"]["remote"], "origin");
+    assert_eq!(value["repositories"][0]["trunk"]["branch"], "main");
+    assert_eq!(value["repositories"][0]["trunk"]["state"], "github-ahead");
+    assert_eq!(value["repositories"][0]["trunk"]["githubAheadBy"], 3);
     assert_eq!(value["repositories"][0]["pullRequests"][0]["number"], 103);
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["checkStatus"],
@@ -570,6 +576,9 @@ fn stack_status_records_perf_steps() {
     assert!(steps
         .iter()
         .any(|step| step["name"] == "maintain_stack_metadata"));
+    assert!(steps
+        .iter()
+        .any(|step| step["name"] == "fetch_trunk_status"));
     assert!(steps.iter().any(|step| step["name"] == "render"));
 }
 

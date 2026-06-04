@@ -39,6 +39,17 @@ pub async fn status_report(
     })
 }
 
+/// Returns the origin remote freshness entry from a full status report.
+pub fn origin_status_report(
+    context: &RepositoryContext,
+    report: StatusReport,
+) -> Option<RemoteStatusReport> {
+    report
+        .remotes
+        .into_iter()
+        .find(|remote| remote.name == context.origin.name)
+}
+
 /// Extends remote freshness with source/fork freshness when origin is a GitHub fork.
 pub async fn remote_status_report(
     context: &RepositoryContext,

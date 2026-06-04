@@ -5,6 +5,7 @@ pub fn pull_request_stack_status_report(
     context: &RepositoryContext,
     snapshot: PullRequestStackSnapshot,
     statuses: Vec<PullRequestStatusRecord>,
+    trunk: Option<RemoteStatusReport>,
 ) -> PullRequestStackStatusReport {
     PullRequestStackStatusReport {
         repository: repository_summary(context),
@@ -13,6 +14,7 @@ pub fn pull_request_stack_status_report(
             .into_iter()
             .map(|status| (status.number, status))
             .collect(),
+        trunk,
     }
 }
 

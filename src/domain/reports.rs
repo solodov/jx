@@ -214,6 +214,7 @@ pub struct PullRequestStackStatusReport {
     pub repository: RepositorySummary,
     pub snapshot: PullRequestStackSnapshot,
     pub statuses: BTreeMap<u64, PullRequestStatusRecord>,
+    pub trunk: Option<RemoteStatusReport>,
 }
 
 /// Pull-request mutation applied by stack PR publishing.
