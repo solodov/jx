@@ -12,7 +12,11 @@ impl JjWorkspace {
             Err(error) => return Err(error),
         };
 
-        Ok(workspace_status_from_jj_status(&jj_status, description))
+        let mut status = workspace_status_from_jj_status(&jj_status, description);
+        if let Ok(lines) = workspace.tracked_bookmark_sync_status_lines() {
+            status.extra_lines.extend(lines);
+        }
+        Ok(status)
     }
 }
 

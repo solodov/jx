@@ -149,11 +149,17 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         number: 42,
         title: "Example change".to_owned(),
         url: "https://github.com/example-owner/example-repo/pull/42".to_owned(),
+        created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/example".to_owned(),
         base_ref_name: "main".to_owned(),
+        author: Some(GraphQlReviewAuthor {
+            login: "change-author".to_owned(),
+        }),
         is_draft: false,
         merged: false,
         closed: false,
+        merged_at: None,
+        closed_at: None,
         review_decision: Some("CHANGES_REQUESTED".to_owned()),
         review_requests: GraphQlReviewRequests {
             total_count: 1,
@@ -161,27 +167,140 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                 requested_reviewer: Some(GraphQlRequestedReviewer {
                     type_name: "User".to_owned(),
                     login: Some("reviewer-one".to_owned()),
+                    slug: None,
                 }),
             }],
         },
+        suggested_reviewers: vec![GraphQlSuggestedReviewer {
+            reviewer: Some(GraphQlSuggestedReviewerUser {
+                login: "reviewer-suggested".to_owned(),
+            }),
+        }],
         labels: GraphQlLabels {
             nodes: vec![GraphQlLabelNode {
                 name: "bug".to_owned(),
                 color: "d73a4a".to_owned(),
             }],
         },
-        latest_reviews: GraphQlLatestReviews {
+        latest_reviews: GraphQlReviews {
             nodes: vec![
-                GraphQlLatestReviewNode {
+                GraphQlReviewNode {
                     state: "APPROVED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
                         login: "reviewer-approved".to_owned(),
                     }),
                 },
-                GraphQlLatestReviewNode {
+                GraphQlReviewNode {
                     state: "COMMENTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "reviewer-commented-approved".to_owned(),
+                    }),
+                },
+            ],
+        },
+        reviews: GraphQlReviews {
+            nodes: vec![
+                GraphQlReviewNode {
+                    state: "COMMENTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
                         login: "reviewer-commented".to_owned(),
+                    }),
+                },
+                GraphQlReviewNode {
+                    state: "COMMENTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "reviewer-approved".to_owned(),
+                    }),
+                },
+                GraphQlReviewNode {
+                    state: "COMMENTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "reviewer-addressed".to_owned(),
+                    }),
+                },
+                GraphQlReviewNode {
+                    state: "COMMENTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "reviewer-obsolete".to_owned(),
+                    }),
+                },
+                GraphQlReviewNode {
+                    state: "COMMENTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "change-author".to_owned(),
+                    }),
+                },
+            ],
+        },
+        review_threads: GraphQlReviewThreads {
+            nodes: vec![
+                GraphQlReviewThreadNode {
+                    is_resolved: false,
+                    is_outdated: false,
+                    comments: GraphQlReviewThreadComments {
+                        nodes: vec![GraphQlReviewThreadCommentNode {
+                            author: Some(GraphQlReviewAuthor {
+                                login: "reviewer-commented".to_owned(),
+                            }),
+                            created_at: "2026-01-01T12:00:00Z".to_owned(),
+                        }],
+                    },
+                },
+                GraphQlReviewThreadNode {
+                    is_resolved: false,
+                    is_outdated: false,
+                    comments: GraphQlReviewThreadComments {
+                        nodes: vec![
+                            GraphQlReviewThreadCommentNode {
+                                author: Some(GraphQlReviewAuthor {
+                                    login: "reviewer-addressed".to_owned(),
+                                }),
+                                created_at: "2026-01-01T12:00:00Z".to_owned(),
+                            },
+                            GraphQlReviewThreadCommentNode {
+                                author: Some(GraphQlReviewAuthor {
+                                    login: "change-author".to_owned(),
+                                }),
+                                created_at: "2026-01-01T12:30:00Z".to_owned(),
+                            },
+                        ],
+                    },
+                },
+                GraphQlReviewThreadNode {
+                    is_resolved: true,
+                    is_outdated: false,
+                    comments: GraphQlReviewThreadComments {
+                        nodes: vec![GraphQlReviewThreadCommentNode {
+                            author: Some(GraphQlReviewAuthor {
+                                login: "reviewer-obsolete".to_owned(),
+                            }),
+                            created_at: "2026-01-01T12:00:00Z".to_owned(),
+                        }],
+                    },
+                },
+            ],
+        },
+        timeline_items: GraphQlTimelineItems {
+            nodes: vec![
+                GraphQlTimelineItemNode::ConvertToDraft {
+                    created_at: "2026-01-01T01:00:00Z".to_owned(),
+                },
+                GraphQlTimelineItemNode::ReadyForReview {
+                    created_at: "2026-01-01T02:00:00Z".to_owned(),
+                },
+                GraphQlTimelineItemNode::ReviewRequested {
+                    created_at: "2026-01-01T02:30:00Z".to_owned(),
+                    requested_reviewer: Some(GraphQlRequestedReviewer {
+                        type_name: "User".to_owned(),
+                        login: Some("reviewer-one".to_owned()),
+                        slug: None,
                     }),
                 },
             ],
@@ -218,6 +337,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         },
     });
 
+    assert_eq!(status.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
     assert_eq!(status.check_status, PullRequestCheckStatus::Failing);
     assert_eq!(
         status.checks,
@@ -240,7 +360,27 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         status.requested_reviewers.users,
         ["reviewer-one".to_owned()]
     );
+    assert_eq!(
+        status.suggested_reviewers,
+        ["reviewer-suggested".to_owned()]
+    );
     assert_eq!(status.approved_reviewers, ["reviewer-approved".to_owned()]);
+    assert_eq!(
+        status.commented_reviewers,
+        ["reviewer-commented".to_owned()]
+    );
+    assert_eq!(
+        status.addressed_reviewers,
+        ["reviewer-addressed".to_owned()]
+    );
+    assert!(status.review_activity.iter().any(|activity| {
+        activity.reviewer == "reviewer-approved" && activity.reviewed_at == "2026-01-02T03:04:05Z"
+    }));
+    assert_eq!(status.timeline_events.len(), 3);
+    assert!(status.timeline_events.iter().any(|event| {
+        event.kind == PullRequestTimelineEventKind::ReadyForReview
+            && event.created_at == "2026-01-01T02:00:00Z"
+    }));
     assert_eq!(
         status.latest_commit_oid.as_deref(),
         Some("aaaabbbbccccdddd")
@@ -257,11 +397,15 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         number: 43,
         title: "Waiting change".to_owned(),
         url: "https://github.com/example-owner/example-repo/pull/43".to_owned(),
+        created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/waiting".to_owned(),
         base_ref_name: "main".to_owned(),
+        author: None,
         is_draft: false,
         merged: false,
         closed: false,
+        merged_at: None,
+        closed_at: None,
         review_decision: Some("REVIEW_REQUIRED".to_owned()),
         review_requests: GraphQlReviewRequests {
             total_count: 2,
@@ -269,11 +413,16 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                 requested_reviewer: Some(GraphQlRequestedReviewer {
                     type_name: "User".to_owned(),
                     login: Some("reviewer-two".to_owned()),
+                    slug: None,
                 }),
             }],
         },
+        suggested_reviewers: Vec::new(),
         labels: GraphQlLabels { nodes: Vec::new() },
-        latest_reviews: GraphQlLatestReviews { nodes: Vec::new() },
+        latest_reviews: GraphQlReviews { nodes: Vec::new() },
+        reviews: GraphQlReviews { nodes: Vec::new() },
+        review_threads: GraphQlReviewThreads { nodes: Vec::new() },
+        timeline_items: GraphQlTimelineItems { nodes: Vec::new() },
         commits: GraphQlPullRequestStatusCommits { nodes: Vec::new() },
     });
 
@@ -284,6 +433,18 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     assert_eq!(
         waiting.requested_reviewers.users,
         ["reviewer-two".to_owned()]
+    );
+}
+
+#[test]
+fn review_request_search_queries_include_existing_review_activity() {
+    // Verifies: the review inbox keeps open PRs visible after the viewer submits a review.
+    assert_eq!(
+        REVIEW_REQUEST_SEARCH_QUERIES,
+        &[
+            "is:pr is:open review-requested:@me -author:@me",
+            "is:pr is:open reviewed-by:@me -author:@me",
+        ]
     );
 }
 
@@ -299,17 +460,91 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("... on CheckRun"));
     assert!(query.contains("... on StatusContext"));
     assert!(query.contains("reviewDecision"));
+    assert!(query.contains("mergedAt"));
+    assert!(query.contains("closedAt"));
+    assert!(query.contains("createdAt"));
+    assert!(query.contains("  author {"));
     assert!(query.contains("reviewRequests"));
     assert!(query.contains("totalCount"));
     assert!(query.contains("requestedReviewer"));
+    assert!(query.contains("suggestedReviewers"));
     assert!(query.contains("labels(first: 100)"));
     assert!(query.contains("      name"));
     assert!(query.contains("      color"));
     assert!(query.contains("latestReviews(first: 100)"));
+    assert!(query.contains("reviews(first: 100)"));
+    assert!(query.contains("submittedAt"));
+    assert!(query.contains("reviewThreads(first: 100)"));
+    assert!(query.contains("timelineItems(last: 100"));
+    assert!(query.contains("READY_FOR_REVIEW_EVENT"));
+    assert!(query.contains("CONVERT_TO_DRAFT_EVENT"));
+    assert!(query.contains("REVIEW_REQUESTED_EVENT"));
+    assert!(query.contains("... on ReadyForReviewEvent"));
+    assert!(query.contains("... on ConvertToDraftEvent"));
+    assert!(query.contains("... on ReviewRequestedEvent"));
+    assert!(query.contains("requestedReviewer"));
+    assert!(!query.contains("slug"));
+    assert!(query.contains("isResolved"));
+    assert!(query.contains("isOutdated"));
+    assert!(query.contains("comments(first: 100)"));
+    assert!(query.contains("createdAt"));
     assert!(query.contains("      state"));
     assert!(query.contains("      author"));
     assert!(query.contains("        login"));
-    assert!(!query.contains("slug"));
+}
+
+#[test]
+fn user_profiles_query_batches_logins_with_aliases() {
+    // Verifies: display-name enrichment can resolve several GitHub users in one GraphQL request.
+    let query = user_profiles_query(&["human-reviewer".to_owned(), "peer-reviewer".to_owned()]);
+
+    assert!(query.contains("query($login0: String!, $login1: String!)"));
+    assert!(query.contains("user0: user(login: $login0)"));
+    assert!(query.contains("user1: user(login: $login1)"));
+    assert!(query.contains("login"));
+    assert!(query.contains("name"));
+}
+
+#[test]
+fn pull_request_suggested_reviewers_query_uses_direct_list_field() {
+    // Verifies: GitHub suggested reviewers are loaded from the direct GraphQL list shape.
+    let query = PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY;
+
+    assert!(query.contains("suggestedReviewers"));
+    assert!(query.contains("reviewer"));
+    assert!(query.contains("login"));
+    assert!(!query.contains("suggestedReviewers(first:"));
+    assert!(!query.contains("nodes"));
+}
+
+#[test]
+fn suggested_reviewers_mapper_preserves_github_order() {
+    // Verifies: GitHub's ranked suggestion order is kept while blank/duplicate logins are removed.
+    let reviewers = suggested_reviewers_from_graphql(vec![
+        GraphQlSuggestedReviewer {
+            reviewer: Some(GraphQlSuggestedReviewerUser {
+                login: " second-reviewer ".to_owned(),
+            }),
+        },
+        GraphQlSuggestedReviewer {
+            reviewer: Some(GraphQlSuggestedReviewerUser {
+                login: "first-reviewer".to_owned(),
+            }),
+        },
+        GraphQlSuggestedReviewer {
+            reviewer: Some(GraphQlSuggestedReviewerUser {
+                login: "second-reviewer".to_owned(),
+            }),
+        },
+        GraphQlSuggestedReviewer {
+            reviewer: Some(GraphQlSuggestedReviewerUser {
+                login: " ".to_owned(),
+            }),
+        },
+        GraphQlSuggestedReviewer { reviewer: None },
+    ]);
+
+    assert_eq!(reviewers, ["second-reviewer", "first-reviewer"]);
 }
 
 #[test]

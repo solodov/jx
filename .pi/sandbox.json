@@ -3,7 +3,7 @@
     "structuredToolWritePaths": [],
     "bashReadRoots": [
       "~/.local/state/jx",
-      "~/.config/jx",
+      "~/.config/jx"
     ],
     "bashWriteRoots": [
       "~/.local/state/jx",

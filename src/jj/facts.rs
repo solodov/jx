@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 impl JjWorkspace {
     /// Returns read-side facts for the current working-copy change.
@@ -11,14 +12,47 @@ impl JjWorkspace {
         &self,
         remote_names: impl IntoIterator<Item = &'a str>,
     ) -> Result<StatusWorkspaceFacts, JjError> {
+        self.status_facts_with_metrics(remote_names)
+            .map(|result| result.facts)
+    }
+
+    /// Returns local cached trunk facts and timing detail for performance tracing.
+    pub fn status_facts_with_metrics<'a>(
+        &self,
+        remote_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<StatusWorkspaceFactsWithMetrics, JjError> {
         self.ensure_git_backed()?;
+        let current_commit_started = Instant::now();
         let target = self.current_commit()?;
+        let mut metrics = StatusWorkspaceMetrics {
+            current_commit_us: duration_us(current_commit_started.elapsed()),
+            remotes: Vec::new(),
+        };
         let mut remotes = Vec::new();
 
         for remote in remote_names {
-            let (branch, trunk) = self.resolve_trunk_for_remote(&target, remote)?;
+            let resolve_trunk_started = Instant::now();
+            let (branch, trunk, trunk_metrics) =
+                self.resolve_trunk_for_remote_with_hint_and_metrics(&target, remote, None)?;
+            let resolve_trunk_us = duration_us(resolve_trunk_started.elapsed());
+
+            let linear_stack_path_started = Instant::now();
             let stack_path = self.linear_stack_path(&trunk, &target)?;
+            let linear_stack_path_us = duration_us(linear_stack_path_started.elapsed());
+
+            let count_non_empty_commits_started = Instant::now();
             let local_ahead_by = self.non_empty_commit_count(&stack_path)?;
+            let count_non_empty_commits_us = duration_us(count_non_empty_commits_started.elapsed());
+            metrics.remotes.push(StatusRemoteMetrics {
+                remote: remote.to_owned(),
+                branch: branch.clone(),
+                stack_path_len: stack_path.len(),
+                non_empty_count: local_ahead_by,
+                resolve_trunk_us,
+                trunk: trunk_metrics,
+                linear_stack_path_us,
+                count_non_empty_commits_us,
+            });
             remotes.push(StatusRemoteFacts {
                 remote: remote.to_owned(),
                 branch,
@@ -28,7 +62,10 @@ impl JjWorkspace {
             });
         }
 
-        Ok(StatusWorkspaceFacts { remotes })
+        Ok(StatusWorkspaceFactsWithMetrics {
+            facts: StatusWorkspaceFacts { remotes },
+            metrics,
+        })
     }
 
     fn non_empty_commit_count(&self, commits: &[Commit]) -> Result<i64, JjError> {
@@ -313,6 +350,10 @@ pub(super) fn select_trunk_candidate_with_hint(
 pub(super) struct ChangedFileFacts {
     pub(super) files: Vec<String>,
     pub(super) lines: Vec<String>,
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().try_into().unwrap_or(u64::MAX)
 }
 
 pub(super) fn changed_file_facts_for_commit(

@@ -323,6 +323,51 @@ fn status_facts_reports_each_requested_remote_trunk() {
 }
 
 #[test]
+fn status_facts_prefers_trunk_branch_without_scanning_all_remote_bookmarks() {
+    // Verifies: remote-status and stack-status avoid broad ancestry scans when origin/main is usable.
+    let fixture = TestWorkspace::new("status-trunk-fast-path");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, trunk) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let current = write_child(tx.repo_mut(), &trunk, "current change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        for index in 0..25 {
+            set_origin_bookmark(tx.repo_mut(), &format!("feature-{index}"), current.id());
+        }
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange status fast-path workspace")
+            .await
+            .expect("commit");
+        (workspace, repo, trunk)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .status_facts_with_metrics(["origin"])
+        .expect("status facts load");
+
+    assert_eq!(facts.facts.remotes[0].branch, "main");
+    assert_eq!(
+        facts.facts.remotes[0].trunk_git_commit_sha,
+        trunk.id().hex()
+    );
+    let trunk_metrics = &facts.metrics.remotes[0].trunk;
+    assert!(trunk_metrics.fast_path);
+    assert_eq!(trunk_metrics.remote_bookmark_count, 1);
+    assert_eq!(trunk_metrics.ancestor_check_count, 1);
+}
+
+#[test]
 fn global_fetch_ready_accepts_empty_current_child_of_origin_trunk() {
     // Verifies: Global fetch may safely run when only jj's empty working-copy commit is local.
     let fixture = TestWorkspace::new("global-fetch-ready");

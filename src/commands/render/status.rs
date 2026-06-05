@@ -176,6 +176,7 @@ struct RemoteStatusRemoteJson {
     state: &'static str,
     github_ahead_by: i64,
     github_behind_by: i64,
+    counts_exact: bool,
 }
 
 impl From<&RemoteStatusReport> for RemoteStatusRemoteJson {
@@ -191,6 +192,7 @@ impl From<&RemoteStatusReport> for RemoteStatusRemoteJson {
             state: remote.comparison.label(),
             github_ahead_by: remote.comparison.github_ahead_by,
             github_behind_by: remote.comparison.github_behind_by,
+            counts_exact: remote.comparison.counts_exact,
         }
     }
 }

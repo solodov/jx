@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 pub(super) fn run_jj_git_push_bookmark(workspace_root: &Path, branch: &str) -> Result<(), JjError> {
     let status = Command::new("jj")
@@ -85,53 +86,212 @@ pub(super) fn fetch_origin_refs(
     mut_repo: &mut MutableRepo,
     origin_branch: &str,
     refresh_bookmarks: &[String],
+    trace: &mut dyn FnMut(FetchTraceStep),
 ) -> Result<git::GitImportStats, JjError> {
-    let git_settings =
-        GitSettings::from_settings(mut_repo.base_repo().settings()).map_err(|error| {
-            JjError::Settings {
-                message: error.to_string(),
-            }
-        })?;
+    let git_settings = measure_git_fetch_step(
+        trace,
+        "load_git_settings",
+        Vec::new(),
+        || {
+            GitSettings::from_settings(mut_repo.base_repo().settings()).map_err(|error| {
+                JjError::Settings {
+                    message: error.to_string(),
+                }
+            })
+        },
+        |_| Vec::new(),
+    )?;
     let import_options = fetch_import_options();
+    let tracked_bookmarks = measure_git_fetch_step(
+        trace,
+        "select_fetch_bookmarks",
+        [
+            fetch_trace_attr("branch", origin_branch),
+            fetch_trace_attr("refresh_bookmark_count", refresh_bookmarks.len()),
+        ],
+        || {
+            Ok(tracked_origin_bookmarks(
+                mut_repo,
+                origin_branch,
+                refresh_bookmarks,
+            ))
+        },
+        |result: &Result<Vec<String>, JjError>| match result {
+            Ok(bookmarks) => vec![
+                fetch_trace_attr("bookmark_count", bookmarks.len()),
+                fetch_trace_attr("bookmarks", joined_git_fetch_values(bookmarks)),
+            ],
+            Err(_) => Vec::new(),
+        },
+    )?;
     let bookmark_expression = StringExpression::union_all(
-        tracked_origin_bookmarks(mut_repo, origin_branch, refresh_bookmarks)
-            .into_iter()
+        tracked_bookmarks
+            .iter()
+            .cloned()
             .map(StringExpression::exact)
             .collect(),
     );
-    let mut fetcher = GitFetch::new(
-        mut_repo,
-        git_settings.to_subprocess_options(),
-        &import_options,
-    )
-    .map_err(|error| JjError::Fetch {
-        message: error.to_string(),
-    })?;
+    let mut fetcher = measure_git_fetch_step(
+        trace,
+        "create_git_fetcher",
+        Vec::new(),
+        || {
+            GitFetch::new(
+                mut_repo,
+                git_settings.to_subprocess_options(),
+                &import_options,
+            )
+            .map_err(|error| JjError::Fetch {
+                message: error.to_string(),
+            })
+        },
+        |_| Vec::new(),
+    )?;
     let ref_expression = GitFetchRefExpression {
         bookmark: bookmark_expression,
         tag: StringExpression::none(),
     };
-    let refspecs = git::expand_fetch_refspecs(RemoteName::new(ORIGIN_REMOTE_NAME), ref_expression)
-        .map_err(|error| JjError::Fetch {
-            message: error.to_string(),
-        })?;
+    let refspecs = measure_git_fetch_step(
+        trace,
+        "expand_fetch_refspecs",
+        [fetch_trace_attr("bookmark_count", tracked_bookmarks.len())],
+        || {
+            git::expand_fetch_refspecs(RemoteName::new(ORIGIN_REMOTE_NAME), ref_expression).map_err(
+                |error| JjError::Fetch {
+                    message: error.to_string(),
+                },
+            )
+        },
+        |result| match result {
+            Ok(_) => vec![fetch_trace_attr("refspec_count", tracked_bookmarks.len())],
+            Err(_) => Vec::new(),
+        },
+    )?;
     let mut callback = SilentGitCallback;
 
-    fetcher
-        .fetch(
-            RemoteName::new(ORIGIN_REMOTE_NAME),
-            refspecs,
-            &mut callback,
-            None,
-            Some(FetchTagsOverride::NoTags),
-        )
-        .map_err(|error| JjError::Fetch {
-            message: error.to_string(),
-        })?;
+    measure_git_fetch_step(
+        trace,
+        "git_fetch",
+        [
+            fetch_trace_attr("remote", ORIGIN_REMOTE_NAME),
+            fetch_trace_attr("refspec_count", tracked_bookmarks.len()),
+            fetch_trace_attr("fetch_tags", "no_tags"),
+            fetch_trace_attr("bookmark_count", tracked_bookmarks.len()),
+        ],
+        || {
+            fetcher
+                .fetch(
+                    RemoteName::new(ORIGIN_REMOTE_NAME),
+                    refspecs,
+                    &mut callback,
+                    None,
+                    Some(FetchTagsOverride::NoTags),
+                )
+                .map_err(|error| JjError::Fetch {
+                    message: error.to_string(),
+                })
+        },
+        |_| Vec::new(),
+    )?;
 
-    pollster::block_on(fetcher.import_refs()).map_err(|error| JjError::Import {
-        message: error.to_string(),
-    })
+    measure_git_fetch_step(
+        trace,
+        "import_refs",
+        [
+            fetch_trace_attr("remote", ORIGIN_REMOTE_NAME),
+            fetch_trace_attr("bookmark_count", tracked_bookmarks.len()),
+        ],
+        || {
+            pollster::block_on(fetcher.import_refs()).map_err(|error| JjError::Import {
+                message: error.to_string(),
+            })
+        },
+        import_refs_result_attrs,
+    )
+}
+
+fn measure_git_fetch_step<T>(
+    trace: &mut dyn FnMut(FetchTraceStep),
+    name: impl Into<String>,
+    attrs: impl IntoIterator<Item = FetchTraceAttr>,
+    operation: impl FnOnce() -> Result<T, JjError>,
+    result_attrs: impl FnOnce(&Result<T, JjError>) -> Vec<FetchTraceAttr>,
+) -> Result<T, JjError> {
+    let name = name.into();
+    let started = Instant::now();
+    let result = operation();
+    let mut attrs = attrs.into_iter().collect::<Vec<_>>();
+    attrs.extend(result_attrs(&result));
+    trace(FetchTraceStep {
+        name,
+        duration_us: git_fetch_duration_us(started.elapsed()),
+        attrs,
+        error: result.as_ref().err().map(ToString::to_string),
+    });
+    result
+}
+
+fn import_refs_result_attrs(result: &Result<git::GitImportStats, JjError>) -> Vec<FetchTraceAttr> {
+    match result {
+        Ok(stats) => vec![
+            fetch_trace_attr(
+                "changed_remote_bookmarks",
+                stats.changed_remote_bookmarks.len(),
+            ),
+            fetch_trace_attr("changed_remote_tags", stats.changed_remote_tags.len()),
+            fetch_trace_attr("abandoned_commits", stats.abandoned_commits.len()),
+        ],
+        Err(error) => git_ref_error_attrs(error),
+    }
+}
+
+fn git_ref_error_attrs(error: &JjError) -> Vec<FetchTraceAttr> {
+    let message = error.to_string();
+    let Some(path) = quoted_git_ref_path(&message) else {
+        return Vec::new();
+    };
+
+    let mut attrs = vec![fetch_trace_attr("git_ref_path", path.display().to_string())];
+    let metadata = fs::metadata(&path);
+    attrs.push(fetch_trace_attr("git_ref_exists", metadata.is_ok()));
+    if let Ok(metadata) = metadata {
+        attrs.push(fetch_trace_attr("git_ref_size", metadata.len()));
+    }
+
+    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+    let lock_metadata = fs::metadata(&lock_path);
+    attrs.push(fetch_trace_attr(
+        "git_ref_lock_exists",
+        lock_metadata.is_ok(),
+    ));
+    if let Ok(metadata) = lock_metadata {
+        attrs.push(fetch_trace_attr("git_ref_lock_size", metadata.len()));
+    }
+
+    attrs
+}
+
+fn quoted_git_ref_path(message: &str) -> Option<PathBuf> {
+    let (_, after_prefix) = message.split_once("The ref file \"")?;
+    let (path, _) = after_prefix.split_once('"')?;
+    Some(PathBuf::from(path))
+}
+
+fn joined_git_fetch_values(values: &[String]) -> String {
+    const MAX_VALUES: usize = 20;
+    if values.len() <= MAX_VALUES {
+        return values.join(",");
+    }
+
+    format!(
+        "{},…(+{})",
+        values[..MAX_VALUES].join(","),
+        values.len() - MAX_VALUES
+    )
+}
+
+fn git_fetch_duration_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 /// Returns the narrow bookmark set fetch should refresh for sync/fetch correctness.

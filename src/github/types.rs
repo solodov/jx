@@ -1,7 +1,7 @@
 use super::ReviewerSelection;
 
 /// GitHub repository identity parsed from the fixed origin URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GitHubRepository {
     pub owner: String,
     pub name: String,
@@ -65,6 +65,13 @@ fn is_valid_github_component(component: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedUser {
     pub login: String,
+}
+
+/// Public GitHub profile fields used only for human display enrichment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubUserProfile {
+    pub login: String,
+    pub name: Option<String>,
 }
 
 /// High-level repository access facts used by readiness checks.
@@ -136,6 +143,20 @@ impl PullRequestHead {
     }
 }
 
+/// Review inbox search results for open pull requests relevant to the authenticated viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestReviewRequests {
+    pub viewer: AuthenticatedUser,
+    pub requests: Vec<PullRequestReviewRequest>,
+}
+
+/// Pull request requesting review from or already reviewed by the authenticated viewer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PullRequestReviewRequest {
+    pub repository: GitHubRepository,
+    pub number: u64,
+}
+
 /// Pull-request data returned by the GitHub boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestRecord {
@@ -164,18 +185,56 @@ pub struct PullRequestStatusRecord {
     pub number: u64,
     pub title: String,
     pub url: Option<String>,
+    /// GitHub creation timestamp in RFC3339 form, when available.
+    pub created_at: Option<String>,
     pub head_branch: String,
     pub base_branch: String,
+    pub author: Option<String>,
     pub draft: bool,
     pub merged: bool,
     pub closed: bool,
+    /// GitHub merge timestamp in RFC3339 form, when the pull request has merged.
+    pub merged_at: Option<String>,
+    /// GitHub close timestamp in RFC3339 form, when the pull request is closed.
+    pub closed_at: Option<String>,
     pub check_status: PullRequestCheckStatus,
     pub checks: Vec<PullRequestCheck>,
     pub review_status: PullRequestReviewStatus,
     pub requested_reviewers: ReviewerSelection,
+    pub suggested_reviewers: Vec<String>,
     pub approved_reviewers: Vec<String>,
+    pub commented_reviewers: Vec<String>,
+    pub addressed_reviewers: Vec<String>,
+    pub review_activity: Vec<PullRequestReviewActivity>,
+    pub timeline_events: Vec<PullRequestTimelineEvent>,
     pub labels: Vec<PullRequestLabel>,
     pub latest_commit_oid: Option<String>,
+}
+
+/// Latest known review activity for one reviewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestReviewActivity {
+    pub reviewer: String,
+    /// GitHub review or review-comment timestamp in RFC3339 form.
+    pub reviewed_at: String,
+}
+
+/// Pull-request lifecycle event needed to explain review wait time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestTimelineEvent {
+    pub kind: PullRequestTimelineEventKind,
+    /// GitHub event timestamp in RFC3339 form.
+    pub created_at: String,
+    /// User login or `team/<slug>` for review-request events.
+    pub reviewer: Option<String>,
+}
+
+/// Supported pull-request lifecycle event kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestTimelineEventKind {
+    ReadyForReview,
+    ConvertToDraft,
+    ReviewRequested,
 }
 
 /// Summary of the latest commit's GitHub check rollup.

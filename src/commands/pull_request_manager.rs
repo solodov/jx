@@ -1,10 +1,14 @@
 use super::*;
+use crate::repository::StackMetadataWorkItemHandlerRun;
+
+const WORK_ITEM_HANDLER_LOG_FILE: &str = "jx-work-item-handlers.log";
 
 /// Command-side integration boundary for pull-request stack state.
 pub(super) struct PullRequestStackManager<'a> {
     context: &'a RepositoryContext,
     services: &'a dyn CommandServices,
     perf: PerfLog,
+    status_metadata_maintainer: StackStatusMetadataMaintainer<'a>,
 }
 
 /// PRs whose generated stack context was refreshed after stack synchronization.
@@ -31,11 +35,13 @@ impl<'a> PullRequestStackManager<'a> {
         context: &'a RepositoryContext,
         services: &'a dyn CommandServices,
         perf: PerfLog,
+        environment: &RuntimeEnvironment,
     ) -> Self {
         Self {
             context,
             services,
             perf,
+            status_metadata_maintainer: StackStatusMetadataMaintainer::new(context, environment),
         }
     }
 
@@ -53,10 +59,10 @@ impl<'a> PullRequestStackManager<'a> {
         statuses: &[PullRequestStatusRecord],
     ) -> Result<PullRequestStackSnapshot, CommandError> {
         let metadata = self.read_metadata()?;
-        let maintained = domain::maintain_stack_metadata_pull_request_statuses(statuses, &metadata);
-        if maintained != metadata {
-            self.write_metadata(&maintained)?;
-        }
+        let maintenance = self
+            .status_metadata_maintainer
+            .maintain(&metadata, statuses)?;
+        let maintained = maintenance.metadata;
         let local_branches = self.local_pull_request_branches()?;
         Ok(PullRequestStackSnapshot::from_metadata(
             &maintained,
@@ -156,8 +162,9 @@ impl<'a> PullRequestStackManager<'a> {
             .pull_request_candidate_bookmarks(self.context, selector)?;
         let metadata = self.sync_metadata()?;
         let local_branches = self.local_pull_request_branches()?;
+        let syncable_metadata = prune_merged_stack_metadata_trees(&metadata);
         let branches = PullRequestStackSnapshot::from_metadata(
-            &metadata,
+            &syncable_metadata,
             &local_branches,
             &[],
             PullRequestStackSelection::default(),
@@ -167,19 +174,22 @@ impl<'a> PullRequestStackManager<'a> {
         Ok(PullRequestStackSyncSelection { branches, metadata })
     }
 
-    /// Upserts newly published stack PRs and syncs stack context once for their component.
-    pub(super) fn update_after_stack_publish(
+    /// Upserts stack PRs and refreshes generated context for PRs whose full update was skipped.
+    pub(super) fn update_after_stack_publish_with_context_only(
         &self,
         reports: &[PullRequestReport],
+        context_only_pull_requests: &[PullRequestRecord],
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
         let mut span = self.perf.start(
             "stack.update_after_publish",
             [
                 perf_attr("repo", self.context.origin.github.slug()),
                 perf_attr("report_count", reports.len()),
+                perf_attr("context_only_pr_count", context_only_pull_requests.len()),
             ],
         );
-        let result = self.update_after_stack_publish_traced(reports, &mut span);
+        let result =
+            self.update_after_stack_publish_traced(reports, context_only_pull_requests, &mut span);
         if let Ok(update) = &result {
             span.set([perf_attr("updated_pr_count", update.pull_requests.len())]);
         }
@@ -190,15 +200,81 @@ impl<'a> PullRequestStackManager<'a> {
         result
     }
 
+    pub(super) fn record_published_work_items(
+        &self,
+        reports: &[PullRequestReport],
+        fixes: &[String],
+        fixes_attached: bool,
+        intent_branches: &BTreeSet<String>,
+    ) -> Result<(), CommandError> {
+        if reports.is_empty() {
+            return Ok(());
+        }
+
+        let mut seed_pull_requests = Vec::new();
+        let mut seen = BTreeSet::new();
+        for report in reports {
+            if let Some(base_pull_request) = &report.base_pull_request {
+                if seen.insert(base_pull_request.number) {
+                    seed_pull_requests.push(base_pull_request.clone());
+                }
+            }
+            if seen.insert(report.pull_request.number) {
+                seed_pull_requests.push(report.pull_request.clone());
+            }
+        }
+
+        let original = self.read_metadata()?;
+        let mut metadata = upsert_stack_metadata_pull_requests(&seed_pull_requests, &original);
+        for report in reports {
+            let Some(node) = metadata.nodes.iter_mut().find(|node| {
+                node.pull_request == Some(report.pull_request.number)
+                    || node.branch == report.pull_request.head_branch
+            }) else {
+                continue;
+            };
+            let is_intent = intent_branches.contains(&report.pull_request.head_branch);
+            let report_fixes: &[String] = if is_intent { fixes } else { &[] };
+            let mut work_ids = domain::pull_request_work_ids(
+                &report.pull_request.title,
+                report.task_id.as_deref(),
+                report_fixes,
+            );
+            let mut fixed_work_ids = report_fixes.to_vec();
+            if is_intent && fixes_attached {
+                merge_work_ids(&mut fixed_work_ids, &work_ids);
+            }
+            merge_work_ids(&mut work_ids, &fixed_work_ids);
+            merge_work_ids(&mut work_ids, &node.fixes_work_ids);
+            if !work_ids.is_empty() {
+                node.work_ids = work_ids;
+            }
+            if !fixed_work_ids.is_empty() {
+                merge_work_ids(&mut node.fixes_work_ids, &fixed_work_ids);
+            }
+        }
+
+        if metadata != original {
+            self.write_metadata(&metadata)?;
+        }
+        Ok(())
+    }
+
     fn update_after_stack_publish_traced(
         &self,
         reports: &[PullRequestReport],
+        context_only_pull_requests: &[PullRequestRecord],
         span: &mut PerfSpan,
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
-        let Some(selection) = reports
+        let selection = reports
             .first()
             .map(|report| PullRequestStackSelection::pull_request(report.pull_request.number))
-        else {
+            .or_else(|| {
+                context_only_pull_requests.first().map(|pull_request| {
+                    PullRequestStackSelection::pull_request(pull_request.number)
+                })
+            });
+        let Some(selection) = selection else {
             return Ok(PullRequestStackPublishUpdate::default());
         };
 
@@ -214,9 +290,27 @@ impl<'a> PullRequestStackManager<'a> {
                 seed_pull_requests.push(report.pull_request.clone());
             }
         }
-        span.set([perf_attr("seed_pr_count", seed_pull_requests.len())]);
+        for pull_request in context_only_pull_requests {
+            if seen.insert(pull_request.number) {
+                seed_pull_requests.push(pull_request.clone());
+            }
+        }
+        let context_only_branches = context_only_pull_requests
+            .iter()
+            .map(|pull_request| pull_request.head_branch.clone())
+            .collect::<BTreeSet<_>>();
+        span.set([
+            perf_attr("seed_pr_count", seed_pull_requests.len()),
+            perf_attr("context_only_branch_count", context_only_branches.len()),
+        ]);
 
-        self.sync_stack_component(selection, &seed_pull_requests, span)
+        self.sync_stack_component(
+            selection,
+            &seed_pull_requests,
+            !reports.is_empty(),
+            &context_only_branches,
+            span,
+        )
     }
 
     /// Syncs PR descriptions using the currently stored stack metadata.
@@ -235,6 +329,8 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
         selection: PullRequestStackSelection,
         seed_pull_requests: &[PullRequestRecord],
+        full_component_sync: bool,
+        context_only_branches: &BTreeSet<String>,
         span: &mut PerfSpan,
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
         let local_branch_facts = span.measure_with_result_attrs(
@@ -308,15 +404,18 @@ impl<'a> PullRequestStackManager<'a> {
         let refreshed_component = refreshed_snapshot.component_for_selection(selection);
         span.measure(
             "sync_available_pull_requests",
-            [perf_attr(
-                "component_pr_count",
-                component_pull_requests.len(),
-            )],
+            [
+                perf_attr("component_pr_count", component_pull_requests.len()),
+                perf_attr("full_component_sync", full_component_sync),
+                perf_attr("context_only_branch_count", context_only_branches.len()),
+            ],
             || {
                 self.sync_available_pull_requests_for_snapshot(
                     &refreshed_component,
                     &component_pull_requests,
                     &metadata,
+                    full_component_sync,
+                    context_only_branches,
                 )
             },
         )
@@ -384,18 +483,18 @@ impl<'a> PullRequestStackManager<'a> {
         &self,
     ) -> Result<AuthoredStackMetadataRefresh, CommandError> {
         let local_branches = self.local_pull_request_branches()?;
-        if local_branches.is_empty() {
+        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
+        let live_pull_requests = self.authored_open_pull_requests_for_branches(&local_branches)?;
+        if local_branches.is_empty() && live_pull_requests.is_empty() {
             let metadata = StackMetadata::default();
             self.write_metadata(&metadata)?;
             return Ok(AuthoredStackMetadataRefresh {
                 metadata,
                 local_branches,
-                live_pull_requests: Vec::new(),
+                live_pull_requests,
             });
         }
 
-        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
-        let live_pull_requests = self.authored_open_pull_requests_for_branches(&local_branches)?;
         let metadata = stack_metadata_from_pull_requests(&live_pull_requests, &metadata);
         let metadata = self.apply_local_stack_metadata(metadata)?;
         self.write_metadata(&metadata)?;
@@ -414,8 +513,13 @@ impl<'a> PullRequestStackManager<'a> {
         let author = self
             .services
             .authenticated_login(&self.context.token_source)?;
-        let mut pull_requests = Vec::new();
-        let mut seen_numbers = BTreeSet::new();
+        let mut pull_requests = self
+            .services
+            .authored_open_pull_requests(self.context, &author)?;
+        let mut seen_numbers = pull_requests
+            .iter()
+            .map(|pull_request| pull_request.number)
+            .collect::<BTreeSet<_>>();
         for branch in branches {
             let Some(pull_request) = self.services.find_authored_open_pull_request_for_head(
                 self.context,
@@ -515,7 +619,13 @@ impl<'a> PullRequestStackManager<'a> {
         metadata: &StackMetadata,
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
         let pull_requests = self.pull_requests_for_component(snapshot, seed_pull_requests)?;
-        self.sync_available_pull_requests_for_snapshot(snapshot, &pull_requests, metadata)
+        self.sync_available_pull_requests_for_snapshot(
+            snapshot,
+            &pull_requests,
+            metadata,
+            true,
+            &BTreeSet::new(),
+        )
     }
 
     fn sync_available_pull_requests_for_snapshot(
@@ -523,23 +633,53 @@ impl<'a> PullRequestStackManager<'a> {
         snapshot: &PullRequestStackSnapshot,
         pull_requests: &[PullRequestRecord],
         metadata: &StackMetadata,
+        full_component_sync: bool,
+        context_only_branches: &BTreeSet<String>,
     ) -> Result<PullRequestStackPublishUpdate, CommandError> {
         if pull_requests.is_empty() {
             return Ok(PullRequestStackPublishUpdate::default());
         }
 
-        let push = stack_context_sync_push(snapshot, pull_requests);
-        let pull_requests = self.sync_pull_requests_with_metadata(&push, metadata)?;
-        Ok(PullRequestStackPublishUpdate { pull_requests })
+        let mut synced_pull_requests = Vec::new();
+        if full_component_sync {
+            let full_branches = pull_requests
+                .iter()
+                .map(|pull_request| pull_request.head_branch.clone())
+                .filter(|branch| !context_only_branches.contains(branch))
+                .collect::<BTreeSet<_>>();
+            if !full_branches.is_empty() {
+                let push = stack_context_sync_push(
+                    snapshot,
+                    pull_requests,
+                    &full_branches,
+                    StackContextSyncMode::Full,
+                );
+                synced_pull_requests
+                    .extend(self.sync_pull_requests_with_metadata(&push, metadata)?);
+            }
+        }
+
+        if !context_only_branches.is_empty() {
+            let push = stack_context_sync_push(
+                snapshot,
+                pull_requests,
+                context_only_branches,
+                StackContextSyncMode::ContextOnly,
+            );
+            if !push.bookmarks.is_empty() {
+                synced_pull_requests
+                    .extend(self.sync_pull_requests_with_metadata(&push, metadata)?);
+            }
+        }
+
+        deduplicate_pull_requests_by_number(&mut synced_pull_requests);
+        Ok(PullRequestStackPublishUpdate {
+            pull_requests: synced_pull_requests,
+        })
     }
 
     fn sync_metadata(&self) -> Result<StackMetadata, CommandError> {
-        let metadata = self.refresh_metadata_by_number(self.read_metadata()?)?;
-        let pruned = prune_merged_stack_metadata_trees(&metadata);
-        if pruned != metadata {
-            self.write_metadata(&pruned)?;
-        }
-        Ok(pruned)
+        self.refresh_metadata_by_number(self.read_metadata()?)
     }
 
     fn apply_local_stack_metadata(
@@ -661,6 +801,343 @@ impl<'a> PullRequestStackManager<'a> {
     }
 }
 
+fn merge_work_ids(target: &mut Vec<String>, work_ids: &[String]) {
+    for work_id in work_ids.iter().map(|work_id| work_id.trim()) {
+        if !work_id.is_empty() && !target.iter().any(|existing| existing == work_id) {
+            target.push(work_id.to_owned());
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkItemFixedEffect {
+    work_id: String,
+    repository: GitHubRepository,
+    pull_request: u64,
+    pull_request_url: Option<String>,
+    title: String,
+    branch: String,
+}
+
+fn fixed_work_item_effects(
+    context: &RepositoryContext,
+    metadata: &StackMetadata,
+) -> Vec<WorkItemFixedEffect> {
+    let mut effects = Vec::new();
+    let mut seen = BTreeSet::new();
+    for node in &metadata.nodes {
+        if !node.merged || node.fixes_work_ids.is_empty() {
+            continue;
+        }
+        let Some(pull_request) = node.pull_request else {
+            continue;
+        };
+        for work_id in &node.fixes_work_ids {
+            if seen.insert((work_id.clone(), pull_request)) {
+                effects.push(WorkItemFixedEffect {
+                    work_id: work_id.clone(),
+                    repository: context.origin.github.clone(),
+                    pull_request,
+                    pull_request_url: node.url.clone(),
+                    title: node.title.clone(),
+                    branch: node.branch.clone(),
+                });
+            }
+        }
+    }
+    effects
+}
+
+fn work_item_handler_run(
+    handler: &RepoWorkItemHandler,
+    effect: &WorkItemFixedEffect,
+) -> StackMetadataWorkItemHandlerRun {
+    StackMetadataWorkItemHandlerRun {
+        handler: work_item_handler_label(handler),
+        work_id: effect.work_id.clone(),
+        pull_request: effect.pull_request,
+    }
+}
+
+/// Maintains durable stack-status metadata through the single path shared by local and global status views.
+pub(super) struct StackStatusMetadataMaintainer<'a> {
+    context: &'a RepositoryContext,
+    work_item_handler_log: WorkItemHandlerLog,
+}
+
+impl<'a> StackStatusMetadataMaintainer<'a> {
+    pub(super) fn new(context: &'a RepositoryContext, environment: &RuntimeEnvironment) -> Self {
+        Self {
+            context,
+            work_item_handler_log: WorkItemHandlerLog::from_environment(environment),
+        }
+    }
+
+    /// Applies status facts, reconciles configured work-item side effects, and writes changed metadata.
+    pub(super) fn maintain(
+        &self,
+        metadata: &StackMetadata,
+        statuses: &[PullRequestStatusRecord],
+    ) -> Result<StackStatusMetadataMaintenance, CommandError> {
+        let mut maintained =
+            domain::maintain_stack_metadata_pull_request_statuses(statuses, metadata);
+        apply_work_item_effects(
+            self.context,
+            &self.context.repository_root,
+            &mut maintained,
+            &self.work_item_handler_log,
+        )?;
+        if &maintained != metadata {
+            write_stack_metadata(&self.context.repository_root, &maintained)?;
+        }
+        Ok(StackStatusMetadataMaintenance {
+            metadata: maintained,
+        })
+    }
+}
+
+/// Updated stack metadata after status maintenance has run to completion.
+pub(super) struct StackStatusMetadataMaintenance {
+    pub(super) metadata: StackMetadata,
+}
+
+fn apply_work_item_effects(
+    context: &RepositoryContext,
+    repository_root: &Path,
+    metadata: &mut StackMetadata,
+    log: &WorkItemHandlerLog,
+) -> Result<(), CommandError> {
+    if !context
+        .config
+        .repo
+        .work_items_for(&context.origin.github)
+        .apply_on_stack_status()
+    {
+        return Ok(());
+    }
+
+    let handlers = context
+        .config
+        .repo
+        .work_item_handlers_for(&context.origin.github)
+        .into_iter()
+        .filter(|handler| handler.on == RepoWorkItemEvent::Fixed)
+        .collect::<Vec<_>>();
+    if handlers.is_empty() {
+        return Ok(());
+    }
+
+    let effects = fixed_work_item_effects(context, metadata);
+    if effects.is_empty() {
+        return Ok(());
+    }
+
+    let mut recorded_runs = metadata
+        .work_item_handler_runs
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut applied_runs = Vec::new();
+    for effect in &effects {
+        for handler in &handlers {
+            let run = work_item_handler_run(handler, effect);
+            if recorded_runs.contains(&run) {
+                continue;
+            }
+            run_work_item_handler(handler, effect, repository_root, log)?;
+            if recorded_runs.insert(run.clone()) {
+                applied_runs.push(run);
+            }
+        }
+    }
+    if !applied_runs.is_empty() {
+        metadata.work_item_handler_runs.extend(applied_runs);
+        metadata.work_item_handler_runs.sort();
+        metadata.work_item_handler_runs.dedup();
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkItemHandlerLog {
+    path: Option<PathBuf>,
+}
+
+impl WorkItemHandlerLog {
+    fn from_environment(environment: &RuntimeEnvironment) -> Self {
+        Self {
+            path: work_item_handler_log_path(environment),
+        }
+    }
+
+    fn append(
+        &self,
+        repository_root: &Path,
+        handler: &RepoWorkItemHandler,
+        effect: &WorkItemFixedEffect,
+        command: &[String],
+        status: &str,
+        message: Option<&str>,
+    ) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        else {
+            return;
+        };
+        let mut record = serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "status": status,
+            "handler": work_item_handler_label(handler),
+            "event": handler.on.label(),
+            "workId": effect.work_id.as_str(),
+            "repo": effect.repository.slug(),
+            "prNumber": effect.pull_request,
+            "prUrl": effect.pull_request_url.as_deref(),
+            "title": effect.title.as_str(),
+            "branch": effect.branch.as_str(),
+            "cwd": repository_root.display().to_string(),
+            "command": command,
+        });
+        if let Some(message) = message {
+            record["message"] = serde_json::Value::String(message.to_owned());
+        }
+        if serde_json::to_writer(&mut file, &record).is_ok() {
+            let _ = writeln!(file);
+        }
+    }
+}
+
+fn work_item_handler_log_path(environment: &RuntimeEnvironment) -> Option<PathBuf> {
+    if let Some(path) = environment
+        .variable("JX_WORK_ITEM_HANDLER_LOG")
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        if matches!(path, "off" | "false" | "0") {
+            return None;
+        }
+        return Some(PathBuf::from(path));
+    }
+
+    environment
+        .variable("XDG_STATE_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            environment
+                .home_dir()
+                .map(|home| home.join(".local").join("state"))
+        })
+        .map(|root| root.join("jx").join(WORK_ITEM_HANDLER_LOG_FILE))
+}
+
+fn run_work_item_handler(
+    handler: &RepoWorkItemHandler,
+    effect: &WorkItemFixedEffect,
+    repository_root: &Path,
+    log: &WorkItemHandlerLog,
+) -> Result<(), CommandError> {
+    let command = render_work_item_handler_command(handler, effect);
+    let handler_label = work_item_handler_label(handler);
+    let Some(program) = command.first() else {
+        log.append(
+            repository_root,
+            handler,
+            effect,
+            &command,
+            "error",
+            Some("command is empty"),
+        );
+        return Err(CommandError::WorkItemHandler {
+            handler: handler_label,
+            work_id: effect.work_id.clone(),
+            message: "command is empty".to_owned(),
+        });
+    };
+    log.append(repository_root, handler, effect, &command, "start", None);
+    let status = ProcessCommand::new(program)
+        .args(command.iter().skip(1))
+        .current_dir(repository_root)
+        .status()
+        .map_err(|source| {
+            let message = source.to_string();
+            log.append(
+                repository_root,
+                handler,
+                effect,
+                &command,
+                "error",
+                Some(message.as_str()),
+            );
+            CommandError::WorkItemHandler {
+                handler: handler_label.clone(),
+                work_id: effect.work_id.clone(),
+                message,
+            }
+        })?;
+    if !status.success() {
+        let message = status.to_string();
+        log.append(
+            repository_root,
+            handler,
+            effect,
+            &command,
+            "error",
+            Some(message.as_str()),
+        );
+        return Err(CommandError::WorkItemHandler {
+            handler: handler_label,
+            work_id: effect.work_id.clone(),
+            message,
+        });
+    }
+    log.append(repository_root, handler, effect, &command, "success", None);
+    Ok(())
+}
+
+fn render_work_item_handler_command(
+    handler: &RepoWorkItemHandler,
+    effect: &WorkItemFixedEffect,
+) -> Vec<String> {
+    handler
+        .command
+        .iter()
+        .map(|arg| render_work_item_handler_arg(arg, effect))
+        .collect()
+}
+
+fn render_work_item_handler_arg(arg: &str, effect: &WorkItemFixedEffect) -> String {
+    arg.replace("{work_id}", &effect.work_id)
+        .replace("{repo}", &effect.repository.slug())
+        .replace("{pr_number}", &effect.pull_request.to_string())
+        .replace(
+            "{pr_url}",
+            effect.pull_request_url.as_deref().unwrap_or_default(),
+        )
+        .replace("{title}", &effect.title)
+        .replace("{branch}", &effect.branch)
+}
+
+fn work_item_handler_label(handler: &RepoWorkItemHandler) -> String {
+    handler
+        .id
+        .clone()
+        .unwrap_or_else(|| handler.on.label().to_owned())
+}
+
 fn metadata_result_attrs(result: &Result<StackMetadata, CommandError>) -> Vec<PerfAttr> {
     result
         .as_ref()
@@ -777,9 +1254,17 @@ fn missing_local_bookmark_pull_requests(context: &RepositoryContext) -> Workflow
     }
 }
 
+#[derive(Clone, Copy)]
+enum StackContextSyncMode {
+    Full,
+    ContextOnly,
+}
+
 fn stack_context_sync_push(
     component: &PullRequestStackSnapshot,
     pull_requests: &[PullRequestRecord],
+    branches: &BTreeSet<String>,
+    mode: StackContextSyncMode,
 ) -> TrackedPushOutcome {
     let pull_requests_by_branch = pull_requests
         .iter()
@@ -792,28 +1277,27 @@ fn stack_context_sync_push(
     let bookmarks = component
         .nodes
         .iter()
-        .filter(|node| {
-            node.pull_request_number()
-                .and_then(|number| pull_requests_by_number.get(&number).copied())
-                .or_else(|| pull_requests_by_branch.get(node.branch.as_str()).copied())
-                .is_some()
-        })
-        .map(|node| {
+        .filter_map(|node| {
             let pull_request = node
                 .pull_request_number()
                 .and_then(|number| pull_requests_by_number.get(&number).copied())
-                .or_else(|| pull_requests_by_branch.get(node.branch.as_str()).copied())
-                .expect("filter ensured pull request exists");
-            PushedBookmarkSummary {
-                branch: pull_request.head_branch.clone(),
-                old_short_commit_id: None,
-                new_short_commit_id: None,
-                old_description: None,
-                new_description: Some(pull_request.title.clone()),
-                pull_request_description: Some(pull_request_description(pull_request)),
-                pull_request_base: Some(node.base_branch.clone()),
-                new_workspace_visibility: WorkspaceVisibility::default(),
-            }
+                .or_else(|| pull_requests_by_branch.get(node.branch.as_str()).copied())?;
+            branches
+                .contains(&pull_request.head_branch)
+                .then_some((node, pull_request))
+        })
+        .map(|(node, pull_request)| PushedBookmarkSummary {
+            branch: pull_request.head_branch.clone(),
+            old_short_commit_id: None,
+            new_short_commit_id: None,
+            old_description: None,
+            new_description: Some(pull_request.title.clone()),
+            pull_request_description: Some(pull_request_description(pull_request)),
+            pull_request_base: match mode {
+                StackContextSyncMode::Full => Some(node.base_branch.clone()),
+                StackContextSyncMode::ContextOnly => None,
+            },
+            new_workspace_visibility: WorkspaceVisibility::default(),
         })
         .collect::<Vec<_>>();
 
@@ -822,6 +1306,11 @@ fn stack_context_sync_push(
         bookmarks,
         pushed_commits: Vec::new(),
     }
+}
+
+fn deduplicate_pull_requests_by_number(pull_requests: &mut Vec<PullRequestRecord>) {
+    let mut seen = BTreeSet::new();
+    pull_requests.retain(|pull_request| seen.insert(pull_request.number));
 }
 
 fn pull_request_description(pull_request: &PullRequestRecord) -> String {

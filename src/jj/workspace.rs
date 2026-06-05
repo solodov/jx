@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 /// High-level jj workspace wrapper used by command/domain services.
 pub struct JjWorkspace {
@@ -189,14 +190,39 @@ impl JjWorkspace {
         remote: &str,
         branch_hint: Option<&str>,
     ) -> Result<(String, Commit), JjError> {
+        self.resolve_trunk_for_remote_with_hint_and_metrics(target, remote, branch_hint)
+            .map(|(branch, trunk, _)| (branch, trunk))
+    }
+
+    /// Resolves a remote trunk and reports where local candidate selection spent time.
+    pub(super) fn resolve_trunk_for_remote_with_hint_and_metrics(
+        &self,
+        target: &Commit,
+        remote: &str,
+        branch_hint: Option<&str>,
+    ) -> Result<(String, Commit, TrunkResolveMetrics), JjError> {
+        if let Some((candidate, mut metrics)) =
+            self.preferred_trunk_candidate(target, remote, branch_hint)?
+        {
+            metrics.fast_path = true;
+            let load_started = Instant::now();
+            let trunk = self.load_commit(&candidate.commit_id)?;
+            metrics.load_trunk_commit_us = duration_us(load_started.elapsed());
+            return Ok((candidate.branch, trunk, metrics));
+        }
+
+        let mut metrics = TrunkResolveMetrics::default();
         let mut candidates = Vec::new();
         let mut conflicted = Vec::new();
 
+        let scan_started = Instant::now();
         for (branch, remote_ref) in self.repo.view().remote_bookmarks(RemoteName::new(remote)) {
+            metrics.remote_bookmark_count += 1;
             let branch_name = branch.as_str().to_owned();
             let ref_target = &remote_ref.target;
 
             if ref_target.has_conflict() {
+                metrics.conflicted_bookmark_count += 1;
                 conflicted.push(branch_name);
                 continue;
             }
@@ -204,6 +230,8 @@ impl JjWorkspace {
             let Some(commit_id) = ref_target.as_normal() else {
                 continue;
             };
+            metrics.normal_bookmark_count += 1;
+            metrics.ancestor_check_count += 1;
 
             if self.is_ancestor_or_equal(commit_id, target.id())? {
                 candidates.push(TrunkCandidate {
@@ -212,12 +240,96 @@ impl JjWorkspace {
                 });
             }
         }
+        metrics.scan_remote_bookmarks_us = duration_us(scan_started.elapsed());
+        metrics.candidate_count = candidates.len();
 
+        let select_started = Instant::now();
         let candidate =
             select_trunk_candidate_with_hint(remote, candidates, conflicted, branch_hint)?;
-        let trunk = self.load_commit(&candidate.commit_id)?;
+        metrics.select_candidate_us = duration_us(select_started.elapsed());
 
-        Ok((candidate.branch, trunk))
+        let load_started = Instant::now();
+        let trunk = self.load_commit(&candidate.commit_id)?;
+        metrics.load_trunk_commit_us = duration_us(load_started.elapsed());
+
+        Ok((candidate.branch, trunk, metrics))
+    }
+
+    fn preferred_trunk_candidate(
+        &self,
+        target: &Commit,
+        remote: &str,
+        branch_hint: Option<&str>,
+    ) -> Result<Option<(TrunkCandidate, TrunkResolveMetrics)>, JjError> {
+        if let Some(branch_hint) = branch_hint {
+            let mut metrics = TrunkResolveMetrics::default();
+            let scan_started = Instant::now();
+            let candidate =
+                self.trunk_candidate_for_branch(target, remote, branch_hint, &mut metrics)?;
+            metrics.scan_remote_bookmarks_us = duration_us(scan_started.elapsed());
+            if let Some(candidate) = candidate {
+                metrics.candidate_count = 1;
+                return Ok(Some((candidate, metrics)));
+            }
+        }
+
+        let mut metrics = TrunkResolveMetrics::default();
+        let scan_started = Instant::now();
+        let mut candidates = Vec::new();
+        let mut checked = Vec::<&str>::new();
+        for branch in PREFERRED_TRUNK_BRANCHES {
+            if Some(branch) == branch_hint || checked.contains(&branch) {
+                continue;
+            }
+            checked.push(branch);
+            if let Some(candidate) =
+                self.trunk_candidate_for_branch(target, remote, branch, &mut metrics)?
+            {
+                candidates.push(candidate);
+            }
+        }
+        metrics.scan_remote_bookmarks_us = duration_us(scan_started.elapsed());
+        metrics.candidate_count = candidates.len();
+
+        match candidates.as_slice() {
+            [candidate] => Ok(Some((candidate.clone(), metrics))),
+            _ => Ok(None),
+        }
+    }
+
+    fn trunk_candidate_for_branch(
+        &self,
+        target: &Commit,
+        remote: &str,
+        branch: &str,
+        metrics: &mut TrunkResolveMetrics,
+    ) -> Result<Option<TrunkCandidate>, JjError> {
+        metrics.preferred_branch_check_count += 1;
+        let remote_ref = self
+            .repo
+            .view()
+            .get_remote_bookmark(RefName::new(branch).to_remote_symbol(RemoteName::new(remote)));
+        let ref_target = &remote_ref.target;
+
+        if ref_target.has_conflict() {
+            metrics.remote_bookmark_count += 1;
+            metrics.conflicted_bookmark_count += 1;
+            return Ok(None);
+        }
+
+        let Some(commit_id) = ref_target.as_normal() else {
+            return Ok(None);
+        };
+        metrics.remote_bookmark_count += 1;
+        metrics.normal_bookmark_count += 1;
+        metrics.ancestor_check_count += 1;
+
+        Ok(self
+            .is_ancestor_or_equal(commit_id, target.id())?
+            .then(|| TrunkCandidate {
+                branch: branch.to_owned(),
+                commit_id: commit_id.clone(),
+            }))
     }
 
     pub(super) fn linear_stack_path(
@@ -376,4 +488,8 @@ impl JjWorkspace {
             })
         }
     }
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().try_into().unwrap_or(u64::MAX)
 }

@@ -1,11 +1,23 @@
 use super::*;
 use crate::github::{
-    AuthenticatedUser, CommitComparison, GitHubError, LabelApplyResult, PullRequestCreate,
-    PullRequestStatusRecord, PullRequestUpdate, RepositoryAccess, RepositoryFork,
-    ReviewerSyncResult,
+    AuthenticatedUser, CommitComparison, ComparisonStatus, GitHubError, LabelApplyResult,
+    PullRequestCreate, PullRequestStatusRecord, PullRequestUpdate, RepositoryAccess,
+    RepositoryFork, ReviewerSyncResult,
 };
+use chrono::Utc;
 use futures::{stream, StreamExt};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+pub(super) struct StackStatusFetches {
+    pub(super) statuses: Vec<PullRequestStatusRecord>,
+    pub(super) trunk: Option<RemoteStatusReport>,
+    pub(super) fetch_github_status_us: u64,
+    pub(super) fetch_trunk_status_us: Option<u64>,
+}
 
 pub(super) trait CommandServices {
     /// Renders the no-argument workspace log.
@@ -120,6 +132,13 @@ pub(super) trait CommandServices {
         workspace: StatusWorkspaceFacts,
     ) -> Result<StatusReport, WorkflowError>;
 
+    /// Checks origin trunk freshness cheaply for stack status without exact GitHub commit counts.
+    fn stack_trunk_status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<RemoteStatusReport, WorkflowError>;
+
     /// Builds the full `remote-status` report, including source/fork freshness.
     fn remote_status_report(
         &self,
@@ -153,12 +172,12 @@ pub(super) trait CommandServices {
         author: &str,
     ) -> Result<Option<PullRequestRecord>, WorkflowError>;
 
-    /// Finds an open GitHub pull request for a same-repository bookmark head.
-    fn find_open_pull_request_for_head(
+    /// Finds open pull requests authored by a user in the fixed-origin repository.
+    fn authored_open_pull_requests(
         &self,
         context: &RepositoryContext,
-        branch: &str,
-    ) -> Result<Option<PullRequestRecord>, WorkflowError>;
+        author: &str,
+    ) -> Result<Vec<PullRequestRecord>, WorkflowError>;
 
     /// Finds the most recent GitHub pull request for a same-repository bookmark head.
     fn find_pull_request_for_head(
@@ -196,6 +215,64 @@ pub(super) trait CommandServices {
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError>;
 
+    /// Loads stack-status GitHub facts, allowing production to overlap independent requests.
+    fn stack_status_fetches(
+        &self,
+        context: &RepositoryContext,
+        numbers: &[u64],
+        fetch_trunk: bool,
+    ) -> Result<StackStatusFetches, CommandError> {
+        let fetch_github_status_started = Instant::now();
+        let statuses = if numbers.is_empty() {
+            Vec::new()
+        } else {
+            self.pull_request_statuses(context, numbers)?
+        };
+        let fetch_github_status_us = duration_us(fetch_github_status_started.elapsed());
+
+        let (trunk, fetch_trunk_status_us) = if fetch_trunk {
+            let fetch_trunk_status_started = Instant::now();
+            let workspace = self.status_workspace_facts(context)?;
+            let trunk = self.stack_trunk_status_report(context, workspace)?;
+            (
+                Some(trunk),
+                Some(duration_us(fetch_trunk_status_started.elapsed())),
+            )
+        } else {
+            (None, None)
+        };
+
+        Ok(StackStatusFetches {
+            statuses,
+            trunk,
+            fetch_github_status_us,
+            fetch_trunk_status_us,
+        })
+    }
+
+    /// Searches open pull requests requesting review from or already reviewed by the authenticated viewer.
+    fn review_requests(
+        &self,
+        token_source: &TokenSource,
+    ) -> Result<PullRequestReviewRequests, WorkflowError>;
+
+    /// Returns cached public display names for GitHub logins, refreshing stale entries best-effort.
+    fn github_user_display_names(
+        &self,
+        _token_source: &TokenSource,
+        _logins: &[String],
+    ) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    /// Loads batched read-only GitHub status facts for an arbitrary repository.
+    fn pull_request_statuses_for_repository(
+        &self,
+        token_source: &TokenSource,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError>;
+
     /// Opens a URL in the platform default browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
 
@@ -219,7 +296,7 @@ pub(super) trait CommandServices {
                         .map_err(|error| error.to_string())
                 },
                 |context, branch| {
-                    self.find_open_pull_request_for_head(context, branch)
+                    self.find_pull_request_for_head(context, branch)
                         .map_err(CommandError::from)
                         .map_err(|error| error.to_string())
                 },
@@ -487,6 +564,43 @@ impl<'environment> ProductionServices<'environment> {
     }
 }
 
+fn record_fetch_trace_step(span: &mut PerfSpan, step: FetchTraceStep) {
+    let error = step.error.clone();
+    span.record_step_us(
+        step.name,
+        step.duration_us,
+        step.attrs.into_iter().map(fetch_trace_attr_to_perf),
+        error.as_ref(),
+    );
+}
+
+fn fetch_trace_attr_to_perf(attr: FetchTraceAttr) -> PerfAttr {
+    perf_attr(attr.key, fetch_trace_value_to_perf(attr.value))
+}
+
+fn fetch_trace_value_to_perf(value: FetchTraceValue) -> PerfValue {
+    match value {
+        FetchTraceValue::String(value) => PerfValue::String(value),
+        FetchTraceValue::U64(value) => PerfValue::U64(value),
+        FetchTraceValue::I64(value) => PerfValue::I64(value),
+        FetchTraceValue::Bool(value) => PerfValue::Bool(value),
+    }
+}
+
+fn fetch_outcome_attrs(fetch: &FetchOutcome) -> Vec<PerfAttr> {
+    vec![
+        perf_attr("branch", &fetch.branch),
+        perf_attr("changed_remote_bookmarks", fetch.changed_remote_bookmarks),
+        perf_attr("changed_remote_tags", fetch.changed_remote_tags),
+        perf_attr("abandoned_commits", fetch.abandoned_commits),
+        perf_attr("rebased_trunk_children", fetch.rebased_trunk_children),
+        perf_attr("rebased_descendants", fetch.rebased_descendants),
+        perf_attr("skipped_trunk_children", fetch.skipped_trunk_children),
+        perf_attr("current_repaired", fetch.current_repaired),
+        perf_attr("rebased_commit_count", fetch.rebased_commits.len()),
+    ]
+}
+
 #[derive(Debug, Default)]
 struct GitHubFactCache {
     authenticated_user: Option<AuthenticatedUser>,
@@ -682,6 +796,76 @@ impl<C> TracedGitHubClient<C> {
             Some(pull_request.clone()),
         );
     }
+
+    async fn pull_request_statuses_chunk_traced(
+        &self,
+        span: &mut PerfSpan,
+        repository: &GitHubRepository,
+        chunk: &[u64],
+        chunk_index: usize,
+        chunk_count: usize,
+        retry_count: &mut usize,
+    ) -> Result<Vec<PullRequestStatusRecord>, GitHubError>
+    where
+        C: GitHubClient,
+    {
+        for attempt in 1..=PULL_REQUEST_STATUS_MAX_ATTEMPTS {
+            let started = Instant::now();
+            let result = self.inner.pull_request_statuses(repository, chunk).await;
+            let duration_us = duration_us(started.elapsed());
+            let base_attrs = || {
+                pull_request_status_chunk_attrs(
+                    chunk,
+                    chunk_index,
+                    chunk_count,
+                    attempt,
+                    PULL_REQUEST_STATUS_MAX_ATTEMPTS,
+                )
+            };
+            match result {
+                Ok(statuses) => {
+                    let mut attrs = base_attrs();
+                    attrs.push(perf_attr("status_count", statuses.len()));
+                    attrs.push(perf_attr("retry", attempt > 1));
+                    span.record_step_us(
+                        "pull_request_statuses.chunk",
+                        duration_us,
+                        attrs,
+                        Option::<&GitHubError>::None,
+                    );
+                    return Ok(statuses);
+                }
+                Err(error) => {
+                    let transient_error_kind = transient_github_error_kind(&error);
+                    let will_retry = transient_error_kind.is_some()
+                        && attempt < PULL_REQUEST_STATUS_MAX_ATTEMPTS;
+                    let mut attrs = base_attrs();
+                    attrs.push(perf_attr("transient_error", transient_error_kind.is_some()));
+                    if let Some(kind) = transient_error_kind {
+                        attrs.push(perf_attr("transient_error_kind", kind));
+                    }
+                    attrs.push(perf_attr("will_retry", will_retry));
+                    span.record_step_us(
+                        "pull_request_statuses.chunk",
+                        duration_us,
+                        attrs,
+                        Some(&error),
+                    );
+                    if will_retry {
+                        *retry_count += 1;
+                        tokio::time::sleep(Duration::from_millis(
+                            PULL_REQUEST_STATUS_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        unreachable!("pull request status retry loop always returns")
+    }
 }
 
 fn cached_pull_request_lookup_result(
@@ -712,6 +896,69 @@ fn unique_pull_request_numbers(numbers: &[u64]) -> Vec<u64> {
         .iter()
         .copied()
         .filter(|number| seen.insert(*number))
+        .collect()
+}
+
+const PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE: usize = 10;
+const PULL_REQUEST_STATUS_MAX_ATTEMPTS: usize = 2;
+const PULL_REQUEST_STATUS_RETRY_DELAY_MS: u64 = 250;
+
+fn pull_request_status_chunk_attrs(
+    numbers: &[u64],
+    chunk_index: usize,
+    chunk_count: usize,
+    attempt: usize,
+    max_attempts: usize,
+) -> Vec<PerfAttr> {
+    let mut attrs = vec![
+        perf_attr("chunk_index", chunk_index),
+        perf_attr("chunk_count", chunk_count),
+        perf_attr("attempt", attempt),
+        perf_attr("max_attempts", max_attempts),
+        perf_attr("number_count", numbers.len()),
+    ];
+    if let Some(first) = numbers.first() {
+        attrs.push(perf_attr("first_number", *first));
+    }
+    if let Some(last) = numbers.last() {
+        attrs.push(perf_attr("last_number", *last));
+    }
+    attrs
+}
+
+fn transient_github_error_kind(error: &GitHubError) -> Option<&'static str> {
+    match error {
+        GitHubError::Api { source, .. } => transient_octocrab_error_kind(source),
+        GitHubError::ApiResponse { status, .. } if *status == 429 => Some("rate_limit"),
+        GitHubError::ApiResponse { status, .. } if (500..=599).contains(status) => Some("server"),
+        _ => None,
+    }
+}
+
+fn transient_octocrab_error_kind(error: &octocrab::Error) -> Option<&'static str> {
+    match error {
+        octocrab::Error::Hyper { .. } => Some("hyper"),
+        octocrab::Error::Http { .. } => Some("http"),
+        octocrab::Error::Service { .. } => Some("service"),
+        octocrab::Error::Graphql { .. } => Some("graphql"),
+        octocrab::Error::GitHub { source, .. } if source.status_code.as_u16() == 429 => {
+            Some("rate_limit")
+        }
+        octocrab::Error::GitHub { source, .. } if source.status_code.is_server_error() => {
+            Some("server")
+        }
+        _ => None,
+    }
+}
+
+fn unique_display_name_logins(logins: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    logins
+        .iter()
+        .map(|login| login.trim())
+        .filter(|login| !login.is_empty())
+        .filter(|login| seen.insert((*login).to_owned()))
+        .map(str::to_owned)
         .collect()
 }
 
@@ -797,6 +1044,24 @@ where
         self.finish(span, result, Vec::new())
     }
 
+    async fn branch_head_sha(
+        &self,
+        repository: &GitHubRepository,
+        branch: &str,
+    ) -> Result<String, GitHubError> {
+        let span = self.start_span(
+            "github.branch_head_sha",
+            Some(repository),
+            [perf_attr("branch", branch)],
+        );
+        let result = self.inner.branch_head_sha(repository, branch).await;
+        let attrs = result
+            .as_ref()
+            .map(|sha| vec![perf_attr("head_sha", sha)])
+            .unwrap_or_default();
+        self.finish(span, result, attrs)
+    }
+
     async fn compare_commits(
         &self,
         repository: &GitHubRepository,
@@ -809,7 +1074,11 @@ where
             [perf_attr("base", base), perf_attr("head", head)],
         );
         let result = self.inner.compare_commits(repository, base, head).await;
-        self.finish(span, result, Vec::new())
+        let attrs = result
+            .as_ref()
+            .map(compare_commits_result_attrs)
+            .unwrap_or_default();
+        self.finish(span, result, attrs)
     }
 
     async fn find_authored_open_pull_request_for_head(
@@ -850,6 +1119,27 @@ where
             .await;
         self.cache_authored_open_pull_request_lookup(repository, head, author, &result);
         let attrs = uncached_pull_request_lookup_attrs(&result);
+        self.finish(span, result, attrs)
+    }
+
+    async fn authored_open_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        author: &str,
+    ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+        let span = self.start_span(
+            "github.authored_open_pull_requests",
+            Some(repository),
+            [perf_attr("author", author)],
+        );
+        let result = self
+            .inner
+            .authored_open_pull_requests(repository, author)
+            .await;
+        let attrs = result
+            .as_ref()
+            .map(|pull_requests| vec![perf_attr("pull_request_count", pull_requests.len())])
+            .unwrap_or_default();
         self.finish(span, result, attrs)
     }
 
@@ -1033,21 +1323,117 @@ where
         repository: &GitHubRepository,
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
-        let span = self.start_span(
+        let requested_numbers = unique_pull_request_numbers(numbers);
+        let chunk_count = pull_request_status_chunk_count(requested_numbers.len());
+        let mut span = self.start_span(
             "github.pull_request_statuses",
             Some(repository),
             [
                 perf_attr("number_count", numbers.len()),
-                perf_attr(
-                    "chunk_count",
-                    pull_request_status_chunk_count(numbers.len()),
-                ),
+                perf_attr("unique_number_count", requested_numbers.len()),
+                perf_attr("chunk_count", chunk_count),
+                perf_attr("chunk_size", PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE),
             ],
         );
-        let result = self.inner.pull_request_statuses(repository, numbers).await;
+        let mut statuses = Vec::new();
+        let mut retry_count = 0_usize;
+        for (chunk_index, chunk) in requested_numbers
+            .chunks(PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE)
+            .enumerate()
+        {
+            let chunk_statuses = self
+                .pull_request_statuses_chunk_traced(
+                    &mut span,
+                    repository,
+                    chunk,
+                    chunk_index,
+                    chunk_count,
+                    &mut retry_count,
+                )
+                .await;
+            match chunk_statuses {
+                Ok(chunk_statuses) => statuses.extend(chunk_statuses),
+                Err(error) => {
+                    return self.finish(
+                        span,
+                        Err(error),
+                        [
+                            perf_attr("retry_count", retry_count),
+                            perf_attr("status_count", statuses.len()),
+                            perf_attr("completed_chunk_count", chunk_index),
+                        ],
+                    );
+                }
+            }
+        }
+
+        self.finish(
+            span,
+            Ok(statuses.clone()),
+            [
+                perf_attr("retry_count", retry_count),
+                perf_attr("status_count", statuses.len()),
+                perf_attr("completed_chunk_count", chunk_count),
+            ],
+        )
+    }
+
+    async fn review_requests(&self) -> Result<PullRequestReviewRequests, GitHubError> {
+        let span = self.start_span("github.review_requests", None, Vec::new());
+        let result = self.inner.review_requests().await;
         let attrs = result
             .as_ref()
-            .map(|statuses| vec![perf_attr("status_count", statuses.len())])
+            .map(|inbox| {
+                let repository_count = inbox
+                    .requests
+                    .iter()
+                    .map(|request| &request.repository)
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                vec![
+                    perf_attr("request_count", inbox.requests.len()),
+                    perf_attr("repository_count", repository_count),
+                    perf_attr("viewer", &inbox.viewer.login),
+                ]
+            })
+            .unwrap_or_default();
+        self.finish(span, result, attrs)
+    }
+
+    async fn user_profiles(
+        &self,
+        logins: &[String],
+    ) -> Result<Vec<GitHubUserProfile>, GitHubError> {
+        let span = self.start_span(
+            "github.user_profiles",
+            None,
+            [perf_attr("login_count", logins.len())],
+        );
+        let result = self.inner.user_profiles(logins).await;
+        let attrs = result
+            .as_ref()
+            .map(|profiles| vec![perf_attr("profile_count", profiles.len())])
+            .unwrap_or_default();
+        self.finish(span, result, attrs)
+    }
+
+    async fn pull_request_suggested_reviewers(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        let span = self.start_span(
+            "github.pull_request_suggested_reviewers",
+            Some(repository),
+            [perf_attr("number", number)],
+        );
+        let result = self
+            .inner
+            .pull_request_suggested_reviewers(repository, number)
+            .await;
+        let attrs = result
+            .as_ref()
+            .map(|reviewers| vec![perf_attr("reviewer_count", reviewers.len())])
             .unwrap_or_default();
         self.finish(span, result, attrs)
     }
@@ -1193,7 +1579,32 @@ fn pull_request_status_chunk_count(number_count: usize) -> usize {
     if number_count == 0 {
         0
     } else {
-        number_count.div_ceil(50)
+        number_count.div_ceil(PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE)
+    }
+}
+
+fn compare_commits_result_attrs(comparison: &CommitComparison) -> Vec<PerfAttr> {
+    vec![
+        perf_attr(
+            "comparison_status",
+            comparison_status_label(comparison.status),
+        ),
+        perf_attr("ahead_by", comparison.ahead_by),
+        perf_attr("behind_by", comparison.behind_by),
+        perf_attr(
+            "identical",
+            comparison.status == ComparisonStatus::Identical,
+        ),
+    ]
+}
+
+fn comparison_status_label(status: ComparisonStatus) -> &'static str {
+    match status {
+        ComparisonStatus::Ahead => "ahead",
+        ComparisonStatus::Behind => "behind",
+        ComparisonStatus::Diverged => "diverged",
+        ComparisonStatus::Identical => "identical",
+        ComparisonStatus::Unknown => "unknown",
     }
 }
 
@@ -1381,6 +1792,18 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn stack_trunk_status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<RemoteStatusReport, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = self.traced_github_client(context)?;
+
+            domain::stack_trunk_status_report(context, workspace, &github).await
+        })
+    }
+
     fn remote_status_report(
         &self,
         context: &RepositoryContext,
@@ -1450,17 +1873,15 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
-    fn find_open_pull_request_for_head(
+    fn authored_open_pull_requests(
         &self,
         context: &RepositoryContext,
-        branch: &str,
-    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
+        author: &str,
+    ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
         self.github_runtime.block_on(async {
             let github = self.traced_github_client(context)?;
-            let head = PullRequestHead::same_repository(&context.origin.github.owner, branch);
-
             Ok(github
-                .find_open_pull_request(&context.origin.github, &head)
+                .authored_open_pull_requests(&context.origin.github, author)
                 .await?)
         })
     }
@@ -1519,6 +1940,154 @@ impl CommandServices for ProductionServices<'_> {
             Ok(github
                 .pull_request_statuses(&context.origin.github, numbers)
                 .await?)
+        })
+    }
+
+    fn stack_status_fetches(
+        &self,
+        context: &RepositoryContext,
+        numbers: &[u64],
+        fetch_trunk: bool,
+    ) -> Result<StackStatusFetches, CommandError> {
+        self.github_runtime.block_on(async {
+            let github = self
+                .traced_github_client(context)
+                .map_err(WorkflowError::from)?;
+            let fetch_statuses = async {
+                let started = Instant::now();
+                let statuses = if numbers.is_empty() {
+                    Vec::new()
+                } else {
+                    github
+                        .pull_request_statuses(&context.origin.github, numbers)
+                        .await
+                        .map_err(WorkflowError::from)?
+                };
+                Ok::<_, CommandError>((statuses, duration_us(started.elapsed())))
+            };
+            let fetch_trunk_status = async {
+                if !fetch_trunk {
+                    return Ok::<_, CommandError>((None, None));
+                }
+
+                let started = Instant::now();
+                let workspace = JjWorkspace::load(context.workspace_root.clone())?.status_facts(
+                    context
+                        .github_remotes
+                        .iter()
+                        .map(|remote| remote.name.as_str()),
+                )?;
+                let trunk = domain::stack_trunk_status_report(context, workspace, &github).await?;
+                Ok((Some(trunk), Some(duration_us(started.elapsed()))))
+            };
+
+            let ((statuses, fetch_github_status_us), (trunk, fetch_trunk_status_us)) =
+                tokio::try_join!(fetch_statuses, fetch_trunk_status)?;
+            Ok(StackStatusFetches {
+                statuses,
+                trunk,
+                fetch_github_status_us,
+                fetch_trunk_status_us,
+            })
+        })
+    }
+
+    fn review_requests(
+        &self,
+        token_source: &TokenSource,
+    ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let github = TracedGitHubClient {
+                inner: github,
+                perf: PerfLog::from_environment(self.environment),
+                repo: "review".to_owned(),
+                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            };
+            let inbox = github.review_requests().await?;
+            if inbox.viewer.login.is_empty() {
+                return Err(WorkflowError::MissingGitHubLogin);
+            }
+            Ok(inbox)
+        })
+    }
+
+    fn github_user_display_names(
+        &self,
+        token_source: &TokenSource,
+        logins: &[String],
+    ) -> BTreeMap<String, String> {
+        let logins = unique_display_name_logins(logins);
+        if logins.is_empty() {
+            return BTreeMap::new();
+        }
+
+        let now = Utc::now();
+        let mut cache = read_github_user_name_cache(self.environment).unwrap_or_default();
+        let mut display_names = BTreeMap::new();
+        let mut stale_logins = Vec::new();
+        for login in logins {
+            match cache.fresh_name(&login, now) {
+                Some(Some(name)) => {
+                    display_names.insert(login, name);
+                }
+                Some(None) => {}
+                None => stale_logins.push(login),
+            }
+        }
+
+        if stale_logins.is_empty() {
+            return display_names;
+        }
+
+        let profiles = self.github_runtime.block_on(async {
+            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let github = TracedGitHubClient {
+                inner: github,
+                perf: PerfLog::from_environment(self.environment),
+                repo: "users".to_owned(),
+                cache: Arc::clone(&self.github_cache),
+            };
+            github.user_profiles(&stale_logins).await
+        });
+
+        match profiles {
+            Ok(profiles) => {
+                for profile in profiles {
+                    cache.upsert(&profile.login, profile.name.as_deref(), now);
+                    if let Some(name) = profile.name {
+                        display_names.insert(profile.login, name);
+                    }
+                }
+                let _ = write_github_user_name_cache(self.environment, &cache);
+            }
+            Err(_) => {
+                for login in stale_logins {
+                    if let Some(Some(name)) = cache.cached_name(&login) {
+                        display_names.insert(login, name);
+                    }
+                }
+            }
+        }
+
+        display_names
+    }
+
+    fn pull_request_statuses_for_repository(
+        &self,
+        token_source: &TokenSource,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let github = TracedGitHubClient {
+                inner: github,
+                perf: PerfLog::from_environment(self.environment),
+                repo: repository.slug(),
+                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            };
+            Ok(github.pull_request_statuses(repository, numbers).await?)
         })
     }
 
@@ -1620,7 +2189,30 @@ impl CommandServices for ProductionServices<'_> {
     }
 
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.fetch_origin()
+        let mut span = PerfLog::from_environment(self.environment).start(
+            "jj.fetch_origin",
+            [
+                perf_attr("repo", context.origin.github.slug()),
+                perf_attr(
+                    "workspace_root",
+                    context.workspace_root.display().to_string(),
+                ),
+                perf_attr("pid", u64::from(std::process::id())),
+            ],
+        );
+        let result = (|| {
+            let mut workspace = JjWorkspace::load(context.workspace_root.clone())?;
+            span.set([perf_attr("jj_workspace", workspace.workspace_name())]);
+            let mut trace = |step| record_fetch_trace_step(&mut span, step);
+            workspace.fetch_origin_with_trace(&mut trace)
+        })();
+        if let Ok(fetch) = &result {
+            span.set(fetch_outcome_attrs(fetch));
+        } else if let Err(error) = &result {
+            span.record_error(error);
+        }
+        span.end();
+        result
     }
 
     fn rebase_on_trunk(
@@ -1875,9 +2467,13 @@ fn stack_status_entry_for_repository(
         fetch_statuses(&context, &numbers)
     };
     let result = discovered_pull_requests.and(statuses).and_then(|statuses| {
-        maintained_stack_status_report(&context, &repository.root, &metadata, statuses, || {
-            fetch_trunk(&context)
-        })
+        maintained_stack_status_report(
+            &context,
+            &repository_environment,
+            &metadata,
+            statuses,
+            || fetch_trunk(&context),
+        )
     });
     let result = match result {
         Ok(Some(report)) => Ok(report),
@@ -1944,13 +2540,19 @@ async fn production_global_stack_status_entry_traced(
     span: &mut PerfSpan,
 ) -> Option<GlobalStackStatusEntry> {
     let display_root = display_path(&repository.root, environment);
-    let prepare_step = span.start_step("load_stack_metadata", Vec::new());
     let prepared_result =
         prepare_global_stack_status(repository.root.clone(), environment.clone()).await;
-    span.finish_step(prepare_step, Vec::new(), prepared_result.as_ref().err());
-    let prepared = match prepared_result {
-        Ok(Some(prepared)) => prepared,
-        Ok(None) => return None,
+    if let Ok(prepared) = &prepared_result {
+        record_global_stack_status_preparation_steps(span, &prepared.metrics);
+    }
+    let (context, metadata) = match prepared_result {
+        Ok(prepared) => match prepared.data {
+            Some(data) => {
+                let data = *data;
+                (data.context, data.metadata)
+            }
+            None => return None,
+        },
         Err(error) => {
             return Some(GlobalStackStatusEntry {
                 key: Some(repository.key.clone()),
@@ -1961,7 +2563,6 @@ async fn production_global_stack_status_entry_traced(
             });
         }
     };
-    let (context, metadata, status_workspace) = prepared;
     let repository_identity = context.origin.github.clone();
     let github =
         match OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
@@ -1985,13 +2586,21 @@ async fn production_global_stack_status_entry_traced(
                 });
             }
         };
+    let status_facts_task = spawn_global_stack_status_facts_load(
+        context.workspace_root.clone(),
+        context
+            .github_remotes
+            .iter()
+            .map(|remote| remote.name.clone())
+            .collect(),
+    );
     let discover_step = span.start_step("discover_missing_pull_requests", Vec::new());
     let discovered_pull_requests = async {
         let mut pull_requests = Vec::new();
         for branch in stack_status_missing_pull_request_branches_from_metadata(&metadata) {
             let head = PullRequestHead::same_repository(&context.origin.github.owner, &branch);
             if let Some(pull_request) = github
-                .find_open_pull_request(&context.origin.github, &head)
+                .find_pull_request_for_head(&context.origin.github, &head)
                 .await
                 .map_err(WorkflowError::from)
                 .map_err(CommandError::from)
@@ -2022,33 +2631,78 @@ async fn production_global_stack_status_entry_traced(
         perf_attr("pr_count", numbers.len()),
     ]);
 
-    let statuses_result = if numbers.is_empty() {
-        Ok(Vec::new())
-    } else {
-        let fetch_step = span.start_step(
-            "fetch_github_status",
-            [perf_attr("pr_count", numbers.len())],
-        );
-        let statuses_result = github
-            .pull_request_statuses(&context.origin.github, &numbers)
-            .await
-            .map_err(WorkflowError::from)
-            .map_err(CommandError::from)
-            .map_err(|error| error.to_string());
-        let status_attrs = statuses_result
-            .as_ref()
-            .map(|statuses| vec![perf_attr("status_count", statuses.len())])
-            .unwrap_or_default();
-        span.finish_step(fetch_step, status_attrs, statuses_result.as_ref().err());
-        statuses_result
+    let fetch_statuses = async {
+        let started = Instant::now();
+        let result = if numbers.is_empty() {
+            Ok(Vec::new())
+        } else {
+            github
+                .pull_request_statuses(&context.origin.github, &numbers)
+                .await
+                .map_err(WorkflowError::from)
+                .map_err(CommandError::from)
+                .map_err(|error| error.to_string())
+        };
+        (result, duration_us(started.elapsed()))
     };
+    let fetch_trunk = async {
+        let started = Instant::now();
+        let status_facts_result = await_global_stack_status_facts_load(status_facts_task).await;
+        let status_facts_metrics = status_facts_result
+            .as_ref()
+            .ok()
+            .map(|facts| facts.metrics.clone());
+        let result = match status_facts_result {
+            Ok(status_facts) => {
+                domain::stack_trunk_status_report(&context, status_facts.status_workspace, &github)
+                    .await
+                    .map(Some)
+                    .map_err(CommandError::from)
+                    .map_err(|error| error.to_string())
+            }
+            Err(error) => Err(error),
+        };
+        (result, duration_us(started.elapsed()), status_facts_metrics)
+    };
+    let (
+        (statuses_result, fetch_github_status_us),
+        (trunk_result, fetch_trunk_status_us, status_facts_metrics),
+    ) = tokio::join!(fetch_statuses, fetch_trunk);
+
+    if !numbers.is_empty() {
+        span.record_step_us(
+            "fetch_github_status",
+            fetch_github_status_us,
+            [
+                perf_attr("pr_count", numbers.len()),
+                perf_attr(
+                    "status_count",
+                    statuses_result
+                        .as_ref()
+                        .map_or(0, |statuses| statuses.len()),
+                ),
+            ],
+            statuses_result.as_ref().err(),
+        );
+    }
+    if let Some(metrics) = &status_facts_metrics {
+        record_global_stack_status_facts_steps(span, metrics);
+    }
+    span.record_step_us(
+        "fetch_trunk_status",
+        fetch_trunk_status_us,
+        stack_trunk_status_attrs(trunk_result.as_ref().ok().and_then(Option::as_ref)),
+        trunk_result.as_ref().err(),
+    );
+
     let result = match discovered_pull_requests.and(statuses_result) {
         Ok(statuses) => {
             let maintain_step = span.start_step(
                 "maintain_stack_metadata",
                 [perf_attr("status_count", statuses.len())],
             );
-            let maintained = maintain_stack_status_metadata(&repository.root, &metadata, &statuses);
+            let maintained =
+                maintain_stack_status_metadata(&context, token_environment, &metadata, &statuses);
             span.finish_step(
                 maintain_step,
                 maintained
@@ -2063,29 +2717,20 @@ async fn production_global_stack_status_entry_traced(
                 maintained.as_ref().err(),
             );
             match maintained {
-                Ok(Some(maintained)) => {
-                    let trunk_step = span.start_step("fetch_trunk_status", Vec::new());
-                    let trunk_result = domain::status_report(&context, status_workspace, &github)
-                        .await
-                        .map(|report| domain::origin_status_report(&context, report))
-                        .map_err(CommandError::from)
-                        .map_err(|error| error.to_string());
-                    span.finish_step(trunk_step, Vec::new(), trunk_result.as_ref().err());
-                    match trunk_result {
-                        Ok(trunk) => {
-                            let snapshot = PullRequestStackSnapshot::from_metadata(
-                                &maintained,
-                                &[],
-                                &[],
-                                PullRequestStackSelection::default(),
-                            );
-                            Ok(Some(domain::pull_request_stack_status_report(
-                                &context, snapshot, statuses, trunk,
-                            )))
-                        }
-                        Err(error) => Err(error),
+                Ok(Some(maintained)) => match trunk_result {
+                    Ok(trunk) => {
+                        let snapshot = PullRequestStackSnapshot::from_metadata(
+                            &maintained,
+                            &[],
+                            &[],
+                            PullRequestStackSelection::default(),
+                        );
+                        Ok(Some(domain::pull_request_stack_status_report(
+                            &context, snapshot, statuses, trunk,
+                        )))
                     }
-                }
+                    Err(error) => Err(error),
+                },
                 Ok(None) => return None,
                 Err(error) => Err(error),
             }
@@ -2107,45 +2752,265 @@ async fn production_global_stack_status_entry_traced(
     })
 }
 
+struct GlobalStackStatusPreparation {
+    data: Option<Box<GlobalStackStatusPreparationData>>,
+    metrics: GlobalStackStatusPreparationMetrics,
+}
+
+struct GlobalStackStatusPreparationData {
+    context: RepositoryContext,
+    metadata: StackMetadata,
+}
+
+struct GlobalStackStatusFactsLoad {
+    status_workspace: StatusWorkspaceFacts,
+    metrics: GlobalStackStatusFactsMetrics,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GlobalStackStatusPreparationMetrics {
+    metadata_node_count: usize,
+    read_stack_metadata_us: u64,
+    discover_repository_context_us: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GlobalStackStatusFactsMetrics {
+    load_jj_workspace_us: u64,
+    load_status_facts_us: u64,
+    status_facts: StatusWorkspaceMetrics,
+}
+
 async fn prepare_global_stack_status(
     root: PathBuf,
     environment: RuntimeEnvironment,
-) -> Result<Option<(RepositoryContext, StackMetadata, StatusWorkspaceFacts)>, String> {
+) -> Result<GlobalStackStatusPreparation, String> {
     tokio::task::spawn_blocking(move || {
-        let metadata = read_stack_metadata(&root).map_err(|error| error.to_string())?;
+        let mut metrics = GlobalStackStatusPreparationMetrics::default();
+        let metadata = measure_global_stack_status_preparation_step(
+            &mut metrics.read_stack_metadata_us,
+            || read_stack_metadata(&root).map_err(|error| error.to_string()),
+        )?;
+        metrics.metadata_node_count = metadata.nodes.len();
         if metadata.nodes.is_empty() {
-            return Ok(None);
+            return Ok(GlobalStackStatusPreparation {
+                data: None,
+                metrics,
+            });
         }
+
         let environment = environment.with_current_dir(&root);
-        let context =
-            RepositoryContext::discover(&environment).map_err(|error| error.to_string())?;
-        let workspace = JjWorkspace::load(context.workspace_root.clone())
-            .map_err(CommandError::from)
-            .and_then(|workspace| {
-                workspace
-                    .status_facts(
-                        context
-                            .github_remotes
-                            .iter()
-                            .map(|remote| remote.name.as_str()),
-                    )
-                    .map_err(CommandError::from)
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(Some((context, metadata, workspace)))
+        let context = measure_global_stack_status_preparation_step(
+            &mut metrics.discover_repository_context_us,
+            || RepositoryContext::discover(&environment).map_err(|error| error.to_string()),
+        )?;
+        Ok(GlobalStackStatusPreparation {
+            data: Some(Box::new(GlobalStackStatusPreparationData {
+                context,
+                metadata,
+            })),
+            metrics,
+        })
     })
     .await
     .map_err(|error| format!("stack status worker failed: {error}"))?
 }
 
+fn spawn_global_stack_status_facts_load(
+    workspace_root: PathBuf,
+    remote_names: Vec<String>,
+) -> tokio::task::JoinHandle<Result<GlobalStackStatusFactsLoad, String>> {
+    tokio::task::spawn_blocking(move || {
+        let mut metrics = GlobalStackStatusFactsMetrics::default();
+        let workspace = measure_global_stack_status_preparation_step(
+            &mut metrics.load_jj_workspace_us,
+            || {
+                JjWorkspace::load(workspace_root)
+                    .map_err(CommandError::from)
+                    .map_err(|error| error.to_string())
+            },
+        )?;
+        let status_facts = measure_global_stack_status_preparation_step(
+            &mut metrics.load_status_facts_us,
+            || {
+                workspace
+                    .status_facts_with_metrics(remote_names.iter().map(String::as_str))
+                    .map_err(CommandError::from)
+                    .map_err(|error| error.to_string())
+            },
+        )?;
+        metrics.status_facts = status_facts.metrics;
+        Ok(GlobalStackStatusFactsLoad {
+            status_workspace: status_facts.facts,
+            metrics,
+        })
+    })
+}
+
+async fn await_global_stack_status_facts_load(
+    task: tokio::task::JoinHandle<Result<GlobalStackStatusFactsLoad, String>>,
+) -> Result<GlobalStackStatusFactsLoad, String> {
+    task.await
+        .map_err(|error| format!("stack status worker failed: {error}"))?
+}
+
+fn measure_global_stack_status_preparation_step<T>(
+    duration_slot_us: &mut u64,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let started = Instant::now();
+    let result = operation();
+    *duration_slot_us = duration_us(started.elapsed());
+    result
+}
+
+fn record_global_stack_status_preparation_steps(
+    span: &mut PerfSpan,
+    metrics: &GlobalStackStatusPreparationMetrics,
+) {
+    record_successful_step(
+        span,
+        "read_stack_metadata",
+        metrics.read_stack_metadata_us,
+        [perf_attr(
+            "metadata_node_count",
+            metrics.metadata_node_count,
+        )],
+    );
+    if metrics.metadata_node_count == 0 {
+        return;
+    }
+    record_successful_step(
+        span,
+        "discover_repository_context",
+        metrics.discover_repository_context_us,
+        Vec::new(),
+    );
+}
+
+fn stack_trunk_status_attrs(trunk: Option<&RemoteStatusReport>) -> Vec<PerfAttr> {
+    trunk
+        .map(|trunk| {
+            vec![
+                perf_attr("state", trunk.comparison.label()),
+                perf_attr("counts_exact", trunk.comparison.counts_exact),
+                perf_attr("local_ahead_by", trunk.local_ahead_by),
+                perf_attr("github_ahead_by", trunk.comparison.github_ahead_by),
+                perf_attr("github_behind_by", trunk.comparison.github_behind_by),
+            ]
+        })
+        .unwrap_or_default()
+}
+
+fn record_global_stack_status_facts_steps(
+    span: &mut PerfSpan,
+    metrics: &GlobalStackStatusFactsMetrics,
+) {
+    record_successful_step(
+        span,
+        "load_jj_workspace",
+        metrics.load_jj_workspace_us,
+        Vec::new(),
+    );
+    record_successful_step(
+        span,
+        "load_status_facts",
+        metrics.load_status_facts_us,
+        [perf_attr(
+            "remote_count",
+            metrics.status_facts.remotes.len(),
+        )],
+    );
+    record_successful_step(
+        span,
+        "status_facts.current_commit",
+        metrics.status_facts.current_commit_us,
+        Vec::new(),
+    );
+    for remote in &metrics.status_facts.remotes {
+        let attrs = || {
+            vec![
+                perf_attr("remote", &remote.remote),
+                perf_attr("branch", &remote.branch),
+                perf_attr("stack_path_len", remote.stack_path_len),
+                perf_attr("non_empty_count", remote.non_empty_count),
+                perf_attr("fast_path", remote.trunk.fast_path),
+                perf_attr(
+                    "preferred_branch_check_count",
+                    remote.trunk.preferred_branch_check_count,
+                ),
+                perf_attr("remote_bookmark_count", remote.trunk.remote_bookmark_count),
+                perf_attr("normal_bookmark_count", remote.trunk.normal_bookmark_count),
+                perf_attr(
+                    "conflicted_bookmark_count",
+                    remote.trunk.conflicted_bookmark_count,
+                ),
+                perf_attr("ancestor_check_count", remote.trunk.ancestor_check_count),
+                perf_attr("candidate_count", remote.trunk.candidate_count),
+            ]
+        };
+        record_successful_step(
+            span,
+            "status_facts.resolve_trunk",
+            remote.resolve_trunk_us,
+            attrs(),
+        );
+        record_successful_step(
+            span,
+            "status_facts.resolve_trunk.scan_remote_bookmarks",
+            remote.trunk.scan_remote_bookmarks_us,
+            attrs(),
+        );
+        record_successful_step(
+            span,
+            "status_facts.resolve_trunk.select_candidate",
+            remote.trunk.select_candidate_us,
+            attrs(),
+        );
+        record_successful_step(
+            span,
+            "status_facts.resolve_trunk.load_commit",
+            remote.trunk.load_trunk_commit_us,
+            attrs(),
+        );
+        record_successful_step(
+            span,
+            "status_facts.linear_stack_path",
+            remote.linear_stack_path_us,
+            attrs(),
+        );
+        record_successful_step(
+            span,
+            "status_facts.count_non_empty_commits",
+            remote.count_non_empty_commits_us,
+            attrs(),
+        );
+    }
+}
+
+fn record_successful_step(
+    span: &mut PerfSpan,
+    name: &str,
+    duration_us: u64,
+    attrs: impl IntoIterator<Item = PerfAttr>,
+) {
+    span.record_step_us(name, duration_us, attrs, Option::<&String>::None);
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().try_into().unwrap_or(u64::MAX)
+}
+
 fn maintained_stack_status_report(
     context: &RepositoryContext,
-    root: &Path,
+    environment: &RuntimeEnvironment,
     metadata: &StackMetadata,
     statuses: Vec<PullRequestStatusRecord>,
     fetch_trunk: impl FnOnce() -> Result<Option<RemoteStatusReport>, String>,
 ) -> Result<Option<PullRequestStackStatusReport>, String> {
-    let Some(maintained) = maintain_stack_status_metadata(root, metadata, &statuses)? else {
+    let Some(maintained) =
+        maintain_stack_status_metadata(context, environment, metadata, &statuses)?
+    else {
         return Ok(None);
     };
 
@@ -2162,14 +3027,15 @@ fn maintained_stack_status_report(
 }
 
 fn maintain_stack_status_metadata(
-    root: &Path,
+    context: &RepositoryContext,
+    environment: &RuntimeEnvironment,
     metadata: &StackMetadata,
     statuses: &[PullRequestStatusRecord],
 ) -> Result<Option<StackMetadata>, String> {
-    let maintained = domain::maintain_stack_metadata_pull_request_statuses(statuses, metadata);
-    if &maintained != metadata {
-        write_stack_metadata(root, &maintained).map_err(|error| error.to_string())?;
-    }
+    let maintained = StackStatusMetadataMaintainer::new(context, environment)
+        .maintain(metadata, statuses)
+        .map_err(|error| error.to_string())?
+        .metadata;
     if maintained.nodes.is_empty() {
         return Ok(None);
     }
@@ -2352,6 +3218,14 @@ mod tests {
             unimplemented!("unused in this test")
         }
 
+        async fn branch_head_sha(
+            &self,
+            _repository: &GitHubRepository,
+            _branch: &str,
+        ) -> Result<String, GitHubError> {
+            unimplemented!("unused in this test")
+        }
+
         async fn compare_commits(
             &self,
             _repository: &GitHubRepository,
@@ -2487,6 +3361,25 @@ mod tests {
         ) -> Result<ReviewerSyncResult, GitHubError> {
             unimplemented!("unused in this test")
         }
+    }
+
+    #[test]
+    fn compare_commits_perf_attrs_include_result_state() {
+        let attrs = compare_commits_result_attrs(&CommitComparison {
+            status: ComparisonStatus::Diverged,
+            ahead_by: 3,
+            behind_by: 5,
+        });
+
+        assert_eq!(
+            attrs,
+            vec![
+                perf_attr("comparison_status", "diverged"),
+                perf_attr("ahead_by", 3_i64),
+                perf_attr("behind_by", 5_i64),
+                perf_attr("identical", false),
+            ]
+        );
     }
 
     #[test]

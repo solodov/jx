@@ -124,6 +124,67 @@ fn workspace_metadata_write_creates_ignored_state_file() {
 }
 
 #[test]
+fn github_user_name_cache_uses_global_cache_map_shape() {
+    // Verifies: display-name cache is compact TOML keyed by login instead of array entries.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [(
+            "XDG_CACHE_HOME".to_owned(),
+            workspace.path().join("cache").display().to_string(),
+        )],
+    );
+    let now = chrono::DateTime::parse_from_rfc3339("2026-06-05T12:00:00Z")
+        .expect("timestamp parses")
+        .with_timezone(&chrono::Utc);
+    let mut cache = GitHubUserNameCache::default();
+    cache.upsert("human-reviewer", Some("Human Reviewer"), now);
+
+    write_github_user_name_cache(&environment, &cache).expect("cache writes");
+
+    let contents = fs::read_to_string(
+        workspace
+            .path()
+            .join("cache")
+            .join("jx")
+            .join("github-users.toml"),
+    )
+    .expect("cache file reads");
+    assert!(contents.contains("[users."));
+    assert!(!contents.contains("[[users]]"));
+    assert!(contents.contains("human-reviewer"));
+    assert!(contents.contains("name = \"Human Reviewer\""));
+    assert_eq!(
+        read_github_user_name_cache(&environment)
+            .expect("cache reads")
+            .fresh_name("human-reviewer", now),
+        Some(Some("Human Reviewer".to_owned()))
+    );
+}
+
+#[test]
+fn github_user_name_cache_expires_after_180_days() {
+    // Verifies: cached names stay long-lived but eventually refresh from GitHub.
+    let cached_at = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+        .expect("timestamp parses")
+        .with_timezone(&chrono::Utc);
+    let fresh_at = cached_at + chrono::Duration::days(GITHUB_USER_NAME_CACHE_TTL_DAYS);
+    let expired_at = fresh_at + chrono::Duration::seconds(1);
+    let mut cache = GitHubUserNameCache::default();
+    cache.upsert("human-reviewer", Some("Human Reviewer"), cached_at);
+
+    assert_eq!(
+        cache.fresh_name("human-reviewer", fresh_at),
+        Some(Some("Human Reviewer".to_owned()))
+    );
+    assert_eq!(cache.fresh_name("human-reviewer", expired_at), None);
+    assert_eq!(
+        cache.cached_name("human-reviewer"),
+        Some(Some("Human Reviewer".to_owned()))
+    );
+}
+
+#[test]
 fn stack_metadata_missing_file_returns_default() {
     // Verifies: Stack state is optional until a repository explicitly tracks a stack.
     let workspace = TestWorkspace::new();
@@ -142,6 +203,7 @@ fn stack_metadata_write_creates_ignored_state_file() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/child".to_owned(),
                 base_branch: "topic/root".to_owned(),
@@ -152,6 +214,8 @@ fn stack_metadata_write_creates_ignored_state_file() {
                 url: None,
                 draft: true,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -165,6 +229,7 @@ fn stack_metadata_write_creates_ignored_state_file() {
         read_stack_metadata(&workspace.path()).expect("metadata reads"),
         StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/child".to_owned(),
                 base_branch: "topic/root".to_owned(),
@@ -175,6 +240,8 @@ fn stack_metadata_write_creates_ignored_state_file() {
                 url: None,
                 draft: true,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         }
     );
@@ -521,18 +588,60 @@ reviewers = ["docs-reviewer"]
         candidates,
         vec![
             reviewer_user_candidate(
-                "global-reviewer",
-                [
-                    "repo",
-                    "foo/bar/** matched 1 file",
-                    "bar/bux/*.py matched 1 file",
-                ],
-            ),
-            reviewer_user_candidate(
                 "foo-reviewer",
                 ["foo/bar/** matched 1 file", "bar/bux/*.py matched 1 file"],
             ),
+            reviewer_user_candidate(
+                "global-reviewer",
+                ["foo/bar/** matched 1 file", "bar/bux/*.py matched 1 file"],
+            ),
             reviewer_user_candidate("docs-reviewer", ["docs/** matched 1 file"]),
+        ]
+    );
+}
+
+#[test]
+fn reviewer_completion_uses_repo_level_matching_rules() {
+    // Verifies: Reviewer completion offers base, wildcard, and exact repo reviewers without path-rule noise.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".config/jx/00-base.toml",
+        r#"
+[repo]
+reviewers = ["base-reviewer", "ExampleOrg/platform"]
+
+[[repo.path_reviewers]]
+paths = ["docs/**"]
+reviewers = ["docs-owner"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+reviewers = ["area-reviewer", "base-reviewer"]
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+reviewers = ["repo-reviewer", "ExampleOrg/platform"]
+
+[[repo.rules]]
+repo = "other-owner/*"
+reviewers = ["external-reviewer"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+
+    assert_eq!(
+        context
+            .config
+            .repo
+            .reviewer_completion_for(&context.origin.github),
+        vec![
+            ReviewerTarget::user("base-reviewer"),
+            ReviewerTarget::team("ExampleOrg/platform", "platform"),
+            ReviewerTarget::user("area-reviewer"),
+            ReviewerTarget::user("repo-reviewer"),
         ]
     );
 }
@@ -545,11 +654,33 @@ fn stack_status_review_gate_checks_compose_for_matching_repo() {
     workspace.write_file(
         ".jx.toml",
         r#"
+[repo.stack_status]
+ignored_checks = ["^global-noise-check$"]
+ignored_labels = ["global-noise"]
+ignored_labels_when_merged = ["global-merge-noise"]
+ignored_reviewers = ["global-bot"]
+review_wait_threshold = "8h"
+
+[[repo.stack_status.title_rewrites]]
+pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
+replace = "$1: $2"
+
 [[repo.stack_status.review_gate_checks]]
 name = "global approval"
 
 [[repo.rules]]
 repo = "example-owner/*"
+
+[repo.rules.stack_status]
+ignored_checks = ["^repo-noise-check.*"]
+ignored_labels = ["repo-noise*"]
+ignored_labels_when_merged = ["repo-merge-noise*"]
+ignored_reviewers = ["repo-bot*"]
+review_wait_threshold = "4h"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^Draft: (.+)$"
+replace = "$1"
 
 [[repo.rules.stack_status.review_gate_checks]]
 name = "repo approval*"
@@ -572,6 +703,26 @@ name = "repo approval*"
         ]
     );
     assert!(stack_status.review_gate_checks[1].matches("repo approval required"));
+    assert!(stack_status.ignores_check("global-noise-check"));
+    assert!(stack_status.ignores_check("repo-noise-check-required"));
+    assert!(stack_status.ignores_label("global-noise"));
+    assert!(stack_status.ignores_label("repo-noise-label"));
+    assert!(stack_status.ignores_label_when_merged("global-merge-noise"));
+    assert!(stack_status.ignores_label_when_merged("repo-merge-noise-label"));
+    assert!(stack_status.ignores_reviewer("global-bot"));
+    assert!(stack_status.ignores_reviewer("repo-bot-helper"));
+    assert_eq!(
+        stack_status.review_wait_threshold_seconds,
+        Some(4 * 60 * 60)
+    );
+    assert_eq!(
+        stack_status.rewrite_title("[TASK-123] Update endpoint"),
+        "TASK-123: Update endpoint"
+    );
+    assert_eq!(
+        stack_status.rewrite_title("Draft: Update endpoint"),
+        "Update endpoint"
+    );
 }
 
 #[test]
@@ -744,10 +895,11 @@ reviewers = ["Foo/bar"]
 
     assert_eq!(
         candidates,
-        vec![
-            reviewer_team_candidate("ExampleOrg/platform", "platform", ["repo"]),
-            reviewer_team_candidate("Foo/bar", "bar", ["src/** matched 1 file"]),
-        ]
+        vec![reviewer_team_candidate(
+            "Foo/bar",
+            "bar",
+            ["src/** matched 1 file"]
+        )]
     );
 }
 
@@ -781,11 +933,11 @@ fn path_reviewers_ignore_other_repos_and_unmatched_files() {
 
     assert_eq!(
         config.reviewer_candidates_for(&other_repository, &["foo/bar/baz.rs".to_owned()]),
-        vec![reviewer_user_candidate("global-reviewer", ["repo"])]
+        Vec::<ReviewerCandidate>::new()
     );
     assert_eq!(
         config.reviewer_candidates_for(&matching_repository, &["src/main.rs".to_owned()]),
-        vec![reviewer_user_candidate("global-reviewer", ["repo"])]
+        Vec::<ReviewerCandidate>::new()
     );
 }
 

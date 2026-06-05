@@ -140,12 +140,21 @@ impl JjWorkspace {
             trunk.as_ref().map(|trunk| &trunk.id),
         )?;
         metrics.split_conflicted_updates_us = duration_us(started.elapsed());
-        metrics.pushable_update_count = split.pushable.len();
         metrics.skipped_conflicted_count = split.skipped_conflicted.len();
+
+        let same_tree =
+            self.split_same_tree_tracked_bookmark_updates(split.pushable, trunk.as_ref())?;
+        metrics.pushable_update_count = same_tree.pushable.len();
+        metrics.skipped_same_tree_count = same_tree.skipped.len();
+        metrics.adopted_remote_head_count = same_tree
+            .skipped
+            .iter()
+            .filter(|bookmark| bookmark.adopted_remote_head)
+            .count();
 
         let started = Instant::now();
         let mut pushed = self.push_tracked_updates_with_metrics_and_trunk(
-            split.pushable,
+            same_tree.pushable,
             "jx sync push tracked bookmarks".to_owned(),
             "tracked bookmarks".to_owned(),
             trunk.as_ref(),
@@ -153,14 +162,21 @@ impl JjWorkspace {
         )?;
         metrics.push_tracked_updates_us = duration_us(started.elapsed());
 
-        let pushed_branches = pushed
+        let synced_branches = pushed
             .bookmarks
             .iter()
             .map(|bookmark| bookmark.branch.clone())
+            .chain(
+                same_tree
+                    .metadata_bookmarks
+                    .iter()
+                    .map(|bookmark| bookmark.branch.clone()),
+            )
             .collect::<BTreeSet<_>>();
+        pushed.bookmarks.extend(same_tree.metadata_bookmarks);
         let started = Instant::now();
         let unchanged =
-            self.unchanged_tracked_bookmark_summaries_with_trunk(&pushed_branches, trunk.as_ref())?;
+            self.unchanged_tracked_bookmark_summaries_with_trunk(&synced_branches, trunk.as_ref())?;
         metrics.unchanged_tracked_bookmark_summaries_us = duration_us(started.elapsed());
         metrics.unchanged_bookmark_count = unchanged.len();
         pushed.bookmarks.extend(unchanged);
@@ -174,6 +190,7 @@ impl JjWorkspace {
             outcome: SyncPushOutcome {
                 pushed,
                 skipped_conflicted_bookmarks: split.skipped_conflicted,
+                skipped_same_tree_bookmarks: same_tree.skipped,
             },
             metrics,
         })
@@ -214,6 +231,7 @@ impl JjWorkspace {
             return Ok(SyncPushOutcome {
                 pushed: self.unchanged_sync_bookmark_outcome(&selection.branch, &target_id)?,
                 skipped_conflicted_bookmarks: Vec::new(),
+                skipped_same_tree_bookmarks: Vec::new(),
             });
         };
 
@@ -221,15 +239,20 @@ impl JjWorkspace {
             RefNameBuf::from(selection.branch.as_str()),
             update,
         )])?;
-        let pushed = self.push_tracked_updates(
-            split.pushable,
+        let trunk = self.tracked_push_trunk();
+        let same_tree =
+            self.split_same_tree_tracked_bookmark_updates(split.pushable, trunk.as_ref())?;
+        let mut pushed = self.push_tracked_updates(
+            same_tree.pushable,
             format!("jx sync push {}", selection.branch),
             selection.branch,
         )?;
+        pushed.bookmarks.extend(same_tree.metadata_bookmarks);
 
         Ok(SyncPushOutcome {
             pushed,
             skipped_conflicted_bookmarks: split.skipped_conflicted,
+            skipped_same_tree_bookmarks: same_tree.skipped,
         })
     }
 
@@ -406,6 +429,54 @@ impl JjWorkspace {
         Ok(updates)
     }
 
+    pub(super) fn tracked_bookmark_sync_status_lines(&self) -> Result<Vec<String>, JjError> {
+        let updates = self.tracked_origin_bookmark_updates()?;
+        if updates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut rows = Vec::new();
+        for (branch, update) in updates {
+            let branch_name = branch.as_str();
+            let line = match (&update.before, &update.after) {
+                (Some(remote), Some(_local)) if self.same_tree_update(&update)?.is_some() => {
+                    format!(
+                        "  ≈ {branch_name} same code as GitHub {}; sync skips code push",
+                        short_commit_id(remote)
+                    )
+                }
+                (Some(remote), Some(local)) => {
+                    format!(
+                        "  ↑ {branch_name} local code {} differs from GitHub {}; sync will push",
+                        short_commit_id(local),
+                        short_commit_id(remote)
+                    )
+                }
+                (Some(remote), None) => {
+                    format!(
+                        "  × {branch_name} deleted locally from GitHub {}; sync will delete remote bookmark",
+                        short_commit_id(remote)
+                    )
+                }
+                (None, Some(local)) => {
+                    format!(
+                        "  + {branch_name} local bookmark {} is new for GitHub; sync will push",
+                        short_commit_id(local)
+                    )
+                }
+                (None, None) => continue,
+            };
+            rows.push(line);
+        }
+
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        rows.sort();
+        rows.insert(0, "Tracked bookmark sync:".to_owned());
+        Ok(rows)
+    }
+
     fn unchanged_tracked_bookmark_summaries_with_trunk(
         &self,
         exclude: &BTreeSet<String>,
@@ -456,6 +527,115 @@ impl JjWorkspace {
     ) -> Result<SyncableBookmarkUpdates, JjError> {
         let trunk_id = self.tracked_push_trunk_id();
         self.split_conflicted_tracked_bookmark_updates_with_trunk_id(updates, trunk_id.as_ref())
+    }
+
+    fn split_same_tree_tracked_bookmark_updates(
+        &mut self,
+        updates: Vec<BookmarkPushUpdate>,
+        trunk: Option<&TrackedPushTrunk>,
+    ) -> Result<SameTreeBookmarkUpdates, JjError> {
+        let workspace_commit_ids = self
+            .repo
+            .view()
+            .wc_commit_ids()
+            .values()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut pushable = Vec::new();
+        let mut skipped = Vec::new();
+        let mut metadata_bookmarks = Vec::new();
+        let mut adopted = Vec::new();
+
+        for (branch, update) in updates {
+            let Some((remote_id, local_id)) = self.same_tree_update(&update)? else {
+                pushable.push((branch, update));
+                continue;
+            };
+            let adopted_remote_head = !workspace_commit_ids.contains(&local_id);
+            if adopted_remote_head {
+                adopted.push((branch.clone(), remote_id.clone()));
+            }
+            metadata_bookmarks
+                .push(self.same_tree_bookmark_summary(&branch, &remote_id, &local_id, trunk)?);
+            skipped.push(SkippedSameTreeBookmarkSummary {
+                branch: branch.as_str().to_owned(),
+                local_short_commit_id: short_commit_id(&local_id),
+                remote_short_commit_id: short_commit_id(&remote_id),
+                adopted_remote_head,
+            });
+        }
+
+        self.adopt_remote_heads(&adopted)?;
+        Ok(SameTreeBookmarkUpdates {
+            pushable,
+            skipped,
+            metadata_bookmarks,
+        })
+    }
+
+    fn same_tree_update(
+        &self,
+        update: &Diff<Option<CommitId>>,
+    ) -> Result<Option<(CommitId, CommitId)>, JjError> {
+        let (Some(remote_id), Some(local_id)) = (&update.before, &update.after) else {
+            return Ok(None);
+        };
+        let remote = self.load_commit(remote_id)?;
+        let local = self.load_commit(local_id)?;
+        Ok((local.tree().tree_ids() == remote.tree().tree_ids())
+            .then(|| (remote_id.clone(), local_id.clone())))
+    }
+
+    fn same_tree_bookmark_summary(
+        &self,
+        branch: &RefNameBuf,
+        remote_id: &CommitId,
+        local_id: &CommitId,
+        trunk: Option<&TrackedPushTrunk>,
+    ) -> Result<PushedBookmarkSummary, JjError> {
+        Ok(PushedBookmarkSummary {
+            branch: branch.as_str().to_owned(),
+            old_short_commit_id: Some(short_commit_id(remote_id)),
+            new_short_commit_id: Some(short_commit_id(remote_id)),
+            old_description: commit_description(self.repo.as_ref(), Some(remote_id))?,
+            new_description: commit_description(self.repo.as_ref(), Some(remote_id))?,
+            pull_request_description: bookmark_pull_request_description(
+                self.repo.as_ref(),
+                Some(local_id),
+                trunk,
+            )?,
+            pull_request_base: bookmark_pull_request_base(
+                self.repo.as_ref(),
+                Some(local_id),
+                trunk,
+            )?,
+            new_workspace_visibility: commit_workspace_visibility(
+                self.repo.as_ref(),
+                Some(remote_id),
+                trunk.map(|trunk| &trunk.id),
+                self.workspace.workspace_name(),
+            )?,
+        })
+    }
+
+    fn adopt_remote_heads(&mut self, bookmarks: &[(RefNameBuf, CommitId)]) -> Result<(), JjError> {
+        if bookmarks.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.repo.start_transaction();
+        for (branch, remote_id) in bookmarks {
+            tx.repo_mut()
+                .set_local_bookmark_target(branch.as_ref(), RefTarget::normal(remote_id.clone()));
+        }
+        export_git_refs(tx.repo_mut())?;
+        let repo = pollster::block_on(tx.commit("jx sync adopt same-tree remote heads")).map_err(
+            |error| JjError::Transaction {
+                message: error.to_string(),
+            },
+        )?;
+        self.repo = repo;
+        Ok(())
     }
 
     fn split_conflicted_tracked_bookmark_updates_with_trunk_id(
@@ -650,6 +830,12 @@ struct BookmarkStackBase {
 pub(super) struct SyncableBookmarkUpdates {
     pub(super) pushable: Vec<BookmarkPushUpdate>,
     pub(super) skipped_conflicted: Vec<SkippedPushBookmarkSummary>,
+}
+
+struct SameTreeBookmarkUpdates {
+    pushable: Vec<BookmarkPushUpdate>,
+    skipped: Vec<SkippedSameTreeBookmarkSummary>,
+    metadata_bookmarks: Vec<PushedBookmarkSummary>,
 }
 
 pub(super) fn classify_push_bookmark_update(

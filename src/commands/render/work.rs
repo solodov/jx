@@ -36,11 +36,20 @@ pub(in crate::commands) fn render_global_work_list(locations: &[WorkLocation]) -
     )
 }
 
-pub(in crate::commands) fn render_work_complete(locations: &[WorkLocation]) -> String {
-    locations
-        .iter()
-        .map(|location| format!("{}\n", location.key))
-        .collect()
+pub(in crate::commands) fn render_work_complete(
+    locations: &[WorkLocation],
+    format: WorkCompleteFormat,
+) -> String {
+    match format {
+        WorkCompleteFormat::Simple => locations
+            .iter()
+            .map(|location| format!("{}\n", location.key))
+            .collect(),
+        WorkCompleteFormat::Picker => locations
+            .iter()
+            .map(|location| format!("{}\t{}\n", location.key, location.root.display()))
+            .collect(),
+    }
 }
 
 pub(in crate::commands) fn render_work_repository_complete(

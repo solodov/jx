@@ -18,7 +18,17 @@ pub struct WorkspaceMetadata {
 pub struct StackMetadata {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_item_handler_runs: Vec<StackMetadataWorkItemHandlerRun>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<StackMetadataNode>,
+}
+
+/// Successful work-item handler application recorded to avoid duplicate external side effects.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
+pub struct StackMetadataWorkItemHandlerRun {
+    pub handler: String,
+    pub work_id: String,
+    pub pull_request: u64,
 }
 
 /// One pull-request node in a locally managed stack.
@@ -39,6 +49,10 @@ pub struct StackMetadataNode {
     pub draft: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub merged: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes_work_ids: Vec<String>,
 }
 
 impl WorkspaceMetadata {

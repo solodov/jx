@@ -205,7 +205,31 @@ pub struct SyncReport {
     pub fetch: FetchOutcome,
     pub push: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
+    pub skipped_same_tree_bookmarks: Vec<SkippedSameTreeBookmarkSummary>,
     pub pull_requests: Vec<PullRequestRecord>,
+}
+
+/// Viewer-specific review-request state for a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewRequestState {
+    New,
+    Commented,
+    Answered,
+    Again,
+    Approved,
+}
+
+impl ReviewRequestState {
+    /// Stable lowercase label for CLI output and perf diagnostics.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Commented => "comment",
+            Self::Answered => "answered",
+            Self::Again => "again",
+            Self::Approved => "approved",
+        }
+    }
 }
 
 /// Read-only health summary for the locally tracked pull-request stack.
@@ -215,6 +239,7 @@ pub struct PullRequestStackStatusReport {
     pub snapshot: PullRequestStackSnapshot,
     pub statuses: BTreeMap<u64, PullRequestStatusRecord>,
     pub trunk: Option<RemoteStatusReport>,
+    pub review_wait_threshold_seconds: Option<u64>,
 }
 
 /// Pull-request mutation applied by stack PR publishing.
@@ -291,6 +316,7 @@ pub struct StatusComparison {
     pub state: StatusState,
     pub github_ahead_by: i64,
     pub github_behind_by: i64,
+    pub counts_exact: bool,
 }
 
 impl StatusComparison {

@@ -5,8 +5,10 @@ use crate::{
         PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
     github::{
-        LabelApplyResult, PullRequestCheck, PullRequestCheckStatus, PullRequestHead,
-        PullRequestLabel, PullRequestRecord, PullRequestReviewStatus, PullRequestStatusRecord,
+        AuthenticatedUser, LabelApplyResult, PullRequestCheck, PullRequestCheckStatus,
+        PullRequestHead, PullRequestLabel, PullRequestRecord, PullRequestReviewActivity,
+        PullRequestReviewRequest, PullRequestReviewRequests, PullRequestReviewStatus,
+        PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
         ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
@@ -15,7 +17,7 @@ use crate::{
         TrackedPushOutcome, TrunkSummary, WorkspaceAddOptions, WorkspaceEntry,
         WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
     },
-    repository::StackMetadataNode,
+    repository::{StackMetadataNode, StackMetadataWorkItemHandlerRun},
 };
 use jj_lib::{
     config::StackedConfig,
@@ -42,6 +44,7 @@ mod push;
 mod rebase;
 mod remote_status;
 mod render;
+mod review;
 mod shell;
 mod stack;
 mod sync;
@@ -61,6 +64,19 @@ fn visible_in(workspaces: &[&str], includes_current: bool) -> WorkspaceVisibilit
 
 fn current_workspace_visibility() -> WorkspaceVisibility {
     visible_in(&["default"], true)
+}
+
+fn test_prompt_handlers() -> PromptHandlers<'static> {
+    PromptHandlers {
+        pull_request_previewer: &NoPullRequestPreview,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &AlwaysConfirmPullRequest,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    }
 }
 
 fn example_bookmark_link(bookmark: &str) -> String {
@@ -265,6 +281,30 @@ impl PullRequestConfirmer for FixedPullRequestConfirmer {
     }
 }
 
+struct SequencePullRequestConfirmer {
+    confirmations: std::cell::RefCell<Vec<bool>>,
+    titles: std::cell::RefCell<Vec<String>>,
+}
+
+impl SequencePullRequestConfirmer {
+    fn new(confirmations: impl IntoIterator<Item = bool>) -> Self {
+        Self {
+            confirmations: std::cell::RefCell::new(confirmations.into_iter().collect()),
+            titles: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl PullRequestConfirmer for SequencePullRequestConfirmer {
+    fn confirm_pull_request(
+        &self,
+        plan: &PullRequestPlan,
+    ) -> Result<bool, PullRequestConfirmationError> {
+        self.titles.borrow_mut().push(plan.title.clone());
+        Ok(self.confirmations.borrow_mut().remove(0))
+    }
+}
+
 struct FixedPushConfirmer {
     confirmed: bool,
 }
@@ -344,6 +384,7 @@ struct FakeServices {
     status_workspace: StatusWorkspaceFacts,
     check: CheckReport,
     status: StatusReport,
+    stack_trunk_branch_head_sha: String,
     status_uses_context_remotes: bool,
     clean_status_repos: Vec<String>,
     github_login: String,
@@ -353,12 +394,17 @@ struct FakeServices {
     open_pull_request_selectors: std::cell::RefCell<Vec<Option<String>>>,
     authored_open_pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
     authored_open_pull_request_head_calls: std::cell::RefCell<Vec<(String, String)>>,
+    authored_open_pull_requests: Vec<PullRequestRecord>,
+    authored_open_pull_request_calls: std::cell::RefCell<Vec<String>>,
     pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
+    open_pull_request_head_calls: std::cell::RefCell<Vec<String>>,
     pull_request_head_calls: std::cell::RefCell<Vec<String>>,
     pull_requests_by_number: BTreeMap<u64, PullRequestRecord>,
     pull_request_number_calls: std::cell::RefCell<Vec<u64>>,
     pull_request_statuses: BTreeMap<u64, PullRequestStatusRecord>,
     pull_request_status_calls: std::cell::RefCell<Vec<Vec<u64>>>,
+    review_requests: Vec<PullRequestReviewRequest>,
+    github_user_display_names: BTreeMap<String, String>,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
@@ -390,6 +436,9 @@ struct FakeServices {
     pull_request_action: PullRequestAction,
     published_pull_request_count: std::cell::Cell<u64>,
     metadata_only_pull_request_count: std::cell::Cell<u64>,
+    published_plans: std::cell::RefCell<Vec<PullRequestPlan>>,
+    metadata_only_plans: std::cell::RefCell<Vec<PullRequestPlan>>,
+    pull_request_plan_task_ids: std::cell::RefCell<Vec<Option<String>>>,
     pull_request_url: Option<String>,
     pull_request_event_effects: Vec<domain::PullRequestEventEffect>,
     existing_pull_request: Option<PullRequestRecord>,
@@ -397,6 +446,7 @@ struct FakeServices {
     expected_reviewers: Option<ReviewerSelection>,
     expected_task_id: Option<Option<String>>,
     expected_labels: Vec<String>,
+    expected_labels_by_publish: Option<Vec<Vec<String>>>,
     expected_draft: Option<bool>,
     expected_drafts: Option<Vec<bool>>,
     expected_clone: Option<(String, PathBuf)>,
@@ -471,10 +521,12 @@ impl Default for FakeServices {
                         state: StatusState::GithubAhead,
                         github_ahead_by: 3,
                         github_behind_by: 0,
+                        counts_exact: true,
                     },
                 }],
                 fork: None,
             },
+            stack_trunk_branch_head_sha: "aaaabbbbccccdddd".to_owned(),
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
             github_login: "example-user".to_owned(),
@@ -484,12 +536,17 @@ impl Default for FakeServices {
             open_pull_request_selectors: std::cell::RefCell::new(Vec::new()),
             authored_open_pull_requests_by_head: BTreeMap::new(),
             authored_open_pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
+            authored_open_pull_requests: Vec::new(),
+            authored_open_pull_request_calls: std::cell::RefCell::new(Vec::new()),
             pull_requests_by_head: BTreeMap::new(),
+            open_pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             pull_requests_by_number: BTreeMap::new(),
             pull_request_number_calls: std::cell::RefCell::new(Vec::new()),
             pull_request_statuses: BTreeMap::new(),
             pull_request_status_calls: std::cell::RefCell::new(Vec::new()),
+            review_requests: Vec::new(),
+            github_user_display_names: BTreeMap::new(),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             origin_push_access_roots: None,
@@ -612,6 +669,9 @@ impl Default for FakeServices {
             pull_request_action: PullRequestAction::Created,
             published_pull_request_count: std::cell::Cell::new(0),
             metadata_only_pull_request_count: std::cell::Cell::new(0),
+            published_plans: std::cell::RefCell::new(Vec::new()),
+            metadata_only_plans: std::cell::RefCell::new(Vec::new()),
+            pull_request_plan_task_ids: std::cell::RefCell::new(Vec::new()),
             pull_request_url: Some(
                 "https://github.com/example-owner/example-repo/pull/42".to_owned(),
             ),
@@ -621,6 +681,7 @@ impl Default for FakeServices {
             expected_reviewers: None,
             expected_task_id: None,
             expected_labels: Vec::new(),
+            expected_labels_by_publish: None,
             expected_draft: None,
             expected_drafts: None,
             expected_clone: None,
@@ -670,7 +731,11 @@ impl FakeServices {
         if let Some(expected) = &self.expected_reviewers {
             assert_eq!(&plan.reviewers, expected);
         }
-        assert_eq!(plan.labels, self.expected_labels);
+        if let Some(expected) = &self.expected_labels_by_publish {
+            assert_eq!(plan.labels, expected[publish_index]);
+        } else {
+            assert_eq!(plan.labels, self.expected_labels);
+        }
         if let Some(expected) = &self.expected_drafts {
             assert_eq!(plan.draft, expected[publish_index]);
         } else if let Some(expected) = self.expected_draft {
@@ -969,6 +1034,7 @@ impl CommandServices for FakeServices {
                     state: StatusState::UpToDate,
                     github_ahead_by: 0,
                     github_behind_by: 0,
+                    counts_exact: true,
                 };
             }
             if let Some(fork) = &mut status.fork {
@@ -980,6 +1046,18 @@ impl CommandServices for FakeServices {
             }
         }
         Ok(status)
+    }
+
+    fn stack_trunk_status_report(
+        &self,
+        context: &RepositoryContext,
+        workspace: StatusWorkspaceFacts,
+    ) -> Result<RemoteStatusReport, WorkflowError> {
+        domain::stack_trunk_status_report_from_branch_head(
+            context,
+            workspace,
+            &self.stack_trunk_branch_head_sha,
+        )
     }
 
     fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError> {
@@ -1025,15 +1103,15 @@ impl CommandServices for FakeServices {
             .cloned())
     }
 
-    fn find_open_pull_request_for_head(
+    fn authored_open_pull_requests(
         &self,
         _context: &RepositoryContext,
-        branch: &str,
-    ) -> Result<Option<PullRequestRecord>, WorkflowError> {
-        self.pull_request_head_calls
+        author: &str,
+    ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
+        self.authored_open_pull_request_calls
             .borrow_mut()
-            .push(branch.to_owned());
-        Ok(self.pull_requests_by_head.get(branch).cloned())
+            .push(author.to_owned());
+        Ok(self.authored_open_pull_requests.clone())
     }
 
     fn find_pull_request_for_head(
@@ -1059,6 +1137,48 @@ impl CommandServices for FakeServices {
     fn pull_request_statuses(
         &self,
         _context: &RepositoryContext,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
+        self.pull_request_status_calls
+            .borrow_mut()
+            .push(numbers.to_vec());
+        Ok(numbers
+            .iter()
+            .filter_map(|number| self.pull_request_statuses.get(number).cloned())
+            .collect())
+    }
+
+    fn review_requests(
+        &self,
+        _token_source: &TokenSource,
+    ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        Ok(PullRequestReviewRequests {
+            viewer: AuthenticatedUser {
+                login: self.github_login.clone(),
+            },
+            requests: self.review_requests.clone(),
+        })
+    }
+
+    fn github_user_display_names(
+        &self,
+        _token_source: &TokenSource,
+        logins: &[String],
+    ) -> BTreeMap<String, String> {
+        logins
+            .iter()
+            .filter_map(|login| {
+                self.github_user_display_names
+                    .get(login)
+                    .map(|name| (login.clone(), name.clone()))
+            })
+            .collect()
+    }
+
+    fn pull_request_statuses_for_repository(
+        &self,
+        _token_source: &TokenSource,
+        _repository: &GitHubRepository,
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
         self.pull_request_status_calls
@@ -1244,6 +1364,7 @@ impl CommandServices for FakeServices {
         Ok(SyncPushOutcome {
             pushed: self.tracked_push.clone(),
             skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
+            skipped_same_tree_bookmarks: Vec::new(),
         })
     }
 
@@ -1266,6 +1387,7 @@ impl CommandServices for FakeServices {
         Ok(SyncPushOutcome {
             pushed,
             skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
+            skipped_same_tree_bookmarks: Vec::new(),
         })
     }
 
@@ -1292,6 +1414,9 @@ impl CommandServices for FakeServices {
         labels: Vec<String>,
         readiness: PullRequestReadiness,
     ) -> Result<PullRequestPlan, WorkflowError> {
+        self.pull_request_plan_task_ids
+            .borrow_mut()
+            .push(task_id.clone());
         if let Some(expected) = &self.expected_task_id {
             assert_eq!(&task_id, expected);
         }
@@ -1314,7 +1439,12 @@ impl CommandServices for FakeServices {
 
         let (title, body) = fake_pull_request_description(&workspace.target_change.description);
 
-        let draft = readiness.desired_draft(self.existing_pull_request.as_ref());
+        let existing_pull_request = self
+            .pull_requests_by_head
+            .get(&branch)
+            .cloned()
+            .or_else(|| self.existing_pull_request.clone());
+        let draft = readiness.desired_draft(existing_pull_request.as_ref());
 
         Ok(PullRequestPlan {
             repository: self.check.repository.clone(),
@@ -1339,7 +1469,7 @@ impl CommandServices for FakeServices {
             head: PullRequestHead::same_repository("example-owner", branch),
             labels,
             draft,
-            existing_pull_request: self.existing_pull_request.clone(),
+            existing_pull_request,
             reviewer_candidates: self.reviewer_candidates.clone(),
             reviewers: ReviewerSelection::default(),
         })
@@ -1354,6 +1484,7 @@ impl CommandServices for FakeServices {
         options: PullRequestPublishOptions,
     ) -> Result<PullRequestReport, WorkflowError> {
         self.assert_publish_plan(&plan, self.published_pull_request_count.get() as usize);
+        self.published_plans.borrow_mut().push(plan.clone());
 
         let number = 42 + self.published_pull_request_count.get();
         self.published_pull_request_count
@@ -1389,6 +1520,7 @@ impl CommandServices for FakeServices {
         push: PushOutcome,
     ) -> Result<PullRequestReport, WorkflowError> {
         self.assert_publish_plan(&plan, self.metadata_only_pull_request_count.get() as usize);
+        self.metadata_only_plans.borrow_mut().push(plan.clone());
 
         let number = plan
             .existing_pull_request

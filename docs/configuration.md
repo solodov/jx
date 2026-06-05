@@ -116,15 +116,34 @@ at the exact configured path; tracked parent directories are allowed for nested
 paths. If post-create setup fails, `jx` reports the failure without rolling back
 the created jj workspace, and shell integration does not enter it.
 
-Stack status can classify repository-specific approval gate checks separately
-from test health. A failed matching check is removed from the `Chk` aggregate and
-reported as waiting review instead, while remaining checks still decide whether
-`Chk` is passing, pending, or failing. `name` is a check run or status context
-name glob:
+Stack status and review views can classify repository-specific approval gate
+checks separately from test health, highlight stale review wait time, omit noisy
+checks, labels, or reviewer identities, hide pre-merge-only labels after merge,
+and rewrite title prefixes before display ellipsizing. A failed matching
+review-gate check is removed from the `Chk` aggregate and reported as waiting
+review instead, while ignored checks are removed without affecting check or
+review state. Remaining checks still decide whether `Chk` is passing, pending, or
+failing. Review-wait thresholds accept `m`, `h`, or `d` suffixes; fresh waits
+render subdued, overdue waits render red, drafts stay subdued, and merged PRs
+stay green. Check ignore entries are Rust regexes; label and reviewer ignore
+entries are globs. `ignored_labels_when_merged` uses the same glob syntax as
+`ignored_labels`, but only applies after a PR has merged. Title rewrites use Rust
+regex capture replacements:
 
 ```toml
 [[repo.rules]]
 repo = "example-owner/example-repo"
+
+[repo.rules.stack_status]
+ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
+ignored_labels = ["generated-*"]
+ignored_labels_when_merged = ["auto-merge", "run-ci"]
+ignored_reviewers = ["automation-bot"]
+review_wait_threshold = "4h"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
+replace = "$1: $2"
 
 [[repo.rules.stack_status.review_gate_checks]]
 name = "approval gate"
@@ -169,9 +188,32 @@ preview, and create/update effects appear after publishing. `prepend_task_id`
 rewrites the selected commit title before PR planning, using `TASK-ID: title`
 and normalizing common existing task prefixes.
 
-Reviewers may be GitHub users or teams written as `org/team`.
+Work item handlers can run generic commands when `jx stack status` observes a
+PR with `fixes_work_ids` transition to merged. Commands run from the repository
+root, and each start, success, or error is appended to the central
+`~/.local/state/jx/jx-work-item-handlers.log` JSONL log. Set
+`JX_WORK_ITEM_HANDLER_LOG=/path/to/log` to override the path or `off` to disable
+this log. The command is configured as an argument array, not a shell string, and supports
+placeholders such as `{work_id}`, `{repo}`, `{pr_number}`, `{pr_url}`, `{title}`,
+and `{branch}`:
 
-Path reviewer rules add reviewers when changed-file globs match. Each repo
+```toml
+[repo.rules.work_items]
+apply_on_stack_status = true
+
+[[repo.rules.work_item_handlers]]
+id = "resolve-ticket"
+on = "work_item.fixed"
+command = ["ticket", "resolve", "{work_id}"]
+```
+
+Reviewers may be GitHub users or teams written as `org/team`. Repo-level
+reviewer lists power shell completion for `jx stack publish --reviewer` only;
+completion is advisory, so syntactically valid reviewers that are not configured
+can still be typed explicitly.
+
+Path reviewer rules add reviewers when changed-file globs match. These are the
+configured reviewers that appear in the publish selection prompt. Each repo
 policy can contain multiple path rules:
 
 ```toml
@@ -199,12 +241,19 @@ metadata refresh/sync.
 ## Shell integration
 
 `jx shell init bash` prints optional shell integration for `eval`. The generated
-navigation function resolves current-repository jj workspace names and trunk
-aliases first, then global `jx work` locations, then optionally falls back to
-zoxide when `zoxide = "auto"` and the `zoxide` binary is installed. Explicit
-absolute and dot-relative paths are used directly. Navigation queries can also be
-unique key fragments, and slash-separated fragments can select child directories
-under the matched location.
+navigation function resolves current-repository layout workspace aliases and
+trunk aliases first, then global `jx work` locations, then optionally falls back
+to zoxide when `zoxide = "auto"` and the `zoxide` binary is installed. Explicit
+absolute and dot-relative paths are used directly. Navigation completion derives
+same-repository workspace aliases from configured layout paths and discovered
+`.jj` directories rather than the jj workspace registry, so a matching managed
+directory can appear before it is registered as a jj workspace and an
+out-of-layout jj workspace may appear only by its global key. Navigation queries
+can also be unique key fragments, and slash-separated fragments can select child
+directories under the matched location. When `fzf` is installed, pressing Tab for
+the navigation command opens an interactive picker over navigation candidates;
+typed text such as `u foo<Tab>` seeds the picker query with `foo`. Path-like
+inputs such as `u ../<Tab>` keep normal directory completion.
 
 ```toml
 [shell]

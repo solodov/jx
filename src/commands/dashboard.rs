@@ -1,0 +1,270 @@
+use super::*;
+use chrono::{DateTime, Local};
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    path::Path,
+    process::Command as ProcessCommand,
+    sync::{mpsc, Arc},
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
+
+const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+pub(super) type DashboardFrameLoader = Arc<dyn Fn() -> Result<String, String> + Send + Sync>;
+
+/// Runs a live terminal dashboard by replacing the display with complete refresh frames.
+pub(super) fn run_interactive_dashboard(
+    title: &'static str,
+    refresh_seconds: u64,
+    loader: DashboardFrameLoader,
+) -> Result<CommandResult, CommandError> {
+    let mut watcher = ExecutableWatcher::from_process();
+    let mut last_frame = None::<String>;
+    let mut last_refreshed = None::<DateTime<Local>>;
+    let mut next_refresh_at = None::<DateTime<Local>>;
+    let mut last_error = None::<String>;
+
+    loop {
+        let receiver = spawn_dashboard_load(Arc::clone(&loader));
+        let mut spinner_index = 0usize;
+        render_dashboard_frame(
+            title,
+            last_frame.as_deref(),
+            last_refreshed,
+            true,
+            last_error.as_deref(),
+            spinner_index,
+            next_refresh_at,
+        )?;
+        loop {
+            if watcher.changed() {
+                return restart_dashboard_process();
+            }
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(frame)) => {
+                    let refreshed_at = Local::now();
+                    last_frame = Some(frame);
+                    last_refreshed = Some(refreshed_at);
+                    next_refresh_at = next_dashboard_refresh_time(refreshed_at, refresh_seconds);
+                    last_error = None;
+                    render_dashboard_frame(
+                        title,
+                        last_frame.as_deref(),
+                        last_refreshed,
+                        false,
+                        None,
+                        spinner_index,
+                        next_refresh_at,
+                    )?;
+                    break;
+                }
+                Ok(Err(error)) => {
+                    last_error = Some(error);
+                    next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
+                    render_dashboard_frame(
+                        title,
+                        last_frame.as_deref(),
+                        last_refreshed,
+                        false,
+                        last_error.as_deref(),
+                        spinner_index,
+                        next_refresh_at,
+                    )?;
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    spinner_index = spinner_index.wrapping_add(1);
+                    render_dashboard_frame(
+                        title,
+                        last_frame.as_deref(),
+                        last_refreshed,
+                        true,
+                        last_error.as_deref(),
+                        spinner_index,
+                        next_refresh_at,
+                    )?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    last_error = Some("dashboard refresh worker stopped unexpectedly".to_owned());
+                    next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
+                    render_dashboard_frame(
+                        title,
+                        last_frame.as_deref(),
+                        last_refreshed,
+                        false,
+                        last_error.as_deref(),
+                        spinner_index,
+                        next_refresh_at,
+                    )?;
+                    break;
+                }
+            }
+        }
+
+        let next_refresh = Instant::now() + Duration::from_secs(refresh_seconds);
+        while Instant::now() < next_refresh {
+            if watcher.changed() {
+                return restart_dashboard_process();
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
+
+fn spawn_dashboard_load(loader: DashboardFrameLoader) -> mpsc::Receiver<Result<String, String>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(loader());
+    });
+    receiver
+}
+
+fn next_dashboard_refresh_time(
+    refreshed_at: DateTime<Local>,
+    refresh_seconds: u64,
+) -> Option<DateTime<Local>> {
+    let seconds = i64::try_from(refresh_seconds).ok()?;
+    refreshed_at.checked_add_signed(chrono::Duration::seconds(seconds))
+}
+
+fn render_dashboard_frame(
+    title: &str,
+    frame: Option<&str>,
+    last_refreshed: Option<DateTime<Local>>,
+    refreshing: bool,
+    error: Option<&str>,
+    spinner_index: usize,
+    next_refresh_at: Option<DateTime<Local>>,
+) -> io::Result<()> {
+    let spinner = SPINNER_FRAMES[spinner_index % SPINNER_FRAMES.len()];
+    let refreshed = last_refreshed
+        .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "never".to_owned());
+    let state = if refreshing {
+        format!("{spinner} refreshing")
+    } else {
+        next_refresh_at
+            .map(|time| format!("next refresh: {}", time.format("%Y-%m-%d %H:%M:%S")))
+            .unwrap_or_else(|| "next refresh: unknown".to_owned())
+    };
+    let mut output = String::new();
+    output.push_str(CLEAR_SCREEN);
+    output.push_str(&format!(
+        "{title}  Last refreshed: {refreshed}  {state}  Ctrl-C to exit\n",
+    ));
+    if let Some(error) = error {
+        output.push_str(&format!("Last refresh failed: {error}\n"));
+    } else {
+        output.push('\n');
+    }
+    if let Some(frame) = frame {
+        output.push_str(frame);
+    }
+    let mut stdout = io::stdout();
+    stdout.write_all(output.as_bytes())?;
+    stdout.flush()
+}
+
+struct ExecutableWatcher {
+    path: Option<PathBuf>,
+    initial: Option<FileStamp>,
+}
+
+impl ExecutableWatcher {
+    fn from_process() -> Self {
+        let path = restart_executable_path();
+        let initial = path.as_deref().and_then(FileStamp::read);
+        Self { path, initial }
+    }
+
+    fn changed(&mut self) -> bool {
+        let Some(path) = self.path.as_deref() else {
+            return false;
+        };
+        match (&self.initial, FileStamp::read(path)) {
+            (Some(initial), Some(current)) => &current != initial,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileStamp {
+    fn read(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            dev: std::os::unix::fs::MetadataExt::dev(&metadata),
+            #[cfg(unix)]
+            ino: std::os::unix::fs::MetadataExt::ino(&metadata),
+        })
+    }
+}
+
+fn restart_executable_path() -> Option<PathBuf> {
+    env::args_os()
+        .next()
+        .and_then(resolve_invoked_executable)
+        .or_else(|| env::current_exe().ok())
+}
+
+fn resolve_invoked_executable(value: OsString) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    if path.components().count() > 1 {
+        return Some(path);
+    }
+    let paths = env::var_os("PATH")?;
+    env::split_paths(&paths)
+        .map(|directory| directory.join(&path))
+        .find(|candidate| candidate.is_file())
+}
+
+fn restart_dashboard_process() -> Result<CommandResult, CommandError> {
+    let argv = env::args_os().collect::<Vec<_>>();
+    let Some(executable) = restart_executable_path() else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "jx executable was not found").into());
+    };
+    let _ = io::stdout().write_all(b"\x1b[2J\x1b[Hjx updated; restarting...\n");
+    let _ = io::stdout().flush();
+    restart_process(&executable, &argv)
+}
+
+#[cfg(unix)]
+fn restart_process(executable: &Path, argv: &[OsString]) -> Result<CommandResult, CommandError> {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = ProcessCommand::new(executable);
+    command.args(argv.iter().skip(1));
+    Err(command.exec().into())
+}
+
+#[cfg(not(unix))]
+fn restart_process(executable: &Path, argv: &[OsString]) -> Result<CommandResult, CommandError> {
+    ProcessCommand::new(executable)
+        .args(argv.iter().skip(1))
+        .spawn()?;
+    std::process::exit(0);
+}
+
+pub(super) struct SilentProgress;
+
+impl ProgressSink for SilentProgress {
+    fn status(&self, _message: &str) {}
+
+    fn finish(&self) {}
+}

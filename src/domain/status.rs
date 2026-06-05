@@ -14,29 +14,71 @@ pub async fn status_report(
             .iter()
             .find(|facts| facts.remote == remote.name)
             .ok_or_else(|| WorkflowError::MissingStatusRemote {
-                remote: remote.name.clone(),
+                remote: remote.name.to_owned(),
             })?;
         let comparison = github
             .compare_commits(&remote.github, &facts.trunk_git_commit_sha, &facts.branch)
             .await?;
         let comparison = status_comparison(&facts.branch, &facts.trunk_git_commit_sha, comparison)?;
 
-        reports.push(RemoteStatusReport {
-            name: remote.name.clone(),
-            url: remote.url.clone(),
-            github_url: remote.github.https_url(),
-            branch: facts.branch.clone(),
-            local_trunk_sha: facts.trunk_git_commit_sha.clone(),
-            local_trunk_short_sha: facts.trunk_short_commit_id.clone(),
-            local_ahead_by: facts.local_ahead_by,
+        reports.push(remote_status_report_entry(
+            remote.name.clone(),
+            remote.url.clone(),
+            &remote.github,
+            facts,
             comparison,
-        });
+        ));
     }
 
     Ok(StatusReport {
         remotes: reports,
         fork: None,
     })
+}
+
+/// Checks origin trunk freshness cheaply for stack status without exact GitHub commit counts.
+pub async fn stack_trunk_status_report(
+    context: &RepositoryContext,
+    workspace: StatusWorkspaceFacts,
+    github: &dyn GitHubClient,
+) -> Result<RemoteStatusReport, WorkflowError> {
+    let remote = &context.origin;
+    let facts = workspace
+        .remotes
+        .iter()
+        .find(|facts| facts.remote == remote.name)
+        .ok_or_else(|| WorkflowError::MissingStatusRemote {
+            remote: remote.name.to_owned(),
+        })?;
+    let branch_head_sha = github
+        .branch_head_sha(&remote.github, &facts.branch)
+        .await?;
+
+    stack_trunk_status_report_from_branch_head(context, workspace, &branch_head_sha)
+}
+
+/// Builds the stack-status trunk report from a cheap live branch-head lookup.
+pub fn stack_trunk_status_report_from_branch_head(
+    context: &RepositoryContext,
+    workspace: StatusWorkspaceFacts,
+    branch_head_sha: &str,
+) -> Result<RemoteStatusReport, WorkflowError> {
+    let remote = &context.origin;
+    let facts = workspace
+        .remotes
+        .iter()
+        .find(|facts| facts.remote == remote.name)
+        .ok_or_else(|| WorkflowError::MissingStatusRemote {
+            remote: remote.name.to_owned(),
+        })?;
+
+    Ok(remote_status_report_entry(
+        remote.name.to_owned(),
+        remote.url.clone(),
+        &remote.github,
+        facts,
+        stack_trunk_comparison(facts, branch_head_sha),
+    ))
 }
 
 /// Returns the origin remote freshness entry from a full status report.
@@ -158,5 +200,43 @@ fn status_comparison(
         state,
         github_ahead_by: comparison.ahead_by,
         github_behind_by: comparison.behind_by,
+        counts_exact: true,
     })
+}
+
+fn stack_trunk_comparison(facts: &StatusRemoteFacts, branch_head_sha: &str) -> StatusComparison {
+    if branch_head_sha == facts.trunk_git_commit_sha {
+        return StatusComparison {
+            state: StatusState::UpToDate,
+            github_ahead_by: 0,
+            github_behind_by: 0,
+            counts_exact: true,
+        };
+    }
+
+    StatusComparison {
+        state: StatusState::GithubAhead,
+        github_ahead_by: 0,
+        github_behind_by: 0,
+        counts_exact: false,
+    }
+}
+
+fn remote_status_report_entry(
+    name: String,
+    url: String,
+    github: &GitHubRepository,
+    facts: &StatusRemoteFacts,
+    comparison: StatusComparison,
+) -> RemoteStatusReport {
+    RemoteStatusReport {
+        name,
+        url,
+        github_url: github.https_url(),
+        branch: facts.branch.clone(),
+        local_trunk_sha: facts.trunk_git_commit_sha.clone(),
+        local_trunk_short_sha: facts.trunk_short_commit_id.clone(),
+        local_ahead_by: facts.local_ahead_by,
+        comparison,
+    }
 }

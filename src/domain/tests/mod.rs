@@ -15,8 +15,8 @@ use crate::{
     repository::{
         GitHubRemote, GitHubRepository, OriginRemote, PullRequestEventPredicate,
         PullRequestEventQuery, PullRequestEventQueryTerm, RepoConfig, RepoEvent, RepoEventHandler,
-        RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig, StackMetadata,
-        StackMetadataNode, TokenSource, WorkflowConfig, ORIGIN_REMOTE_NAME,
+        RepoEventHandlerConfig, RepoEventHandlerRun, RepoPolicyConfig, ReviewerPathRule,
+        StackMetadata, StackMetadataNode, TokenSource, WorkflowConfig, ORIGIN_REMOTE_NAME,
     },
 };
 
@@ -27,6 +27,7 @@ fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {
     // Verifies: Snapshot nodes preserve durable stack edges while refreshing PR fields from GitHub.
     let metadata = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![
             StackMetadataNode {
                 branch: "topic/root".to_owned(),
@@ -38,6 +39,8 @@ fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {
                 url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "topic/child".to_owned(),
@@ -49,6 +52,8 @@ fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
         ],
     };
@@ -138,6 +143,7 @@ fn pull_request_stack_snapshot_refreshes_stored_node_by_pull_request_number() {
     // Verifies: Durable nodes can be refreshed from PR numbers even when branch lookup is unavailable.
     let metadata = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![StackMetadataNode {
             branch: "topic/root".to_owned(),
             base_branch: "main".to_owned(),
@@ -148,6 +154,8 @@ fn pull_request_stack_snapshot_refreshes_stored_node_by_pull_request_number() {
             url: None,
             draft: false,
             merged: false,
+            work_ids: Vec::new(),
+            fixes_work_ids: Vec::new(),
         }],
     };
     let live_root = PullRequestRecord {
@@ -188,10 +196,122 @@ fn pull_request_stack_snapshot_refreshes_stored_node_by_pull_request_number() {
 }
 
 #[test]
+fn local_stack_refresh_preserves_completed_parent_context() {
+    // Verifies: a submitted parent disappearing from local jj branches does not erase open-child stack context.
+    let metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![
+            StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Merged root".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Open child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+        ],
+    };
+    let local_child = crate::jj::LocalStackBranch {
+        branch: "topic/child".to_owned(),
+        base_branch: "main".to_owned(),
+        parent_branch: None,
+        title: "Open child local title".to_owned(),
+    };
+
+    let refreshed = apply_local_stack_branches(&[local_child], &metadata);
+    let child = refreshed
+        .nodes
+        .iter()
+        .find(|node| node.branch == "topic/child")
+        .expect("child remains tracked");
+
+    assert_eq!(child.base_branch, "main");
+    assert_eq!(child.parent_branch.as_deref(), Some("topic/root"));
+    assert_eq!(child.parent_pull_request, Some(10));
+}
+
+#[test]
+fn pull_request_record_refresh_preserves_fix_merge_transition() {
+    // Verifies: sync/refresh cannot consume the status-observed transition that runs work-item handlers.
+    let mut metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![StackMetadataNode {
+            branch: "topic/root".to_owned(),
+            base_branch: "main".to_owned(),
+            parent_branch: None,
+            pull_request: Some(10),
+            parent_pull_request: None,
+            title: "Stored root".to_owned(),
+            url: None,
+            draft: false,
+            merged: false,
+            work_ids: vec!["ABC-123".to_owned()],
+            fixes_work_ids: vec!["ABC-123".to_owned()],
+        }],
+    };
+    let live_root = PullRequestRecord {
+        number: 10,
+        title: "Live root".to_owned(),
+        body: None,
+        head_branch: "topic/root".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+        draft: false,
+        merged: true,
+        reviewers: ReviewerSelection::default(),
+    };
+
+    let refreshed =
+        refresh_stack_metadata_pull_requests(std::slice::from_ref(&live_root), &metadata);
+    let upserted = upsert_stack_metadata_pull_requests(&[live_root], &metadata);
+
+    assert!(!refreshed.nodes[0].merged);
+    assert!(!upserted.nodes[0].merged);
+
+    metadata.nodes[0].fixes_work_ids.clear();
+    let refreshed_without_fix_intent = refresh_stack_metadata_pull_requests(
+        &[PullRequestRecord {
+            number: 10,
+            title: "Live root".to_owned(),
+            body: None,
+            head_branch: "topic/root".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: None,
+            draft: false,
+            merged: true,
+            reviewers: ReviewerSelection::default(),
+        }],
+        &metadata,
+    );
+    assert!(refreshed_without_fix_intent.nodes[0].merged);
+}
+
+#[test]
 fn pull_request_stack_prunes_only_fully_merged_components() {
     // Verifies: completed stack trees are removed while merged ancestors remain for open descendants.
     let metadata = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![
             StackMetadataNode {
                 branch: "merged/root".to_owned(),
@@ -203,6 +323,8 @@ fn pull_request_stack_prunes_only_fully_merged_components() {
                 url: None,
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "merged/child".to_owned(),
@@ -214,6 +336,8 @@ fn pull_request_stack_prunes_only_fully_merged_components() {
                 url: None,
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "mixed/root".to_owned(),
@@ -225,6 +349,8 @@ fn pull_request_stack_prunes_only_fully_merged_components() {
                 url: None,
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "mixed/child".to_owned(),
@@ -236,6 +362,8 @@ fn pull_request_stack_prunes_only_fully_merged_components() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
         ],
     };
@@ -253,10 +381,55 @@ fn pull_request_stack_prunes_only_fully_merged_components() {
 }
 
 #[test]
-fn pull_request_stack_status_maintenance_removes_closed_nodes() {
-    // Verifies: closed PRs leave the local stack cache while still-open descendants remain visible.
-    let metadata = StackMetadata {
+fn pull_request_stack_status_maintenance_retains_recently_closed_nodes() {
+    // Verifies: freshly closed PRs remain as reminder rows instead of disappearing immediately.
+    let metadata = closed_status_maintenance_metadata();
+    let now = utc_datetime("2026-06-05T12:00:00Z");
+    let mut closed = pull_request_status(10, "Closed root", false);
+    closed.closed = true;
+    closed.closed_at = Some("2026-06-04T12:00:00Z".to_owned());
+
+    let maintained = maintain_stack_metadata_pull_request_statuses_at(
+        &[closed, pull_request_status(11, "Open child", false)],
+        &metadata,
+        now,
+    );
+
+    assert_eq!(maintained.nodes.len(), 2);
+    assert_eq!(maintained.nodes[0].branch, "closed/root");
+    assert_eq!(maintained.nodes[1].branch, "open/child");
+    assert_eq!(
+        maintained.nodes[1].parent_branch.as_deref(),
+        Some("closed/root")
+    );
+    assert_eq!(maintained.nodes[1].parent_pull_request, Some(10));
+}
+
+#[test]
+fn pull_request_stack_status_maintenance_prunes_expired_closed_nodes() {
+    // Verifies: closed reminder rows expire later while still-open descendants remain visible.
+    let metadata = closed_status_maintenance_metadata();
+    let now = utc_datetime("2026-06-05T12:00:00Z");
+    let mut closed = pull_request_status(10, "Closed root", false);
+    closed.closed = true;
+    closed.closed_at = Some("2026-06-01T12:00:00Z".to_owned());
+
+    let maintained = maintain_stack_metadata_pull_request_statuses_at(
+        &[closed, pull_request_status(11, "Open child", false)],
+        &metadata,
+        now,
+    );
+
+    assert_eq!(maintained.nodes.len(), 1);
+    assert_eq!(maintained.nodes[0].branch, "open/child");
+    assert_eq!(maintained.nodes[0].parent_branch, None);
+    assert_eq!(maintained.nodes[0].parent_pull_request, None);
+}
+
+fn closed_status_maintenance_metadata() -> StackMetadata {
+    StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![
             StackMetadataNode {
                 branch: "closed/root".to_owned(),
@@ -268,6 +441,8 @@ fn pull_request_stack_status_maintenance_removes_closed_nodes() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "open/child".to_owned(),
@@ -279,21 +454,158 @@ fn pull_request_stack_status_maintenance_removes_closed_nodes() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
         ],
-    };
-    let mut closed = pull_request_status(10, "Closed root", false);
-    closed.closed = true;
+    }
+}
 
-    let maintained = maintain_stack_metadata_pull_request_statuses(
-        &[closed, pull_request_status(11, "Open child", false)],
-        &metadata,
+#[test]
+fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
+    // Verifies: repo-scoped presentation policy removes noisy labels and reviewer tokens.
+    let mut status = pull_request_status(31, "Review facts", false);
+    status.labels = vec![
+        crate::github::PullRequestLabel {
+            name: "useful-signal".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "generated-noise".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    status.requested_reviewers = ReviewerSelection::new(
+        ["human-reviewer", "ignored-bot"],
+        ["platform", "ignored-team"],
+    );
+    status.suggested_reviewers = vec!["suggested-reviewer".to_owned(), "ignored-bot".to_owned()];
+    status.approved_reviewers = vec!["human-reviewer".to_owned(), "ignored-bot".to_owned()];
+    status.commented_reviewers = vec!["commenter".to_owned(), "ignored-bot".to_owned()];
+    status.addressed_reviewers = vec!["addressed".to_owned(), "ignored-bot".to_owned()];
+    status.check_status = crate::github::PullRequestCheckStatus::Failing;
+    status.checks = vec![
+        crate::github::PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+        crate::github::PullRequestCheck {
+            name: "generated-check".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Failing,
+        },
+    ];
+    status.review_activity = vec![
+        crate::github::PullRequestReviewActivity {
+            reviewer: "commenter".to_owned(),
+            reviewed_at: "2026-01-01T00:00:00Z".to_owned(),
+        },
+        crate::github::PullRequestReviewActivity {
+            reviewer: "ignored-bot".to_owned(),
+            reviewed_at: "2026-01-01T00:00:00Z".to_owned(),
+        },
+    ];
+
+    let filtered = apply_pull_request_status_policy(
+        status,
+        &crate::repository::RepoStackStatusConfig {
+            review_gate_checks: Vec::new(),
+            ignored_checks: vec![crate::repository::IgnoredCheckConfig {
+                name: "^generated-.*".to_owned(),
+            }],
+            ignored_labels: vec![crate::repository::IgnoredLabelConfig {
+                name: "generated-*".to_owned(),
+            }],
+            ignored_labels_when_merged: Vec::new(),
+            ignored_reviewers: vec![
+                crate::repository::IgnoredReviewerConfig {
+                    name: "ignored-bot".to_owned(),
+                },
+                crate::repository::IgnoredReviewerConfig {
+                    name: "team/ignored-team".to_owned(),
+                },
+            ],
+            title_rewrites: Vec::new(),
+            review_wait_threshold_seconds: None,
+        },
     );
 
-    assert_eq!(maintained.nodes.len(), 1);
-    assert_eq!(maintained.nodes[0].branch, "open/child");
-    assert_eq!(maintained.nodes[0].parent_branch, None);
-    assert_eq!(maintained.nodes[0].parent_pull_request, None);
+    assert_eq!(
+        filtered
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["useful-signal"]
+    );
+    assert_eq!(filtered.requested_reviewers.users, ["human-reviewer"]);
+    assert_eq!(filtered.requested_reviewers.teams, ["platform"]);
+    assert_eq!(filtered.suggested_reviewers, ["suggested-reviewer"]);
+    assert_eq!(
+        filtered
+            .checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ci/build"]
+    );
+    assert_eq!(
+        filtered.check_status,
+        crate::github::PullRequestCheckStatus::Passing
+    );
+    assert_eq!(filtered.approved_reviewers, ["human-reviewer"]);
+    assert_eq!(filtered.commented_reviewers, ["commenter"]);
+    assert_eq!(filtered.addressed_reviewers, ["addressed"]);
+    assert_eq!(filtered.review_activity.len(), 1);
+    assert_eq!(filtered.review_activity[0].reviewer, "commenter");
+}
+
+#[test]
+fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
+    // Verifies: labels that only matter before merge stay visible on open PRs but disappear from merged rows.
+    let mut open_status = pull_request_status(32, "Open labels", false);
+    open_status.labels = vec![
+        crate::github::PullRequestLabel {
+            name: "run-ci".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "kept".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    let mut merged_status = pull_request_status(33, "Merged labels", true);
+    merged_status.labels = open_status.labels.clone();
+    let config = crate::repository::RepoStackStatusConfig {
+        review_gate_checks: Vec::new(),
+        ignored_checks: Vec::new(),
+        ignored_labels: Vec::new(),
+        ignored_labels_when_merged: vec![crate::repository::IgnoredLabelConfig {
+            name: "run-*".to_owned(),
+        }],
+        ignored_reviewers: Vec::new(),
+        title_rewrites: Vec::new(),
+        review_wait_threshold_seconds: None,
+    };
+
+    let open_filtered = apply_pull_request_status_policy(open_status, &config);
+    let merged_filtered = apply_pull_request_status_policy(merged_status, &config);
+
+    assert_eq!(
+        open_filtered
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["run-ci", "kept"]
+    );
+    assert_eq!(
+        merged_filtered
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["kept"]
+    );
 }
 
 #[test]
@@ -301,6 +613,7 @@ fn pull_request_stack_status_maintenance_attaches_branch_only_statuses() {
     // Verifies: status refresh can repair stack nodes created before their PR number was cached.
     let metadata = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![StackMetadataNode {
             branch: "topic/branch-only-status".to_owned(),
             base_branch: "main".to_owned(),
@@ -311,6 +624,8 @@ fn pull_request_stack_status_maintenance_attaches_branch_only_statuses() {
             url: None,
             draft: false,
             merged: false,
+            work_ids: Vec::new(),
+            fixes_work_ids: Vec::new(),
         }],
     };
     let mut status = pull_request_status(451, "Example branch-only status", false);
@@ -325,66 +640,52 @@ fn pull_request_stack_status_maintenance_attaches_branch_only_statuses() {
 }
 
 #[test]
-fn pull_request_stack_status_maintenance_prunes_newly_merged_components() {
-    // Verifies: status refresh can remove completed cached trees without a separate stack refresh.
-    let metadata = StackMetadata {
-        version: 1,
-        nodes: vec![
-            StackMetadataNode {
-                branch: "merged/root".to_owned(),
-                base_branch: "main".to_owned(),
-                parent_branch: None,
-                pull_request: Some(10),
-                parent_pull_request: None,
-                title: "Cached root".to_owned(),
-                url: None,
-                draft: false,
-                merged: false,
-            },
-            StackMetadataNode {
-                branch: "merged/child".to_owned(),
-                base_branch: "merged/root".to_owned(),
-                parent_branch: Some("merged/root".to_owned()),
-                pull_request: Some(11),
-                parent_pull_request: Some(10),
-                title: "Cached child".to_owned(),
-                url: None,
-                draft: false,
-                merged: false,
-            },
-            StackMetadataNode {
-                branch: "mixed/root".to_owned(),
-                base_branch: "main".to_owned(),
-                parent_branch: None,
-                pull_request: Some(20),
-                parent_pull_request: None,
-                title: "Mixed root".to_owned(),
-                url: None,
-                draft: false,
-                merged: false,
-            },
-            StackMetadataNode {
-                branch: "mixed/child".to_owned(),
-                base_branch: "mixed/root".to_owned(),
-                parent_branch: Some("mixed/root".to_owned()),
-                pull_request: Some(21),
-                parent_pull_request: Some(20),
-                title: "Mixed child".to_owned(),
-                url: None,
-                draft: false,
-                merged: false,
-            },
-        ],
-    };
+fn pull_request_stack_status_maintenance_retains_recently_merged_components() {
+    // Verifies: freshly merged PRs remain as progress markers instead of disappearing immediately.
+    let metadata = status_maintenance_metadata();
+    let now = utc_datetime("2026-06-05T12:00:00Z");
 
-    let maintained = maintain_stack_metadata_pull_request_statuses(
+    let maintained = maintain_stack_metadata_pull_request_statuses_at(
         &[
-            pull_request_status(10, "Merged root", true),
-            pull_request_status(11, "Merged child", true),
-            pull_request_status(20, "Live mixed root", true),
+            merged_pull_request_status(10, "Merged root", "2026-06-04T12:00:00Z"),
+            merged_pull_request_status(11, "Merged child", "2026-06-04T12:00:00Z"),
+            merged_pull_request_status(20, "Live mixed root", "2026-06-01T12:00:00Z"),
             pull_request_status(21, "Live mixed child", false),
         ],
         &metadata,
+        now,
+    );
+
+    assert_eq!(
+        maintained
+            .nodes
+            .iter()
+            .map(|node| (node.branch.as_str(), node.title.as_str(), node.merged))
+            .collect::<Vec<_>>(),
+        vec![
+            ("merged/root", "Merged root", true),
+            ("merged/child", "Merged child", true),
+            ("mixed/root", "Live mixed root", true),
+            ("mixed/child", "Live mixed child", false),
+        ]
+    );
+}
+
+#[test]
+fn pull_request_stack_status_maintenance_prunes_stale_fully_merged_components() {
+    // Verifies: completed stacks still age out once they are no longer useful progress context.
+    let metadata = status_maintenance_metadata();
+    let now = utc_datetime("2026-06-05T12:00:00Z");
+
+    let maintained = maintain_stack_metadata_pull_request_statuses_at(
+        &[
+            merged_pull_request_status(10, "Merged root", "2026-06-01T12:00:00Z"),
+            merged_pull_request_status(11, "Merged child", "2026-06-01T12:00:00Z"),
+            merged_pull_request_status(20, "Live mixed root", "2026-06-01T12:00:00Z"),
+            pull_request_status(21, "Live mixed child", false),
+        ],
+        &metadata,
+        now,
     );
 
     assert_eq!(
@@ -400,6 +701,84 @@ fn pull_request_stack_status_maintenance_prunes_newly_merged_components() {
     );
 }
 
+fn status_maintenance_metadata() -> StackMetadata {
+    StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![
+            StackMetadataNode {
+                branch: "merged/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Cached root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "merged/child".to_owned(),
+                base_branch: "merged/root".to_owned(),
+                parent_branch: Some("merged/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Cached child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "mixed/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(20),
+                parent_pull_request: None,
+                title: "Mixed root".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "mixed/child".to_owned(),
+                base_branch: "mixed/root".to_owned(),
+                parent_branch: Some("mixed/root".to_owned()),
+                pull_request: Some(21),
+                parent_pull_request: Some(20),
+                title: "Mixed child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+        ],
+    }
+}
+
+fn merged_pull_request_status(
+    number: u64,
+    title: &str,
+    merged_at: &str,
+) -> PullRequestStatusRecord {
+    let mut status = pull_request_status(number, title, true);
+    status.closed = true;
+    status.merged_at = Some(merged_at.to_owned());
+    status
+}
+
+fn utc_datetime(value: &str) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .expect("synthetic timestamp is valid")
+        .with_timezone(&chrono::Utc)
+}
+
 fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestStatusRecord {
     PullRequestStatusRecord {
         number,
@@ -407,16 +786,25 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         url: Some(format!(
             "https://github.com/example-owner/example-repo/pull/{number}"
         )),
+        created_at: None,
         head_branch: format!("topic/{number}"),
         base_branch: "main".to_owned(),
+        author: None,
         draft: false,
         merged,
         closed: false,
+        merged_at: None,
+        closed_at: None,
         check_status: crate::github::PullRequestCheckStatus::Passing,
         checks: Vec::new(),
         review_status: crate::github::PullRequestReviewStatus::Approved,
         requested_reviewers: ReviewerSelection::default(),
+        suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),
+        commented_reviewers: Vec::new(),
+        addressed_reviewers: Vec::new(),
+        review_activity: Vec::new(),
+        timeline_events: Vec::new(),
         labels: Vec::new(),
         latest_commit_oid: None,
     }
@@ -671,13 +1059,13 @@ fn push_plan_generates_ticket_or_change_bookmark_when_selected_change_has_none()
     // already identifies the selected change.
     let generic = push_plan(&context(), workspace_facts(), None).expect("generic push plans");
     let mut ticket_workspace = workspace_facts();
-    ticket_workspace.target_change.description = "fd-12345 make checkout faster".to_owned();
+    ticket_workspace.target_change.description = "task-12345 make checkout faster".to_owned();
 
     let ticket = push_plan(&context(), ticket_workspace, None).expect("ticket push plans");
 
     assert_eq!(generic.bookmark.branch, "push-zzzzzzzz");
     assert_eq!(generic.bookmark.action, BookmarkAction::Create);
-    assert_eq!(ticket.bookmark.branch, "ps/fd-12345-02-zzzzzzzz");
+    assert_eq!(ticket.bookmark.branch, "ps/task-12345-02-zzzzzzzz");
     assert_eq!(ticket.bookmark.action, BookmarkAction::Create);
 }
 
@@ -722,6 +1110,36 @@ fn status_compares_github_branch_to_local_trunk_sha() {
     assert_eq!(report.remotes[0].comparison.state, StatusState::GithubAhead);
     assert_eq!(report.remotes[0].comparison.github_ahead_by, 3);
     assert_eq!(report.remotes[0].local_ahead_by, 2);
+}
+
+#[test]
+fn stack_trunk_status_uses_branch_head_without_exact_compare() {
+    // Verifies: Stack status only needs a cheap changed/not-changed trunk signal.
+    let compare_calls = Arc::new(Mutex::new(Vec::new()));
+    let branch_head_calls = Arc::new(Mutex::new(Vec::new()));
+    let github = FakeGitHub {
+        branch_head_sha: "aaaabbbbccccdddd".to_owned(),
+        branch_head_calls: branch_head_calls.clone(),
+        compare_calls: compare_calls.clone(),
+        ..FakeGitHub::default()
+    };
+
+    let report = pollster::block_on(stack_trunk_status_report(
+        &context(),
+        status_workspace_facts(),
+        &github,
+    ))
+    .expect("stack trunk status succeeds");
+
+    assert_eq!(
+        *branch_head_calls.lock().expect("branch head calls"),
+        vec!["main".to_owned()]
+    );
+    assert!(compare_calls.lock().expect("compare calls").is_empty());
+    assert_eq!(report.name, "origin");
+    assert_eq!(report.comparison.state, StatusState::GithubAhead);
+    assert_eq!(report.comparison.github_ahead_by, 0);
+    assert!(!report.comparison.counts_exact);
 }
 
 #[test]
@@ -918,6 +1336,23 @@ fn status_surfaces_auth_failure_and_missing_comparison_targets() {
 }
 
 #[test]
+fn pull_request_work_ids_prefer_title_prefix_over_task_id() {
+    // Verifies: stack metadata records the title ticket when it differs from workspace task context.
+    assert_eq!(
+        pull_request_work_ids("XYZ-9: Update endpoint", Some("ABC-123"), &[]),
+        ["XYZ-9".to_owned()]
+    );
+    assert_eq!(
+        pull_request_work_ids("[XYZ-9] Update endpoint", Some("ABC-123"), &[]),
+        ["XYZ-9".to_owned()]
+    );
+    assert_eq!(
+        pull_request_work_ids("Update endpoint", Some("ABC-123"), &["DEF-456".to_owned()]),
+        ["ABC-123".to_owned(), "DEF-456".to_owned()]
+    );
+}
+
+#[test]
 fn prepare_pull_request_change_prepends_task_id_to_commit_title() {
     // Verifies: PR preparation updates the selected commit title before PR planning.
     let context = context_with_event_handlers(vec![prepend_task_id_handler(
@@ -952,8 +1387,8 @@ fn prepare_pull_request_change_prepends_task_id_to_commit_title() {
 }
 
 #[test]
-fn prepare_pull_request_change_normalizes_existing_task_title_prefix() {
-    // Verifies: Prepend-task-id fixes common existing task title shapes idempotently.
+fn prepare_pull_request_change_normalizes_existing_matching_task_title_prefix() {
+    // Verifies: Prepend-task-id fixes common matching task title shapes idempotently.
     let context = context_with_event_handlers(vec![prepend_task_id_handler(
         "prepend-task",
         query([has_task()]),
@@ -962,8 +1397,9 @@ fn prepare_pull_request_change_normalizes_existing_task_title_prefix() {
         ("ABC-123 Example title", "ABC-123: Example title", true),
         ("ABC-123 - Example title", "ABC-123: Example title", true),
         ("[ABC-123]: Example title", "ABC-123: Example title", true),
-        ("XYZ-9: Example title", "ABC-123: Example title", true),
         ("ABC-123: Example title", "ABC-123: Example title", false),
+        ("XYZ-9: Example title", "XYZ-9: Example title", false),
+        ("Update XYZ-9 behavior", "Update XYZ-9 behavior", false),
     ];
 
     for (input, expected, changed) in cases {
@@ -1012,7 +1448,7 @@ fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
     workspace.target_change.description = "Example title\n\nDetailed body".to_owned();
 
     let plan = pollster::block_on(pull_request_plan(
-        &context_with_reviewers(&["example-reviewer", "second-reviewer"]),
+        &context_with_path_reviewers(&["example-reviewer", "second-reviewer"]),
         workspace,
         &github,
         Some("ABC-123".to_owned()),
@@ -1047,6 +1483,25 @@ fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
 }
 
 #[test]
+fn pull_request_plan_leaves_repo_level_reviewers_completion_only() {
+    // Verifies: Repo-level reviewer lists do not become automatic publish candidates.
+    let github = FakeGitHub::default();
+
+    let plan = pollster::block_on(pull_request_plan(
+        &context_with_reviewers(&["possible-reviewer"]),
+        workspace_facts(),
+        &github,
+        None,
+        Vec::new(),
+        PullRequestReadiness::Preserve,
+    ))
+    .expect("PR plan is derived");
+
+    assert!(plan.reviewer_candidates.is_empty());
+    assert_eq!(plan.reviewers, ReviewerSelection::default());
+}
+
+#[test]
 fn pull_request_plan_merges_existing_requested_reviewers() {
     // Verifies: existing PR reviewers stay selected while computed reviewers remain available.
     let github = FakeGitHub {
@@ -1065,7 +1520,7 @@ fn pull_request_plan_merges_existing_requested_reviewers() {
     };
 
     let plan = pollster::block_on(pull_request_plan(
-        &context_with_reviewers(&["computed-reviewer"]),
+        &context_with_path_reviewers(&["computed-reviewer"]),
         workspace_facts(),
         &github,
         None,
@@ -1084,6 +1539,148 @@ fn pull_request_plan_merges_existing_requested_reviewers() {
         .find(|candidate| candidate.target.display_name() == "already-reviewer")
         .expect("existing reviewer is offered");
     assert_eq!(existing.reasons, ["already requested".to_owned()]);
+}
+
+#[test]
+fn pull_request_plan_offers_existing_review_activity() {
+    // Verifies: Reviewers who already approved or commented stay visible even after GitHub clears requests.
+    let mut status = pull_request_status(7, "Existing PR", false);
+    status.approved_reviewers = vec!["approved-reviewer".to_owned()];
+    status.commented_reviewers = vec!["comment-reviewer".to_owned()];
+    status.addressed_reviewers = vec!["addressed-reviewer".to_owned()];
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Existing PR".to_owned(),
+            body: None,
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: false,
+            merged: false,
+            reviewers: ReviewerSelection::new(["requested-reviewer"], Vec::<String>::new()),
+        }),
+        pull_request_statuses: vec![status],
+        ..FakeGitHub::default()
+    };
+
+    let plan = pollster::block_on(pull_request_plan(
+        &context(),
+        workspace_facts(),
+        &github,
+        None,
+        Vec::new(),
+        PullRequestReadiness::Preserve,
+    ))
+    .expect("PR plan is derived");
+
+    assert_eq!(
+        plan.reviewer_candidates
+            .iter()
+            .map(|candidate| (
+                candidate.target.display_name().to_owned(),
+                candidate.reasons.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "requested-reviewer".to_owned(),
+                vec!["already requested".to_owned()]
+            ),
+            (
+                "approved-reviewer".to_owned(),
+                vec!["already approved".to_owned()]
+            ),
+            ("comment-reviewer".to_owned(), vec!["commented".to_owned()]),
+            (
+                "addressed-reviewer".to_owned(),
+                vec!["comments addressed".to_owned()]
+            ),
+        ]
+    );
+    assert_eq!(
+        plan.reviewers,
+        ReviewerSelection::new(["requested-reviewer"], Vec::<String>::new())
+    );
+}
+
+#[test]
+fn pull_request_plan_offers_suggested_reviewers_for_ready_draft_pr() {
+    // Verifies: GitHub suggestions become prompt candidates only when an existing draft is marked ready.
+    let github = FakeGitHub {
+        open_pull_request: Some(PullRequestRecord {
+            number: 7,
+            title: "Existing draft PR".to_owned(),
+            body: None,
+            head_branch: "example-user/02-a1b2c3d4".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+            draft: true,
+            merged: false,
+            reviewers: ReviewerSelection::new(["already-reviewer"], Vec::<String>::new()),
+        }),
+        suggested_reviewers: vec![
+            "suggested-reviewer".to_owned(),
+            "already-reviewer".to_owned(),
+        ],
+        ..FakeGitHub::default()
+    };
+
+    let plan = pollster::block_on(pull_request_plan(
+        &context_with_path_reviewers(&["computed-reviewer"]),
+        workspace_facts(),
+        &github,
+        None,
+        Vec::new(),
+        PullRequestReadiness::Ready,
+    ))
+    .expect("PR plan is derived");
+
+    assert!(!plan.draft);
+    assert_eq!(
+        github
+            .suggested_reviewer_calls
+            .lock()
+            .expect("suggested reviewer calls")
+            .as_slice(),
+        &[7]
+    );
+    assert_eq!(
+        plan.reviewer_candidates
+            .iter()
+            .map(|candidate| candidate.target.display_name())
+            .collect::<Vec<_>>(),
+        [
+            "computed-reviewer",
+            "already-reviewer",
+            "suggested-reviewer"
+        ]
+    );
+    assert_eq!(
+        plan.reviewers,
+        ReviewerSelection::new(
+            ["already-reviewer", "computed-reviewer"],
+            Vec::<String>::new()
+        )
+    );
+    let suggested = plan
+        .reviewer_candidates
+        .iter()
+        .find(|candidate| candidate.target.display_name() == "suggested-reviewer")
+        .expect("suggested reviewer is offered");
+    assert_eq!(suggested.reasons, ["suggested by GitHub".to_owned()]);
+    let already = plan
+        .reviewer_candidates
+        .iter()
+        .find(|candidate| candidate.target.display_name() == "already-reviewer")
+        .expect("existing reviewer is offered");
+    assert_eq!(
+        already.reasons,
+        [
+            "already requested".to_owned(),
+            "suggested by GitHub".to_owned()
+        ]
+    );
 }
 
 #[test]
@@ -1168,7 +1765,7 @@ fn pull_request_description_accepts_title_only_descriptions() {
 
 #[test]
 fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
-    // Verifies: Publish pull request creates PR and syncs configured reviewers.
+    // Verifies: Publish pull request creates PR and syncs matched path reviewers.
     let github = FakeGitHub {
         reviewer_result: ReviewerSyncResult {
             requested_users: vec!["example-reviewer".to_owned()],
@@ -1178,7 +1775,7 @@ fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
     };
     let create_calls = github.create_calls.clone();
     let reviewer_calls = github.reviewer_calls.clone();
-    let context = context_with_reviewers(&["example-reviewer"]);
+    let context = context_with_path_reviewers(&["example-reviewer"]);
     let plan = pollster::block_on(pull_request_plan(
         &context,
         workspace_facts(),
@@ -1821,6 +2418,7 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
     let context = context();
     let stack_metadata = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![
             StackMetadataNode {
                 branch: "example-user/root".to_owned(),
@@ -1832,6 +2430,8 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
                 url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "example-user/child".to_owned(),
@@ -1843,6 +2443,8 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
                 url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "example-user/draft".to_owned(),
@@ -1854,6 +2456,8 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
                 url: Some("https://github.com/example-owner/example-repo/pull/8".to_owned()),
                 draft: true,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
         ],
     };
@@ -1900,9 +2504,101 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
         &[(
             7,
             PullRequestUpdate {
-                title: Some("Child".to_owned()),
+                title: None,
                 body: Some(
-                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└─ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;&nbsp;└─ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n\n<!-- jx-stack:end -->"
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n\n<!-- jx-stack:end -->"
+                        .to_owned()
+                ),
+                base: None,
+            }
+        )]
+    );
+}
+
+#[test]
+fn sync_pull_requests_falls_back_to_metadata_number_when_head_lookup_misses() {
+    // Verifies: immediate post-publish sync does not depend on GitHub head search indexing the new PR.
+    let context = context();
+    let stack_metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![
+            StackMetadataNode {
+                branch: "example-user/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(6),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "example-user/child".to_owned(),
+                base_branch: "example-user/root".to_owned(),
+                parent_branch: Some("example-user/root".to_owned()),
+                pull_request: Some(7),
+                parent_pull_request: Some(6),
+                title: "Child".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+        ],
+    };
+    let child = PullRequestRecord {
+        number: 7,
+        title: "Child".to_owned(),
+        body: Some("Authored body".to_owned()),
+        head_branch: "example-user/child".to_owned(),
+        base_branch: "example-user/root".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+        draft: false,
+        merged: false,
+        reviewers: ReviewerSelection::default(),
+    };
+    let github = FakeGitHub {
+        open_pull_request: None,
+        pull_requests_by_number: BTreeMap::from([(7, child)]),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 1,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/child".to_owned(),
+            old_short_commit_id: Some("old".to_owned()),
+            new_short_commit_id: Some("new".to_owned()),
+            old_description: None,
+            new_description: None,
+            pull_request_description: Some("Child\n\nAuthored body".to_owned()),
+            pull_request_base: Some("example-user/root".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    pollster::block_on(sync_pull_requests(
+        &context,
+        &push,
+        &stack_metadata,
+        &github,
+    ))
+    .expect("pull requests sync");
+
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            7,
+            PullRequestUpdate {
+                title: None,
+                body: Some(
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n\n<!-- jx-stack:end -->"
                         .to_owned()
                 ),
                 base: None,
@@ -1959,7 +2655,7 @@ fn sync_pull_requests_removes_stack_context_for_untracked_pr() {
         &[(
             7,
             PullRequestUpdate {
-                title: Some("Child".to_owned()),
+                title: None,
                 body: Some("Authored body".to_owned()),
                 base: None,
             }
@@ -2104,6 +2800,21 @@ fn context_with_reviewers(reviewers: &[&str]) -> RepositoryContext {
             .iter()
             .map(|reviewer| ReviewerTarget::user(*reviewer))
             .collect(),
+        ..RepoPolicyConfig::default()
+    };
+    context
+}
+
+fn context_with_path_reviewers(reviewers: &[&str]) -> RepositoryContext {
+    let mut context = context();
+    context.config.repo.base = RepoPolicyConfig {
+        reviewer_rules: vec![ReviewerPathRule {
+            paths: vec!["src/**".to_owned()],
+            reviewers: reviewers
+                .iter()
+                .map(|reviewer| ReviewerTarget::user(*reviewer))
+                .collect(),
+        }],
         ..RepoPolicyConfig::default()
     };
     context
@@ -2272,9 +2983,11 @@ impl FakeCompareFailure {
 }
 
 type CompareCalls = Arc<Mutex<Vec<(String, String)>>>;
+type BranchHeadCalls = Arc<Mutex<Vec<String>>>;
 type CreateCalls = Arc<Mutex<Vec<PullRequestCreate>>>;
 type UpdateCalls = Arc<Mutex<Vec<(u64, PullRequestUpdate)>>>;
 type ReadinessCalls = Arc<Mutex<Vec<u64>>>;
+type SuggestedReviewerCalls = Arc<Mutex<Vec<u64>>>;
 type LabelCalls = Arc<Mutex<Vec<(u64, Vec<String>)>>>;
 type ReviewerCalls = Arc<Mutex<Vec<(u64, ReviewerSelection)>>>;
 
@@ -2286,12 +2999,18 @@ struct FakeGitHub {
     comparisons: BTreeMap<(String, String), CommitComparison>,
     compare_failure: Option<FakeCompareFailure>,
     compare_calls: CompareCalls,
+    branch_head_sha: String,
+    branch_head_calls: BranchHeadCalls,
     repository_fork: Option<RepositoryFork>,
     open_pull_request: Option<PullRequestRecord>,
+    pull_requests_by_number: BTreeMap<u64, PullRequestRecord>,
+    pull_request_statuses: Vec<PullRequestStatusRecord>,
     create_calls: CreateCalls,
     update_calls: UpdateCalls,
     mark_ready_calls: ReadinessCalls,
     convert_draft_calls: ReadinessCalls,
+    suggested_reviewers: Vec<String>,
+    suggested_reviewer_calls: SuggestedReviewerCalls,
     label_calls: LabelCalls,
     label_result: LabelApplyResult,
     pull_request_labels: Vec<String>,
@@ -2344,12 +3063,18 @@ impl Default for FakeGitHub {
             comparisons: BTreeMap::new(),
             compare_failure: None,
             compare_calls: Arc::new(Mutex::new(Vec::new())),
+            branch_head_sha: "1111222233334444".to_owned(),
+            branch_head_calls: Arc::new(Mutex::new(Vec::new())),
             repository_fork: None,
             open_pull_request: None,
+            pull_requests_by_number: BTreeMap::new(),
+            pull_request_statuses: Vec::new(),
             create_calls: Arc::new(Mutex::new(Vec::new())),
             update_calls: Arc::new(Mutex::new(Vec::new())),
             mark_ready_calls: Arc::new(Mutex::new(Vec::new())),
             convert_draft_calls: Arc::new(Mutex::new(Vec::new())),
+            suggested_reviewers: Vec::new(),
+            suggested_reviewer_calls: Arc::new(Mutex::new(Vec::new())),
             label_calls: Arc::new(Mutex::new(Vec::new())),
             label_result: LabelApplyResult::default(),
             pull_request_labels: Vec::new(),
@@ -2389,6 +3114,18 @@ impl GitHubClient for FakeGitHub {
             html_url: repository.https_url(),
             private,
         })
+    }
+
+    async fn branch_head_sha(
+        &self,
+        _repository: &GitHubRepository,
+        branch: &str,
+    ) -> Result<String, GitHubError> {
+        self.branch_head_calls
+            .lock()
+            .expect("branch head calls")
+            .push(branch.to_owned());
+        Ok(self.branch_head_sha.clone())
     }
 
     async fn compare_commits(
@@ -2444,17 +3181,39 @@ impl GitHubClient for FakeGitHub {
         number: u64,
     ) -> Result<Option<PullRequestRecord>, GitHubError> {
         Ok(self
-            .open_pull_request
-            .clone()
-            .filter(|pull_request| pull_request.number == number))
+            .pull_requests_by_number
+            .get(&number)
+            .cloned()
+            .or_else(|| {
+                self.open_pull_request
+                    .clone()
+                    .filter(|pull_request| pull_request.number == number)
+            }))
     }
 
     async fn pull_request_statuses(
         &self,
         _repository: &GitHubRepository,
-        _numbers: &[u64],
+        numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
-        Ok(Vec::new())
+        Ok(self
+            .pull_request_statuses
+            .iter()
+            .filter(|status| numbers.contains(&status.number))
+            .cloned()
+            .collect())
+    }
+
+    async fn pull_request_suggested_reviewers(
+        &self,
+        _repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        self.suggested_reviewer_calls
+            .lock()
+            .expect("suggested reviewer calls")
+            .push(number);
+        Ok(self.suggested_reviewers.clone())
     }
 
     async fn create_pull_request(

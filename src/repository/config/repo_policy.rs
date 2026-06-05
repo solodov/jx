@@ -34,6 +34,28 @@ impl RepoConfig {
         handlers
     }
 
+    /// Returns effective work-item settings for this repository.
+    pub fn work_items_for(&self, repository: &GitHubRepository) -> RepoWorkItemsConfig {
+        let mut config = self.base.work_items.clone();
+        for rule in self.matching_rules(repository) {
+            config.apply_layer(rule.policy.work_items.clone());
+        }
+        config
+    }
+
+    /// Returns effective work-item handlers for this repository in deterministic execution order.
+    pub fn work_item_handlers_for(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Vec<RepoWorkItemHandler> {
+        let mut handlers = Vec::new();
+        apply_work_item_handler_configs(&mut handlers, &self.base.work_item_handlers);
+        for rule in self.matching_rules(repository) {
+            apply_work_item_handler_configs(&mut handlers, &rule.policy.work_item_handlers);
+        }
+        handlers
+    }
+
     /// Returns reviewer candidates selected by repo policy and matching file rules.
     pub fn reviewer_candidates_for(
         &self,
@@ -46,6 +68,16 @@ impl RepoConfig {
             add_repo_policy_reviewer_candidates(&mut candidates, &rule.policy, changed_files);
         }
         candidates
+    }
+
+    /// Returns repo-level reviewers offered for `jx stack publish --reviewer` completion.
+    pub fn reviewer_completion_for(&self, repository: &GitHubRepository) -> Vec<ReviewerTarget> {
+        let mut reviewers = Vec::new();
+        merge_reviewers(&mut reviewers, self.base.reviewers.clone());
+        for rule in self.matching_rules(repository) {
+            merge_reviewers(&mut reviewers, rule.policy.reviewers.clone());
+        }
+        reviewers
     }
 
     /// Returns normalized shared workspace paths from base policy and matching repo rules.
@@ -123,6 +155,8 @@ impl RepoConfig {
 pub struct RepoPolicyConfig {
     pub advance_trunk: Option<bool>,
     pub event_handlers: Vec<RepoEventHandlerConfig>,
+    pub work_items: RepoWorkItemsConfig,
+    pub work_item_handlers: Vec<RepoWorkItemHandlerConfig>,
     pub reviewers: Vec<ReviewerTarget>,
     pub reviewer_rules: Vec<ReviewerPathRule>,
     pub workspace_shared_paths: Vec<String>,
@@ -135,6 +169,8 @@ impl RepoPolicyConfig {
             self.advance_trunk = layer.advance_trunk;
         }
         merge_event_handler_configs(&mut self.event_handlers, &layer.event_handlers);
+        self.work_items.apply_layer(layer.work_items);
+        merge_work_item_handler_configs(&mut self.work_item_handlers, &layer.work_item_handlers);
         merge_reviewers(&mut self.reviewers, layer.reviewers);
         self.reviewer_rules.extend(layer.reviewer_rules);
         merge_workspace_shared_paths(
@@ -145,15 +181,146 @@ impl RepoPolicyConfig {
     }
 }
 
+/// Work-item side-effect behavior that can vary by repository policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoWorkItemsConfig {
+    pub apply_on_stack_status: Option<bool>,
+}
+
+impl RepoWorkItemsConfig {
+    fn apply_layer(&mut self, layer: RepoWorkItemsConfig) {
+        if layer.apply_on_stack_status.is_some() {
+            self.apply_on_stack_status = layer.apply_on_stack_status;
+        }
+    }
+
+    /// Returns whether stack-status should apply configured work-item side effects.
+    pub fn apply_on_stack_status(&self) -> bool {
+        self.apply_on_stack_status.unwrap_or(false)
+    }
+}
+
 /// Stack status behavior that can vary by repository policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoStackStatusConfig {
     pub review_gate_checks: Vec<ReviewGateCheckConfig>,
+    pub ignored_checks: Vec<IgnoredCheckConfig>,
+    pub ignored_labels: Vec<IgnoredLabelConfig>,
+    pub ignored_labels_when_merged: Vec<IgnoredLabelConfig>,
+    pub ignored_reviewers: Vec<IgnoredReviewerConfig>,
+    pub title_rewrites: Vec<TitleRewriteConfig>,
+    pub review_wait_threshold_seconds: Option<u64>,
 }
 
 impl RepoStackStatusConfig {
     fn apply_layer(&mut self, layer: RepoStackStatusConfig) {
         merge_review_gate_checks(&mut self.review_gate_checks, layer.review_gate_checks);
+        merge_ignored_checks(&mut self.ignored_checks, layer.ignored_checks);
+        merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
+        merge_ignored_labels(
+            &mut self.ignored_labels_when_merged,
+            layer.ignored_labels_when_merged,
+        );
+        merge_ignored_reviewers(&mut self.ignored_reviewers, layer.ignored_reviewers);
+        self.title_rewrites.extend(layer.title_rewrites);
+        if layer.review_wait_threshold_seconds.is_some() {
+            self.review_wait_threshold_seconds = layer.review_wait_threshold_seconds;
+        }
+    }
+
+    /// Returns whether a GitHub check should be omitted from stack/review status health.
+    pub fn ignores_check(&self, check: &str) -> bool {
+        self.ignored_checks.iter().any(|rule| rule.matches(check))
+    }
+
+    /// Returns whether a pull-request label should be omitted from stack/review status views.
+    pub fn ignores_label(&self, label: &str) -> bool {
+        self.ignored_labels.iter().any(|rule| rule.matches(label))
+    }
+
+    /// Returns whether a pull-request label should be omitted after the PR has merged.
+    pub fn ignores_label_when_merged(&self, label: &str) -> bool {
+        self.ignored_labels_when_merged
+            .iter()
+            .any(|rule| rule.matches(label))
+    }
+
+    /// Returns whether a reviewer token should be omitted from stack/review status views.
+    pub fn ignores_reviewer(&self, reviewer: &str) -> bool {
+        self.ignored_reviewers
+            .iter()
+            .any(|rule| rule.matches(reviewer))
+    }
+
+    /// Applies repository-specific title presentation rewrites in configured order.
+    pub fn rewrite_title(&self, title: &str) -> String {
+        self.title_rewrites
+            .iter()
+            .fold(title.to_owned(), |title, rule| rule.rewrite(&title))
+    }
+}
+
+/// Regex-based pull-request title rewrite applied before display ellipsizing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleRewriteConfig {
+    pub pattern: String,
+    pub replace: String,
+}
+
+impl TitleRewriteConfig {
+    /// Applies this rewrite once using Rust regex replacement syntax such as `$1`.
+    pub fn rewrite(&self, title: &str) -> String {
+        regex::Regex::new(&self.pattern)
+            .ok()
+            .map(|regex| regex.replace(title, self.replace.as_str()).into_owned())
+            .unwrap_or_else(|| title.to_owned())
+    }
+}
+
+/// Check-name regex omitted from stack/review status health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredCheckConfig {
+    pub name: String,
+}
+
+impl IgnoredCheckConfig {
+    /// Returns whether this regex matches a GitHub check run or status context name.
+    pub fn matches(&self, check_name: &str) -> bool {
+        regex::Regex::new(&self.name)
+            .ok()
+            .is_some_and(|regex| regex.is_match(check_name))
+    }
+}
+
+/// Label-name glob hidden from stack/review status presentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredLabelConfig {
+    pub name: String,
+}
+
+impl IgnoredLabelConfig {
+    /// Returns whether this rule matches a GitHub label name.
+    pub fn matches(&self, label_name: &str) -> bool {
+        Glob::new(&self.name)
+            .ok()
+            .map(|glob| glob.compile_matcher().is_match(label_name))
+            .unwrap_or(false)
+    }
+}
+
+/// Reviewer-name glob hidden from stack/review status presentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredReviewerConfig {
+    pub name: String,
+}
+
+impl IgnoredReviewerConfig {
+    /// Returns whether this rule matches a user, team slug, or `team/<slug>` reviewer token.
+    pub fn matches(&self, reviewer: &str) -> bool {
+        Glob::new(&self.name)
+            .ok()
+            .map(|glob| glob.compile_matcher().is_match(reviewer))
+            .unwrap_or(false)
     }
 }
 
@@ -180,6 +347,13 @@ pub enum RepoEventHandlerConfig {
     Disable { id: String },
 }
 
+/// One configured work-item handler or a disabling override by handler id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoWorkItemHandlerConfig {
+    Handler(RepoWorkItemHandler),
+    Disable { id: String },
+}
+
 /// Effect to run when a matching repository event is emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEventHandler {
@@ -187,6 +361,14 @@ pub struct RepoEventHandler {
     pub on: RepoEvent,
     pub when: PullRequestEventQuery,
     pub run: RepoEventHandlerRun,
+}
+
+/// Side effect to run when a matching work-item event is emitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoWorkItemHandler {
+    pub id: Option<String>,
+    pub on: RepoWorkItemEvent,
+    pub command: Vec<String>,
 }
 
 /// Repository events supported by configured handlers.
@@ -204,6 +386,21 @@ impl RepoEvent {
             Self::PullRequestPrepare => "pull_request.prepare",
             Self::PullRequestCreated => "pull_request.created",
             Self::PullRequestUpdated => "pull_request.updated",
+        }
+    }
+}
+
+/// Work-item events supported by configured handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoWorkItemEvent {
+    Fixed,
+}
+
+impl RepoWorkItemEvent {
+    /// Stable config label for this event, used in operator-facing handler output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fixed => "work_item.fixed",
         }
     }
 }
@@ -283,10 +480,6 @@ fn add_repo_policy_reviewer_candidates(
     policy: &RepoPolicyConfig,
     changed_files: &[String],
 ) {
-    for reviewer in &policy.reviewers {
-        add_reviewer_candidate(candidates, reviewer, "repo".to_owned());
-    }
-
     for rule in &policy.reviewer_rules {
         let reasons = rule.match_reasons(changed_files);
         for reviewer in &rule.reviewers {
@@ -343,6 +536,54 @@ fn event_handler_config_id(config: &RepoEventHandlerConfig) -> Option<&str> {
     }
 }
 
+fn apply_work_item_handler_configs(
+    target: &mut Vec<RepoWorkItemHandler>,
+    configs: &[RepoWorkItemHandlerConfig],
+) {
+    for config in configs {
+        match config {
+            RepoWorkItemHandlerConfig::Handler(handler) => {
+                if let Some(id) = &handler.id {
+                    target.retain(|existing| existing.id.as_deref() != Some(id.as_str()));
+                }
+                target.push(handler.clone());
+            }
+            RepoWorkItemHandlerConfig::Disable { id } => {
+                target.retain(|handler| handler.id.as_deref() != Some(id.as_str()));
+            }
+        }
+    }
+}
+
+fn merge_work_item_handler_configs(
+    target: &mut Vec<RepoWorkItemHandlerConfig>,
+    configs: &[RepoWorkItemHandlerConfig],
+) {
+    for config in configs {
+        match config {
+            RepoWorkItemHandlerConfig::Handler(handler) => {
+                if let Some(id) = &handler.id {
+                    target.retain(|existing| {
+                        work_item_handler_config_id(existing) != Some(id.as_str())
+                    });
+                }
+                target.push(config.clone());
+            }
+            RepoWorkItemHandlerConfig::Disable { id } => {
+                target
+                    .retain(|existing| work_item_handler_config_id(existing) != Some(id.as_str()));
+            }
+        }
+    }
+}
+
+fn work_item_handler_config_id(config: &RepoWorkItemHandlerConfig) -> Option<&str> {
+    match config {
+        RepoWorkItemHandlerConfig::Handler(handler) => handler.id.as_deref(),
+        RepoWorkItemHandlerConfig::Disable { id } => Some(id.as_str()),
+    }
+}
+
 fn merge_reviewers(target: &mut Vec<ReviewerTarget>, reviewers: Vec<ReviewerTarget>) {
     let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
     for reviewer in reviewers {
@@ -372,6 +613,45 @@ fn merge_review_gate_checks(
     for check in checks {
         if seen.insert(check.name.clone()) {
             target.push(check);
+        }
+    }
+}
+
+fn merge_ignored_checks(target: &mut Vec<IgnoredCheckConfig>, checks: Vec<IgnoredCheckConfig>) {
+    let mut seen = target
+        .iter()
+        .map(|check| check.name.clone())
+        .collect::<BTreeSet<_>>();
+    for check in checks {
+        if seen.insert(check.name.clone()) {
+            target.push(check);
+        }
+    }
+}
+
+fn merge_ignored_labels(target: &mut Vec<IgnoredLabelConfig>, labels: Vec<IgnoredLabelConfig>) {
+    let mut seen = target
+        .iter()
+        .map(|label| label.name.clone())
+        .collect::<BTreeSet<_>>();
+    for label in labels {
+        if seen.insert(label.name.clone()) {
+            target.push(label);
+        }
+    }
+}
+
+fn merge_ignored_reviewers(
+    target: &mut Vec<IgnoredReviewerConfig>,
+    reviewers: Vec<IgnoredReviewerConfig>,
+) {
+    let mut seen = target
+        .iter()
+        .map(|reviewer| reviewer.name.clone())
+        .collect::<BTreeSet<_>>();
+    for reviewer in reviewers {
+        if seen.insert(reviewer.name.clone()) {
+            target.push(reviewer);
         }
     }
 }

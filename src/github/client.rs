@@ -25,6 +25,13 @@ pub trait GitHubClient: Send + Sync {
         private: bool,
     ) -> Result<RepositoryCreation, GitHubError>;
 
+    /// Returns the current head commit SHA for a repository branch.
+    async fn branch_head_sha(
+        &self,
+        repository: &GitHubRepository,
+        branch: &str,
+    ) -> Result<String, GitHubError>;
+
     /// Compares two Git refs or SHAs through GitHub's repository comparison API.
     async fn compare_commits(
         &self,
@@ -40,6 +47,15 @@ pub trait GitHubClient: Send + Sync {
         head: &PullRequestHead,
         author: &str,
     ) -> Result<Option<PullRequestRecord>, GitHubError>;
+
+    /// Finds open pull requests authored by a user in this repository.
+    async fn authored_open_pull_requests(
+        &self,
+        _repository: &GitHubRepository,
+        _author: &str,
+    ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+        Ok(Vec::new())
+    }
 
     /// Finds an open pull request by same-repository head branch.
     async fn find_open_pull_request(
@@ -84,6 +100,33 @@ pub trait GitHubClient: Send + Sync {
         repository: &GitHubRepository,
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, GitHubError>;
+
+    /// Searches open pull requests requesting review from the authenticated viewer.
+    async fn review_requests(&self) -> Result<PullRequestReviewRequests, GitHubError> {
+        Ok(PullRequestReviewRequests {
+            viewer: AuthenticatedUser {
+                login: String::new(),
+            },
+            requests: Vec::new(),
+        })
+    }
+
+    /// Loads public profile names for GitHub logins.
+    async fn user_profiles(
+        &self,
+        _logins: &[String],
+    ) -> Result<Vec<GitHubUserProfile>, GitHubError> {
+        Ok(Vec::new())
+    }
+
+    /// Loads GitHub's suggested user reviewers for a pull request.
+    async fn pull_request_suggested_reviewers(
+        &self,
+        _repository: &GitHubRepository,
+        _number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        Ok(Vec::new())
+    }
 
     /// Creates a pull request from domain input.
     async fn create_pull_request(
@@ -488,6 +531,25 @@ impl GitHubClient for OctocrabGitHubClient {
         })
     }
 
+    async fn branch_head_sha(
+        &self,
+        repository: &GitHubRepository,
+        branch: &str,
+    ) -> Result<String, GitHubError> {
+        let route = format!(
+            "/repos/{owner}/{repo}/git/ref/heads/{branch}",
+            owner = repository.owner,
+            repo = repository.name,
+        );
+        let reference: GitRefResponse = self
+            .crab
+            .get(route, Option::<&()>::None)
+            .await
+            .map_err(|source| api_error("get branch head", source))?;
+
+        Ok(reference.object.sha)
+    }
+
     async fn compare_commits(
         &self,
         repository: &GitHubRepository,
@@ -528,6 +590,60 @@ impl GitHubClient for OctocrabGitHubClient {
             Some(author),
         )
         .await
+    }
+
+    async fn authored_open_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        author: &str,
+    ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+        let mut pull_requests = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut cursor = None::<String>;
+        loop {
+            let query = format!(
+                "is:pr is:open repo:{}/{} author:{}",
+                repository.owner, repository.name, author
+            );
+            let variables = AuthoredOpenPullRequestsVariables {
+                query: &query,
+                cursor: cursor.as_deref(),
+            };
+            let data: AuthoredOpenPullRequestsQueryData = self
+                .graphql(
+                    AUTHORED_OPEN_PULL_REQUESTS_QUERY,
+                    variables,
+                    "search authored open pull requests",
+                )
+                .await?;
+            for node in data.search.nodes.into_iter().flatten() {
+                if node.head_repository_owner.login != repository.owner {
+                    continue;
+                }
+                let pull_request = PullRequestRecord {
+                    number: node.number,
+                    title: node.title,
+                    body: (!node.body.is_empty()).then_some(node.body),
+                    head_branch: node.head_ref_name,
+                    base_branch: node.base_ref_name,
+                    html_url: Some(node.url),
+                    draft: node.is_draft,
+                    merged: node.merged,
+                    reviewers: ReviewerSelection::default(),
+                };
+                if seen.insert(pull_request.number) {
+                    pull_requests.push(pull_request);
+                }
+            }
+            if !data.search.page_info.has_next_page {
+                break;
+            }
+            let Some(next_cursor) = data.search.page_info.end_cursor else {
+                break;
+            };
+            cursor = Some(next_cursor);
+        }
+        Ok(pull_requests)
     }
 
     async fn find_open_pull_request(
@@ -600,6 +716,113 @@ impl GitHubClient for OctocrabGitHubClient {
             statuses.extend(self.pull_request_statuses_chunk(repository, chunk).await?);
         }
         Ok(statuses)
+    }
+
+    async fn review_requests(&self) -> Result<PullRequestReviewRequests, GitHubError> {
+        let mut viewer = None::<AuthenticatedUser>;
+        let mut requests = Vec::new();
+        let mut seen = BTreeSet::new();
+        for &query in REVIEW_REQUEST_SEARCH_QUERIES {
+            let mut cursor = None::<String>;
+            loop {
+                let variables = ReviewRequestsVariables {
+                    query,
+                    cursor: cursor.as_deref(),
+                };
+                let data: ReviewRequestsQueryData = self
+                    .graphql(REVIEW_REQUESTS_QUERY, variables, "search review requests")
+                    .await?;
+                if viewer.is_none() {
+                    viewer = Some(AuthenticatedUser {
+                        login: data.viewer.login,
+                    });
+                }
+                for node in data.search.nodes.into_iter().flatten() {
+                    let request = PullRequestReviewRequest {
+                        repository: GitHubRepository {
+                            owner: node.repository.owner.login,
+                            name: node.repository.name,
+                        },
+                        number: node.number,
+                    };
+                    if seen.insert((request.repository.clone(), request.number)) {
+                        requests.push(request);
+                    }
+                }
+                if !data.search.page_info.has_next_page {
+                    break;
+                }
+                let Some(next_cursor) = data.search.page_info.end_cursor else {
+                    break;
+                };
+                cursor = Some(next_cursor);
+            }
+        }
+        Ok(PullRequestReviewRequests {
+            viewer: viewer.unwrap_or(AuthenticatedUser {
+                login: String::new(),
+            }),
+            requests,
+        })
+    }
+
+    async fn user_profiles(
+        &self,
+        logins: &[String],
+    ) -> Result<Vec<GitHubUserProfile>, GitHubError> {
+        let logins = unique_user_profile_logins(logins);
+        let mut profiles = Vec::new();
+        for chunk in logins.chunks(USER_PROFILE_QUERY_CHUNK_SIZE) {
+            let query = user_profiles_query(chunk);
+            let variables = user_profiles_variables(chunk);
+            let data: BTreeMap<String, Option<GraphQlUserProfile>> = self
+                .graphql(&query, variables, "load user profiles")
+                .await?;
+            profiles.extend(chunk.iter().enumerate().map(|(index, requested_login)| {
+                let alias = user_profile_alias(index);
+                data.get(&alias)
+                    .and_then(|profile| profile.as_ref())
+                    .map_or_else(
+                        || GitHubUserProfile {
+                            login: requested_login.clone(),
+                            name: None,
+                        },
+                        |profile| GitHubUserProfile {
+                            login: profile.login.clone(),
+                            name: normalize_user_profile_name(profile.name.as_deref()),
+                        },
+                    )
+            }));
+        }
+        Ok(profiles)
+    }
+
+    async fn pull_request_suggested_reviewers(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        let variables = PullRequestSuggestedReviewersVariables {
+            owner: &repository.owner,
+            name: &repository.name,
+            number: number as i64,
+        };
+        let data: PullRequestSuggestedReviewersQueryData = self
+            .graphql(
+                PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY,
+                variables,
+                "load suggested reviewers",
+            )
+            .await?;
+        let repository = data.repository.ok_or_else(|| GitHubError::GraphQl {
+            operation: "load suggested reviewers",
+            message: "repository was not found".to_owned(),
+        })?;
+
+        Ok(repository
+            .pull_request
+            .map(|pull_request| suggested_reviewers_from_graphql(pull_request.suggested_reviewers))
+            .unwrap_or_default())
     }
 
     async fn create_pull_request(
@@ -771,6 +994,76 @@ query($owner: String!, $name: String!, $number: Int!) {
 }
 "#;
 
+pub(super) const PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      suggestedReviewers {
+        reviewer {
+          login
+        }
+      }
+    }
+  }
+}
+"#;
+
+pub(super) const REVIEW_REQUEST_SEARCH_QUERIES: &[&str] = &[
+    "is:pr is:open review-requested:@me -author:@me",
+    "is:pr is:open reviewed-by:@me -author:@me",
+];
+
+const REVIEW_REQUESTS_QUERY: &str = r#"
+query($query: String!, $cursor: String) {
+  viewer {
+    login
+  }
+  search(type: ISSUE, query: $query, first: 100, after: $cursor) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on PullRequest {
+        number
+        repository {
+          name
+          owner {
+            login
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+
+const AUTHORED_OPEN_PULL_REQUESTS_QUERY: &str = r#"
+query($query: String!, $cursor: String) {
+  search(type: ISSUE, query: $query, first: 100, after: $cursor) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        body
+        headRefName
+        baseRefName
+        url
+        isDraft
+        merged
+        headRepositoryOwner {
+          login
+        }
+      }
+    }
+  }
+}
+"#;
+
 const MARK_PULL_REQUEST_READY_MUTATION: &str = r#"
 mutation($pullRequestId: ID!) {
   markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
@@ -806,7 +1099,7 @@ mutation($pullRequestId: ID!) {
 "#;
 
 const PULL_REQUEST_RECORD_BATCH_SIZE: usize = 50;
-const PULL_REQUEST_STATUS_BATCH_SIZE: usize = 50;
+const PULL_REQUEST_STATUS_BATCH_SIZE: usize = 10;
 
 pub(super) fn pull_request_record_query(numbers: &[u64]) -> String {
     let fields = numbers
@@ -868,11 +1161,17 @@ fragment PullRequestStatusFields on PullRequest {{
   number
   title
   url
+  createdAt
   headRefName
   baseRefName
+  author {{
+    login
+  }}
   isDraft
   merged
   closed
+  mergedAt
+  closedAt
   reviewDecision
   reviewRequests(first: 100) {{
     totalCount
@@ -885,6 +1184,11 @@ fragment PullRequestStatusFields on PullRequest {{
       }}
     }}
   }}
+  suggestedReviewers {{
+    reviewer {{
+      login
+    }}
+  }}
   labels(first: 100) {{
     nodes {{
       name
@@ -894,8 +1198,52 @@ fragment PullRequestStatusFields on PullRequest {{
   latestReviews(first: 100) {{
     nodes {{
       state
+      submittedAt
       author {{
         login
+      }}
+    }}
+  }}
+  reviews(first: 100) {{
+    nodes {{
+      state
+      submittedAt
+      author {{
+        login
+      }}
+    }}
+  }}
+  reviewThreads(first: 100) {{
+    nodes {{
+      isResolved
+      isOutdated
+      comments(first: 100) {{
+        nodes {{
+          author {{
+            login
+          }}
+          createdAt
+        }}
+      }}
+    }}
+  }}
+  timelineItems(last: 100, itemTypes: [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REVIEW_REQUESTED_EVENT]) {{
+    nodes {{
+      __typename
+      ... on ReadyForReviewEvent {{
+        createdAt
+      }}
+      ... on ConvertToDraftEvent {{
+        createdAt
+      }}
+      ... on ReviewRequestedEvent {{
+        createdAt
+        requestedReviewer {{
+          __typename
+          ... on User {{
+            login
+          }}
+        }}
       }}
     }}
   }}
@@ -930,6 +1278,54 @@ fragment PullRequestStatusFields on PullRequest {{
 
 fn pull_request_status_alias(index: usize) -> String {
     format!("pr{index}")
+}
+
+const USER_PROFILE_QUERY_CHUNK_SIZE: usize = 50;
+
+pub(super) fn user_profiles_query(logins: &[String]) -> String {
+    let variables = (0..logins.len())
+        .map(|index| format!("$login{index}: String!"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let fields = (0..logins.len())
+        .map(|index| {
+            format!(
+                "  {}: user(login: $login{index}) {{\n    login\n    name\n  }}",
+                user_profile_alias(index)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("query({variables}) {{\n{fields}\n}}\n")
+}
+
+fn user_profiles_variables(logins: &[String]) -> BTreeMap<String, &str> {
+    logins
+        .iter()
+        .enumerate()
+        .map(|(index, login)| (format!("login{index}"), login.as_str()))
+        .collect()
+}
+
+fn user_profile_alias(index: usize) -> String {
+    format!("user{index}")
+}
+
+fn unique_user_profile_logins(logins: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    logins
+        .iter()
+        .map(|login| login.trim())
+        .filter(|login| !login.is_empty())
+        .filter(|login| seen.insert((*login).to_owned()))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn normalize_user_profile_name(name: Option<&str>) -> Option<String> {
+    name.map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
 fn unique_pull_request_numbers(numbers: &[u64]) -> Vec<u64> {
@@ -1030,26 +1426,148 @@ struct PullRequestStatusesQueryData {
     repository: Option<BTreeMap<String, Option<GraphQlPullRequestStatus>>>,
 }
 
+#[derive(Debug, Serialize)]
+struct PullRequestSuggestedReviewersVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+    number: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewRequestsVariables<'a> {
+    query: &'a str,
+    cursor: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewRequestsQueryData {
+    viewer: GraphQlViewer,
+    search: GraphQlReviewRequestSearch,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlViewer {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlReviewRequestSearch {
+    #[serde(rename = "pageInfo")]
+    page_info: GraphQlPageInfo,
+    nodes: Vec<Option<GraphQlReviewRequestPullRequest>>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuthoredOpenPullRequestsVariables<'a> {
+    query: &'a str,
+    cursor: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthoredOpenPullRequestsQueryData {
+    search: GraphQlAuthoredOpenPullRequestSearch,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlAuthoredOpenPullRequestSearch {
+    #[serde(rename = "pageInfo")]
+    page_info: GraphQlPageInfo,
+    nodes: Vec<Option<GraphQlAuthoredOpenPullRequest>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlAuthoredOpenPullRequest {
+    number: u64,
+    title: String,
+    body: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
+    url: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    merged: bool,
+    #[serde(rename = "headRepositoryOwner")]
+    head_repository_owner: GraphQlReviewRequestOwner,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlPageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlReviewRequestPullRequest {
+    number: u64,
+    repository: GraphQlReviewRequestRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlReviewRequestRepository {
+    name: String,
+    owner: GraphQlReviewRequestOwner,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlReviewRequestOwner {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestSuggestedReviewersQueryData {
+    repository: Option<PullRequestSuggestedReviewersRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestSuggestedReviewersRepository {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<GraphQlPullRequestSuggestedReviewers>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlPullRequestSuggestedReviewers {
+    #[serde(rename = "suggestedReviewers")]
+    suggested_reviewers: Vec<GraphQlSuggestedReviewer>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlPullRequestStatus {
     pub(super) number: u64,
     pub(super) title: String,
     pub(super) url: String,
+    #[serde(rename = "createdAt")]
+    pub(super) created_at: String,
     #[serde(rename = "headRefName")]
     pub(super) head_ref_name: String,
     #[serde(rename = "baseRefName")]
     pub(super) base_ref_name: String,
+    pub(super) author: Option<GraphQlReviewAuthor>,
     #[serde(rename = "isDraft")]
     pub(super) is_draft: bool,
     pub(super) merged: bool,
     pub(super) closed: bool,
+    #[serde(rename = "mergedAt")]
+    pub(super) merged_at: Option<String>,
+    #[serde(rename = "closedAt")]
+    pub(super) closed_at: Option<String>,
     #[serde(rename = "reviewDecision")]
     pub(super) review_decision: Option<String>,
     #[serde(rename = "reviewRequests")]
     pub(super) review_requests: GraphQlReviewRequests,
+    #[serde(rename = "suggestedReviewers")]
+    pub(super) suggested_reviewers: Vec<GraphQlSuggestedReviewer>,
     pub(super) labels: GraphQlLabels,
     #[serde(rename = "latestReviews")]
-    pub(super) latest_reviews: GraphQlLatestReviews,
+    pub(super) latest_reviews: GraphQlReviews,
+    pub(super) reviews: GraphQlReviews,
+    #[serde(rename = "reviewThreads")]
+    pub(super) review_threads: GraphQlReviewThreads,
+    #[serde(rename = "timelineItems")]
+    pub(super) timeline_items: GraphQlTimelineItems,
     pub(super) commits: GraphQlPullRequestStatusCommits,
 }
 
@@ -1126,6 +1644,22 @@ struct GraphQlPullRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlSuggestedReviewer {
+    pub(super) reviewer: Option<GraphQlSuggestedReviewerUser>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlSuggestedReviewerUser {
+    pub(super) login: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GraphQlUserProfile {
+    login: String,
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlReviewRequests {
     #[serde(rename = "totalCount")]
     pub(super) total_count: usize,
@@ -1143,6 +1677,7 @@ pub(super) struct GraphQlRequestedReviewer {
     #[serde(rename = "__typename")]
     pub(super) type_name: String,
     pub(super) login: Option<String>,
+    pub(super) slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1157,19 +1692,76 @@ pub(super) struct GraphQlLabelNode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct GraphQlLatestReviews {
-    pub(super) nodes: Vec<GraphQlLatestReviewNode>,
+pub(super) struct GraphQlReviews {
+    pub(super) nodes: Vec<GraphQlReviewNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct GraphQlLatestReviewNode {
+pub(super) struct GraphQlReviewNode {
     pub(super) state: String,
+    #[serde(rename = "submittedAt")]
+    pub(super) submitted_at: Option<String>,
     pub(super) author: Option<GraphQlReviewAuthor>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewThreads {
+    pub(super) nodes: Vec<GraphQlReviewThreadNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewThreadNode {
+    #[serde(rename = "isResolved")]
+    pub(super) is_resolved: bool,
+    #[serde(rename = "isOutdated")]
+    pub(super) is_outdated: bool,
+    pub(super) comments: GraphQlReviewThreadComments,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewThreadComments {
+    pub(super) nodes: Vec<GraphQlReviewThreadCommentNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlReviewThreadCommentNode {
+    pub(super) author: Option<GraphQlReviewAuthor>,
+    #[serde(rename = "createdAt")]
+    pub(super) created_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlReviewAuthor {
     pub(super) login: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlTimelineItems {
+    pub(super) nodes: Vec<GraphQlTimelineItemNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "__typename")]
+pub(super) enum GraphQlTimelineItemNode {
+    #[serde(rename = "ReadyForReviewEvent")]
+    ReadyForReview {
+        #[serde(rename = "createdAt")]
+        created_at: String,
+    },
+    #[serde(rename = "ConvertToDraftEvent")]
+    ConvertToDraft {
+        #[serde(rename = "createdAt")]
+        created_at: String,
+    },
+    #[serde(rename = "ReviewRequestedEvent")]
+    ReviewRequested {
+        #[serde(rename = "createdAt")]
+        created_at: String,
+        #[serde(rename = "requestedReviewer")]
+        requested_reviewer: Option<GraphQlRequestedReviewer>,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1206,6 +1798,16 @@ struct RepositoryForkSourceResponse {
 #[derive(Debug, Deserialize)]
 struct RepositoryForkOwnerResponse {
     login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitRefResponse {
+    object: GitRefObject,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitRefObject {
+    sha: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1269,8 +1871,29 @@ pub(super) fn map_graphql_pull_request_status(
     pull: GraphQlPullRequestStatus,
 ) -> PullRequestStatusRecord {
     let requested_reviewer_count = pull.review_requests.total_count;
+    let pull_request_author = pull.author.as_ref().map(|author| author.login.as_str());
     let requested_reviewers = reviewer_selection_from_graphql(pull.review_requests.nodes);
-    let approved_reviewers = approved_reviewers_from_graphql(pull.latest_reviews.nodes);
+    let suggested_reviewers = suggested_reviewers_from_graphql(pull.suggested_reviewers);
+    let latest_review_nodes = pull.latest_reviews.nodes;
+    let review_nodes = pull.reviews.nodes;
+    let review_thread_nodes = pull.review_threads.nodes;
+    let review_activity = review_activity_from_graphql(
+        &latest_review_nodes,
+        &review_nodes,
+        &review_thread_nodes,
+        pull_request_author,
+    );
+    let approved_reviewers =
+        approved_reviewers_from_graphql(latest_review_nodes, pull_request_author);
+    let thread_reviewers =
+        review_thread_reviewers_from_graphql(review_thread_nodes, pull_request_author);
+    let commented_reviewers = active_commented_reviewers(
+        thread_reviewers.commented.clone(),
+        commented_reviewers_from_graphql(review_nodes, &approved_reviewers, pull_request_author),
+        &thread_reviewers.seen,
+    );
+    let addressed_reviewers = thread_reviewers.addressed;
+    let timeline_events = timeline_events_from_graphql(pull.timeline_items.nodes);
     let labels = labels_from_graphql(pull.labels.nodes);
     let latest_commit = pull
         .commits
@@ -1298,16 +1921,25 @@ pub(super) fn map_graphql_pull_request_status(
         number: pull.number,
         title: pull.title,
         url: Some(pull.url),
+        created_at: Some(pull.created_at),
         head_branch: pull.head_ref_name,
         base_branch: pull.base_ref_name,
+        author: pull.author.map(|author| author.login),
         draft: pull.is_draft,
         merged: pull.merged,
         closed: pull.closed,
+        merged_at: pull.merged_at,
+        closed_at: pull.closed_at,
         check_status,
         checks,
         review_status,
         requested_reviewers,
+        suggested_reviewers,
         approved_reviewers,
+        commented_reviewers,
+        addressed_reviewers,
+        review_activity,
+        timeline_events,
         labels,
         latest_commit_oid: latest_commit.map(|commit| commit.oid),
     }
@@ -1391,7 +2023,130 @@ fn reviewer_selection_from_graphql(nodes: Vec<GraphQlReviewRequestNode>) -> Revi
     ReviewerSelection::new(users, Vec::<String>::new())
 }
 
-fn approved_reviewers_from_graphql(nodes: Vec<GraphQlLatestReviewNode>) -> Vec<String> {
+pub(super) fn suggested_reviewers_from_graphql(
+    nodes: Vec<GraphQlSuggestedReviewer>,
+) -> Vec<String> {
+    let mut reviewers = Vec::new();
+    let mut seen = BTreeSet::new();
+    for login in nodes
+        .into_iter()
+        .filter_map(|node| node.reviewer.map(|reviewer| reviewer.login))
+        .map(|login| login.trim().to_owned())
+        .filter(|login| !login.is_empty())
+    {
+        if seen.insert(login.clone()) {
+            reviewers.push(login);
+        }
+    }
+    reviewers
+}
+
+fn timeline_events_from_graphql(
+    nodes: Vec<GraphQlTimelineItemNode>,
+) -> Vec<PullRequestTimelineEvent> {
+    nodes
+        .into_iter()
+        .filter_map(|node| match node {
+            GraphQlTimelineItemNode::ReadyForReview { created_at } => {
+                Some(PullRequestTimelineEvent {
+                    kind: PullRequestTimelineEventKind::ReadyForReview,
+                    created_at,
+                    reviewer: None,
+                })
+            }
+            GraphQlTimelineItemNode::ConvertToDraft { created_at } => {
+                Some(PullRequestTimelineEvent {
+                    kind: PullRequestTimelineEventKind::ConvertToDraft,
+                    created_at,
+                    reviewer: None,
+                })
+            }
+            GraphQlTimelineItemNode::ReviewRequested {
+                created_at,
+                requested_reviewer,
+            } => Some(PullRequestTimelineEvent {
+                kind: PullRequestTimelineEventKind::ReviewRequested,
+                created_at,
+                reviewer: requested_reviewer.and_then(timeline_requested_reviewer_name),
+            }),
+            GraphQlTimelineItemNode::Other => None,
+        })
+        .collect()
+}
+
+fn timeline_requested_reviewer_name(reviewer: GraphQlRequestedReviewer) -> Option<String> {
+    match reviewer.type_name.as_str() {
+        "User" => reviewer.login,
+        "Team" => reviewer.slug.map(|slug| format!("team/{slug}")),
+        _ => None,
+    }
+}
+
+fn review_activity_from_graphql(
+    latest_reviews: &[GraphQlReviewNode],
+    reviews: &[GraphQlReviewNode],
+    review_threads: &[GraphQlReviewThreadNode],
+    pull_request_author: Option<&str>,
+) -> Vec<PullRequestReviewActivity> {
+    let mut reviewed_at_by_reviewer = BTreeMap::<String, String>::new();
+    for node in latest_reviews.iter().chain(reviews.iter()) {
+        let Some(author) = &node.author else {
+            continue;
+        };
+        let Some(reviewed_at) = node.submitted_at.as_deref() else {
+            continue;
+        };
+        record_review_activity(
+            &mut reviewed_at_by_reviewer,
+            author.login.as_str(),
+            reviewed_at,
+            pull_request_author,
+        );
+    }
+    for comment in review_threads
+        .iter()
+        .flat_map(|thread| thread.comments.nodes.iter())
+    {
+        let Some(author) = &comment.author else {
+            continue;
+        };
+        record_review_activity(
+            &mut reviewed_at_by_reviewer,
+            author.login.as_str(),
+            comment.created_at.as_str(),
+            pull_request_author,
+        );
+    }
+
+    reviewed_at_by_reviewer
+        .into_iter()
+        .map(|(reviewer, reviewed_at)| PullRequestReviewActivity {
+            reviewer,
+            reviewed_at,
+        })
+        .collect()
+}
+
+fn record_review_activity(
+    reviewed_at_by_reviewer: &mut BTreeMap<String, String>,
+    login: &str,
+    reviewed_at: &str,
+    pull_request_author: Option<&str>,
+) {
+    let login = login.trim();
+    if login.is_empty() || pull_request_author == Some(login) {
+        return;
+    }
+    let current = reviewed_at_by_reviewer.entry(login.to_owned()).or_default();
+    if current.as_str() < reviewed_at {
+        *current = reviewed_at.to_owned();
+    }
+}
+
+fn approved_reviewers_from_graphql(
+    nodes: Vec<GraphQlReviewNode>,
+    pull_request_author: Option<&str>,
+) -> Vec<String> {
     let mut reviewers = Vec::new();
     let mut seen = BTreeSet::new();
     for node in nodes {
@@ -1400,12 +2155,144 @@ fn approved_reviewers_from_graphql(nodes: Vec<GraphQlLatestReviewNode>) -> Vec<S
                 continue;
             };
             let login = author.login.trim();
-            if !login.is_empty() && seen.insert(login.to_owned()) {
+            if !login.is_empty()
+                && pull_request_author != Some(login)
+                && seen.insert(login.to_owned())
+            {
                 reviewers.push(login.to_owned());
             }
         }
     }
     reviewers
+}
+
+fn commented_reviewers_from_graphql(
+    nodes: Vec<GraphQlReviewNode>,
+    approved_reviewers: &[String],
+    pull_request_author: Option<&str>,
+) -> Vec<String> {
+    let approved = approved_reviewers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut reviewers = Vec::new();
+    let mut seen = BTreeSet::new();
+    for node in nodes {
+        if node.state == "COMMENTED" {
+            let Some(author) = node.author else {
+                continue;
+            };
+            let login = author.login.trim();
+            if !login.is_empty()
+                && pull_request_author != Some(login)
+                && !approved.contains(login)
+                && seen.insert(login.to_owned())
+            {
+                reviewers.push(login.to_owned());
+            }
+        }
+    }
+    reviewers
+}
+
+#[derive(Debug, Default)]
+struct ReviewThreadReviewers {
+    commented: Vec<String>,
+    addressed: Vec<String>,
+    seen: BTreeSet<String>,
+}
+
+fn review_thread_reviewers_from_graphql(
+    nodes: Vec<GraphQlReviewThreadNode>,
+    pull_request_author: Option<&str>,
+) -> ReviewThreadReviewers {
+    let mut result = ReviewThreadReviewers::default();
+    for thread in nodes {
+        let mut latest_author_comment_at: Option<String> = None;
+        let mut reviewer_comments: Vec<(String, String)> = Vec::new();
+        for comment in thread.comments.nodes {
+            let Some(author) = comment.author else {
+                continue;
+            };
+            let login = author.login.trim();
+            if login.is_empty() {
+                continue;
+            }
+            if pull_request_author == Some(login) {
+                replace_if_newer(&mut latest_author_comment_at, &comment.created_at);
+                continue;
+            }
+
+            result.seen.insert(login.to_owned());
+            if let Some((_, created_at)) = reviewer_comments
+                .iter_mut()
+                .find(|(reviewer, _)| reviewer == login)
+            {
+                if created_at.as_str() < comment.created_at.as_str() {
+                    *created_at = comment.created_at;
+                }
+            } else {
+                reviewer_comments.push((login.to_owned(), comment.created_at));
+            }
+        }
+
+        if thread.is_resolved || thread.is_outdated {
+            continue;
+        }
+
+        for (reviewer, reviewer_comment_at) in reviewer_comments {
+            if latest_author_comment_at
+                .as_ref()
+                .is_some_and(|author_comment_at| author_comment_at > &reviewer_comment_at)
+            {
+                push_unique(&mut result.addressed, reviewer);
+            } else {
+                push_unique(&mut result.commented, reviewer);
+            }
+        }
+    }
+
+    let commented = result
+        .commented
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    result
+        .addressed
+        .retain(|reviewer| !commented.contains(reviewer.as_str()));
+    result
+}
+
+fn active_commented_reviewers(
+    thread_commented_reviewers: Vec<String>,
+    historical_commented_reviewers: Vec<String>,
+    thread_reviewers: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut reviewers = Vec::new();
+    for reviewer in thread_commented_reviewers {
+        push_unique(&mut reviewers, reviewer);
+    }
+    for reviewer in historical_commented_reviewers {
+        if !thread_reviewers.contains(reviewer.as_str()) {
+            push_unique(&mut reviewers, reviewer);
+        }
+    }
+    reviewers
+}
+
+fn replace_if_newer(current: &mut Option<String>, candidate: &str) {
+    if current
+        .as_deref()
+        .is_none_or(|existing| existing < candidate)
+    {
+        *current = Some(candidate.to_owned());
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn labels_from_graphql(nodes: Vec<GraphQlLabelNode>) -> Vec<PullRequestLabel> {

@@ -45,6 +45,19 @@ impl WorkAddPlan {
     }
 }
 
+impl WorkRepository {
+    pub(super) fn github_repository(&self) -> GitHubRepository {
+        self.identity.github_repository()
+    }
+
+    pub(super) fn provider_slug(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.identity.host, self.identity.owner, self.identity.repo
+        )
+    }
+}
+
 /// Post-create setup failure for an already-created managed workspace.
 #[derive(Debug, Error)]
 #[error("{source}")]
@@ -345,10 +358,35 @@ fn global_discovered_work_locations(
     config: &WorkflowConfig,
     environment: &RuntimeEnvironment,
 ) -> Result<Vec<DiscoveredWorkLocation>, RepositoryError> {
+    discovered_work_locations(config, environment, WorkDiscoveryScope::All)
+}
+
+fn global_discovered_work_repositories(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+) -> Result<Vec<DiscoveredWorkLocation>, RepositoryError> {
+    Ok(
+        discovered_work_locations(config, environment, WorkDiscoveryScope::PrimaryOnly)?
+            .into_iter()
+            .filter(|location| location.workspace.is_none())
+            .collect(),
+    )
+}
+
+fn discovered_work_locations(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+    scope: WorkDiscoveryScope,
+) -> Result<Vec<DiscoveredWorkLocation>, RepositoryError> {
     let mut workspace_roots = Vec::new();
     let max_depth = max_work_location_depth(&config.layout);
     for root in config.layout.configured_roots(environment)? {
-        collect_jj_workspace_roots(&root, max_depth, &mut workspace_roots);
+        collect_jj_workspace_roots(
+            &root,
+            max_depth,
+            scope.skipped_child_name(&config.layout),
+            &mut workspace_roots,
+        );
     }
     workspace_roots.sort();
     workspace_roots.dedup();
@@ -361,6 +399,21 @@ fn global_discovered_work_locations(
     }
 
     Ok(discovered)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WorkDiscoveryScope {
+    All,
+    PrimaryOnly,
+}
+
+impl WorkDiscoveryScope {
+    fn skipped_child_name(self, layout: &LayoutConfig) -> Option<&str> {
+        match self {
+            Self::All => None,
+            Self::PrimaryOnly => Some(&layout.workspace_dir),
+        }
+    }
 }
 
 /// Builds the global work-location index used by shell completion and path resolution.
@@ -385,13 +438,12 @@ pub(super) fn filter_work_locations_by_prefix(
         .collect()
 }
 
-/// Builds navigation candidates with current-repository targets before global layout targets.
-pub(super) fn navigation_work_locations(
+pub(super) fn navigation_work_locations_from_global(
     config: &WorkflowConfig,
     environment: &RuntimeEnvironment,
     current_workspaces: &[WorkspaceEntry],
+    global: Vec<WorkLocation>,
 ) -> Result<Vec<WorkLocation>, RepositoryError> {
-    let global = global_work_locations(config, environment)?;
     let mut locations = current_workspace_name_locations(current_workspaces);
 
     let Some(current_repository) =
@@ -401,6 +453,12 @@ pub(super) fn navigation_work_locations(
         return Ok(deduplicate_work_locations_by_key(locations));
     };
 
+    let (current_global, other_global) =
+        partition_navigation_global_locations(&global, &current_repository);
+    locations.extend(current_repository_workspace_aliases(
+        &current_global,
+        &current_repository,
+    ));
     locations.push(WorkLocation {
         key: "default".to_owned(),
         root: current_repository.primary_root.clone(),
@@ -413,13 +471,33 @@ pub(super) fn navigation_work_locations(
         key: "root".to_owned(),
         root: current_repository.primary_root.clone(),
     });
-
-    let (current_global, other_global) =
-        partition_navigation_global_locations(&global, &current_repository);
     locations.extend(current_global);
     locations.extend(other_global);
 
     Ok(deduplicate_work_locations_by_key(locations))
+}
+
+fn current_repository_workspace_aliases(
+    global: &[WorkLocation],
+    current_repository: &CurrentNavigationRepository,
+) -> Vec<WorkLocation> {
+    global
+        .iter()
+        .filter(|location| {
+            location
+                .root
+                .starts_with(&current_repository.workspace_collection_root)
+        })
+        .filter_map(|location| {
+            location
+                .key
+                .split_once('@')
+                .map(|(_, workspace)| WorkLocation {
+                    key: workspace.to_owned(),
+                    root: location.root.clone(),
+                })
+        })
+        .collect()
 }
 
 /// Builds the global primary-checkout index used by cross-repository commands.
@@ -428,7 +506,7 @@ pub(super) fn global_work_repositories(
     environment: &RuntimeEnvironment,
 ) -> Result<Vec<WorkRepository>, RepositoryError> {
     Ok(assign_work_repository_keys(
-        global_discovered_work_locations(config, environment)?,
+        global_discovered_work_repositories(config, environment)?,
     ))
 }
 
@@ -584,6 +662,48 @@ pub(super) fn resolve_work_location(
                 .collect(),
         }),
     }
+}
+
+/// Resolves exact current-repository navigation targets without scanning global layout roots.
+pub(super) fn resolve_local_navigation_work_location(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+    current_workspaces: &[WorkspaceEntry],
+    query: &str,
+) -> Result<Option<PathBuf>, RepositoryError> {
+    if let Some(path) = resolve_navigation_path(query, environment) {
+        return Ok(Some(path));
+    }
+
+    let Some(components) = navigation_query_components(query) else {
+        return Ok(None);
+    };
+    if components.len() != 1 {
+        return Ok(None);
+    }
+    let key = &components[0];
+
+    if let Some(workspace) = current_workspaces
+        .iter()
+        .find(|workspace| workspace.name == *key)
+    {
+        return Ok(Some(workspace.root.clone()));
+    }
+
+    let Some(current_repository) =
+        current_navigation_repository(config, environment, current_workspaces)?
+    else {
+        return Ok(None);
+    };
+    if matches!(key.as_str(), "default" | "trunk" | "root") {
+        return Ok(Some(current_repository.primary_root));
+    }
+
+    if validate_workspace_name(key).is_err() {
+        return Ok(None);
+    }
+    let workspace_root = current_repository.workspace_collection_root.join(key);
+    Ok(workspace_root.is_dir().then_some(workspace_root))
 }
 
 /// Resolves a shell navigation query by explicit path first, then unique key and child-directory fragments.
@@ -903,14 +1023,20 @@ fn contains_glob_meta(pattern: &str) -> bool {
         .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
 }
 
-fn collect_jj_workspace_roots(root: &Path, max_depth: usize, roots: &mut Vec<PathBuf>) {
-    collect_jj_workspace_roots_at_depth(root, 0, max_depth, roots);
+fn collect_jj_workspace_roots(
+    root: &Path,
+    max_depth: usize,
+    skipped_child_name: Option<&str>,
+    roots: &mut Vec<PathBuf>,
+) {
+    collect_jj_workspace_roots_at_depth(root, 0, max_depth, skipped_child_name, roots);
 }
 
 fn collect_jj_workspace_roots_at_depth(
     path: &Path,
     depth: usize,
     max_depth: usize,
+    skipped_child_name: Option<&str>,
     roots: &mut Vec<PathBuf>,
 ) {
     if is_jj_workspace_root(path) {
@@ -929,14 +1055,24 @@ fn collect_jj_workspace_roots_at_depth(
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_dir() && entry.file_name() != ".jj" {
-            children.push(entry.path());
+        if !file_type.is_dir() || entry.file_name() == ".jj" {
+            continue;
         }
+        if skipped_child_name.is_some_and(|name| entry.file_name() == name) {
+            continue;
+        }
+        children.push(entry.path());
     }
     children.sort();
 
     for child in children {
-        collect_jj_workspace_roots_at_depth(&child, depth + 1, max_depth, roots);
+        collect_jj_workspace_roots_at_depth(
+            &child,
+            depth + 1,
+            max_depth,
+            skipped_child_name,
+            roots,
+        );
     }
 }
 

@@ -24,6 +24,86 @@ fn stack_help_describes_cached_display_and_live_refresh() {
 }
 
 #[test]
+fn stack_complete_reviewers_lists_configured_repo_reviewers() {
+    // Verifies: Reviewer completion is repo-scoped and filtered while publish still accepts arbitrary reviewers.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[repo]
+reviewers = ["base-reviewer"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+reviewers = ["area-reviewer"]
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+reviewers = ["repo-reviewer", "ExampleOrg/platform"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "complete-reviewers", "--prefix", "repo-"],
+        &environment,
+        &services,
+    )
+    .expect("reviewer completion succeeds");
+
+    assert_eq!(result.stdout, "repo-reviewer\n");
+}
+
+#[test]
+fn stack_status_interactive_flags_parse_without_loading_dashboard() {
+    // Verifies: stack status dashboard flags are represented in the typed request.
+    let matches = cli()
+        .try_get_matches_from([
+            "jx",
+            "stack",
+            "status",
+            "-a",
+            "-i",
+            "--refresh-seconds",
+            "20",
+            "api-*",
+        ])
+        .expect("stack status dashboard args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+
+    let CommandRequest::Stack(StackRequest::Status(request)) = request else {
+        panic!("expected stack status request");
+    };
+    assert!(request.all);
+    assert_eq!(request.repo_filters, vec!["api-*".to_owned()]);
+    assert_eq!(request.parallelism, 8);
+    assert_eq!(request.format, StackStatusFormat::Human);
+    assert!(request.interactive);
+    assert_eq!(request.refresh_seconds, 20);
+}
+
+#[test]
+fn stack_status_interactive_rejects_json_format() {
+    // Verifies: live terminal dashboards only support human output.
+    let matches = cli()
+        .try_get_matches_from(["jx", "stack", "status", "-i", "--format", "json"])
+        .expect("CLI shape parses before request validation");
+    let result = CommandRequest::from_matches(&matches);
+
+    assert!(matches!(
+        result.as_ref().map_err(clap::Error::kind),
+        Err(clap::error::ErrorKind::ArgumentConflict)
+    ));
+}
+
+#[test]
 fn stack_status_renders_check_and_review_summary() {
     // Verifies: stack status fetches batched GitHub health for locally tracked PR numbers.
     let workspace = TestWorkspace::new();
@@ -37,6 +117,7 @@ fn stack_status_renders_check_and_review_summary() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 stack_status_node(101, "topic/root", "main", "Root change", false),
                 stack_status_node(102, "topic/child", "topic/root", "Child change", true),
@@ -67,8 +148,16 @@ fn stack_status_renders_check_and_review_summary() {
                         name: "help wanted".to_owned(),
                         color: "008672".to_owned(),
                     },
+                    PullRequestLabel {
+                        name: "area: backend".to_owned(),
+                        color: "0e8a16".to_owned(),
+                    },
                 ];
                 status.approved_reviewers = vec!["reviewer-approved".to_owned()];
+                status.review_activity = vec![PullRequestReviewActivity {
+                    reviewer: "reviewer-approved".to_owned(),
+                    reviewed_at: "2099-01-01T00:00:00Z".to_owned(),
+                }];
                 status
             }),
             (102, {
@@ -82,6 +171,8 @@ fn stack_status_renders_check_and_review_summary() {
                     ReviewerSelection::new(["reviewer-one"], ["platform"]),
                 );
                 status.draft = true;
+                status.created_at = Some("2099-01-01T00:00:00Z".to_owned());
+                status.suggested_reviewers = vec!["suggested-reviewer".to_owned()];
                 status.labels = vec![PullRequestLabel {
                     name: "ui".to_owned(),
                     color: "fbca04".to_owned(),
@@ -106,24 +197,576 @@ fn stack_status_renders_check_and_review_summary() {
             "example-owner/example-repo"
         )
     )));
-    assert!(result.stdout.contains("(origin/main 3 commits behind)"));
-    assert!(result.stdout.contains("PR       Chk  Rev  Title"));
+    assert!(result.stdout.contains("(origin/main behind)"));
+    assert!(result.stdout.contains("PR       Chk  Rev  Lag   Title"));
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ✓    ◯ Root change [bug] [help wanted] reviewer-approved",
+        "{}  ✓    ✓    <1h   ◯ Root change [bug] [help wanted] [area:backend] reviewer-approved",
         stack_status_pull_request_cell(101)
     )));
     assert!(result.stdout.contains(&format!(
-        "{}  ◷    ◷    └ ◌ Child change [ui] reviewer-one, team/platform",
+        "{}  ◷    ◷    <1h   └ ◌ Child change [ui] reviewer-one, team/platform, suggested-reviewer",
         stack_status_pull_request_cell(102)
     )));
-    assert!(result.stdout.contains("Legend:\n  Title: ◯ ready, ◌ draft"));
-    assert!(result.stdout.contains("labels and reviewers follow title"));
+    assert!(result
+        .stdout
+        .contains("Legend:\n  Title: ● merged, ◯ ready/closed, ◌ draft"));
+    assert!(result.stdout.contains("labels/reviewers follow"));
     assert!(result
         .stdout
         .contains("Chk: ✓ passing, ✗ failing, ◷ pending"));
     assert!(result
         .stdout
         .contains("Rev: ✓ approved, ! changes requested, ◷ waiting"));
+}
+
+#[test]
+fn stack_status_styles_review_wait_threshold() {
+    // Verifies: configured review SLA styling highlights stale review waits without distracting fresh, draft, or merged rows.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[repo.stack_status]
+review_wait_threshold = "4h"
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                stack_status_node(201, "topic/old", "main", "Old waiting", false),
+                stack_status_node(202, "topic/fresh", "main", "Fresh waiting", false),
+                stack_status_node(203, "topic/draft", "main", "Draft waiting", true),
+                stack_status_node(204, "topic/merged", "main", "Merged change", false),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let timestamp = |hours: i64| {
+        (chrono::Utc::now() - chrono::Duration::hours(hours))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    };
+    let mut old = stack_status_record(
+        201,
+        "Old waiting",
+        "topic/old",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["reviewer-one"], Vec::<String>::new()),
+    );
+    old.created_at = Some(timestamp(5));
+    let mut fresh = stack_status_record(
+        202,
+        "Fresh waiting",
+        "topic/fresh",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["reviewer-one"], Vec::<String>::new()),
+    );
+    fresh.created_at = Some(timestamp(5));
+    fresh.timeline_events = vec![PullRequestTimelineEvent {
+        kind: PullRequestTimelineEventKind::ReadyForReview,
+        created_at: timestamp(1),
+        reviewer: None,
+    }];
+    let mut draft = stack_status_record(
+        203,
+        "Draft waiting",
+        "topic/draft",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["reviewer-one"], Vec::<String>::new()),
+    );
+    draft.created_at = Some(timestamp(10));
+    draft.timeline_events = vec![PullRequestTimelineEvent {
+        kind: PullRequestTimelineEventKind::ConvertToDraft,
+        created_at: timestamp(6),
+        reviewer: None,
+    }];
+    draft.draft = true;
+    let mut merged = stack_status_record(
+        204,
+        "Merged change",
+        "topic/merged",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    merged.created_at = Some(timestamp(7));
+    merged.merged = true;
+    merged.closed = true;
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "topic/old".to_owned(),
+            "topic/fresh".to_owned(),
+            "topic/draft".to_owned(),
+            "topic/merged".to_owned(),
+        ],
+        pull_request_statuses: BTreeMap::from([
+            (201, old),
+            (202, fresh),
+            (203, draft),
+            (204, merged),
+        ]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let prompts = test_prompt_handlers();
+
+    let result = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        prompts,
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("colored stack status succeeds");
+
+    assert!(result
+        .stdout
+        .contains("\x1b[1m\x1b[31m◷\x1b[0m    \x1b[1m\x1b[31m5h  \x1b[0m  ◯ Old waiting"));
+    assert!(result
+        .stdout
+        .contains("\x1b[36m◷\x1b[0m    \x1b[2m1h  \x1b[0m  ◯ Fresh waiting"));
+    assert!(result
+        .stdout
+        .contains("◷    \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  ◌ Draft waiting"));
+    assert!(result
+        .stdout
+        .contains("\x1b[32m✓\x1b[0m    \x1b[32m7h  \x1b[0m  \x1b[32m● Merged change\x1b[0m"));
+}
+
+#[test]
+fn stack_status_applies_configured_work_item_fix_handler_on_merge_transition() {
+    // Verifies: configured work-item side effects run only when stack status observes a fixing PR merge.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let marker = workspace.home.join("resolved-work-item.txt");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        &format!(
+            r#"
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.work_items]
+apply_on_stack_status = true
+
+[[repo.rules.work_item_handlers]]
+id = "resolve-work"
+on = "work_item.fixed"
+command = ["sh", "-c", "printf '%s\\n%s\\n' \"$1\" \"$(pwd)\" > \"$2\"", "_", "{{work_id}}", "{}"]
+"#,
+            marker.display()
+        ),
+    );
+    let mut node = stack_status_node(101, "topic/root", "main", "Root change", false);
+    node.work_ids = vec!["ABC-123".to_owned()];
+    node.fixes_work_ids = vec!["ABC-123".to_owned()];
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![node],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = stack_status_record(
+        101,
+        "Root change",
+        "topic/root",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    status.merged = true;
+    status.closed = true;
+    status.merged_at = Some("2026-06-09T12:00:00Z".to_owned());
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/root".to_owned()],
+        pull_request_statuses: BTreeMap::from([(101, status)]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    let marker_contents = std::fs::read_to_string(marker).expect("handler marker is written");
+    let marker_lines = marker_contents.lines().collect::<Vec<_>>();
+    assert_eq!(marker_lines[0], "ABC-123");
+    assert_eq!(
+        std::fs::canonicalize(marker_lines[1]).expect("handler cwd exists"),
+        std::fs::canonicalize(workspace.path()).expect("workspace path exists")
+    );
+    let log = std::fs::read_to_string(
+        workspace
+            .home
+            .join(".local/state/jx/jx-work-item-handlers.log"),
+    )
+    .expect("handler log is written");
+    let events = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("handler log json"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["status"], "start");
+    assert_eq!(events[1]["status"], "success");
+    assert_eq!(events[0]["handler"], "resolve-work");
+    assert_eq!(events[0]["workId"], "ABC-123");
+    assert_eq!(events[0]["cwd"], workspace.path().display().to_string());
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        metadata.work_item_handler_runs,
+        vec![StackMetadataWorkItemHandlerRun {
+            handler: "resolve-work".to_owned(),
+            work_id: "ABC-123".to_owned(),
+            pull_request: 101,
+        }]
+    );
+    assert!(
+        !std::fs::read_to_string(workspace.path().join(".jx/.gitignore"))
+            .expect("metadata gitignore is written")
+            .contains("/work-item-handlers.log")
+    );
+}
+
+#[test]
+fn stack_status_reconciles_missing_work_item_fix_handler_ledger() {
+    // Verifies: merged fixing PRs still apply configured side effects when stack metadata has no success ledger entry.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let marker = workspace.home.join("resolved-work-items.txt");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        &format!(
+            r#"
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.work_items]
+apply_on_stack_status = true
+
+[[repo.rules.work_item_handlers]]
+id = "resolve-work"
+on = "work_item.fixed"
+command = ["sh", "-c", "printf '%s\\n' \"$1\" >> \"$2\"", "_", "{{work_id}}", "{}"]
+"#,
+            marker.display()
+        ),
+    );
+    let mut node = stack_status_node(102, "topic/root", "main", "Root change", false);
+    node.merged = true;
+    node.work_ids = vec!["ABC-124".to_owned()];
+    node.fixes_work_ids = vec!["ABC-124".to_owned()];
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![node],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = stack_status_record(
+        102,
+        "Root change",
+        "topic/root",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    status.merged = true;
+    status.closed = true;
+    status.merged_at = Some("2026-06-09T12:00:00Z".to_owned());
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/root".to_owned()],
+        pull_request_statuses: BTreeMap::from([(102, status)]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("first stack status succeeds");
+    run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("second stack status succeeds");
+
+    assert_eq!(
+        std::fs::read_to_string(marker).expect("handler marker is written"),
+        "ABC-124\n"
+    );
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        metadata.work_item_handler_runs,
+        vec![StackMetadataWorkItemHandlerRun {
+            handler: "resolve-work".to_owned(),
+            work_id: "ABC-124".to_owned(),
+            pull_request: 102,
+        }]
+    );
+}
+
+#[test]
+fn stack_status_renders_reviewer_display_names() {
+    // Verifies: stack status keeps login-based facts but renders cached public names for humans.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                119,
+                "topic/display-name",
+                "main",
+                "Display names",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/display-name".to_owned()],
+        pull_request_statuses: BTreeMap::from([(
+            119,
+            stack_status_record(
+                119,
+                "Display names",
+                "topic/display-name",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::ReviewRequested,
+                ReviewerSelection::new(["human-reviewer"], Vec::<String>::new()),
+            ),
+        )]),
+        github_user_display_names: BTreeMap::from([(
+            "human-reviewer".to_owned(),
+            "Human Reviewer".to_owned(),
+        )]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains("Human Reviewer"));
+    assert!(!result.stdout.contains("human-reviewer"));
+}
+
+#[test]
+fn stack_status_rewrites_titles_before_rendering() {
+    // Verifies: repo policy can normalize PR title prefixes before stack status display.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
+replace = "$1: $2"
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                121,
+                "topic/title-rewrite",
+                "main",
+                "Cached title",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/title-rewrite".to_owned()],
+        pull_request_statuses: BTreeMap::from([(
+            121,
+            stack_status_record(
+                121,
+                "[TASK-123] Wire up synthetic endpoint",
+                "topic/title-rewrite",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::Approved,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result
+        .stdout
+        .contains("TASK-123: Wire up synthetic endpoint"));
+    assert!(!result.stdout.contains("[TASK-123]"));
+}
+
+#[test]
+fn stack_status_ellipsizes_long_titles_before_labels_and_reviewers() {
+    // Verifies: PR titles follow the conventional short subject width while preserving row signals.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                120,
+                "topic/title-width",
+                "main",
+                "Cached title",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        120,
+        "Implement a very long synthetic stack title that demonstrates the compact subject width convention",
+        "topic/title-width",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["human-reviewer"], Vec::<String>::new()),
+    );
+    status.labels = vec![PullRequestLabel {
+        name: "backend".to_owned(),
+        color: "5319e7".to_owned(),
+    }];
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/title-width".to_owned()],
+        pull_request_statuses: BTreeMap::from([(120, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result
+        .stdout
+        .contains("Implement a very long synthetic stack title that demonstrates the compa…"));
+    assert!(result.stdout.contains("[backend] human-reviewer"));
+    assert!(!result.stdout.contains("compact subject width convention"));
+}
+
+#[test]
+fn stack_status_ellipsizes_rows_to_terminal_width() {
+    // Verifies: long stack-status rows stay within the detected terminal width.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                119,
+                "topic/long-row",
+                "main",
+                "Implement a very long synthetic stack feature title that must be truncated",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/long-row".to_owned()],
+        pull_request_statuses: BTreeMap::from([(
+            119,
+            stack_status_record(
+                119,
+                "Implement a very long synthetic feature title that must be truncated",
+                "topic/long-row",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::Approved,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        test_prompt_handlers(),
+        OutputMode::plain_with_width(64),
+    )
+    .expect("stack status succeeds");
+
+    let row = result
+        .stdout
+        .lines()
+        .find(|line| line.contains("#119"))
+        .expect("stack row renders");
+    assert!(row.contains('…'), "row: {row:?}\n{}", result.stdout);
+    assert!(rendered_visible_width(row) <= 64, "row: {row:?}");
 }
 
 #[test]
@@ -144,12 +787,22 @@ repo = "example-owner/example-repo"
 
 [[repo.rules.stack_status.review_gate_checks]]
 name = "approval gate"
+
+[[repo.rules.stack_status.ignored_checks]]
+name = "^ci/noisy-advisory$"
+
+[[repo.rules.stack_status.ignored_labels]]
+name = "generated-noise"
+
+[[repo.rules.stack_status.ignored_reviewers]]
+name = "ignored-bot"
 "#,
     );
     write_stack_metadata(
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 120,
                 "topic/review-gate",
@@ -167,8 +820,19 @@ name = "approval gate"
         "main",
         PullRequestCheckStatus::Failing,
         PullRequestReviewStatus::NotReviewed,
-        ReviewerSelection::default(),
+        ReviewerSelection::new(["human-reviewer", "ignored-bot"], Vec::<String>::new()),
     );
+    status.labels = vec![
+        PullRequestLabel {
+            name: "useful-label".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        PullRequestLabel {
+            name: "generated-noise".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    status.commented_reviewers = vec!["ignored-bot".to_owned()];
     status.checks = vec![
         // GitHub rollups can include stale duplicate contexts; the latest matching name wins.
         PullRequestCheck {
@@ -177,6 +841,10 @@ name = "approval gate"
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Failing,
+        },
+        PullRequestCheck {
+            name: "ci/noisy-advisory".to_owned(),
             status: PullRequestCheckStatus::Failing,
         },
         PullRequestCheck {
@@ -195,8 +863,74 @@ name = "approval gate"
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ◷    ◯ Review gate change",
+        "{}  ✓    ◷    —     ◯ Review gate change [useful-label] human-reviewer",
         stack_status_pull_request_cell(120)
+    )));
+    assert!(!result.stdout.contains("generated-noise"));
+    assert!(!result.stdout.contains("ignored-bot"));
+}
+
+#[test]
+fn stack_status_uses_latest_contexts_when_rollup_has_stale_failure() {
+    // Verifies: stale duplicate GitHub contexts do not keep Chk failing after a newer success.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                121,
+                "topic/stale-rollup",
+                "main",
+                "Stale rollup change",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        121,
+        "Stale rollup change",
+        "topic/stale-rollup",
+        "main",
+        PullRequestCheckStatus::Failing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    status.checks = vec![
+        PullRequestCheck {
+            name: "Trunk Runner".to_owned(),
+            status: PullRequestCheckStatus::Failing,
+        },
+        PullRequestCheck {
+            name: "Trunk Runner".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Pending,
+        },
+    ];
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/stale-rollup".to_owned()],
+        pull_request_statuses: BTreeMap::from([(121, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains(&format!(
+        "{}  ◷    ✓    —     ◯ Stale rollup change",
+        stack_status_pull_request_cell(121)
     )));
 }
 
@@ -214,6 +948,7 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/branch-only-status".to_owned(),
                 base_branch: "main".to_owned(),
@@ -224,6 +959,8 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -266,11 +1003,93 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
         &[vec![451]]
     );
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ◷    ◌ Example branch-only status example-reviewer",
+        "{}  ✓    ◷    —     ◌ Example branch-only status example-reviewer",
         stack_status_pull_request_cell(451)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(metadata.nodes[0].pull_request, Some(451));
+}
+
+#[test]
+fn stack_status_resolves_merged_branch_only_stack_nodes() {
+    // Verifies: merged PRs can reattach their PR number even when only the local branch was cached.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![StackMetadataNode {
+                branch: "topic/merged-branch-only".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: None,
+                parent_pull_request: None,
+                title: "Merged branch-only status".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut pull_request = pull_request_choice_record(
+        452,
+        "Merged branch-only status",
+        "topic/merged-branch-only",
+        "main",
+        false,
+    );
+    pull_request.merged = true;
+    let mut status = stack_status_record(
+        452,
+        "Merged branch-only status",
+        "topic/merged-branch-only",
+        "main",
+        PullRequestCheckStatus::Failing,
+        PullRequestReviewStatus::ChangesRequested,
+        ReviewerSelection::default(),
+    );
+    status.merged = true;
+    status.closed = true;
+    status.merged_at = Some(chrono::Utc::now().to_rfc3339());
+    let services = FakeServices {
+        pull_requests_by_head: BTreeMap::from([(
+            "topic/merged-branch-only".to_owned(),
+            pull_request,
+        )]),
+        pull_request_statuses: BTreeMap::from([(452, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(services.open_pull_request_head_calls.borrow().is_empty());
+    assert_eq!(
+        services.pull_request_head_calls.borrow().as_slice(),
+        ["topic/merged-branch-only"]
+    );
+    assert_eq!(
+        services.pull_request_status_calls.borrow().as_slice(),
+        &[vec![452]]
+    );
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ✓    —     ● Merged branch-only status",
+        stack_status_pull_request_cell(452)
+    )));
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes[0].pull_request, Some(452));
+    assert!(metadata.nodes[0].merged);
 }
 
 #[test]
@@ -283,13 +1102,22 @@ fn stack_status_colorizes_labels_with_github_backgrounds() {
     url = ssh://git@github.com/example-owner/example-repo.git
 "#,
     );
+    workspace.write_file(
+        ".jx.toml",
+        r#"
+[repo.stack_status]
+ignored_labels_when_merged = ["auto-merge", "run-ci"]
+"#,
+    );
     write_stack_metadata(
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 stack_status_node(110, "topic/labeled", "main", "Labeled change", false),
                 stack_status_node(111, "topic/draft-label", "main", "Draft label", true),
+                stack_status_node(112, "topic/merged", "main", "Merged change", false),
             ],
         },
     )
@@ -312,10 +1140,33 @@ fn stack_status_colorizes_labels_with_github_backgrounds() {
             name: "docs".to_owned(),
             color: "fbca04".to_owned(),
         },
+        PullRequestLabel {
+            name: "run-ci".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        PullRequestLabel {
+            name: "pink".to_owned(),
+            color: "d73a4a".to_owned(),
+        },
+        PullRequestLabel {
+            name: "area: backend".to_owned(),
+            color: "5319e7".to_owned(),
+        },
     ];
-    ready_status.requested_reviewers =
-        ReviewerSelection::new(["reviewer-pending"], std::iter::empty::<&str>());
+    ready_status.requested_reviewers = ReviewerSelection::new(
+        [
+            "reviewer-pending",
+            "reviewer-commented-requested",
+            "reviewer-addressed",
+        ],
+        std::iter::empty::<&str>(),
+    );
     ready_status.approved_reviewers = vec!["reviewer-approved".to_owned()];
+    ready_status.commented_reviewers = vec![
+        "reviewer-commented-requested".to_owned(),
+        "reviewer-commented".to_owned(),
+    ];
+    ready_status.addressed_reviewers = vec!["reviewer-addressed".to_owned()];
     let mut draft_status = stack_status_record(
         111,
         "Draft label",
@@ -333,9 +1184,52 @@ fn stack_status_colorizes_labels_with_github_backgrounds() {
     draft_status.requested_reviewers =
         ReviewerSelection::new(["draft-pending"], std::iter::empty::<&str>());
     draft_status.approved_reviewers = vec!["draft-approved".to_owned()];
+    let mut merged_status = stack_status_record(
+        112,
+        "Merged change",
+        "topic/merged",
+        "main",
+        PullRequestCheckStatus::Failing,
+        PullRequestReviewStatus::ChangesRequested,
+        ReviewerSelection::new(["obsolete-reviewer"], std::iter::empty::<&str>()),
+    );
+    merged_status.merged = true;
+    merged_status.closed = true;
+    merged_status.merged_at = Some(chrono::Utc::now().to_rfc3339());
+    merged_status.labels = vec![
+        PullRequestLabel {
+            name: "done".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        PullRequestLabel {
+            name: "run-ci".to_owned(),
+            color: "d73a4a".to_owned(),
+        },
+        PullRequestLabel {
+            name: "auto-merge".to_owned(),
+            color: "fbca04".to_owned(),
+        },
+    ];
+    merged_status.approved_reviewers = vec![
+        "merged-approved".to_owned(),
+        "merged-commented-approved".to_owned(),
+    ];
+    merged_status.commented_reviewers = vec![
+        "merged-commented".to_owned(),
+        "merged-commented-approved".to_owned(),
+    ];
+    merged_status.addressed_reviewers = vec!["merged-addressed".to_owned()];
     let services = FakeServices {
-        pull_request_bookmarks: vec!["topic/labeled".to_owned(), "topic/draft-label".to_owned()],
-        pull_request_statuses: BTreeMap::from([(110, ready_status), (111, draft_status)]),
+        pull_request_bookmarks: vec![
+            "topic/labeled".to_owned(),
+            "topic/draft-label".to_owned(),
+            "topic/merged".to_owned(),
+        ],
+        pull_request_statuses: BTreeMap::from([
+            (110, ready_status),
+            (111, draft_status),
+            (112, merged_status),
+        ]),
         ..FakeServices::default()
     };
     let environment = RuntimeEnvironment::new(workspace.path(), []);
@@ -356,19 +1250,53 @@ fn stack_status_colorizes_labels_with_github_backgrounds() {
         &services,
         &NoProgress,
         prompts,
-        OutputMode { color: true },
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
     )
     .expect("colored stack status succeeds");
 
     assert!(result.stdout.contains(
-        "\x1b[48;2;0;0;0m\x1b[38;2;255;255;255m bug \x1b[0m\x1b[48;2;251;202;4m\x1b[38;2;0;0;0m docs \x1b[0m"
+        "\x1b[48;2;0;0;0m\x1b[38;2;255;255;255m bug \x1b[0m\x1b[48;2;251;202;4m\x1b[38;2;0;0;0m docs \x1b[0m\x1b[48;2;14;138;22m\x1b[38;2;255;255;255m run-ci \x1b[0m\x1b[48;2;215;58;74m\x1b[38;2;0;0;0m pink \x1b[0m\x1b[48;2;83;25;231m\x1b[38;2;255;255;255m area:backend \x1b[0m"
     ));
     assert!(result
         .stdout
-        .contains("\x1b[1m\x1b[30mreviewer-pending\x1b[0m, \x1b[32mreviewer-approved\x1b[0m"));
+        .contains("\x1b[1m\x1b[30mreviewer-pending\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[38;2;194;95;0mreviewer-commented-requested\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[38;2;194;95;0mreviewer-commented\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[3m\x1b[30mreviewer-addressed\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[32mreviewer-approved\x1b[0m"));
     assert!(result.stdout.contains(
         "\x1b[48;2;246;237;234m\x1b[38;2;190;184;176m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
     ));
+    assert!(result.stdout.contains("\x1b[32m#112\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[32m● Merged change\x1b[0m"));
+    assert!(result.stdout.contains(
+        "\x1b[32m● Merged change\x1b[0m \x1b[48;2;236;241;231m\x1b[38;2;190;184;176m done \x1b[0m"
+    ));
+    let merged_line = result
+        .stdout
+        .lines()
+        .find(|line| line.contains("Merged change"))
+        .expect("merged row renders");
+    assert!(!merged_line.contains("run-ci"));
+    assert!(!merged_line.contains("auto-merge"));
+    assert!(result
+        .stdout
+        .contains("\x1b[38;2;194;95;0mmerged-commented\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[32mmerged-approved\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[32mmerged-commented-approved\x1b[0m"));
+    assert!(!result.stdout.contains("obsolete-reviewer"));
+    assert!(!result.stdout.contains("merged-addressed"));
     assert!(result
         .stdout
         .contains("\x1b[2m\x1b[38;2;190;184;176mLegend:"));
@@ -378,8 +1306,8 @@ fn stack_status_colorizes_labels_with_github_backgrounds() {
 }
 
 #[test]
-fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
-    // Verifies: status output focuses on actionable PRs while cleaning completed cached stacks.
+fn stack_status_shows_recently_merged_rows_as_progress_markers() {
+    // Verifies: status output keeps recently merged PRs visible as non-actionable progress context.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -391,6 +1319,7 @@ fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 stack_status_node(201, "merged/done", "main", "Fully merged change", false),
                 stack_status_node(202, "mixed/root", "main", "Merged ancestor", false),
@@ -399,6 +1328,7 @@ fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
         },
     )
     .expect("stack metadata writes");
+    let merged_at = chrono::Utc::now().to_rfc3339();
     let mut fully_merged = stack_status_record(
         201,
         "Fully merged change",
@@ -409,6 +1339,8 @@ fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
         ReviewerSelection::default(),
     );
     fully_merged.merged = true;
+    fully_merged.closed = true;
+    fully_merged.merged_at = Some(merged_at.clone());
     let mut merged_ancestor = stack_status_record(
         202,
         "Merged ancestor",
@@ -419,6 +1351,8 @@ fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
         ReviewerSelection::default(),
     );
     merged_ancestor.merged = true;
+    merged_ancestor.closed = true;
+    merged_ancestor.merged_at = Some(merged_at);
     let services = FakeServices {
         pull_request_statuses: BTreeMap::from([
             (201, fully_merged),
@@ -443,9 +1377,9 @@ fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
     let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
         .expect("stack status succeeds");
 
-    assert!(!result.stdout.contains("Fully merged change"));
-    assert!(!result.stdout.contains("Merged ancestor"));
-    assert!(result.stdout.contains("Open child"));
+    assert!(result.stdout.contains("● Fully merged change"));
+    assert!(result.stdout.contains("● Merged ancestor"));
+    assert!(result.stdout.contains("◯ Open child"));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(
         metadata
@@ -453,13 +1387,17 @@ fn stack_status_hides_merged_rows_and_prunes_fully_merged_cache_trees() {
             .iter()
             .map(|node| (node.branch.as_str(), node.merged))
             .collect::<Vec<_>>(),
-        vec![("mixed/root", true), ("mixed/child", false)]
+        vec![
+            ("merged/done", true),
+            ("mixed/root", true),
+            ("mixed/child", false),
+        ]
     );
 }
 
 #[test]
-fn stack_status_removes_closed_rows_from_cache_and_output() {
-    // Verifies: closed PRs are treated as stale stack cache entries, not actionable rows.
+fn stack_status_keeps_recently_closed_rows_as_reminders() {
+    // Verifies: recently closed PRs remain visible as non-actionable reminder rows.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -471,6 +1409,7 @@ fn stack_status_removes_closed_rows_from_cache_and_output() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 stack_status_node(301, "closed/root", "main", "Closed root", false),
                 stack_status_node(302, "open/child", "closed/root", "Open child", false),
@@ -488,6 +1427,7 @@ fn stack_status_removes_closed_rows_from_cache_and_output() {
         ReviewerSelection::default(),
     );
     closed.closed = true;
+    closed.closed_at = Some((chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339());
     let services = FakeServices {
         pull_request_statuses: BTreeMap::from([
             (301, closed),
@@ -511,13 +1451,17 @@ fn stack_status_removes_closed_rows_from_cache_and_output() {
     let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
         .expect("stack status succeeds");
 
-    assert!(!result.stdout.contains("Closed root"));
+    assert!(result.stdout.contains("◯ Closed root"));
     assert!(result.stdout.contains("Open child"));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
-    assert_eq!(metadata.nodes.len(), 1);
-    assert_eq!(metadata.nodes[0].branch, "open/child");
-    assert_eq!(metadata.nodes[0].parent_branch, None);
-    assert_eq!(metadata.nodes[0].parent_pull_request, None);
+    assert_eq!(metadata.nodes.len(), 2);
+    assert_eq!(metadata.nodes[0].branch, "closed/root");
+    assert_eq!(metadata.nodes[1].branch, "open/child");
+    assert_eq!(
+        metadata.nodes[1].parent_branch.as_deref(),
+        Some("closed/root")
+    );
+    assert_eq!(metadata.nodes[1].parent_pull_request, None);
 }
 
 #[test]
@@ -534,6 +1478,7 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 103,
                 "topic/json",
@@ -561,6 +1506,8 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
                 name: "bug".to_owned(),
                 color: "d73a4a".to_owned(),
             }];
+            status.commented_reviewers = vec!["reviewer-commented".to_owned()];
+            status.addressed_reviewers = vec!["reviewer-addressed".to_owned()];
             status
         })]),
         ..FakeServices::default()
@@ -582,7 +1529,8 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
     assert_eq!(value["repositories"][0]["trunk"]["remote"], "origin");
     assert_eq!(value["repositories"][0]["trunk"]["branch"], "main");
     assert_eq!(value["repositories"][0]["trunk"]["state"], "github-ahead");
-    assert_eq!(value["repositories"][0]["trunk"]["githubAheadBy"], 3);
+    assert_eq!(value["repositories"][0]["trunk"]["githubAheadBy"], 0);
+    assert_eq!(value["repositories"][0]["trunk"]["countsExact"], false);
     assert_eq!(value["repositories"][0]["pullRequests"][0]["number"], 103);
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["checkStatus"],
@@ -599,6 +1547,14 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["labels"][0]["color"],
         "d73a4a"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["commentedUsers"][0],
+        "reviewer-commented"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["addressedUsers"][0],
+        "reviewer-addressed"
     );
 }
 
@@ -636,6 +1592,7 @@ path = "{repo}"
         &alpha,
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 201,
                 "topic/alpha",
@@ -650,6 +1607,7 @@ path = "{repo}"
         &beta,
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 202,
                 "topic/beta",
@@ -695,6 +1653,98 @@ path = "{repo}"
 }
 
 #[test]
+fn stack_status_all_reconciles_work_item_handler_ledger() {
+    // Verifies: global stack status uses the same metadata maintenance path as current-repo status.
+    let workspace = TestWorkspace::new();
+    let marker = workspace.home.join("resolved-global-work-item.txt");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        &format!(
+            r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{{repo}}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.work_items]
+apply_on_stack_status = true
+
+[[repo.rules.work_item_handlers]]
+id = "resolve-work"
+on = "work_item.fixed"
+command = ["sh", "-c", "printf '%s\\n%s\\n' \"$1\" \"$(pwd)\" > \"$2\"", "_", "{{work_id}}", "{}"]
+"#,
+            marker.display()
+        ),
+    );
+    let repo = workspace.create_jj_workspace("projects/api-alpha");
+    TestWorkspace::write_git_config_at(
+        &repo,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api-alpha.git
+"#,
+    );
+    let mut node = stack_status_node(203, "topic/alpha", "main", "Alpha change", false);
+    node.work_ids = vec!["ABC-203".to_owned()];
+    node.fixes_work_ids = vec!["ABC-203".to_owned()];
+    write_stack_metadata(
+        &repo,
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![node],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        203,
+        "Alpha change",
+        "topic/alpha",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    status.merged = true;
+    status.closed = true;
+    status.merged_at = Some("2026-06-09T12:00:00Z".to_owned());
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([(203, status)]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        ["jx", "stack", "status", "-a", "api-*"],
+        &environment,
+        &services,
+    )
+    .expect("global stack status succeeds");
+
+    let marker_contents = std::fs::read_to_string(marker).expect("handler marker is written");
+    let marker_lines = marker_contents.lines().collect::<Vec<_>>();
+    assert_eq!(marker_lines[0], "ABC-203");
+    assert_eq!(
+        std::fs::canonicalize(marker_lines[1]).expect("handler cwd exists"),
+        std::fs::canonicalize(&repo).expect("repo path exists")
+    );
+    let metadata = read_stack_metadata(&repo).expect("stack metadata reads");
+    assert_eq!(
+        metadata.work_item_handler_runs,
+        vec![StackMetadataWorkItemHandlerRun {
+            handler: "resolve-work".to_owned(),
+            work_id: "ABC-203".to_owned(),
+            pull_request: 203,
+        }]
+    );
+}
+
+#[test]
 fn stack_status_all_skips_repositories_pruned_to_empty_stack_state() {
     // Verifies: -a status cleans fully merged cached stacks and omits them from global output.
     let workspace = TestWorkspace::new();
@@ -728,6 +1778,7 @@ path = "{repo}"
         &merged_repo,
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 401,
                 "topic/merged",
@@ -742,6 +1793,7 @@ path = "{repo}"
         &open_repo,
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 402,
                 "topic/open",
@@ -762,6 +1814,8 @@ path = "{repo}"
         ReviewerSelection::default(),
     );
     merged.merged = true;
+    merged.closed = true;
+    merged.merged_at = Some(chrono::Utc::now().to_rfc3339());
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices {
         pull_request_statuses: BTreeMap::from([
@@ -790,13 +1844,19 @@ path = "{repo}"
     .expect("global stack status succeeds");
 
     assert!(result.stdout.contains(
-        "Stack status: 2 repositories checked, 1 repository with stacks, 1 pull request"
+        "Stack status: 2 repositories checked, 2 repositories with stacks, 2 pull requests"
     ));
-    assert!(!result.stdout.contains("api-merged"));
+    assert!(result.stdout.contains("api-merged"));
+    assert!(result.stdout.contains("● Merged change"));
     assert!(result.stdout.contains("api-open"));
     assert_eq!(
-        read_stack_metadata(&merged_repo).expect("merged metadata reads"),
-        StackMetadata::default()
+        read_stack_metadata(&merged_repo)
+            .expect("merged metadata reads")
+            .nodes
+            .iter()
+            .map(|node| (node.branch.as_str(), node.merged))
+            .collect::<Vec<_>>(),
+        vec![("topic/merged", true)]
     );
 }
 
@@ -815,6 +1875,7 @@ fn stack_status_records_perf_steps() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![stack_status_node(
                 301,
                 "topic/perf",
@@ -901,6 +1962,8 @@ fn stack_status_node(
         )),
         draft,
         merged: false,
+        work_ids: Vec::new(),
+        fixes_work_ids: Vec::new(),
     }
 }
 
@@ -919,16 +1982,25 @@ fn stack_status_record(
         url: Some(format!(
             "https://github.com/example-owner/example-repo/pull/{number}"
         )),
+        created_at: None,
         head_branch: branch.to_owned(),
         base_branch: base_branch.to_owned(),
+        author: None,
         draft: false,
         merged: false,
         closed: false,
+        merged_at: None,
+        closed_at: None,
         check_status,
         checks: Vec::new(),
         review_status,
         requested_reviewers,
+        suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),
+        commented_reviewers: Vec::new(),
+        addressed_reviewers: Vec::new(),
+        review_activity: Vec::new(),
+        timeline_events: Vec::new(),
         labels: Vec::new(),
         latest_commit_oid: Some(format!("commit-{number}")),
     }
@@ -1033,7 +2105,7 @@ fn stack_plan_renders_neighbourhood_tree_without_github_mutations() {
     );
     assert_eq!(
         result.stdout,
-        "Stack plan: 3 commits, 2 selected\nBase: main @ 11112222\nRoot: aaaaaaaa Root change\n\n◯ aaaaaaaa Root change  context\n├─ ◉ bbbbbbbb Left change  selected\n└─ ◉ cccccccc Right change  selected\n\nSelected revisions share one stack root. Publish would create/update PRs for selected rows.\n"
+        "Stack plan: 3 commits, 2 selected\nBase: main @ 11112222\nRoot: aaaaaaaa Root change\n\n◯ aaaaaaaa Root change  context\n├ ◉ bbbbbbbb Left change  selected\n└ ◉ cccccccc Right change  selected\n\nSelected revisions share one stack root. Publish would create/update PRs for selected rows.\n"
     );
     assert!(services.sync_pull_request_pushes.borrow().is_empty());
 }
@@ -1093,8 +2165,12 @@ fn stack_publish_without_revision_publishes_inferred_stack() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "stack", "publish"], &environment, &services)
-        .expect("stack publishes");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "--apply-to-stack"],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes");
 
     assert_eq!(
         services.stack_publish_selections.borrow().first(),
@@ -1124,6 +2200,464 @@ fn stack_publish_without_revision_publishes_inferred_stack() {
             example_pull_request_link(43),
         )
     );
+}
+
+#[test]
+fn stack_publish_intent_flags_apply_to_current_commit_only() {
+    // Verifies: publish intent such as task, labels, reviewers, draft, and fixes stays on the current stack commit.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "TASK-123: Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let root_pr =
+        pull_request_choice_record(42, "Root change", "example-user/00-aaaaaaaa", "main", false);
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        reviewer_candidates: vec![ReviewerCandidate::new(
+            ReviewerTarget::user("path-reviewer"),
+            vec!["matched 1 file".to_owned()],
+        )],
+        pull_requests_by_head: BTreeMap::from([(
+            "example-user/00-aaaaaaaa".to_owned(),
+            root_pr.clone(),
+        )]),
+        sync_pull_requests: vec![
+            root_pr,
+            pull_request_choice_record(
+                43,
+                "TASK-123: Child change",
+                "example-user/01-bbbbbbbb",
+                "example-user/00-aaaaaaaa",
+                true,
+            ),
+        ],
+        expected_labels_by_publish: Some(vec![Vec::new(), vec!["needs-review".to_owned()]]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        [
+            "jx",
+            "stack",
+            "publish",
+            "-t",
+            "TASK-123",
+            "-F",
+            "TASK-123",
+            "--label",
+            "needs-review",
+            "--draft",
+            "-R",
+            "manual-reviewer",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes");
+
+    assert_eq!(
+        services.pull_request_plan_task_ids.borrow().as_slice(),
+        &[None, Some("TASK-123".to_owned())]
+    );
+    let published_plans = services.published_plans.borrow();
+    assert_eq!(published_plans[0].labels, Vec::<String>::new());
+    assert_eq!(published_plans[0].reviewers, ReviewerSelection::default());
+    assert!(!published_plans[0].draft);
+    assert_eq!(published_plans[1].labels, ["needs-review".to_owned()]);
+    assert_eq!(
+        published_plans[1].reviewers,
+        ReviewerSelection::new(
+            ["manual-reviewer", "path-reviewer"],
+            std::iter::empty::<&str>()
+        )
+    );
+    assert!(published_plans[1].draft);
+
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    let root = metadata
+        .nodes
+        .iter()
+        .find(|node| node.pull_request == Some(42))
+        .expect("root node exists");
+    let child = metadata
+        .nodes
+        .iter()
+        .find(|node| node.pull_request == Some(43))
+        .expect("child node exists");
+    assert!(root.work_ids.is_empty());
+    assert!(root.fixes_work_ids.is_empty());
+    assert_eq!(child.work_ids, ["TASK-123".to_owned()]);
+    assert_eq!(child.fixes_work_ids, ["TASK-123".to_owned()]);
+}
+
+#[test]
+fn stack_publish_apply_to_stack_applies_intent_to_every_published_pr() {
+    // Verifies: explicit stack-wide intent restores uniform labels, reviewers, readiness, and task context.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "TASK-123: Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "TASK-123: Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        reviewer_candidates: vec![ReviewerCandidate::new(
+            ReviewerTarget::user("path-reviewer"),
+            vec!["matched 1 file".to_owned()],
+        )],
+        expected_task_id: Some(Some("TASK-123".to_owned())),
+        expected_labels: vec!["needs-review".to_owned()],
+        expected_draft: Some(true),
+        expected_reviewers: Some(ReviewerSelection::new(
+            ["manual-reviewer", "path-reviewer"],
+            std::iter::empty::<&str>(),
+        )),
+        sync_pull_requests: vec![
+            pull_request_choice_record(
+                42,
+                "TASK-123: Root change",
+                "example-user/00-aaaaaaaa",
+                "main",
+                true,
+            ),
+            pull_request_choice_record(
+                43,
+                "TASK-123: Child change",
+                "example-user/01-bbbbbbbb",
+                "example-user/00-aaaaaaaa",
+                true,
+            ),
+        ],
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        [
+            "jx",
+            "stack",
+            "publish",
+            "-A",
+            "-t",
+            "TASK-123",
+            "--label",
+            "needs-review",
+            "--draft",
+            "-R",
+            "manual-reviewer",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes");
+
+    assert_eq!(services.published_pull_request_count.get(), 2);
+}
+
+#[test]
+fn stack_publish_apply_to_stack_interleaves_previews_and_confirmations() {
+    // Verifies: stack-wide confirmation shows each PR preview immediately before its prompt.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        ..FakeServices::default()
+    };
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let previewer = TitleRecordingPullRequestPreviewer {
+        events: events.clone(),
+    };
+    let confirmer = TitleRecordingPullRequestConfirmer {
+        events: events.clone(),
+    };
+    let prompts = PromptHandlers {
+        pull_request_previewer: &previewer,
+        pull_request_selector: &SelectFirstPullRequest,
+        reviewer_selector: &SelectAllReviewers,
+        pull_request_confirmer: &confirmer,
+        push_confirmer: &AlwaysConfirmPush,
+        repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
+        repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
+        workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
+    };
+
+    run_with_args_and_progress(
+        ["jx", "stack", "publish", "-A"],
+        &environment,
+        &services,
+        &NoProgress,
+        prompts,
+        OutputMode::plain(),
+    )
+    .expect("stack publishes");
+
+    assert_eq!(
+        events.borrow().as_slice(),
+        &[
+            "preview Root change".to_owned(),
+            "confirm Root change".to_owned(),
+            "preview Child change".to_owned(),
+            "confirm Child change".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn stack_publish_apply_to_stack_records_fix_intent_on_stack_tip() {
+    // Verifies: stack-wide publish intent treats the final stack PR as the ticket-fixing PR.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "TASK-123: Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "TASK-123: Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        [
+            "jx",
+            "stack",
+            "publish",
+            "--apply-to-stack",
+            "-F",
+            "TASK-123",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes");
+
+    assert_eq!(services.published_pull_request_count.get(), 2);
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    let root = metadata
+        .nodes
+        .iter()
+        .find(|node| node.pull_request == Some(42))
+        .expect("root node exists");
+    let child = metadata
+        .nodes
+        .iter()
+        .find(|node| node.pull_request == Some(43))
+        .expect("child node exists");
+    assert_eq!(root.work_ids, ["TASK-123".to_owned()]);
+    assert!(root.fixes_work_ids.is_empty());
+    assert_eq!(child.work_ids, ["TASK-123".to_owned()]);
+    assert_eq!(child.fixes_work_ids, ["TASK-123".to_owned()]);
+}
+
+#[test]
+fn stack_publish_bare_fixes_requires_attached_work_id() {
+    // Verifies: -F without a value fails before publishing when no work ID is attached.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@", "-F"],
+        &environment,
+        &services,
+    )
+    .expect_err("bare fixes without work ID is rejected");
+
+    assert!(matches!(error, CommandError::Usage(_)));
+    assert_eq!(services.published_pull_request_count.get(), 0);
+}
+
+#[test]
+fn stack_publish_fixes_requires_single_intent_target() {
+    // Verifies: fix intent needs one current or explicitly selected target, not an ambiguous explicit set.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: None,
+            metrics: StackPublishMetrics::default(),
+        }),
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        [
+            "jx", "stack", "publish", "-r", "root", "-r", "child", "-F", "TASK-123",
+        ],
+        &environment,
+        &services,
+    )
+    .expect_err("multi-pr fixes are rejected");
+
+    assert!(matches!(error, CommandError::Usage(_)));
+    assert_eq!(services.published_pull_request_count.get(), 0);
 }
 
 #[test]
@@ -1273,11 +2807,183 @@ fn stack_publish_updates_only_metadata_when_existing_branch_is_up_to_date() {
         services.push_bookmark_calls.borrow().as_slice(),
         &["example-user/02-zzzzzzzz".to_owned()]
     );
-    assert!(services.sync_pull_request_pushes.borrow().is_empty());
+    assert_eq!(
+        services.sync_pull_request_pushes.borrow()[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_base.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("example-user/02-zzzzzzzz", Some("main"))]
+    );
     assert_eq!(
         result.stdout,
         format!("Updated {}\n", example_pull_request_link(77))
     );
+}
+
+#[test]
+fn stack_publish_declined_existing_pr_refreshes_context_only() {
+    // Verifies: declining a PR update still refreshes its generated stack tree without retargeting it.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let root_branch = "example-user/00-aaaaaaaa";
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let child_branch = "example-user/01-bbbbbbbb";
+    let root_pr = pull_request_choice_record(50, "Root change", root_branch, "main", false);
+    let child_pr = pull_request_choice_record(51, "Child change", child_branch, root_branch, false);
+    let confirmer = SequencePullRequestConfirmer::new([false, true]);
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        pull_requests_by_head: BTreeMap::from([
+            (root_branch.to_owned(), root_pr.clone()),
+            (child_branch.to_owned(), child_pr.clone()),
+        ]),
+        sync_pull_requests: vec![child_pr, root_pr],
+        pull_request_action: PullRequestAction::Updated,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_prompts(
+        ["jx", "stack", "publish"],
+        &environment,
+        &services,
+        &SelectAllReviewers,
+        &confirmer,
+    )
+    .expect("stack publish proceeds past declined existing PR");
+
+    assert_eq!(confirmer.titles.borrow().as_slice(), ["Child change"]);
+    assert_eq!(services.published_pull_request_count.get(), 1);
+    assert_eq!(
+        services.push_bookmark_calls.borrow().as_slice(),
+        &[root_branch.to_owned()]
+    );
+    let sync_pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(sync_pushes.len(), 2);
+    assert_eq!(
+        sync_pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_base.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(root_branch, Some("main"))]
+    );
+    assert_eq!(
+        sync_pushes[1]
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_base.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(child_branch, None)]
+    );
+    assert!(result
+        .stdout
+        .contains(&format!("Updated {}", example_pull_request_link(42))));
+}
+
+#[test]
+fn stack_publish_declined_unpublished_parent_skips_descendants() {
+    // Verifies: descendants are not published when their unpublished stack base was declined.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let confirmer = SequencePullRequestConfirmer::new([false, true]);
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_prompts(
+        ["jx", "stack", "publish"],
+        &environment,
+        &services,
+        &SelectAllReviewers,
+        &confirmer,
+    )
+    .expect("stack publish cancellation succeeds");
+
+    assert!(confirmer.titles.borrow().is_empty());
+    assert_eq!(services.published_pull_request_count.get(), 0);
+    assert!(services.push_bookmark_calls.borrow().is_empty());
+    assert!(services.sync_pull_request_pushes.borrow().is_empty());
+    assert_eq!(result.stdout, "cancelled\n");
 }
 
 #[test]
@@ -1556,7 +3262,7 @@ fn stack_subcommand_help_explains_effects() {
 
     let refresh_help = help_output(["jx", "stack", "refresh", "--help"]);
     assert!(refresh_help.contains("Rebuild repo-local stack state"));
-    assert!(refresh_help.contains("local PR bookmark heads"));
+    assert!(refresh_help.contains("searches open GitHub PRs authored by the authenticated login"));
     assert!(refresh_help.contains("writes"));
     assert!(refresh_help.contains(".jx/stack.toml"));
     assert!(refresh_help.contains("syncs affected PR bases/descriptions"));
@@ -1578,6 +3284,7 @@ fn stack_interactive_opens_selected_cached_pull_request() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "example-user/old".to_owned(),
@@ -1589,6 +3296,8 @@ fn stack_interactive_opens_selected_cached_pull_request() {
                     url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "example-user/chosen".to_owned(),
@@ -1600,6 +3309,8 @@ fn stack_interactive_opens_selected_cached_pull_request() {
                     url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
                     draft: true,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -1662,6 +3373,7 @@ fn stack_interactive_can_be_cancelled() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "example-user/change".to_owned(),
                 base_branch: "main".to_owned(),
@@ -1672,6 +3384,8 @@ fn stack_interactive_can_be_cancelled() {
                 url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -1709,6 +3423,7 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "topic/root".to_owned(),
@@ -1720,6 +3435,8 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
                     url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
                     draft: false,
                     merged: true,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/child".to_owned(),
@@ -1731,6 +3448,8 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
                     url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/draft".to_owned(),
@@ -1742,6 +3461,8 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
                     url: Some("https://github.com/example-owner/example-repo/pull/12".to_owned()),
                     draft: true,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -1774,7 +3495,7 @@ fn stack_interactive_shows_full_cached_stack_with_draft_rows() {
         &[vec![
             "\x1b[2m\x1b[38;2;190;184;176m◌ #12     Draft\x1b[0m".to_owned(),
             "✓ #10     Root".to_owned(),
-            "└─ ◉ #11     Child".to_owned(),
+            "└ ◉ #11     Child".to_owned(),
         ]]
     );
     assert_eq!(
@@ -1804,6 +3525,7 @@ fn stack_show_colored_rows_match_interactive_selector_labels() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "topic/ready".to_owned(),
@@ -1815,6 +3537,8 @@ fn stack_show_colored_rows_match_interactive_selector_labels() {
                     url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/draft".to_owned(),
@@ -1826,6 +3550,8 @@ fn stack_show_colored_rows_match_interactive_selector_labels() {
                     url: Some("https://github.com/example-owner/example-repo/pull/11".to_owned()),
                     draft: true,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -1849,7 +3575,10 @@ fn stack_show_colored_rows_match_interactive_selector_labels() {
         &FakeServices::default(),
         &NoProgress,
         prompts,
-        OutputMode { color: true },
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
     )
     .expect("stack show succeeds");
     let selector = RecordingPullRequestSelector::new(0);
@@ -1879,6 +3608,7 @@ fn stack_interactive_prints_selected_pull_request_url() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "example-user/selected".to_owned(),
                 base_branch: "main".to_owned(),
@@ -1889,6 +3619,8 @@ fn stack_interactive_prints_selected_pull_request_url() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -1930,6 +3662,7 @@ fn stack_interactive_opens_historical_cached_pull_requests() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "example-user/reused".to_owned(),
                 base_branch: "main".to_owned(),
@@ -1940,6 +3673,8 @@ fn stack_interactive_opens_historical_cached_pull_requests() {
                 url: Some("https://github.com/example-owner/example-repo/pull/40568".to_owned()),
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -2075,7 +3810,7 @@ fn stack_refresh_persists_hierarchy_and_ignore_rules() {
     assert!(progress.finished.get());
     assert_eq!(
         result.stdout,
-        "◯ #10     Root\n├─ ◯ #11     Child\n└─ ◌ #12     Draft\n"
+        "◯ #10     Root\n├ ◯ #11     Child\n└ ◌ #12     Draft\n"
     );
     assert_eq!(
         fs::read_to_string(workspace.path().join(".jx/.gitignore")).expect("read gitignore"),
@@ -2106,6 +3841,53 @@ fn stack_refresh_persists_hierarchy_and_ignore_rules() {
 }
 
 #[test]
+fn stack_refresh_includes_authored_agent_pr_without_local_bookmark() {
+    // Verifies: repo-authored search seeds stack metadata for same-repo agent branches not tracked locally.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        github_login: "example-user".to_owned(),
+        authored_open_pull_requests: vec![pull_request_choice_record(
+            246,
+            "Agent-authored plan",
+            "agent/generated-plan",
+            "main",
+            true,
+        )],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "refresh"], &environment, &services)
+        .expect("stack refresh succeeds");
+
+    assert_eq!(result.stdout, "◌ #246    Agent-authored plan\n");
+    let stack_file =
+        fs::read_to_string(workspace.path().join(".jx/stack.toml")).expect("read stack state");
+    assert!(stack_file.contains("branch = \"agent/generated-plan\""));
+    assert!(stack_file.contains("pull_request = 246"));
+    assert_eq!(
+        services
+            .authored_open_pull_request_calls
+            .borrow()
+            .as_slice(),
+        ["example-user"]
+    );
+    assert!(services
+        .authored_open_pull_request_head_calls
+        .borrow()
+        .is_empty());
+}
+
+#[test]
 fn stack_without_subcommand_shows_state() {
     // Verifies: bare `jx stack` uses the safe read-only stack view.
     let workspace = TestWorkspace::new();
@@ -2119,6 +3901,7 @@ fn stack_without_subcommand_shows_state() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/root".to_owned(),
                 base_branch: "main".to_owned(),
@@ -2129,6 +3912,8 @@ fn stack_without_subcommand_shows_state() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -2167,6 +3952,7 @@ path = "{repo}"
         &primary,
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/root".to_owned(),
                 base_branch: "main".to_owned(),
@@ -2177,6 +3963,8 @@ path = "{repo}"
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -2199,6 +3987,7 @@ fn stack_tracking_retains_missing_stored_ancestors() {
     // Verifies: disappeared parents remain in stack state while children are still tracked.
     let existing = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: vec![
             StackMetadataNode {
                 branch: "topic/root".to_owned(),
@@ -2210,6 +3999,8 @@ fn stack_tracking_retains_missing_stored_ancestors() {
                 url: None,
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
             StackMetadataNode {
                 branch: "topic/child".to_owned(),
@@ -2221,6 +4012,8 @@ fn stack_tracking_retains_missing_stored_ancestors() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             },
         ],
     };
@@ -2230,7 +4023,7 @@ fn stack_tracking_retains_missing_stored_ancestors() {
 
     assert_eq!(
         stack_metadata_rows(&metadata.nodes),
-        vec!["✓ #10     Root", "└─ ◯ #11     Child"]
+        vec!["✓ #10     Root", "└ ◯ #11     Child"]
     );
 }
 
@@ -2248,6 +4041,7 @@ fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/root".to_owned(),
                 base_branch: "main".to_owned(),
@@ -2258,6 +4052,8 @@ fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -2290,7 +4086,7 @@ fn stack_refresh_updates_missing_stored_ancestor_by_pull_request_number() {
     let result = run_with_args_and_services(["jx", "stack", "refresh"], &environment, &services)
         .expect("stack refresh succeeds");
 
-    assert_eq!(result.stdout, "✓ #10     Merged root\n└─ ◯ #11     Child\n");
+    assert_eq!(result.stdout, "✓ #10     Merged root\n└ ◯ #11     Child\n");
     assert_eq!(
         services.pull_request_number_calls.borrow().as_slice(),
         [10, 10]
@@ -2315,6 +4111,7 @@ fn stack_onto_moves_current_stack_and_syncs_old_and_new_components() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 stack_node("topic/root", "main", None, 10, "Root"),
                 stack_node("topic/child", "topic/root", Some("topic/root"), 11, "Child"),
@@ -2397,6 +4194,7 @@ fn stack_move_no_sync_updates_local_metadata_without_github_mutations() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 stack_node("topic/root", "main", None, 10, "Root"),
                 stack_node("topic/child", "topic/root", Some("topic/root"), 11, "Child"),
@@ -2441,6 +4239,39 @@ fn stack_move_no_sync_updates_local_metadata_without_github_mutations() {
     );
 }
 
+struct TitleRecordingPullRequestPreviewer {
+    events: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl PullRequestPreviewer for TitleRecordingPullRequestPreviewer {
+    fn show_preview(
+        &self,
+        plan: &PullRequestPlan,
+        _status: &WorkspaceStatus,
+        _prepare_effects: &[PullRequestEventEffect],
+    ) {
+        self.events
+            .borrow_mut()
+            .push(format!("preview {}", plan.title));
+    }
+}
+
+struct TitleRecordingPullRequestConfirmer {
+    events: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl PullRequestConfirmer for TitleRecordingPullRequestConfirmer {
+    fn confirm_pull_request(
+        &self,
+        plan: &PullRequestPlan,
+    ) -> Result<bool, PullRequestConfirmationError> {
+        self.events
+            .borrow_mut()
+            .push(format!("confirm {}", plan.title));
+        Ok(true)
+    }
+}
+
 fn stack_node(
     branch: &str,
     base_branch: &str,
@@ -2458,6 +4289,8 @@ fn stack_node(
         url: None,
         draft: false,
         merged: false,
+        work_ids: Vec::new(),
+        fixes_work_ids: Vec::new(),
     }
 }
 

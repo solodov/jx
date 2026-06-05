@@ -11,7 +11,7 @@ pub enum TokenSource {
 }
 
 impl TokenSource {
-    pub(super) fn discover(environment: &RuntimeEnvironment, config: &WorkflowConfig) -> Self {
+    pub fn discover(environment: &RuntimeEnvironment, config: &WorkflowConfig) -> Self {
         TOKEN_ENV_CANDIDATES
             .iter()
             .copied()

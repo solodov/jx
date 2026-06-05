@@ -4,6 +4,13 @@ use crate::jj::{StackPublishMetrics, StackPublishNodeFacts};
 #[cfg(test)]
 use crate::repository::StackMetadataNode;
 
+#[derive(Default)]
+struct StackPublishPlanSelection {
+    plans: Vec<PullRequestPlan>,
+    context_only_pull_requests: Vec<PullRequestRecord>,
+    skipped_count: usize,
+}
+
 /// Handles repo-local pull-request stack state that survives bookmark movement.
 pub(super) fn handle_stack(
     request: StackRequest,
@@ -15,6 +22,9 @@ pub(super) fn handle_stack(
 ) -> Result<CommandResult, CommandError> {
     let perf = PerfLog::from_environment(environment);
     if let StackRequest::Status(request) = request {
+        if request.interactive {
+            return run_stack_status_dashboard(request, environment);
+        }
         if request.all {
             return handle_global_stack_status(
                 request,
@@ -26,7 +36,7 @@ pub(super) fn handle_stack(
             );
         }
         let context = RepositoryContext::discover(environment)?;
-        let manager = PullRequestStackManager::new(&context, services, perf.clone());
+        let manager = PullRequestStackManager::new(&context, services, perf.clone(), environment);
         return StackStatusExecution {
             services,
             progress,
@@ -39,7 +49,7 @@ pub(super) fn handle_stack(
     }
 
     let context = RepositoryContext::discover(environment)?;
-    let manager = PullRequestStackManager::new(&context, services, perf.clone());
+    let manager = PullRequestStackManager::new(&context, services, perf.clone(), environment);
     match request {
         StackRequest::Show => {
             progress.status("Loading pull request stack…");
@@ -98,10 +108,151 @@ pub(super) fn handle_stack(
             perf: &perf,
         }
         .run(request),
+        StackRequest::CompleteReviewers(request) => Ok(CommandResult::success(
+            render_stack_reviewer_completion(&context, &request.prefix),
+        )),
         StackRequest::Status(_) => {
             unreachable!("stack status is handled before current-repo dispatch")
         }
     }
+}
+
+/// Renders configured reviewer names for shell completion without constraining CLI input.
+fn render_stack_reviewer_completion(context: &RepositoryContext, prefix: &str) -> String {
+    context
+        .config
+        .repo
+        .reviewer_completion_for(&context.origin.github)
+        .into_iter()
+        .map(|reviewer| reviewer.display_name().to_owned())
+        .filter(|reviewer| reviewer.starts_with(prefix))
+        .map(|reviewer| format!("{reviewer}\n"))
+        .collect()
+}
+
+fn run_stack_status_dashboard(
+    request: StackStatusRequest,
+    environment: &RuntimeEnvironment,
+) -> Result<CommandResult, CommandError> {
+    let environment = environment.clone();
+    let loader_request = request.clone();
+    let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
+        render_stack_status_dashboard_frame(loader_request.clone(), &environment)
+            .map_err(|error| error.to_string())
+    });
+    run_interactive_dashboard("jx stack status", request.refresh_seconds, loader)
+}
+
+fn render_stack_status_dashboard_frame(
+    request: StackStatusRequest,
+    environment: &RuntimeEnvironment,
+) -> Result<String, CommandError> {
+    let services = ProductionServices::new(environment)?;
+    let progress = SilentProgress;
+    let output = OutputMode::from_process();
+    let perf = PerfLog::from_environment(environment);
+    let mut span = perf.start(
+        "stack.status.dashboard_frame",
+        [
+            perf_attr("all", request.all),
+            perf_attr("repo_filter_count", request.repo_filters.len()),
+            perf_attr("parallelism", request.parallelism),
+            perf_attr("format", stack_status_format_label(request.format)),
+        ],
+    );
+    let result = if request.all {
+        render_global_stack_status_dashboard_frame(
+            &request,
+            environment,
+            &services,
+            &progress,
+            output,
+            &mut span,
+        )
+    } else {
+        render_current_stack_status_dashboard_frame(
+            request,
+            environment,
+            &services,
+            &progress,
+            output,
+            &perf,
+            &mut span,
+        )
+    };
+    if let Err(error) = &result {
+        span.record_error(error);
+    }
+    span.end();
+    result
+}
+
+fn render_global_stack_status_dashboard_frame(
+    request: &StackStatusRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+    span: &mut PerfSpan,
+) -> Result<String, CommandError> {
+    let loaded = load_global_stack_status_view(request, environment, services, progress, span)?;
+    span.measure(
+        "render",
+        [perf_attr(
+            "format",
+            stack_status_format_label(request.format),
+        )],
+        || {
+            render_global_stack_status_output(
+                &loaded.entries,
+                loaded.total_repositories,
+                environment.current_dir(),
+                output.color,
+                output.terminal_width,
+                request.format,
+                &loaded.display_names,
+            )
+        },
+    )
+}
+
+fn render_current_stack_status_dashboard_frame(
+    request: StackStatusRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    output: OutputMode,
+    perf: &PerfLog,
+    span: &mut PerfSpan,
+) -> Result<String, CommandError> {
+    let context = RepositoryContext::discover(environment)?;
+    let manager = PullRequestStackManager::new(&context, services, perf.clone(), environment);
+    let execution = StackStatusExecution {
+        services,
+        progress,
+        context: &context,
+        manager: &manager,
+        output,
+        perf,
+    };
+    let loaded = execution.load_status_view(&request, span)?;
+    span.measure(
+        "render",
+        [perf_attr(
+            "format",
+            stack_status_format_label(request.format),
+        )],
+        || {
+            render_stack_status_output(
+                &loaded.report,
+                &context.repository_root,
+                output.color,
+                output.terminal_width,
+                request.format,
+                &loaded.display_names,
+            )
+        },
+    )
 }
 
 fn handle_global_stack_status(
@@ -144,9 +295,49 @@ fn handle_global_stack_status_traced(
     output: OutputMode,
     span: &mut PerfSpan,
 ) -> Result<CommandResult, CommandError> {
+    let loaded = load_global_stack_status_view(&request, environment, services, progress, span)?;
+    progress.finish();
+
+    let stdout = span.measure(
+        "render",
+        [perf_attr(
+            "format",
+            stack_status_format_label(request.format),
+        )],
+        || {
+            render_global_stack_status_output(
+                &loaded.entries,
+                loaded.total_repositories,
+                environment.current_dir(),
+                output.color,
+                output.terminal_width,
+                request.format,
+                &loaded.display_names,
+            )
+        },
+    )?;
+    Ok(CommandResult::success(stdout))
+}
+
+struct LoadedGlobalStackStatusView {
+    entries: Vec<GlobalStackStatusEntry>,
+    total_repositories: usize,
+    display_names: BTreeMap<String, String>,
+}
+
+fn load_global_stack_status_view(
+    request: &StackStatusRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    span: &mut PerfSpan,
+) -> Result<LoadedGlobalStackStatusView, CommandError> {
     progress.status("Discovering repositories…");
+    let config = span.measure("discover_config", Vec::new(), || {
+        WorkflowConfig::discover_global(environment).map_err(CommandError::from)
+    })?;
+    let token_source = TokenSource::discover(environment, &config);
     let repositories = span.measure("discover_repositories", Vec::new(), || {
-        let config = WorkflowConfig::discover_global(environment)?;
         global_work_repositories(&config, environment).map_err(CommandError::from)
     })?;
     span.set([perf_attr("discovered_repo_count", repositories.len())]);
@@ -172,7 +363,7 @@ fn handle_global_stack_status_traced(
         || {
             Ok::<_, CommandError>(services.global_stack_status_entries(
                 &repositories,
-                &request,
+                request,
                 environment,
                 progress,
             ))
@@ -184,25 +375,35 @@ fn handle_global_stack_status_traced(
                 .unwrap_or_default()
         },
     )?;
-    progress.finish();
-
-    let stdout = span.measure(
-        "render",
-        [perf_attr(
-            "format",
-            stack_status_format_label(request.format),
-        )],
+    let display_name_logins = stack_status_entry_user_logins(&entries);
+    let display_names = span.measure_with_result_attrs(
+        "load_display_names",
+        [
+            perf_attr("format", stack_status_format_label(request.format)),
+            perf_attr("login_count", display_name_logins.len()),
+        ],
         || {
-            render_global_stack_status_output(
-                &entries,
-                repositories.len(),
-                environment.current_dir(),
-                output.color,
+            Ok::<_, CommandError>(stack_status_display_names(
+                services,
+                &token_source,
+                display_name_logins,
                 request.format,
-            )
+                progress,
+            ))
+        },
+        |result| {
+            result
+                .as_ref()
+                .map(|display_names| vec![perf_attr("display_name_count", display_names.len())])
+                .unwrap_or_default()
         },
     )?;
-    Ok(CommandResult::success(stdout))
+
+    Ok(LoadedGlobalStackStatusView {
+        total_repositories: repositories.len(),
+        entries,
+        display_names,
+    })
 }
 
 struct StackStatusExecution<'a> {
@@ -239,6 +440,34 @@ impl StackStatusExecution<'_> {
         request: StackStatusRequest,
         span: &mut PerfSpan,
     ) -> Result<CommandResult, CommandError> {
+        let loaded = self.load_status_view(&request, span)?;
+        self.progress.finish();
+
+        let stdout = span.measure(
+            "render",
+            [perf_attr(
+                "format",
+                stack_status_format_label(request.format),
+            )],
+            || {
+                render_stack_status_output(
+                    &loaded.report,
+                    &self.context.repository_root,
+                    self.output.color,
+                    self.output.terminal_width,
+                    request.format,
+                    &loaded.display_names,
+                )
+            },
+        )?;
+        Ok(CommandResult::success(stdout))
+    }
+
+    fn load_status_view(
+        &self,
+        request: &StackStatusRequest,
+        span: &mut PerfSpan,
+    ) -> Result<LoadedStackStatusView, CommandError> {
         self.progress.status("Loading pull request stack…");
         let snapshot = span.measure_with_result_attrs(
             "load_stack_snapshot",
@@ -261,17 +490,33 @@ impl StackStatusExecution<'_> {
             perf_attr("pr_count", numbers.len()),
         ]);
 
-        let statuses = if numbers.is_empty() {
-            Vec::new()
-        } else {
-            self.progress.status("Loading GitHub pull request status…");
-            span.measure_with_result_attrs(
+        self.progress.status("Loading GitHub stack status…");
+        let fetches = self.services.stack_status_fetches(
+            self.context,
+            &numbers,
+            !snapshot.nodes.is_empty(),
+        )?;
+        if !numbers.is_empty() {
+            span.record_step_us(
                 "fetch_github_status",
-                [perf_attr("pr_count", numbers.len())],
-                || self.services.pull_request_statuses(self.context, &numbers),
-                pull_request_status_result_attrs,
-            )?
-        };
+                fetches.fetch_github_status_us,
+                [
+                    perf_attr("pr_count", numbers.len()),
+                    perf_attr("status_count", fetches.statuses.len()),
+                ],
+                Option::<&CommandError>::None,
+            );
+        }
+        if let Some(duration_us) = fetches.fetch_trunk_status_us {
+            span.record_step_us(
+                "fetch_trunk_status",
+                duration_us,
+                stack_status_trunk_attrs(fetches.trunk.as_ref()),
+                Option::<&CommandError>::None,
+            );
+        }
+
+        let statuses = fetches.statuses;
         self.progress.status("Maintaining stack cache…");
         let snapshot = span.measure_with_result_attrs(
             "maintain_stack_metadata",
@@ -279,44 +524,59 @@ impl StackStatusExecution<'_> {
             || self.manager.maintain_status_metadata(&statuses),
             stack_snapshot_result_attrs,
         )?;
-        let trunk = if snapshot.nodes.is_empty() {
-            None
-        } else {
-            self.progress.status("Loading trunk status…");
-            span.measure("fetch_trunk_status", Vec::new(), || {
-                stack_status_trunk_report(self.services, self.context)
-            })?
-        };
+        let trunk = (!snapshot.nodes.is_empty())
+            .then_some(fetches.trunk)
+            .flatten();
         let report =
             domain::pull_request_stack_status_report(self.context, snapshot, statuses, trunk);
-        self.progress.finish();
-
-        let stdout = span.measure(
-            "render",
-            [perf_attr(
-                "format",
-                stack_status_format_label(request.format),
-            )],
+        let display_name_logins = pull_request_status_user_logins(report.statuses.values());
+        let display_names = span.measure_with_result_attrs(
+            "load_display_names",
+            [
+                perf_attr("format", stack_status_format_label(request.format)),
+                perf_attr("login_count", display_name_logins.len()),
+            ],
             || {
-                render_stack_status_output(
-                    &report,
-                    &self.context.repository_root,
-                    self.output.color,
+                Ok::<_, CommandError>(stack_status_display_names(
+                    self.services,
+                    &self.context.token_source,
+                    display_name_logins,
                     request.format,
-                )
+                    self.progress,
+                ))
+            },
+            |result| {
+                result
+                    .as_ref()
+                    .map(|display_names| vec![perf_attr("display_name_count", display_names.len())])
+                    .unwrap_or_default()
             },
         )?;
-        Ok(CommandResult::success(stdout))
+
+        Ok(LoadedStackStatusView {
+            report,
+            display_names,
+        })
     }
 }
 
-fn stack_status_trunk_report(
-    services: &dyn CommandServices,
-    context: &RepositoryContext,
-) -> Result<Option<RemoteStatusReport>, CommandError> {
-    let workspace = services.status_workspace_facts(context)?;
-    let report = services.status_report(context, workspace)?;
-    Ok(domain::origin_status_report(context, report))
+struct LoadedStackStatusView {
+    report: PullRequestStackStatusReport,
+    display_names: BTreeMap<String, String>,
+}
+
+fn stack_status_trunk_attrs(trunk: Option<&RemoteStatusReport>) -> Vec<PerfAttr> {
+    let mut attrs = vec![perf_attr("mode", "branch_head")];
+    if let Some(trunk) = trunk {
+        attrs.extend([
+            perf_attr("state", trunk.comparison.label()),
+            perf_attr("counts_exact", trunk.comparison.counts_exact),
+            perf_attr("local_ahead_by", trunk.local_ahead_by),
+            perf_attr("github_ahead_by", trunk.comparison.github_ahead_by),
+            perf_attr("github_behind_by", trunk.comparison.github_behind_by),
+        ]);
+    }
+    attrs
 }
 
 struct StackMoveExecution<'a> {
@@ -402,6 +662,8 @@ impl StackPublishExecution<'_> {
                 perf_attr("explicit_revisions", !request.revisions.is_empty()),
                 perf_attr("label_count", request.labels.len()),
                 perf_attr("reviewer_arg_count", request.reviewers.len()),
+                perf_attr("fixes_count", request.fixes.len()),
+                perf_attr("fixes_attached", request.fixes_attached),
                 perf_attr("ready_selector_count", request.ready.len()),
                 perf_attr("draft_selector_count", request.draft.len()),
                 perf_attr("event_handlers", !request.no_event_handlers),
@@ -423,6 +685,7 @@ impl StackPublishExecution<'_> {
         let task_id = match (request.task_id.clone(), request.no_task_id) {
             (Some(task_id), _) => Some(task_id),
             (None, true) => None,
+            (None, false) if request.fixes.len() == 1 => request.fixes.first().cloned(),
             (None, false) => read_workspace_metadata(&self.context.workspace_root)?.task_id,
         };
         span.set([perf_attr("has_task_id", task_id.is_some())]);
@@ -435,7 +698,7 @@ impl StackPublishExecution<'_> {
         let (facts, prepare_effects) = span.measure(
             "load_publish_stack",
             [perf_attr("revision_count", request.revisions.len())],
-            || self.prepare_stack(selection, task_id.as_deref(), publish_options),
+            || self.prepare_stack(selection, task_id.as_deref(), publish_options, &request),
         )?;
         record_stack_publish_metrics(span, &facts.metrics);
         span.set([
@@ -444,16 +707,35 @@ impl StackPublishExecution<'_> {
             perf_attr("prepare_effect_count", prepare_effects.len()),
         ]);
 
-        let readiness = self.stack_readiness_by_index(&facts, &request, span)?;
-        span.set([perf_attr("readiness_override_count", readiness.len())]);
+        let intent_indexes = stack_publish_intent_indexes(&facts, request.apply_to_stack);
+        let fix_intent_indexes =
+            stack_publish_fix_intent_indexes(&facts, &request, &intent_indexes);
+        span.set([
+            perf_attr("intent_count", intent_indexes.len()),
+            perf_attr("fix_intent_count", fix_intent_indexes.len()),
+        ]);
+        let readiness = self.stack_readiness_by_index(&facts, &request, &intent_indexes, span)?;
+        let confirmation_indexes = stack_publish_confirmation_indexes(&intent_indexes, &readiness);
+        span.set([
+            perf_attr("readiness_override_count", readiness.len()),
+            perf_attr("confirmation_count", confirmation_indexes.len()),
+        ]);
 
         self.progress.status("Planning pull requests…");
         let plan_step = span.start_step(
             "plan_pull_requests",
             [perf_attr("publish_count", facts.publish_indexes.len())],
         );
-        let plans_result =
-            self.plan_pull_requests(&facts, task_id, request.labels, &readiness, span);
+        let task_ids_by_index =
+            stack_publish_task_ids_by_index(&intent_indexes, task_id.as_deref());
+        let plans_result = self.plan_pull_requests(
+            &facts,
+            &task_ids_by_index,
+            &intent_indexes,
+            &request.labels,
+            &readiness,
+            span,
+        );
         let plan_step_attrs = plans_result
             .as_ref()
             .map(|plans| vec![perf_attr("plan_count", plans.len())])
@@ -468,23 +750,13 @@ impl StackPublishExecution<'_> {
         })?;
         self.progress.finish();
 
-        span.measure(
-            "preview_pull_requests",
-            [perf_attr("plan_count", plans.len())],
-            || {
-                for plan in &plans {
-                    self.prompts.pull_request_previewer.show_preview(
-                        plan,
-                        &status,
-                        &prepare_effects,
-                    );
-                }
-                Ok::<_, CommandError>(())
-            },
-        )?;
+        let intent_plan_positions = stack_publish_intent_plan_positions(&facts, &intent_indexes);
+        let confirmation_plan_positions =
+            stack_publish_intent_plan_positions(&facts, &confirmation_indexes);
 
-        let reviewer_candidates = stack_reviewer_candidates(&plans);
-        let preselected_reviewers = stack_preselected_reviewers(&plans, &request.reviewers);
+        let reviewer_candidates = stack_reviewer_candidates(&plans, &intent_plan_positions);
+        let preselected_reviewers =
+            stack_preselected_reviewers(&plans, &intent_plan_positions, &request.reviewers);
         let reviewers = span.measure(
             "reviewer_selection",
             [
@@ -509,27 +781,44 @@ impl StackPublishExecution<'_> {
             ]);
             return Ok(CommandResult::success("cancelled\n".to_owned()));
         };
-        for plan in &mut plans {
-            plan.reviewers = reviewers.clone();
+        let intent_branches = stack_publish_intent_branches(&plans, &intent_plan_positions);
+        let fix_intent_plan_positions =
+            stack_publish_intent_plan_positions(&facts, &fix_intent_indexes);
+        let fix_intent_branches = stack_publish_intent_branches(&plans, &fix_intent_plan_positions);
+        for (position, plan) in plans.iter_mut().enumerate() {
+            plan.reviewers = if intent_plan_positions.contains(&position) {
+                reviewers.clone()
+            } else {
+                ReviewerSelection::default()
+            };
         }
 
-        let confirmed = span.measure(
+        let plan_selection = span.measure(
             "confirm_pull_requests",
-            [perf_attr("plan_count", plans.len())],
+            [
+                perf_attr("plan_count", plans.len()),
+                perf_attr("intent_plan_count", confirmation_plan_positions.len()),
+            ],
             || {
-                for plan in &plans {
-                    if !self
-                        .prompts
-                        .pull_request_confirmer
-                        .confirm_pull_request(plan)?
-                    {
-                        return Ok::<_, PullRequestConfirmationError>(false);
-                    }
-                }
-                Ok::<_, PullRequestConfirmationError>(true)
+                self.confirm_stack_publish_plans(
+                    plans,
+                    &confirmation_plan_positions,
+                    &status,
+                    &prepare_effects,
+                )
             },
         )?;
-        if !confirmed {
+        span.set([
+            perf_attr("confirmed_plan_count", plan_selection.plans.len()),
+            perf_attr(
+                "context_only_pr_count",
+                plan_selection.context_only_pull_requests.len(),
+            ),
+            perf_attr("skipped_plan_count", plan_selection.skipped_count),
+        ]);
+        let plans = plan_selection.plans;
+        let context_only_pull_requests = plan_selection.context_only_pull_requests;
+        if plans.is_empty() && context_only_pull_requests.is_empty() {
             span.set([
                 perf_attr("cancelled", true),
                 perf_attr("cancel_stage", "confirm_pull_requests"),
@@ -586,6 +875,9 @@ impl StackPublishExecution<'_> {
         };
         for ((plan, bookmark_update), push) in plans.into_iter().zip(bookmark_updates).zip(pushes) {
             let branch = plan.bookmark.branch.clone();
+            let plan_publish_options = PullRequestPublishOptions {
+                event_handlers: publish_options.event_handlers && intent_branches.contains(&branch),
+            };
             reports.push(span.measure_with_result_attrs(
                 publish_step_name,
                 [perf_attr("branch", branch)],
@@ -603,7 +895,7 @@ impl StackPublishExecution<'_> {
                             plan,
                             bookmark_update,
                             push,
-                            publish_options,
+                            plan_publish_options,
                         )
                     }
                 },
@@ -612,23 +904,52 @@ impl StackPublishExecution<'_> {
         }
         span.set([perf_attr("published_pr_count", reports.len())]);
 
-        let stack_update = if metadata_only {
-            PullRequestStackPublishUpdate::default()
-        } else {
-            self.progress.status("Updating pull request stack…");
-            span.measure(
-                "update_stack",
-                [perf_attr("report_count", reports.len())],
-                || self.manager.update_after_stack_publish(&reports),
-            )?
-        };
+        self.progress.status("Updating pull request stack…");
+        let stack_update = span.measure(
+            "update_stack",
+            [
+                perf_attr("report_count", reports.len()),
+                perf_attr("context_only_pr_count", context_only_pull_requests.len()),
+            ],
+            || {
+                self.manager.update_after_stack_publish_with_context_only(
+                    &reports,
+                    &context_only_pull_requests,
+                )
+            },
+        )?;
+        span.measure(
+            "record_work_items",
+            [
+                perf_attr("report_count", reports.len()),
+                perf_attr("fixes_count", request.fixes.len()),
+                perf_attr("fixes_attached", request.fixes_attached),
+            ],
+            || {
+                self.manager.record_published_work_items(
+                    &reports,
+                    &request.fixes,
+                    request.fixes_attached,
+                    &fix_intent_branches,
+                )
+            },
+        )?;
         span.set([perf_attr(
             "stack_update_pr_count",
             stack_update.pull_requests.len(),
         )]);
         self.progress.finish();
-        render_stack_publish(&reports, &stack_update, self.services, self.output.color)
-            .map(CommandResult::success)
+        if reports.is_empty() && stack_update.is_empty() {
+            return Ok(CommandResult::success("cancelled\n".to_owned()));
+        }
+        render_stack_publish(
+            &self.context.origin.github.https_url(),
+            &reports,
+            &stack_update,
+            self.services,
+            self.output.color,
+        )
+        .map(CommandResult::success)
     }
 
     fn prepare_stack(
@@ -636,6 +957,7 @@ impl StackPublishExecution<'_> {
         mut selection: StackPublishSelection,
         task_id: Option<&str>,
         publish_options: PullRequestPublishOptions,
+        request: &StackPublishRequest,
     ) -> Result<(StackPublishFacts, Vec<PullRequestEventEffect>), CommandError> {
         let mut prepare_effects = Vec::new();
         loop {
@@ -643,6 +965,17 @@ impl StackPublishExecution<'_> {
                 .services
                 .stack_publish_facts(self.context, &selection)?;
             let facts = non_empty_stack_publish_facts(facts)?;
+            let intent_indexes = stack_publish_intent_indexes(&facts, request.apply_to_stack);
+            let fix_intent_indexes =
+                stack_publish_fix_intent_indexes(&facts, request, &intent_indexes);
+            validate_stack_publish_intent(&facts, request, &intent_indexes)?;
+            validate_stack_publish_fixes(
+                &facts,
+                &request.fixes,
+                request.fixes_attached,
+                task_id,
+                &fix_intent_indexes,
+            )?;
             let stable_selection = stable_stack_publish_selection(&selection, &facts);
             let mut rewrote = false;
             for index in &facts.publish_indexes {
@@ -650,8 +983,11 @@ impl StackPublishExecution<'_> {
                 let prepare_report = domain::prepare_pull_request_change(
                     self.context,
                     workspace,
-                    task_id,
-                    publish_options,
+                    intent_indexes.contains(index).then_some(task_id).flatten(),
+                    PullRequestPublishOptions {
+                        event_handlers: publish_options.event_handlers
+                            && intent_indexes.contains(index),
+                    },
                 );
                 if prepare_report.changed {
                     self.services.rewrite_commit_description(
@@ -675,8 +1011,11 @@ impl StackPublishExecution<'_> {
                     domain::prepare_pull_request_change(
                         self.context,
                         workspace,
-                        task_id,
-                        publish_options,
+                        intent_indexes.contains(index).then_some(task_id).flatten(),
+                        PullRequestPublishOptions {
+                            event_handlers: publish_options.event_handlers
+                                && intent_indexes.contains(index),
+                        },
                     )
                     .event_effects,
                 );
@@ -688,8 +1027,9 @@ impl StackPublishExecution<'_> {
     fn plan_pull_requests(
         &self,
         facts: &StackPublishFacts,
-        task_id: Option<String>,
-        labels: Vec<String>,
+        task_ids_by_index: &BTreeMap<usize, String>,
+        intent_indexes: &BTreeSet<usize>,
+        labels: &[String],
         readiness_by_index: &BTreeMap<usize, PullRequestReadiness>,
         span: &mut PerfSpan,
     ) -> Result<Vec<PullRequestPlan>, CommandError> {
@@ -700,6 +1040,11 @@ impl StackPublishExecution<'_> {
             workspace.nearest_ancestor_bookmark =
                 stack_publish_base(facts, *index, &plans_by_index);
             let readiness = readiness_by_index.get(index).copied().unwrap_or_default();
+            let plan_labels = if intent_indexes.contains(index) {
+                labels.to_vec()
+            } else {
+                Vec::new()
+            };
             let step = span.start_step(
                 "pull_request_plan",
                 [
@@ -710,7 +1055,7 @@ impl StackPublishExecution<'_> {
                         "has_stack_base",
                         workspace.nearest_ancestor_bookmark.is_some(),
                     ),
-                    perf_attr("label_count", labels.len()),
+                    perf_attr("label_count", plan_labels.len()),
                     perf_attr("readiness", readiness.label()),
                 ],
             );
@@ -719,8 +1064,8 @@ impl StackPublishExecution<'_> {
                 .pull_request_plan(
                     self.context,
                     workspace,
-                    task_id.clone(),
-                    labels.clone(),
+                    task_ids_by_index.get(index).cloned(),
+                    plan_labels,
                     readiness,
                 )
                 .map_err(CommandError::from);
@@ -736,10 +1081,57 @@ impl StackPublishExecution<'_> {
         Ok(plans)
     }
 
+    fn confirm_stack_publish_plans(
+        &self,
+        plans: Vec<PullRequestPlan>,
+        intent_plan_positions: &BTreeSet<usize>,
+        status: &WorkspaceStatus,
+        prepare_effects: &[PullRequestEventEffect],
+    ) -> Result<StackPublishPlanSelection, CommandError> {
+        let mut selected = StackPublishPlanSelection::default();
+        let mut blocked_branches = BTreeSet::new();
+        for (position, plan) in plans.into_iter().enumerate() {
+            if blocked_branches.contains(&plan.base) {
+                blocked_branches.insert(plan.bookmark.branch);
+                selected.skipped_count += 1;
+                continue;
+            }
+
+            if !intent_plan_positions.contains(&position) {
+                if plan.existing_pull_request.is_some() {
+                    selected.plans.push(plan);
+                } else {
+                    blocked_branches.insert(plan.bookmark.branch);
+                    selected.skipped_count += 1;
+                }
+                continue;
+            }
+
+            self.prompts
+                .pull_request_previewer
+                .show_preview(&plan, status, prepare_effects);
+            if self
+                .prompts
+                .pull_request_confirmer
+                .confirm_pull_request(&plan)?
+            {
+                selected.plans.push(plan);
+            } else if let Some(existing) = plan.existing_pull_request {
+                selected.context_only_pull_requests.push(existing);
+                selected.skipped_count += 1;
+            } else {
+                blocked_branches.insert(plan.bookmark.branch);
+                selected.skipped_count += 1;
+            }
+        }
+        Ok(selected)
+    }
+
     fn stack_readiness_by_index(
         &self,
         facts: &StackPublishFacts,
         request: &StackPublishRequest,
+        intent_indexes: &BTreeSet<usize>,
         span: &mut PerfSpan,
     ) -> Result<BTreeMap<usize, PullRequestReadiness>, CommandError> {
         let ready_all = readiness_selects_all(&request.ready);
@@ -765,11 +1157,11 @@ impl StackPublishExecution<'_> {
 
         let mut readiness = BTreeMap::new();
         if ready_all {
-            for index in &facts.publish_indexes {
+            for index in intent_indexes {
                 readiness.insert(*index, PullRequestReadiness::Ready);
             }
         } else if draft_all {
-            for index in &facts.publish_indexes {
+            for index in intent_indexes {
                 readiness.insert(*index, PullRequestReadiness::Draft);
             }
         }
@@ -941,7 +1333,79 @@ fn readiness_selects_all(selectors: &[StackPublishReadinessSelector]) -> bool {
         .any(|selector| matches!(selector, StackPublishReadinessSelector::All))
 }
 
+fn validate_stack_publish_intent(
+    facts: &StackPublishFacts,
+    request: &StackPublishRequest,
+    intent_indexes: &BTreeSet<usize>,
+) -> Result<(), CommandError> {
+    if !intent_indexes.is_empty() {
+        return Ok(());
+    }
+
+    let has_bare_readiness =
+        readiness_selects_all(&request.ready) || readiness_selects_all(&request.draft);
+    let has_explicit_intent = request.task_id.is_some()
+        || !request.labels.is_empty()
+        || !request.reviewers.is_empty()
+        || !request.fixes.is_empty()
+        || request.fixes_attached
+        || has_bare_readiness;
+    if has_explicit_intent {
+        return Err(stack_publish_intent_usage_error(format!(
+            "publish intent flags require a current commit or single selected revision; selected {}",
+            stack_publish_index_summary(facts, &facts.publish_indexes),
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_stack_publish_fixes(
+    facts: &StackPublishFacts,
+    fixes: &[String],
+    fixes_attached: bool,
+    task_id: Option<&str>,
+    intent_indexes: &BTreeSet<usize>,
+) -> Result<(), CommandError> {
+    if fixes.is_empty() && !fixes_attached {
+        return Ok(());
+    }
+    if intent_indexes.len() != 1 {
+        return Err(stack_publish_fixes_usage_error(
+            "--fixes requires a current commit or single selected revision",
+        ));
+    }
+    let intent_index = *intent_indexes
+        .iter()
+        .next()
+        .expect("length check ensures one intent index");
+    if fixes_attached {
+        let workspace = &facts.nodes[intent_index].workspace;
+        if domain::pull_request_work_ids_from_description(
+            &workspace.target_change.description,
+            task_id,
+            fixes,
+        )
+        .is_empty()
+        {
+            return Err(stack_publish_fixes_usage_error(
+                "--fixes without WORK_ID requires a task id or ticket prefix in the selected commit title",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn stack_publish_readiness_usage_error(message: impl Into<String>) -> CommandError {
+    CommandError::Usage(clap::Error::raw(ErrorKind::ValueValidation, message.into()))
+}
+
+fn stack_publish_intent_usage_error(message: impl Into<String>) -> CommandError {
+    CommandError::Usage(clap::Error::raw(ErrorKind::ValueValidation, message.into()))
+}
+
+fn stack_publish_fixes_usage_error(message: impl Into<String>) -> CommandError {
     CommandError::Usage(clap::Error::raw(ErrorKind::ValueValidation, message.into()))
 }
 
@@ -1047,17 +1511,17 @@ fn append_stack_plan_rows(
         let connector = if depth == 0 {
             String::new()
         } else if last {
-            "└─ ".to_owned()
+            "└ ".to_owned()
         } else {
-            "├─ ".to_owned()
+            "├ ".to_owned()
         };
         rows.push((format!("{prefix}{connector}"), index));
         let child_prefix = if depth == 0 {
             String::new()
         } else if last {
-            format!("{prefix}   ")
+            format!("{prefix}  ")
         } else {
-            format!("{prefix}│  ")
+            format!("{prefix}│ ")
         };
         append_stack_plan_rows(rows, children, &children[index], &child_prefix, depth + 1);
     }
@@ -1248,6 +1712,87 @@ fn record_stack_publish_metric_step(
     );
 }
 
+fn stack_publish_intent_indexes(
+    facts: &StackPublishFacts,
+    apply_to_stack: bool,
+) -> BTreeSet<usize> {
+    if apply_to_stack {
+        return facts.publish_indexes.iter().copied().collect();
+    }
+    if let Some(anchor_index) = facts
+        .anchor_index
+        .filter(|index| facts.publish_indexes.contains(index))
+    {
+        return BTreeSet::from([anchor_index]);
+    }
+    match facts.publish_indexes.as_slice() {
+        [index] => BTreeSet::from([*index]),
+        _ => BTreeSet::new(),
+    }
+}
+
+fn stack_publish_fix_intent_indexes(
+    facts: &StackPublishFacts,
+    request: &StackPublishRequest,
+    intent_indexes: &BTreeSet<usize>,
+) -> BTreeSet<usize> {
+    if request.fixes.is_empty() && !request.fixes_attached {
+        return BTreeSet::new();
+    }
+    if request.apply_to_stack {
+        return facts.publish_indexes.last().copied().into_iter().collect();
+    }
+    intent_indexes.clone()
+}
+
+fn stack_publish_confirmation_indexes(
+    intent_indexes: &BTreeSet<usize>,
+    readiness: &BTreeMap<usize, PullRequestReadiness>,
+) -> BTreeSet<usize> {
+    intent_indexes
+        .iter()
+        .copied()
+        .chain(readiness.keys().copied())
+        .collect()
+}
+
+fn stack_publish_task_ids_by_index(
+    intent_indexes: &BTreeSet<usize>,
+    task_id: Option<&str>,
+) -> BTreeMap<usize, String> {
+    let Some(task_id) = task_id else {
+        return BTreeMap::new();
+    };
+    intent_indexes
+        .iter()
+        .map(|index| (*index, task_id.to_owned()))
+        .collect()
+}
+
+fn stack_publish_intent_plan_positions(
+    facts: &StackPublishFacts,
+    intent_indexes: &BTreeSet<usize>,
+) -> BTreeSet<usize> {
+    facts
+        .publish_indexes
+        .iter()
+        .enumerate()
+        .filter_map(|(position, index)| intent_indexes.contains(index).then_some(position))
+        .collect()
+}
+
+fn stack_publish_intent_branches(
+    plans: &[PullRequestPlan],
+    intent_plan_positions: &BTreeSet<usize>,
+) -> BTreeSet<String> {
+    plans
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| intent_plan_positions.contains(position))
+        .map(|(_, plan)| plan.bookmark.branch.clone())
+        .collect()
+}
+
 fn stable_stack_publish_selection(
     selection: &StackPublishSelection,
     facts: &StackPublishFacts,
@@ -1308,11 +1853,16 @@ fn stack_publish_node_has_changes(node: &StackPublishNodeFacts) -> bool {
     !node.workspace.target_change.is_empty && !node.workspace.changed_files.is_empty()
 }
 
-fn stack_reviewer_candidates(plans: &[PullRequestPlan]) -> Vec<ReviewerCandidate> {
+fn stack_reviewer_candidates(
+    plans: &[PullRequestPlan],
+    intent_plan_positions: &BTreeSet<usize>,
+) -> Vec<ReviewerCandidate> {
     let mut candidates: Vec<ReviewerCandidate> = Vec::new();
     for candidate in plans
         .iter()
-        .flat_map(|plan| plan.reviewer_candidates.iter().cloned())
+        .enumerate()
+        .filter(|(position, _)| intent_plan_positions.contains(position))
+        .flat_map(|(_, plan)| plan.reviewer_candidates.iter().cloned())
     {
         if let Some(existing) = candidates
             .iter_mut()
@@ -1332,13 +1882,19 @@ fn stack_reviewer_candidates(plans: &[PullRequestPlan]) -> Vec<ReviewerCandidate
 
 fn stack_preselected_reviewers(
     plans: &[PullRequestPlan],
+    intent_plan_positions: &BTreeSet<usize>,
     cli_reviewers: &[ReviewerTarget],
 ) -> Vec<ReviewerTarget> {
     let mut reviewers = Vec::new();
     for reviewer in cli_reviewers {
         push_reviewer_target(&mut reviewers, reviewer.clone());
     }
-    for plan in plans {
+    for plan in plans
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| intent_plan_positions.contains(position))
+        .map(|(_, plan)| plan)
+    {
         if let Some(existing) = &plan.existing_pull_request {
             for user in &existing.reviewers.users {
                 push_reviewer_target(&mut reviewers, ReviewerTarget::user(user.clone()));
@@ -1348,6 +1904,15 @@ fn stack_preselected_reviewers(
                     &mut reviewers,
                     ReviewerTarget::team(team.clone(), team.clone()),
                 );
+            }
+        }
+        for candidate in &plan.reviewer_candidates {
+            if candidate
+                .reasons
+                .iter()
+                .any(|reason| reason == "already approved")
+            {
+                push_reviewer_target(&mut reviewers, candidate.target.clone());
             }
         }
     }
@@ -1364,6 +1929,7 @@ fn push_reviewer_target(reviewers: &mut Vec<ReviewerTarget>, reviewer: ReviewerT
 }
 
 fn render_stack_publish(
+    repository_url: &str,
     reports: &[PullRequestReport],
     stack_update: &PullRequestStackPublishUpdate,
     services: &dyn CommandServices,
@@ -1377,7 +1943,7 @@ fn render_stack_publish(
                 output.push_str(&render_pull_request(report));
                 append_pull_request_event_effects(&mut output, report, services, color);
             }
-            append_stack_update(&mut output, reports, stack_update, color);
+            append_stack_update(&mut output, repository_url, stack_update, color);
             Ok(output)
         }
     }
@@ -1385,16 +1951,13 @@ fn render_stack_publish(
 
 fn append_stack_update(
     output: &mut String,
-    reports: &[PullRequestReport],
+    repository_url: &str,
     stack_update: &PullRequestStackPublishUpdate,
     color: bool,
 ) {
     if stack_update.is_empty() {
         return;
     }
-    let Some(repository_url) = reports.first().map(|report| &report.repository.github_url) else {
-        return;
-    };
     let pull_requests = stack_update
         .pull_requests
         .iter()
@@ -1519,11 +2082,14 @@ fn render_stack_status_output(
     report: &PullRequestStackStatusReport,
     current_dir: &Path,
     color: bool,
+    terminal_width: Option<usize>,
     format: StackStatusFormat,
+    display_names: &BTreeMap<String, String>,
 ) -> Result<String, CommandError> {
     match format {
         StackStatusFormat::Human => {
-            render_stack_status(report, current_dir, color).map_err(Into::into)
+            render_stack_status(report, current_dir, color, terminal_width, display_names)
+                .map_err(Into::into)
         }
         StackStatusFormat::Json => Ok(render_stack_status_json(&[
             GlobalStackStatusEntry::current(current_dir.to_path_buf(), report),
@@ -1536,15 +2102,45 @@ fn render_global_stack_status_output(
     total_repositories: usize,
     current_dir: &Path,
     color: bool,
+    terminal_width: Option<usize>,
     format: StackStatusFormat,
+    display_names: &BTreeMap<String, String>,
 ) -> Result<String, CommandError> {
     match format {
-        StackStatusFormat::Human => {
-            render_global_stack_status(entries, total_repositories, current_dir, color)
-                .map_err(Into::into)
-        }
+        StackStatusFormat::Human => render_global_stack_status(
+            entries,
+            total_repositories,
+            current_dir,
+            color,
+            terminal_width,
+            display_names,
+        )
+        .map_err(Into::into),
         StackStatusFormat::Json => Ok(render_stack_status_json(entries)),
     }
+}
+
+fn stack_status_display_names(
+    services: &dyn CommandServices,
+    token_source: &TokenSource,
+    logins: Vec<String>,
+    format: StackStatusFormat,
+    progress: &dyn ProgressSink,
+) -> BTreeMap<String, String> {
+    if format != StackStatusFormat::Human || logins.is_empty() {
+        return BTreeMap::new();
+    }
+    progress.status("Loading reviewer names…");
+    services.github_user_display_names(token_source, &logins)
+}
+
+fn stack_status_entry_user_logins(entries: &[GlobalStackStatusEntry]) -> Vec<String> {
+    pull_request_status_user_logins(
+        entries
+            .iter()
+            .filter_map(|entry| entry.result.as_ref().ok())
+            .flat_map(|report| report.statuses.values()),
+    )
 }
 
 fn stack_status_pull_request_numbers(
@@ -1579,7 +2175,7 @@ fn stack_status_missing_pull_requests(
         .map(|node| node.branch.as_str())
         .filter(|branch| seen.insert((*branch).to_owned()))
     {
-        if let Some(pull_request) = services.find_open_pull_request_for_head(context, branch)? {
+        if let Some(pull_request) = services.find_pull_request_for_head(context, branch)? {
             pull_requests.push(pull_request);
         }
     }
@@ -1609,15 +2205,6 @@ fn pull_request_discovery_result_attrs(
     result
         .as_ref()
         .map(|pull_requests| vec![perf_attr("discovered_pr_count", pull_requests.len())])
-        .unwrap_or_default()
-}
-
-fn pull_request_status_result_attrs(
-    result: &Result<Vec<PullRequestStatusRecord>, WorkflowError>,
-) -> Vec<PerfAttr> {
-    result
-        .as_ref()
-        .map(|statuses| vec![perf_attr("status_count", statuses.len())])
         .unwrap_or_default()
 }
 
@@ -1656,6 +2243,7 @@ fn stack_snapshot_rows(snapshot: &PullRequestStackSnapshot, color: bool) -> Vec<
 pub(super) fn stack_metadata_rows(nodes: &[StackMetadataNode]) -> Vec<String> {
     let metadata = StackMetadata {
         version: 1,
+        work_item_handler_runs: Vec::new(),
         nodes: nodes.to_vec(),
     };
     let snapshot = PullRequestStackSnapshot::from_metadata(

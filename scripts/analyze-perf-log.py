@@ -15,13 +15,16 @@ DEFAULT_LOG_PATH = Path.home() / ".local" / "state" / "jx" / "jx-perf.log"
 
 def main() -> int:
     args = parse_args()
-    records = read_records(args.path.expanduser())
+    records, skipped = read_records(args.path.expanduser())
     if not records:
         print(f"no perf records found in {args.path}")
         return 1
 
     print(f"log: {args.path.expanduser()}")
-    print(f"records: {len(records)}  lines: {records[-1]['_lineno']}")
+    print(
+        f"records: {len(records)}  lines: {records[-1]['_lineno']}  "
+        f"skipped: {skipped}"
+    )
 
     if args.tail:
         print(f"\nlast {args.tail} records:")
@@ -94,8 +97,9 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def read_records(path: Path) -> list[dict[str, Any]]:
+def read_records(path: Path) -> tuple[list[dict[str, Any]], int]:
     records: list[dict[str, Any]] = []
+    skipped = 0
     with path.open(encoding="utf-8") as handle:
         for lineno, line in enumerate(handle, 1):
             line = line.strip()
@@ -104,6 +108,10 @@ def read_records(path: Path) -> list[dict[str, Any]]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
+                skipped += 1
+                continue
+            if not isinstance(record, dict):
+                skipped += 1
                 continue
             record["_lineno"] = lineno
             if started_at := record.get("started_at"):
@@ -113,7 +121,7 @@ def read_records(path: Path) -> list[dict[str, Any]]:
                     microseconds=record.get("duration_us", 0)
                 )
             records.append(record)
-    return records
+    return records, skipped
 
 
 def matching_commands(
@@ -234,6 +242,9 @@ def event_extras(record: dict[str, Any]) -> str:
         "command",
         "mode",
         "repo",
+        "workspace_root",
+        "jj_workspace",
+        "pid",
         "exit_code",
         "advance_trunk",
         "tracked_update_count",
@@ -243,9 +254,24 @@ def event_extras(record: dict[str, Any]) -> str:
         "unchanged_bookmark_count",
         "pushed_commit_count",
         "bookmark_count",
+        "chunk_count",
+        "chunk_size",
+        "unique_number_count",
+        "retry_count",
+        "completed_chunk_count",
+        "status_count",
         "metadata_node_count",
         "synced_pr_count",
         "pull_request_count",
+        "branch",
+        "current_repaired",
+        "changed_remote_bookmarks",
+        "changed_remote_tags",
+        "abandoned_commits",
+        "rebased_trunk_children",
+        "rebased_descendants",
+        "skipped_trunk_children",
+        "rebased_commit_count",
         "cache_hit",
         "number",
         "head_branch",
@@ -263,11 +289,51 @@ def step_extras(step: dict[str, Any]) -> str:
         "unchanged_bookmark_count",
         "pushed_commit_count",
         "bookmark_count",
+        "bookmarks",
+        "refresh_bookmark_count",
+        "refresh_bookmarks",
+        "chunk_index",
+        "chunk_count",
+        "attempt",
+        "max_attempts",
+        "number_count",
+        "first_number",
+        "last_number",
+        "will_retry",
+        "transient_error",
+        "transient_error_kind",
+        "status_count",
+        "refspec_count",
+        "fetch_tags",
+        "child_count",
+        "branch",
+        "current_commit",
+        "current_change",
+        "previous_trunk",
+        "trunk_commit",
+        "updated_trunk",
+        "current_before",
+        "final_current",
+        "workspace",
+        "op_id",
+        "op_id_before",
+        "git_ref_path",
+        "git_ref_exists",
+        "git_ref_size",
+        "git_ref_lock_exists",
+        "git_ref_lock_size",
         "metadata_node_count",
         "pull_request_count",
         "changed_remote_bookmarks",
+        "changed_remote_tags",
+        "abandoned_commits",
+        "rebased_trunk_children",
+        "rebased_descendants",
+        "skipped_trunk_children",
+        "abandoned_empty_commits",
         "rebased_commit_count",
         "conflicted_rebased_commit_count",
+        "repaired",
         "jj_total_us",
         "err",
     ]

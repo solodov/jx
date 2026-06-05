@@ -140,7 +140,7 @@ for navigation and workspace management.
   read the task id stored in workspace-local metadata created by
   `jx work add --task-id`.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
-  completion prefers current-repository jj workspace names, `trunk`/`root`
+  completion prefers current-repository layout workspace aliases, `trunk`/`root`
   aliases, and same-repository layout keys before other global work locations;
   project argument completion includes only primary repositories. The navigation
   command accepts explicit absolute and dot-relative paths, and can also resolve

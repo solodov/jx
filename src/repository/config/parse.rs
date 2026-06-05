@@ -492,6 +492,8 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
             key.as_str(),
             "advance_trunk"
                 | "event_handlers"
+                | "work_items"
+                | "work_item_handlers"
                 | "reviewers"
                 | "path_reviewers"
                 | "reviewer_rules"
@@ -552,6 +554,8 @@ fn parse_repo_rule(
             "repo"
                 | "advance_trunk"
                 | "event_handlers"
+                | "work_items"
+                | "work_item_handlers"
                 | "reviewers"
                 | "path_reviewers"
                 | "reviewer_rules"
@@ -586,6 +590,18 @@ fn parse_repo_policy(
         .map(|value| parse_event_handlers(file, &format!("{key_prefix}.event_handlers"), value))
         .transpose()?
         .unwrap_or_default();
+    let work_items = table
+        .get("work_items")
+        .map(|value| parse_work_items(file, &format!("{key_prefix}.work_items"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let work_item_handlers = table
+        .get("work_item_handlers")
+        .map(|value| {
+            parse_work_item_handlers(file, &format!("{key_prefix}.work_item_handlers"), value)
+        })
+        .transpose()?
+        .unwrap_or_default();
     let reviewers = table
         .get("reviewers")
         .map(|value| parse_reviewers(file, &format!("{key_prefix}.reviewers"), value))
@@ -612,6 +628,8 @@ fn parse_repo_policy(
     Ok(RepoPolicyConfig {
         advance_trunk,
         event_handlers,
+        work_items,
+        work_item_handlers,
         reviewers,
         reviewer_rules,
         workspace_shared_paths,
@@ -632,7 +650,16 @@ fn parse_stack_status_config(
     };
 
     for name in table.keys() {
-        if !matches!(name.as_str(), "review_gate_checks") {
+        if !matches!(
+            name.as_str(),
+            "review_gate_checks"
+                | "ignored_checks"
+                | "ignored_labels"
+                | "ignored_labels_when_merged"
+                | "ignored_reviewers"
+                | "title_rewrites"
+                | "review_wait_threshold"
+        ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
                 key: format!("{key}.{name}"),
@@ -645,8 +672,86 @@ fn parse_stack_status_config(
         .map(|value| parse_review_gate_checks(file, &format!("{key}.review_gate_checks"), value))
         .transpose()?
         .unwrap_or_default();
+    let ignored_checks = table
+        .get("ignored_checks")
+        .map(|value| parse_ignored_checks(file, &format!("{key}.ignored_checks"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let ignored_labels = table
+        .get("ignored_labels")
+        .map(|value| parse_ignored_labels(file, &format!("{key}.ignored_labels"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let ignored_labels_when_merged = table
+        .get("ignored_labels_when_merged")
+        .map(|value| {
+            parse_ignored_labels(file, &format!("{key}.ignored_labels_when_merged"), value)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let ignored_reviewers = table
+        .get("ignored_reviewers")
+        .map(|value| parse_ignored_reviewers(file, &format!("{key}.ignored_reviewers"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let title_rewrites = table
+        .get("title_rewrites")
+        .map(|value| parse_title_rewrites(file, &format!("{key}.title_rewrites"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let review_wait_threshold_seconds = table
+        .get("review_wait_threshold")
+        .map(|value| {
+            parse_review_wait_threshold(file, &format!("{key}.review_wait_threshold"), value)
+        })
+        .transpose()?;
 
-    Ok(RepoStackStatusConfig { review_gate_checks })
+    Ok(RepoStackStatusConfig {
+        review_gate_checks,
+        ignored_checks,
+        ignored_labels,
+        ignored_labels_when_merged,
+        ignored_reviewers,
+        title_rewrites,
+        review_wait_threshold_seconds,
+    })
+}
+
+fn parse_review_wait_threshold(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<u64, RepositoryError> {
+    let raw = parse_non_empty_string_value(file, key, value)?;
+    let Some(unit) = raw.chars().last() else {
+        return Err(invalid_review_wait_threshold(file, key));
+    };
+    let amount = &raw[..raw.len() - unit.len_utf8()];
+    if amount.is_empty() {
+        return Err(invalid_review_wait_threshold(file, key));
+    }
+    let multiplier = match unit {
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        _ => return Err(invalid_review_wait_threshold(file, key)),
+    };
+    let amount = amount
+        .parse::<u64>()
+        .map_err(|_| invalid_review_wait_threshold(file, key))?;
+    if amount == 0 {
+        return Err(invalid_review_wait_threshold(file, key));
+    }
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| invalid_review_wait_threshold(file, key))
+}
+
+fn invalid_review_wait_threshold(file: &str, key: &str) -> RepositoryError {
+    RepositoryError::InvalidConfig {
+        file: file.to_owned(),
+        message: format!("`{key}` must be a duration such as `30m`, `4h`, or `2d`"),
+    }
 }
 
 fn parse_review_gate_checks(
@@ -699,6 +804,197 @@ fn parse_review_gate_check(
     Ok(ReviewGateCheckConfig { name })
 }
 
+fn parse_title_rewrites(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<TitleRewriteConfig>, RepositoryError> {
+    let Some(rules) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_title_rewrite(file, key, index, value))
+        .collect()
+}
+
+fn parse_title_rewrite(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<TitleRewriteConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "pattern" | "replace") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let pattern_key = format!("{key}[{index}].pattern");
+    let pattern = required_non_empty_string(file, table, &pattern_key)?;
+    regex::Regex::new(&pattern).map_err(|source| RepositoryError::InvalidConfig {
+        file: file.to_owned(),
+        message: format!("`{pattern_key}` must be a valid regex: {source}"),
+    })?;
+    let replace = required_non_empty_string(file, table, &format!("{key}[{index}].replace"))?;
+
+    Ok(TitleRewriteConfig { pattern, replace })
+}
+
+fn parse_ignored_checks(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<IgnoredCheckConfig>, RepositoryError> {
+    parse_named_regex_rules(file, key, value, "check-name regex").map(|rules| {
+        rules
+            .into_iter()
+            .map(|name| IgnoredCheckConfig { name })
+            .collect()
+    })
+}
+
+fn parse_ignored_labels(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<IgnoredLabelConfig>, RepositoryError> {
+    parse_named_glob_rules(file, key, value, "label-name glob").map(|rules| {
+        rules
+            .into_iter()
+            .map(|name| IgnoredLabelConfig { name })
+            .collect()
+    })
+}
+
+fn parse_ignored_reviewers(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<IgnoredReviewerConfig>, RepositoryError> {
+    parse_named_glob_rules(file, key, value, "reviewer-name glob").map(|rules| {
+        rules
+            .into_iter()
+            .map(|name| IgnoredReviewerConfig { name })
+            .collect()
+    })
+}
+
+fn parse_named_regex_rules(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+    description: &str,
+) -> Result<Vec<String>, RepositoryError> {
+    parse_named_rules(file, key, value, description, validate_named_regex_rule)
+}
+
+fn parse_named_glob_rules(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+    description: &str,
+) -> Result<Vec<String>, RepositoryError> {
+    parse_named_rules(file, key, value, description, validate_named_glob_rule)
+}
+
+fn parse_named_rules(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+    description: &str,
+    validate: fn(&str, &str, String, &str) -> Result<String, RepositoryError>,
+) -> Result<Vec<String>, RepositoryError> {
+    let Some(rules) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of {description}s"),
+        });
+    };
+
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_named_rule(file, key, index, value, description, validate))
+        .collect()
+}
+
+fn parse_named_rule(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+    description: &str,
+    validate: fn(&str, &str, String, &str) -> Result<String, RepositoryError>,
+) -> Result<String, RepositoryError> {
+    if value.is_str() {
+        let item_key = format!("{key}[{index}]");
+        let name = parse_non_empty_string_value(file, &item_key, value)?;
+        return validate(file, &item_key, name, description);
+    }
+
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a {description} string or table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "name") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let item_key = format!("{key}[{index}].name");
+    let name = required_non_empty_string(file, table, &item_key)?;
+    validate(file, &item_key, name, description)
+}
+
+fn validate_named_regex_rule(
+    file: &str,
+    key: &str,
+    name: String,
+    description: &str,
+) -> Result<String, RepositoryError> {
+    regex::Regex::new(&name).map_err(|source| RepositoryError::InvalidConfig {
+        file: file.to_owned(),
+        message: format!("`{key}` must be a valid {description}: {source}"),
+    })?;
+    Ok(name)
+}
+
+fn validate_named_glob_rule(
+    file: &str,
+    key: &str,
+    name: String,
+    description: &str,
+) -> Result<String, RepositoryError> {
+    Glob::new(&name).map_err(|source| RepositoryError::InvalidConfig {
+        file: file.to_owned(),
+        message: format!("`{key}` must be a valid {description}: {source}"),
+    })?;
+    Ok(name)
+}
+
 fn parse_policy_path_reviewers(
     file: &str,
     key_prefix: &str,
@@ -718,6 +1014,129 @@ fn parse_policy_path_reviewers(
             ),
         }),
         (None, None) => Ok(Vec::new()),
+    }
+}
+
+fn parse_work_items(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<RepoWorkItemsConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "apply_on_stack_status") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}.{name}"),
+            });
+        }
+    }
+
+    let apply_on_stack_status = table
+        .get("apply_on_stack_status")
+        .map(|value| parse_bool_value(file, &format!("{key}.apply_on_stack_status"), value))
+        .transpose()?;
+
+    Ok(RepoWorkItemsConfig {
+        apply_on_stack_status,
+    })
+}
+
+fn parse_work_item_handlers(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<RepoWorkItemHandlerConfig>, RepositoryError> {
+    let Some(handlers) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    handlers
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_work_item_handler(file, key, index, value))
+        .collect()
+}
+
+fn parse_work_item_handler(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoWorkItemHandlerConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "id" | "enabled" | "on" | "command") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let id = table
+        .get("id")
+        .map(|value| parse_non_empty_string_value(file, &format!("{key}[{index}].id"), value))
+        .transpose()?;
+    let enabled = table
+        .get("enabled")
+        .map(|value| parse_bool_value(file, &format!("{key}[{index}].enabled"), value))
+        .transpose()?
+        .unwrap_or(true);
+    if !enabled {
+        let Some(id) = id else {
+            return Err(RepositoryError::InvalidConfig {
+                file: file.to_owned(),
+                message: format!("`{key}[{index}].id` is required when disabling a handler"),
+            });
+        };
+        return Ok(RepoWorkItemHandlerConfig::Disable { id });
+    }
+
+    let on = parse_work_item_event(file, key, index, required_value(file, table, "on")?)?;
+    let command_key = format!("{key}[{index}].command");
+    let command = parse_string_array(file, &command_key, required_value(file, table, "command")?)?;
+    if command.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{command_key}` must not be empty"),
+        });
+    }
+
+    Ok(RepoWorkItemHandlerConfig::Handler(RepoWorkItemHandler {
+        id,
+        on,
+        command,
+    }))
+}
+
+fn parse_work_item_event(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoWorkItemEvent, RepositoryError> {
+    match parse_non_empty_string_value(file, &format!("{key}[{index}].on"), value)?.as_str() {
+        "work_item.fixed" => Ok(RepoWorkItemEvent::Fixed),
+        event => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("unsupported work item handler event `{event}`"),
+        }),
     }
 }
 

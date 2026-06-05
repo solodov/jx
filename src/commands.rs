@@ -25,6 +25,7 @@ use dialoguer::{theme::Theme, Confirm, MultiSelect, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use jj_cli::formatter::{Formatter, PlainTextFormatter};
 use termimad::MadSkin;
+use terminal_size::{terminal_size, Width};
 use thiserror::Error;
 
 use crate::{
@@ -37,35 +38,39 @@ use crate::{
         PullRequestReadiness, PullRequestReport, PullRequestStackNode, PullRequestStackRow,
         PullRequestStackSelection, PullRequestStackSnapshot, PullRequestStackStatusReport,
         PushPlan, PushReport, RebaseOnTrunkReport, RemoteStatusReport, RepositorySummary,
-        StatusReport, SyncReport, TrackedPushReport, WorkflowError,
+        StatusReport, StatusState, SyncReport, TrackedPushReport, WorkflowError,
     },
     github::{
-        GitHubClient, OctocrabGitHubClient, PullRequestCheckStatus, PullRequestHead,
-        PullRequestLabel, PullRequestRecord, PullRequestReviewStatus, PullRequestStatusRecord,
-        RepositoryCreation, ReviewerCandidate, ReviewerSelection, ReviewerTarget,
+        GitHubClient, GitHubUserProfile, OctocrabGitHubClient, PullRequestCheckStatus,
+        PullRequestHead, PullRequestLabel, PullRequestRecord, PullRequestReviewRequests,
+        PullRequestReviewStatus, PullRequestStatusRecord, RepositoryCreation, ReviewerCandidate,
+        ReviewerSelection, ReviewerTarget,
     },
     jj::{
         current_workspace_entry, jj_workspace_entries, remove_jj_workspace, run_current_diff,
         run_jj_git_clone, run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome,
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
-        DiffToolInvocation, ExternalDiffTool, FetchOutcome, InitialPublishTarget, JjError,
-        JjWorkspace, LocalStackBranch, LocalStackBranchFacts, LocalStackBranchMetrics,
-        PipeDiffTool, PushBookmarksMetrics, PushBookmarksOutcome, PushOutcome,
-        PushedBookmarkSummary, RebaseOnTrunkOutcome, StackMoveOutcome, StackMoveTarget,
-        StackPlanFacts, StackPlanSelection, StackPublishFacts, StackPublishSelection,
-        StatusWorkspaceFacts, SyncPushMetrics, SyncPushMetricsOutcome, SyncPushOutcome,
-        TrackedPushOutcome, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
-        WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
+        DiffToolInvocation, ExternalDiffTool, FetchOutcome, FetchTraceAttr, FetchTraceStep,
+        FetchTraceValue, InitialPublishTarget, JjError, JjWorkspace, LocalStackBranch,
+        LocalStackBranchFacts, LocalStackBranchMetrics, PipeDiffTool, PushBookmarksMetrics,
+        PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary, RebaseOnTrunkOutcome,
+        StackMoveOutcome, StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
+        StackPublishSelection, StatusWorkspaceFacts, StatusWorkspaceMetrics, SyncPushMetrics,
+        SyncPushMetricsOutcome, SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions,
+        WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
+        WorkspaceVisibility,
     },
     repository::{
-        read_stack_metadata, read_workspace_metadata, validate_workspace_name,
-        write_stack_metadata, write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote,
-        GitHubRepository, LayoutConfig, LocalRepositoryContext, RepositoryContext, RepositoryError,
-        RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
-        TokenSource, WorkflowConfig, WorkspaceMetadata,
+        read_github_user_name_cache, read_stack_metadata, read_workspace_metadata,
+        validate_workspace_name, write_github_user_name_cache, write_stack_metadata,
+        write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote, GitHubRepository,
+        LayoutConfig, LocalRepositoryContext, RepoWorkItemEvent, RepoWorkItemHandler,
+        RepositoryContext, RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig,
+        ShellZoxideMode, StackMetadata, TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 
+mod dashboard;
 mod handlers;
 mod perf;
 mod progress;
@@ -73,11 +78,13 @@ mod prompts;
 mod pull_request_manager;
 mod render;
 mod request;
+mod review;
 mod services;
 mod shell;
 mod stack;
 mod work;
 
+use dashboard::*;
 use handlers::*;
 use perf::*;
 use progress::*;
@@ -90,6 +97,7 @@ pub use prompts::{
 use pull_request_manager::*;
 use render::*;
 use request::*;
+use review::*;
 use services::*;
 use shell::*;
 use stack::*;
@@ -146,6 +154,12 @@ pub enum CommandError {
     RepositoryCreationConfirmation(#[from] RepositoryCreationConfirmationError),
     #[error(transparent)]
     WorkspaceRemoveConfirmation(#[from] WorkspaceRemoveConfirmationError),
+    #[error("Work item handler `{handler}` failed for {work_id}: {message}")]
+    WorkItemHandler {
+        handler: String,
+        work_id: String,
+        message: String,
+    },
     #[error("Workspace `{workspace}` was created at {destination}, but post-create setup failed: {message}. The workspace was not rolled back; repair or delete it manually.")]
     WorkAddSetup {
         workspace: String,
@@ -439,19 +453,37 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OutputMode {
     color: bool,
+    terminal_width: Option<usize>,
 }
 
 impl OutputMode {
     fn from_process() -> Self {
+        let is_terminal = io::stdout().is_terminal();
         Self {
-            color: io::stdout().is_terminal(),
+            color: is_terminal,
+            terminal_width: is_terminal.then(detected_terminal_width).flatten(),
         }
     }
 
     #[cfg(test)]
     fn plain() -> Self {
-        Self { color: false }
+        Self {
+            color: false,
+            terminal_width: None,
+        }
     }
+
+    #[cfg(test)]
+    fn plain_with_width(width: usize) -> Self {
+        Self {
+            color: false,
+            terminal_width: Some(width),
+        }
+    }
+}
+
+fn detected_terminal_width() -> Option<usize> {
+    terminal_size().map(|(Width(width), _)| usize::from(width))
 }
 
 fn run_with_args_and_progress<I, T>(
@@ -473,6 +505,7 @@ where
         [
             perf_attr("arg_count", args.len().saturating_sub(1)),
             perf_attr("color", output.color),
+            perf_attr("terminal_width", output.terminal_width.unwrap_or_default()),
         ],
     );
 

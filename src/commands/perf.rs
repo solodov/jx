@@ -223,6 +223,10 @@ impl PerfSpan {
         );
         event.insert("op".to_owned(), Value::String(self.op.clone()));
         event.insert(
+            "pid".to_owned(),
+            Value::Number(u64::from(std::process::id()).into()),
+        );
+        event.insert(
             "status".to_owned(),
             Value::String(if self.error.is_some() { "error" } else { "ok" }.to_owned()),
         );

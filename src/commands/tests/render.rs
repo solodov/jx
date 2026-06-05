@@ -65,9 +65,9 @@ fn pull_request_selection_renders_newest_stack_first_with_dependency_order() {
             .collect::<Vec<_>>(),
         vec![
             "◯ #10     Root",
-            "├─ ◯ #11     Child 1",
-            "│  └─ ◯ #14     Child 11",
-            "└─ ◯ #12     Child 2",
+            "├ ◯ #11     Child 1",
+            "│ └ ◯ #14     Child 11",
+            "└ ◯ #12     Child 2",
             "◯ #2      Other root",
             "\x1b[2m\x1b[38;2;190;184;176m◌ #1      Draft root\x1b[0m",
         ]

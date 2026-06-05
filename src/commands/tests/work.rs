@@ -631,6 +631,46 @@ path = "{repo}"
 }
 
 #[test]
+fn work_complete_picker_format_includes_keys_and_paths() {
+    // Verifies: fzf-backed shell completion can display a key with its resolved target path.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let project_root = workspace.home.join("projects/project");
+    let fix_root = workspace.home.join("projects/.work/project/fix");
+    create_jj_workspace_marker(&project_root);
+    create_jj_workspace_marker(&fix_root);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        [
+            "jx", "work", "complete", "--format", "picker", "--prefix", "p",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("work picker completion succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "project\t{}\nproject@fix\t{}\n",
+            project_root.display(),
+            fix_root.display()
+        )
+    );
+}
+
+#[test]
 fn work_complete_workspaces_lists_only_deletable_workspace_names() {
     // Verifies: Delete completion offers managed workspaces but omits the primary default checkout.
     let workspace = TestWorkspace::new_under("projects/jx");
@@ -911,7 +951,7 @@ path = "{repo}"
 
 #[test]
 fn work_complete_navigation_orders_current_repo_before_global_locations() {
-    // Verifies: navigation completion presents local workspace names and trunk aliases first.
+    // Verifies: navigation completion presents current-repo layout workspace aliases and trunk aliases first.
     let workspace = TestWorkspace::new_under("projects/.work/project/current");
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -931,18 +971,11 @@ path = "{repo}"
     create_jj_workspace_marker(&unrelated_root);
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices {
-        workspaces: vec![
-            WorkspaceEntry {
-                name: "current".to_owned(),
-                root: workspace.path(),
-                is_current: true,
-            },
-            WorkspaceEntry {
-                name: "fix".to_owned(),
-                root: sibling_root,
-                is_current: false,
-            },
-        ],
+        workspaces: vec![WorkspaceEntry {
+            name: "current".to_owned(),
+            root: workspace.path(),
+            is_current: true,
+        }],
         ..FakeServices::default()
     };
 
@@ -965,6 +998,249 @@ path = "{repo}"
     )
     .expect("default navigation root succeeds");
     assert_eq!(default.stdout, format!("{}\n", primary_root.display()));
+}
+
+#[test]
+fn work_complete_navigation_records_perf_steps() {
+    // Verifies: Navigation completion reports where candidate gathering spends time.
+    let workspace = TestWorkspace::new_under("projects/.work/sample/current");
+    let log_path = workspace.home.join("work-complete-perf.jsonl");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/sample"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/sample/current"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/sample/review"));
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            ("HOME".to_owned(), workspace.home.display().to_string()),
+            ("JX_PERF_LOG".to_owned(), log_path.display().to_string()),
+        ],
+    );
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "current".to_owned(),
+                root: workspace.home.join("projects/.work/sample/current"),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "review".to_owned(),
+                root: workspace.home.join("projects/.work/sample/review"),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--format",
+            "picker",
+            "--prefix",
+            "sample@",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("navigation completion succeeds");
+    let events = work_perf_events(&log_path);
+    let event = events
+        .iter()
+        .find(|event| event["op"] == "work.complete")
+        .expect("work.complete span is recorded");
+
+    assert_eq!(event["mode"], "navigation");
+    assert_eq!(event["format"], "picker");
+    assert_eq!(event["candidate_count"], 2);
+    assert_eq!(event["current_workspace_count"], 1);
+    assert_eq!(event["global_location_count"], 3);
+    assert_eq!(
+        work_perf_step_names(event),
+        [
+            "discover_global_config",
+            "load_current_workspaces",
+            "discover_global_work_locations",
+            "compose_navigation_locations",
+            "filter_candidates",
+            "render",
+        ]
+    );
+}
+
+#[test]
+fn work_root_navigation_fast_path_records_perf_steps() {
+    // Verifies: exact current-repo workspace aliases avoid scanning global layout roots.
+    let workspace = TestWorkspace::new_under("projects/.work/sample/current");
+    let log_path = workspace.home.join("work-root-fast-perf.jsonl");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/sample/current"));
+    fs::create_dir_all(workspace.home.join("projects/.work/sample/review"))
+        .expect("create managed workspace directory");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            ("HOME".to_owned(), workspace.home.display().to_string()),
+            ("JX_PERF_LOG".to_owned(), log_path.display().to_string()),
+        ],
+    );
+    let services = FakeServices {
+        workspaces: vec![WorkspaceEntry {
+            name: "current".to_owned(),
+            root: workspace.home.join("projects/.work/sample/current"),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "review"],
+        &environment,
+        &services,
+    )
+    .expect("navigation root succeeds");
+    let events = work_perf_events(&log_path);
+    let event = events
+        .iter()
+        .find(|event| event["op"] == "work.root")
+        .expect("work.root span is recorded");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "{}\n",
+            workspace
+                .home
+                .join("projects/.work/sample/review")
+                .display()
+        )
+    );
+    assert_eq!(event["navigation"], true);
+    assert_eq!(event["local_resolution"], true);
+    assert_eq!(event["current_workspace_count"], 1);
+    assert_eq!(event.get("global_location_count"), None);
+    assert_eq!(
+        work_perf_step_names(event),
+        [
+            "discover_global_config",
+            "load_current_workspaces",
+            "resolve_local_navigation_target",
+            "render",
+        ]
+    );
+}
+
+#[test]
+fn work_root_navigation_global_fallback_records_perf_steps() {
+    // Verifies: non-local navigation still reports the expensive global discovery phases.
+    let workspace = TestWorkspace::new_under("projects/.work/sample/current");
+    let log_path = workspace.home.join("work-root-global-perf.jsonl");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/sample"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/sample/current"));
+    create_jj_workspace_marker(&workspace.home.join("projects/.work/sample/review"));
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            ("HOME".to_owned(), workspace.home.display().to_string()),
+            ("JX_PERF_LOG".to_owned(), log_path.display().to_string()),
+        ],
+    );
+    let services = FakeServices {
+        workspaces: vec![WorkspaceEntry {
+            name: "current".to_owned(),
+            root: workspace.home.join("projects/.work/sample/current"),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "sample@review"],
+        &environment,
+        &services,
+    )
+    .expect("navigation root succeeds");
+    let events = work_perf_events(&log_path);
+    let event = events
+        .iter()
+        .find(|event| event["op"] == "work.root")
+        .expect("work.root span is recorded");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "{}\n",
+            workspace
+                .home
+                .join("projects/.work/sample/review")
+                .display()
+        )
+    );
+    assert_eq!(event["navigation"], true);
+    assert_eq!(event["local_resolution"], false);
+    assert_eq!(event["current_workspace_count"], 1);
+    assert_eq!(event["global_location_count"], 3);
+    assert_eq!(event["location_count"], 8);
+    assert_eq!(
+        work_perf_step_names(event),
+        [
+            "discover_global_config",
+            "load_current_workspaces",
+            "resolve_local_navigation_target",
+            "discover_global_work_locations",
+            "compose_navigation_locations",
+            "resolve_navigation_target",
+            "render",
+        ]
+    );
+}
+
+fn work_perf_events(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .expect("perf log is written")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("perf event is json"))
+        .collect()
+}
+
+fn work_perf_step_names(event: &serde_json::Value) -> Vec<&str> {
+    event["steps"]
+        .as_array()
+        .expect("steps are recorded")
+        .iter()
+        .map(|step| step["name"].as_str().expect("step has name"))
+        .collect()
 }
 
 #[test]

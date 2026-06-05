@@ -34,6 +34,7 @@ pub fn sync_report(
         fetch,
         push: push.pushed,
         skipped_conflicted_bookmarks: push.skipped_conflicted_bookmarks,
+        skipped_same_tree_bookmarks: push.skipped_same_tree_bookmarks,
         pull_requests,
     }
 }
@@ -52,10 +53,9 @@ pub async fn sync_pull_requests(
             continue;
         }
 
-        let head = PullRequestHead::same_repository(&context.origin.github.owner, &bookmark.branch);
-        let Some(pull_request) = github
-            .find_open_pull_request(&context.origin.github, &head)
-            .await?
+        let Some(pull_request) =
+            sync_bookmark_pull_request(context, github, stack_metadata, bookmark.branch.as_str())
+                .await?
         else {
             continue;
         };
@@ -73,6 +73,37 @@ pub async fn sync_pull_requests(
     }
 
     Ok(pull_requests)
+}
+
+async fn sync_bookmark_pull_request(
+    context: &RepositoryContext,
+    github: &dyn GitHubClient,
+    stack_metadata: &StackMetadata,
+    branch: &str,
+) -> Result<Option<PullRequestRecord>, WorkflowError> {
+    let head = PullRequestHead::same_repository(&context.origin.github.owner, branch);
+    if let Some(pull_request) = github
+        .find_open_pull_request(&context.origin.github, &head)
+        .await?
+    {
+        return Ok(Some(pull_request));
+    }
+
+    // Newly created PRs can lag behind head-branch search, so durable stack metadata
+    // gives immediate post-publish stack-context sync a stable lookup key.
+    let Some(number) = stack_metadata
+        .nodes
+        .iter()
+        .find(|node| node.branch == branch && !node.merged)
+        .and_then(|node| node.pull_request)
+    else {
+        return Ok(None);
+    };
+
+    Ok(github
+        .find_pull_request_by_number(&context.origin.github, number)
+        .await?
+        .filter(|pull_request| pull_request.head_branch == branch))
 }
 
 async fn sync_pull_request_metadata(
@@ -93,10 +124,10 @@ async fn sync_pull_request_metadata(
             &pull_request,
             &context.origin.github.https_url(),
         );
-        if pull_request.title != title
-            || !pull_request_body_matches(pull_request.body.as_deref(), &body)
-        {
+        if pull_request.title != title {
             update.title = Some(title);
+        }
+        if !pull_request_body_matches(pull_request.body.as_deref(), &body) {
             update.body = Some(body);
         }
     }
@@ -175,20 +206,9 @@ fn stack_context_row(row: PullRequestStackRow<'_>, repository_url: &str) -> Stri
 }
 
 fn markdown_stack_tree_prefix(prefix: &str) -> String {
-    let Some((stem, connector)) = prefix
-        .strip_suffix("├─ ")
-        .map(|stem| (stem, "├─ "))
-        .or_else(|| prefix.strip_suffix("└─ ").map(|stem| (stem, "└─ ")))
-    else {
-        return prefix.to_owned();
-    };
-    format!("{}{connector}", markdown_stack_tree_indent(stem))
-}
-
-fn markdown_stack_tree_indent(indent: &str) -> String {
-    indent
-        .replace("│  ", "│&nbsp;&nbsp;")
-        .replace("   ", "&nbsp;&nbsp;&nbsp;")
+    compact_stack_tree_prefix(prefix)
+        .replace("│ ", "│&nbsp;")
+        .replace("  ", "&nbsp;&nbsp;")
 }
 
 fn stack_context_link(node: &PullRequestStackNode, repository_url: &str) -> String {

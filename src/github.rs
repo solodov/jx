@@ -25,12 +25,16 @@ pub use client::*;
 #[cfg(test)]
 use client::{
     map_comparison_status, map_graphql_pull_request_status, pull_request_status_query,
-    CompareCommitsResponse, CompareCommitsStatus, GraphQlLabelNode, GraphQlLabels,
-    GraphQlLatestReviewNode, GraphQlLatestReviews, GraphQlPullRequestStatus,
+    suggested_reviewers_from_graphql, user_profiles_query, CompareCommitsResponse,
+    CompareCommitsStatus, GraphQlLabelNode, GraphQlLabels, GraphQlPullRequestStatus,
     GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
     GraphQlPullRequestStatusCommits, GraphQlRequestedReviewer, GraphQlReviewAuthor,
-    GraphQlReviewRequestNode, GraphQlReviewRequests, GraphQlStatusCheckContextNode,
-    GraphQlStatusCheckContexts, GraphQlStatusCheckRollup,
+    GraphQlReviewNode, GraphQlReviewRequestNode, GraphQlReviewRequests,
+    GraphQlReviewThreadCommentNode, GraphQlReviewThreadComments, GraphQlReviewThreadNode,
+    GraphQlReviewThreads, GraphQlReviews, GraphQlStatusCheckContextNode,
+    GraphQlStatusCheckContexts, GraphQlStatusCheckRollup, GraphQlSuggestedReviewer,
+    GraphQlSuggestedReviewerUser, PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY,
+    REVIEW_REQUEST_SEARCH_QUERIES,
 };
 pub use error::*;
 pub use reviewers::*;

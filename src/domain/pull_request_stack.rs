@@ -1,4 +1,7 @@
 use super::*;
+use chrono::{DateTime, Duration, Utc};
+
+const COMPLETED_STACK_STATUS_RETENTION_DAYS: i64 = 3;
 
 /// Builds a read-only health report for a pull-request stack snapshot.
 pub fn pull_request_stack_status_report(
@@ -13,22 +16,38 @@ pub fn pull_request_stack_status_report(
         snapshot,
         statuses: statuses
             .into_iter()
-            .map(|status| apply_stack_status_config(status, &stack_status_config))
+            .map(|status| apply_pull_request_status_policy(status, &stack_status_config))
             .map(|status| (status.number, status))
             .collect(),
         trunk,
+        review_wait_threshold_seconds: stack_status_config.review_wait_threshold_seconds,
     }
 }
 
-fn apply_stack_status_config(
+/// Applies repository-specific PR status policy to raw GitHub check and review facts.
+pub fn apply_pull_request_status_policy(
     mut status: PullRequestStatusRecord,
     config: &RepoStackStatusConfig,
 ) -> PullRequestStatusRecord {
-    if config.review_gate_checks.is_empty() || status.checks.is_empty() {
+    status.title = config.rewrite_title(&status.title);
+    let had_checks = !status.checks.is_empty();
+    apply_ignored_pull_request_status_facts(&mut status, config);
+
+    if status.checks.is_empty() {
+        if had_checks {
+            status.check_status = aggregate_check_status(&[]);
+        }
         return status;
     }
 
     let checks = latest_checks_by_name(&status.checks);
+    status.check_status = aggregate_check_status(&checks);
+    status.checks = checks.clone();
+
+    if config.review_gate_checks.is_empty() {
+        return status;
+    }
+
     let mut found_failing_review_gate = false;
     let remaining_checks = checks
         .iter()
@@ -44,13 +63,64 @@ fn apply_stack_status_config(
         .cloned()
         .collect::<Vec<_>>();
 
-    status.checks = checks;
-
     if found_failing_review_gate {
         status.check_status = aggregate_check_status(&remaining_checks);
         status.review_status = review_status_with_review_gate(status.review_status);
     }
     status
+}
+
+fn apply_ignored_pull_request_status_facts(
+    status: &mut PullRequestStatusRecord,
+    config: &RepoStackStatusConfig,
+) {
+    if !config.ignored_checks.is_empty() {
+        status
+            .checks
+            .retain(|check| !config.ignores_check(&check.name));
+    }
+    if !config.ignored_labels.is_empty() {
+        status
+            .labels
+            .retain(|label| !config.ignores_label(&label.name));
+    }
+    if status.merged && !config.ignored_labels_when_merged.is_empty() {
+        status
+            .labels
+            .retain(|label| !config.ignores_label_when_merged(&label.name));
+    }
+    if config.ignored_reviewers.is_empty() {
+        return;
+    }
+
+    status
+        .requested_reviewers
+        .users
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status.requested_reviewers.teams.retain(|team| {
+        !config.ignores_reviewer(team) && !config.ignores_reviewer(&format!("team/{team}"))
+    });
+    status
+        .suggested_reviewers
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
+        .approved_reviewers
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
+        .commented_reviewers
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
+        .addressed_reviewers
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
+        .review_activity
+        .retain(|activity| !config.ignores_reviewer(&activity.reviewer));
+    status
+        .timeline_events
+        .retain(|event| match event.reviewer.as_deref() {
+            Some(reviewer) => !config.ignores_reviewer(reviewer),
+            None => true,
+        });
 }
 
 /// Collapses duplicate rollup contexts so superseded failures do not outvote newer results.
@@ -248,7 +318,7 @@ impl PullRequestStackRow<'_> {
 
     /// Returns the stable plain-text row label shared by CLI stack views.
     pub fn plain_label(&self) -> String {
-        let mut label = self.prefix.clone();
+        let mut label = self.compact_prefix();
         label.push_str(self.status_symbol());
         label.push(' ');
         if let Some(number) = self.node.pull_request_number() {
@@ -257,6 +327,20 @@ impl PullRequestStackRow<'_> {
         label.push_str(self.display_title());
         label
     }
+
+    /// Returns the compact tree prefix used by terminal and Markdown renderers.
+    pub fn compact_prefix(&self) -> String {
+        compact_stack_tree_prefix(&self.prefix)
+    }
+}
+
+/// Compacts tree drawing whitespace so stack connectors stay readable in fixed-width views.
+pub fn compact_stack_tree_prefix(prefix: &str) -> String {
+    prefix
+        .replace("│  ", "│ ")
+        .replace("   ", "  ")
+        .replace("├─ ", "├ ")
+        .replace("└─ ", "└ ")
 }
 
 /// Optional current selection used to mark one stack node as current.
@@ -490,7 +574,7 @@ pub fn upsert_stack_metadata_pull_requests(
     }
     sort_stack_metadata_nodes(&mut nodes);
 
-    StackMetadata { version: 1, nodes }
+    stack_metadata_with_nodes(existing_metadata, nodes)
 }
 
 /// Refreshes durable stack metadata from PR records matched by pull-request number.
@@ -517,17 +601,27 @@ pub fn refresh_stack_metadata_pull_requests(
         .collect::<Vec<_>>();
     sort_stack_metadata_nodes(&mut nodes);
 
-    StackMetadata { version: 1, nodes }
+    stack_metadata_with_nodes(existing_metadata, nodes)
 }
 
-/// Refreshes cached PR status facts, drops closed PR nodes, and prunes completed trees.
+/// Refreshes cached PR status facts and prunes stale completed reminder rows.
 pub fn maintain_stack_metadata_pull_request_statuses(
     statuses: &[PullRequestStatusRecord],
     existing_metadata: &StackMetadata,
 ) -> StackMetadata {
+    maintain_stack_metadata_pull_request_statuses_at(statuses, existing_metadata, Utc::now())
+}
+
+/// Refreshes status metadata with an explicit clock for deterministic retention tests.
+pub fn maintain_stack_metadata_pull_request_statuses_at(
+    statuses: &[PullRequestStatusRecord],
+    existing_metadata: &StackMetadata,
+    now: DateTime<Utc>,
+) -> StackMetadata {
     let refreshed = refresh_stack_metadata_pull_request_statuses(statuses, existing_metadata);
-    let without_closed = prune_closed_stack_metadata_nodes(statuses, &refreshed);
-    prune_merged_stack_metadata_trees(&without_closed)
+    let without_expired_closed =
+        prune_expired_closed_stack_metadata_nodes(statuses, &refreshed, now);
+    prune_expired_merged_stack_metadata_trees(statuses, &without_expired_closed, now)
 }
 
 /// Refreshes durable stack metadata from read-only PR status facts matched by PR number or branch.
@@ -559,66 +653,64 @@ pub fn refresh_stack_metadata_pull_request_statuses(
         .collect::<Vec<_>>();
     sort_stack_metadata_nodes(&mut nodes);
 
-    StackMetadata { version: 1, nodes }
+    stack_metadata_with_nodes(existing_metadata, nodes)
 }
 
-/// Drops closed PR nodes while keeping any still-open descendants visible as roots.
-pub fn prune_closed_stack_metadata_nodes(
+/// Drops closed-unmerged PR nodes after the reminder retention window expires.
+fn prune_expired_closed_stack_metadata_nodes(
     statuses: &[PullRequestStatusRecord],
     metadata: &StackMetadata,
+    now: DateTime<Utc>,
 ) -> StackMetadata {
-    let closed_numbers = statuses
+    let expired_closed_numbers = statuses
         .iter()
-        .filter(|status| status.closed)
+        .filter(|status| status.closed && !status.merged)
+        .filter(|status| {
+            status
+                .closed_at
+                .as_deref()
+                .is_some_and(|closed_at| timestamp_is_outside_completed_retention(closed_at, now))
+        })
         .map(|status| status.number)
         .collect::<BTreeSet<_>>();
-    if closed_numbers.is_empty() {
+    if expired_closed_numbers.is_empty() {
         return metadata.clone();
     }
 
-    let removed_branches = metadata
-        .nodes
-        .iter()
-        .filter(|node| {
-            node.pull_request
-                .is_some_and(|number| closed_numbers.contains(&number))
-        })
-        .map(|node| node.branch.clone())
-        .collect::<BTreeSet<_>>();
-    if removed_branches.is_empty() {
-        return metadata.clone();
-    }
-
-    let mut nodes = metadata
-        .nodes
-        .iter()
-        .filter(|node| {
-            node.pull_request
-                .is_none_or(|number| !closed_numbers.contains(&number))
-        })
-        .cloned()
-        .map(|mut node| {
-            if node
-                .parent_branch
-                .as_ref()
-                .is_some_and(|parent| removed_branches.contains(parent))
-                || node
-                    .parent_pull_request
-                    .is_some_and(|number| closed_numbers.contains(&number))
-            {
-                node.parent_branch = None;
-                node.parent_pull_request = None;
-            }
-            node
-        })
-        .collect::<Vec<_>>();
-    sort_stack_metadata_nodes(&mut nodes);
-
-    StackMetadata { version: 1, nodes }
+    prune_stack_metadata_nodes_by_number(metadata, &expired_closed_numbers)
 }
 
 /// Drops stack components whose stored PR nodes are all merged.
 pub fn prune_merged_stack_metadata_trees(metadata: &StackMetadata) -> StackMetadata {
+    prune_merged_stack_metadata_trees_by(metadata, |_, _| true)
+}
+
+fn prune_expired_merged_stack_metadata_trees(
+    statuses: &[PullRequestStatusRecord],
+    metadata: &StackMetadata,
+    now: DateTime<Utc>,
+) -> StackMetadata {
+    let statuses_by_number = statuses
+        .iter()
+        .map(|status| (status.number, status))
+        .collect::<BTreeMap<_, _>>();
+    prune_merged_stack_metadata_trees_by(metadata, |component, snapshot| {
+        component.iter().all(|index| {
+            let Some(number) = snapshot.nodes[*index].pull_request_number() else {
+                return false;
+            };
+            statuses_by_number
+                .get(&number)
+                .and_then(|status| status.merged_at.as_deref())
+                .is_some_and(|merged_at| timestamp_is_outside_completed_retention(merged_at, now))
+        })
+    })
+}
+
+fn prune_merged_stack_metadata_trees_by(
+    metadata: &StackMetadata,
+    should_prune: impl Fn(&BTreeSet<usize>, &PullRequestStackSnapshot) -> bool,
+) -> StackMetadata {
     let snapshot = PullRequestStackSnapshot::from_metadata(
         metadata,
         &[],
@@ -633,7 +725,9 @@ pub fn prune_merged_stack_metadata_trees(metadata: &StackMetadata) -> StackMetad
         for index in &component {
             unvisited.remove(index);
         }
-        if component.iter().all(|index| snapshot.nodes[*index].merged) {
+        if component.iter().all(|index| snapshot.nodes[*index].merged)
+            && should_prune(&component, &snapshot)
+        {
             pruned.extend(component);
         }
     }
@@ -649,7 +743,61 @@ pub fn prune_merged_stack_metadata_trees(metadata: &StackMetadata) -> StackMetad
         .collect::<Vec<_>>();
     sort_stack_metadata_nodes(&mut nodes);
 
-    StackMetadata { version: 1, nodes }
+    stack_metadata_with_nodes(metadata, nodes)
+}
+
+fn prune_stack_metadata_nodes_by_number(
+    metadata: &StackMetadata,
+    numbers: &BTreeSet<u64>,
+) -> StackMetadata {
+    let removed_branches = metadata
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.pull_request
+                .is_some_and(|number| numbers.contains(&number))
+        })
+        .map(|node| node.branch.clone())
+        .collect::<BTreeSet<_>>();
+    if removed_branches.is_empty() {
+        return metadata.clone();
+    }
+
+    let mut nodes = metadata
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.pull_request
+                .is_none_or(|number| !numbers.contains(&number))
+        })
+        .cloned()
+        .map(|mut node| {
+            if node
+                .parent_branch
+                .as_ref()
+                .is_some_and(|parent| removed_branches.contains(parent))
+                || node
+                    .parent_pull_request
+                    .is_some_and(|number| numbers.contains(&number))
+            {
+                node.parent_branch = None;
+                node.parent_pull_request = None;
+            }
+            node
+        })
+        .collect::<Vec<_>>();
+    sort_stack_metadata_nodes(&mut nodes);
+
+    stack_metadata_with_nodes(metadata, nodes)
+}
+
+fn timestamp_is_outside_completed_retention(timestamp: &str, now: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|timestamp| {
+            now.signed_duration_since(timestamp.with_timezone(&Utc))
+                >= Duration::days(COMPLETED_STACK_STATUS_RETENTION_DAYS)
+        })
+        .unwrap_or(false)
 }
 
 /// Builds durable stack metadata from live PR records while retaining missing ancestors.
@@ -680,7 +828,7 @@ pub fn stack_metadata_from_pull_requests(
     preserve_missing_ancestors(&mut nodes, &existing_nodes_by_branch);
     sort_stack_metadata_nodes(&mut nodes);
 
-    StackMetadata { version: 1, nodes }
+    stack_metadata_with_nodes(existing_metadata, nodes)
 }
 
 /// Applies local jj branch ancestry while preserving durable PR identity and status.
@@ -713,7 +861,18 @@ pub fn apply_local_stack_branches(
     }
     sort_stack_metadata_nodes(&mut nodes);
 
-    StackMetadata { version: 1, nodes }
+    stack_metadata_with_nodes(existing_metadata, nodes)
+}
+
+fn stack_metadata_with_nodes(
+    existing_metadata: &StackMetadata,
+    nodes: Vec<StackMetadataNode>,
+) -> StackMetadata {
+    StackMetadata {
+        version: 1,
+        work_item_handler_runs: existing_metadata.work_item_handler_runs.clone(),
+        nodes,
+    }
 }
 
 fn stack_metadata_node_from_pull_request(
@@ -768,7 +927,15 @@ fn stack_metadata_node_from_pull_request(
         title: pull_request_title(pull_request).to_owned(),
         url: pull_request.html_url.clone(),
         draft: pull_request.draft,
-        merged: pull_request.merged,
+        merged: existing_node
+            .map(|node| refreshed_pull_request_merged_state(node, pull_request.merged))
+            .unwrap_or(pull_request.merged),
+        work_ids: existing_node
+            .map(|node| node.work_ids.clone())
+            .unwrap_or_default(),
+        fixes_work_ids: existing_node
+            .map(|node| node.fixes_work_ids.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -777,16 +944,29 @@ fn stack_metadata_node_from_local_branch(
     existing_nodes_by_branch: &BTreeMap<&str, &StackMetadataNode>,
 ) -> StackMetadataNode {
     let existing_node = existing_nodes_by_branch.get(local.branch.as_str());
-    let parent_pull_request = local.parent_branch.as_deref().and_then(|branch| {
-        existing_nodes_by_branch
-            .get(branch)
-            .and_then(|node| node.pull_request)
-    });
+    let parent_branch = local
+        .parent_branch
+        .clone()
+        .or_else(|| existing_completed_parent_branch(existing_node, existing_nodes_by_branch));
+    let parent_pull_request = parent_branch
+        .as_deref()
+        .and_then(|branch| {
+            existing_nodes_by_branch
+                .get(branch)
+                .and_then(|node| node.pull_request)
+        })
+        .or_else(|| {
+            existing_node.and_then(|node| {
+                (node.parent_branch.as_deref() == parent_branch.as_deref())
+                    .then_some(node.parent_pull_request)
+                    .flatten()
+            })
+        });
 
     StackMetadataNode {
         branch: local.branch.clone(),
         base_branch: local.base_branch.clone(),
-        parent_branch: local.parent_branch.clone(),
+        parent_branch,
         pull_request: existing_node.and_then(|node| node.pull_request),
         parent_pull_request,
         title: existing_node
@@ -795,7 +975,27 @@ fn stack_metadata_node_from_local_branch(
         url: existing_node.and_then(|node| node.url.clone()),
         draft: existing_node.is_some_and(|node| node.draft),
         merged: existing_node.is_some_and(|node| node.merged),
+        work_ids: existing_node
+            .map(|node| node.work_ids.clone())
+            .unwrap_or_default(),
+        fixes_work_ids: existing_node
+            .map(|node| node.fixes_work_ids.clone())
+            .unwrap_or_default(),
     }
+}
+
+fn existing_completed_parent_branch(
+    existing_node: Option<&&StackMetadataNode>,
+    existing_nodes_by_branch: &BTreeMap<&str, &StackMetadataNode>,
+) -> Option<String> {
+    existing_node
+        .and_then(|node| node.parent_branch.as_deref())
+        .filter(|parent_branch| {
+            existing_nodes_by_branch
+                .get(parent_branch)
+                .is_some_and(|parent| parent.merged)
+        })
+        .map(str::to_owned)
 }
 
 fn local_stack_branch_title(local: &LocalStackBranch) -> String {
@@ -820,7 +1020,19 @@ fn refreshed_stack_metadata_node(
         title: pull_request_title(pull_request).to_owned(),
         url: pull_request.html_url.clone(),
         draft: pull_request.draft,
-        merged: pull_request.merged,
+        merged: refreshed_pull_request_merged_state(node, pull_request.merged),
+        work_ids: node.work_ids.clone(),
+        fixes_work_ids: node.fixes_work_ids.clone(),
+    }
+}
+
+fn refreshed_pull_request_merged_state(node: &StackMetadataNode, merged: bool) -> bool {
+    // Only status maintenance should advance fixing PRs to merged, so configured
+    // work-item handlers still see the false -> true transition.
+    if merged && !node.merged && !node.fixes_work_ids.is_empty() {
+        false
+    } else {
+        merged
     }
 }
 
@@ -838,6 +1050,8 @@ fn refreshed_stack_metadata_node_from_status(
         url: status.url.clone(),
         draft: status.draft,
         merged: status.merged,
+        work_ids: node.work_ids.clone(),
+        fixes_work_ids: node.fixes_work_ids.clone(),
     }
 }
 

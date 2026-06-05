@@ -1,5 +1,18 @@
 use super::*;
 
+fn blank_sync_pull_request_cell() -> String {
+    " ".repeat(7)
+}
+
+fn sync_pull_request_cell(number: u64) -> String {
+    let target = format!("#{number}");
+    format!(
+        "{}{}",
+        example_pull_request_link(number),
+        " ".repeat(7_usize.saturating_sub(target.chars().count()))
+    )
+}
+
 #[test]
 fn global_sync_renderer_sorts_each_section_by_directory() {
     // Verifies: Global sync output keeps each status section in stable filesystem order.
@@ -257,6 +270,7 @@ path = "{repo}"
                     state: StatusState::UpToDate,
                     github_ahead_by: 0,
                     github_behind_by: 0,
+                    counts_exact: true,
                 },
             }],
             fork: None,
@@ -367,13 +381,13 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
     );
     assert!(services.push_syncable_revision_requests.borrow().is_empty());
     assert_eq!(
-            result.stdout,
-            format!(
-                "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  aaaabbbb -> ccccdddd  example change\n  default@  eeeeffff -> 12345678  follow-up change\n\nPushed commits:\n  default@  a1b2c3d4 -> {}  example change\n\nDeleted bookmarks:\n  {}: 99990000 obsolete example change\n",
-                example_bookmark_link("example-user/current"),
-                example_bookmark_link("example-user/old")
-            )
-        );
+        result.stdout,
+        format!(
+            "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  aaaabbbb -> ccccdddd  example change\n  default@  eeeeffff -> 12345678  follow-up change\n\nPushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  example change default@\n\nDeleted bookmarks:\n  {}: 99990000 obsolete example change\n",
+            blank_sync_pull_request_cell(),
+            example_bookmark_link("example-user/old")
+        )
+    );
 }
 
 #[test]
@@ -390,6 +404,7 @@ fn sync_stack_pushes_current_pull_request_stack() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "topic/root".to_owned(),
@@ -401,6 +416,8 @@ fn sync_stack_pushes_current_pull_request_stack() {
                     url: None,
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/child".to_owned(),
@@ -412,6 +429,8 @@ fn sync_stack_pushes_current_pull_request_stack() {
                     url: None,
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/draft".to_owned(),
@@ -423,6 +442,8 @@ fn sync_stack_pushes_current_pull_request_stack() {
                     url: None,
                     draft: true,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -468,6 +489,7 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "topic/root".to_owned(),
@@ -479,6 +501,8 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
                     url: None,
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/child".to_owned(),
@@ -490,6 +514,8 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
                     url: None,
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -544,8 +570,8 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
 }
 
 #[test]
-fn sync_stack_prunes_completed_tree_before_selecting_bookmarks() {
-    // Verifies: sync -s garbage-collects already completed stack trees before selecting branches to push.
+fn sync_stack_skips_completed_tree_without_pruning_cached_progress() {
+    // Verifies: sync -s ignores completed stack trees while retaining recent merged context for status.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -557,6 +583,7 @@ fn sync_stack_prunes_completed_tree_before_selecting_bookmarks() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "topic/root".to_owned(),
@@ -568,6 +595,8 @@ fn sync_stack_prunes_completed_tree_before_selecting_bookmarks() {
                     url: None,
                     draft: false,
                     merged: true,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/child".to_owned(),
@@ -579,6 +608,8 @@ fn sync_stack_prunes_completed_tree_before_selecting_bookmarks() {
                     url: None,
                     draft: false,
                     merged: true,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -599,16 +630,15 @@ fn sync_stack_prunes_completed_tree_before_selecting_bookmarks() {
         CommandError::Workflow(WorkflowError::MissingPullRequest)
     ));
     assert!(services.push_syncable_revision_requests.borrow().is_empty());
-    assert!(read_stack_metadata(&workspace.path())
-        .expect("stack metadata reads")
-        .nodes
-        .is_empty());
-    assert!(!workspace.path().join(".jx/stack.toml").exists());
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes.len(), 2);
+    assert!(metadata.nodes.iter().all(|node| node.merged));
+    assert!(workspace.path().join(".jx/stack.toml").exists());
 }
 
 #[test]
-fn sync_prunes_completed_stack_tree_after_refresh() {
-    // Verifies: sync removes completed PR stack trees even when no bookmarks need PR description updates.
+fn sync_preserves_completed_stack_tree_after_refresh() {
+    // Verifies: sync refreshes completed PR stack trees without deleting cached progress context.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -620,6 +650,7 @@ fn sync_prunes_completed_stack_tree_after_refresh() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![
                 StackMetadataNode {
                     branch: "topic/root".to_owned(),
@@ -631,6 +662,8 @@ fn sync_prunes_completed_stack_tree_after_refresh() {
                     url: None,
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
                 StackMetadataNode {
                     branch: "topic/child".to_owned(),
@@ -642,6 +675,8 @@ fn sync_prunes_completed_stack_tree_after_refresh() {
                     url: None,
                     draft: false,
                     merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
                 },
             ],
         },
@@ -700,11 +735,16 @@ fn sync_prunes_completed_stack_tree_after_refresh() {
         [10, 11]
     );
     assert!(services.sync_pull_request_metadata.borrow().is_empty());
-    assert!(read_stack_metadata(&workspace.path())
-        .expect("stack metadata reads")
-        .nodes
-        .is_empty());
-    assert!(!workspace.path().join(".jx/stack.toml").exists());
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        metadata
+            .nodes
+            .iter()
+            .map(|node| (node.branch.as_str(), node.merged))
+            .collect::<Vec<_>>(),
+        vec![("topic/root", true), ("topic/child", true)]
+    );
+    assert!(workspace.path().join(".jx/stack.toml").exists());
 }
 
 #[test]
@@ -1057,8 +1097,8 @@ advance_trunk = true
 }
 
 #[test]
-fn sync_links_pull_requests_under_changed_bookmarks() {
-    // Verifies: Sync shows PR annotations as secondary, linked rows under changed bookmarks.
+fn sync_links_pull_requests_in_pushed_commit_table() {
+    // Verifies: Sync shows pushed PRs inline while keeping deleted PR annotations secondary.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1103,10 +1143,8 @@ fn sync_links_pull_requests_under_changed_bookmarks() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  default@  a1b2c3d4 -> {}  example change\n{}↳ PR {}\n",
-        example_bookmark_link("example-user/current"),
-        " ".repeat(24),
-        example_pull_request_link(1234)
+        "Pushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  current pull request default@\n",
+        sync_pull_request_cell(1234)
     )));
     assert!(result.stdout.contains(&format!(
         "Deleted bookmarks:\n  {}: 99990000 obsolete example change\n  ↳ PR {}\n",
@@ -1116,8 +1154,8 @@ fn sync_links_pull_requests_under_changed_bookmarks() {
 }
 
 #[test]
-fn sync_aligns_pushed_bookmark_targets_and_deleted_bookmarks() {
-    // Verifies: Sync aligns pushed targets and keeps deleted bookmark rows workspace-free.
+fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
+    // Verifies: Sync preserves PR column space for pushed commits without known PRs.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1164,10 +1202,10 @@ fn sync_aligns_pushed_bookmark_targets_and_deleted_bookmarks() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-            "Pushed commits:\n  default@  22223333 -> {}     short branch\n  default@  33334444 -> {}  long branch\n",
-            example_bookmark_link("b"),
-            example_bookmark_link("long")
-        )));
+        "Pushed commits:\n  Commit    PR       Title\n  22223333  {}  short branch default@\n  33334444  {}  long branch default@\n",
+        blank_sync_pull_request_cell(),
+        blank_sync_pull_request_cell()
+    )));
     assert!(result.stdout.contains(&format!(
         "Deleted bookmarks:\n  {}: 44445555 old branch\n",
         example_bookmark_link("old")
@@ -1254,8 +1292,8 @@ fn sync_omits_deleted_bookmark_section_when_none_were_deleted() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  default@  a1b2c3d4 -> {}  example change\n",
-        example_bookmark_link("example-user/current")
+        "Pushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  example change default@\n",
+        blank_sync_pull_request_cell()
     )));
     assert!(!result.stdout.contains("Deleted bookmarks:"));
 }
@@ -1359,8 +1397,8 @@ fn sync_pushes_clean_bookmarks_and_reports_conflicted_skips() {
 
     assert_eq!(result.exit_code, 1);
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  default@  a1b2c3d4 -> {}  example change\n",
-        example_bookmark_link("example-user/current")
+        "Pushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  example change default@\n",
+        blank_sync_pull_request_cell()
     )));
     assert!(result.stdout.contains(&format!(
         "Skipped bookmarks with conflicts:\n  {}  ccccdddd  example change (conflicted)\n",

@@ -163,6 +163,48 @@ pub struct StatusWorkspaceFacts {
     pub remotes: Vec<StatusRemoteFacts>,
 }
 
+/// Local cached remote-trunk facts with timing detail for command-level perf tracing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusWorkspaceFactsWithMetrics {
+    pub facts: StatusWorkspaceFacts,
+    pub metrics: StatusWorkspaceMetrics,
+}
+
+/// Timing detail for local status fact collection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatusWorkspaceMetrics {
+    pub current_commit_us: u64,
+    pub remotes: Vec<StatusRemoteMetrics>,
+}
+
+/// Timing detail for resolving one remote's local status facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusRemoteMetrics {
+    pub remote: String,
+    pub branch: String,
+    pub stack_path_len: usize,
+    pub non_empty_count: i64,
+    pub resolve_trunk_us: u64,
+    pub trunk: TrunkResolveMetrics,
+    pub linear_stack_path_us: u64,
+    pub count_non_empty_commits_us: u64,
+}
+
+/// Timing and cardinality detail for resolving a remote trunk commit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrunkResolveMetrics {
+    pub fast_path: bool,
+    pub preferred_branch_check_count: usize,
+    pub remote_bookmark_count: usize,
+    pub conflicted_bookmark_count: usize,
+    pub normal_bookmark_count: usize,
+    pub ancestor_check_count: usize,
+    pub candidate_count: usize,
+    pub scan_remote_bookmarks_us: u64,
+    pub select_candidate_us: u64,
+    pub load_trunk_commit_us: u64,
+}
+
 /// Local cached trunk facts for one configured remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusRemoteFacts {
@@ -190,6 +232,84 @@ pub struct TrunkSummary {
     pub branch: String,
     pub commit_id: String,
     pub short_commit_id: String,
+}
+
+/// One timed fetch substep emitted as soon as it completes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchTraceStep {
+    pub name: String,
+    pub duration_us: u64,
+    pub attrs: Vec<FetchTraceAttr>,
+    pub error: Option<String>,
+}
+
+/// One structured fetch trace attribute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchTraceAttr {
+    pub key: String,
+    pub value: FetchTraceValue,
+}
+
+/// Creates a structured fetch trace attribute.
+pub fn fetch_trace_attr(
+    key: impl Into<String>,
+    value: impl Into<FetchTraceValue>,
+) -> FetchTraceAttr {
+    FetchTraceAttr {
+        key: key.into(),
+        value: value.into(),
+    }
+}
+
+/// Scalar values supported by fetch tracing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchTraceValue {
+    String(String),
+    U64(u64),
+    I64(i64),
+    Bool(bool),
+}
+
+impl From<&str> for FetchTraceValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_owned())
+    }
+}
+
+impl From<String> for FetchTraceValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&String> for FetchTraceValue {
+    fn from(value: &String) -> Self {
+        Self::String(value.clone())
+    }
+}
+
+impl From<usize> for FetchTraceValue {
+    fn from(value: usize) -> Self {
+        Self::U64(value as u64)
+    }
+}
+
+impl From<u64> for FetchTraceValue {
+    fn from(value: u64) -> Self {
+        Self::U64(value)
+    }
+}
+
+impl From<i64> for FetchTraceValue {
+    fn from(value: i64) -> Self {
+        Self::I64(value)
+    }
+}
+
+impl From<bool> for FetchTraceValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
 }
 
 /// Outcome of fetching and importing fixed `origin` through the jj boundary.
@@ -382,6 +502,7 @@ pub struct TrackedPushOutcome {
 pub struct SyncPushOutcome {
     pub pushed: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
+    pub skipped_same_tree_bookmarks: Vec<SkippedSameTreeBookmarkSummary>,
 }
 
 /// Sync push outcome plus jj-internal phase timings for performance tracing.
@@ -398,6 +519,12 @@ impl SyncPushMetricsOutcome {
             pushed_bookmark_count: outcome.pushed.bookmarks.len(),
             pushed_commit_count: outcome.pushed.pushed_commits.len(),
             skipped_conflicted_count: outcome.skipped_conflicted_bookmarks.len(),
+            skipped_same_tree_count: outcome.skipped_same_tree_bookmarks.len(),
+            adopted_remote_head_count: outcome
+                .skipped_same_tree_bookmarks
+                .iter()
+                .filter(|bookmark| bookmark.adopted_remote_head)
+                .count(),
             ..SyncPushMetrics::default()
         };
         Self { outcome, metrics }
@@ -410,6 +537,8 @@ pub struct SyncPushMetrics {
     pub tracked_update_count: usize,
     pub pushable_update_count: usize,
     pub skipped_conflicted_count: usize,
+    pub skipped_same_tree_count: usize,
+    pub adopted_remote_head_count: usize,
     pub pushed_ref_count: usize,
     pub pushed_bookmark_count: usize,
     pub unchanged_bookmark_count: usize,
@@ -432,6 +561,15 @@ pub struct SyncPushMetrics {
 pub struct SkippedPushBookmarkSummary {
     pub branch: String,
     pub conflicted_commits: Vec<ConflictedCommitSummary>,
+}
+
+/// One tracked bookmark whose local and remote heads have identical file trees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedSameTreeBookmarkSummary {
+    pub branch: String,
+    pub local_short_commit_id: String,
+    pub remote_short_commit_id: String,
+    pub adopted_remote_head: bool,
 }
 
 /// One conflicted commit that prevents a bookmark from being synced.

@@ -266,6 +266,15 @@ pub enum RepositoryError {
     },
     #[error("Could not write workspace metadata `{file}`: {source}")]
     WorkspaceMetadataWrite { file: PathBuf, source: io::Error },
+    #[error("Could not read cache `{file}`: {source}")]
+    CacheRead { file: PathBuf, source: io::Error },
+    #[error("Could not parse cache `{file}`: {source}")]
+    CacheParse {
+        file: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("Could not write cache `{file}`: {source}")]
+    CacheWrite { file: PathBuf, source: io::Error },
 }
 
 fn global_config_dir(environment: &RuntimeEnvironment) -> Option<PathBuf> {

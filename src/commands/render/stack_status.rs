@@ -1,16 +1,6 @@
 use super::*;
 
-const BOLD_STYLE: &str = "\x1b[1m";
-const BLACK_BOLD_STYLE: &str = "\x1b[1m\x1b[30m";
-const DIM_STYLE: &str = "\x1b[2m";
-const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
-const DRAFT_TEXT_RGB: (u8, u8, u8) = (190, 184, 176);
-const GREEN_STYLE: &str = "\x1b[32m";
-const RED_BOLD_STYLE: &str = "\x1b[1m\x1b[31m";
-const YELLOW_STYLE: &str = "\x1b[33m";
-const CYAN_STYLE: &str = "\x1b[36m";
-const RESET_STYLE: &str = "\x1b[0m";
-const STACK_STATUS_PR_WIDTH: usize = 7;
+const STACK_STATUS_PR_WIDTH: usize = PULL_REQUEST_STATUS_PR_WIDTH;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands) struct GlobalStackStatusEntry {
@@ -43,6 +33,8 @@ pub(in crate::commands) fn render_stack_status(
     report: &PullRequestStackStatusReport,
     current_dir: &Path,
     color: bool,
+    terminal_width: Option<usize>,
+    display_names: &BTreeMap<String, String>,
 ) -> Result<String, JjError> {
     Ok(render_plain_output(|formatter| {
         writeln!(
@@ -57,7 +49,8 @@ pub(in crate::commands) fn render_stack_status(
             )
         )?;
         writeln!(formatter)?;
-        let wrote_stack = write_stack_status_report(formatter, report, color, 0)?;
+        let wrote_stack =
+            write_stack_status_report(formatter, report, color, 0, terminal_width, display_names)?;
         if wrote_stack {
             writeln!(formatter)?;
             write_stack_status_legend(formatter, color, 0)?;
@@ -71,6 +64,8 @@ pub(in crate::commands) fn render_global_stack_status(
     total_repositories: usize,
     current_dir: &Path,
     color: bool,
+    terminal_width: Option<usize>,
+    display_names: &BTreeMap<String, String>,
 ) -> Result<String, JjError> {
     let _ = current_dir;
     Ok(render_plain_output(|formatter| {
@@ -130,7 +125,14 @@ pub(in crate::commands) fn render_global_stack_status(
             match &entry.result {
                 Ok(report) => {
                     writeln!(formatter)?;
-                    let _ = write_stack_status_report(formatter, report, color, 2)?;
+                    let _ = write_stack_status_report(
+                        formatter,
+                        report,
+                        color,
+                        2,
+                        terminal_width,
+                        display_names,
+                    )?;
                 }
                 Err(error) => writeln!(formatter, "  error: {error}")?,
             }
@@ -169,6 +171,8 @@ fn write_stack_status_report(
     report: &PullRequestStackStatusReport,
     color: bool,
     indent: usize,
+    terminal_width: Option<usize>,
+    display_names: &BTreeMap<String, String>,
 ) -> io::Result<bool> {
     let indent = " ".repeat(indent);
     let visible_snapshot = visible_stack_status_snapshot(report);
@@ -177,7 +181,7 @@ fn write_stack_status_report(
         return Ok(false);
     }
 
-    let rows = stack_status_table_rows(report, &visible_snapshot, color);
+    let rows = stack_status_table_rows(report, &visible_snapshot, color, display_names);
     let pr_width = rows
         .iter()
         .map(|row| row.pr_visible_width)
@@ -186,16 +190,26 @@ fn write_stack_status_report(
         .max(STACK_STATUS_PR_WIDTH);
     writeln!(
         formatter,
-        "{indent}{:<pr_width$}  Chk  Rev  Title",
+        "{indent}{:<pr_width$}  Chk  Rev  {:<lag_width$}  Title",
         "PR",
-        pr_width = pr_width
+        "Lag",
+        pr_width = pr_width,
+        lag_width = REVIEW_LAG_WIDTH,
     )?;
     for row in rows {
         let pr_padding = " ".repeat(pr_width.saturating_sub(row.pr_visible_width));
-        let line = format!(
-            "{indent}{}{}  {}    {}    {}",
-            row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, row.title,
+        let review_lag = render_review_lag_cell(
+            &row.review_lag,
+            color,
+            if row.draft { DRAFT_ROW_STYLE } else { "" },
+            row.merged,
+            row.draft,
         );
+        let line = format!(
+            "{indent}{}{}  {}    {}    {}  {}",
+            row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, review_lag, row.title,
+        );
+        let line = ellipsize_rendered_line(&line, terminal_width);
         writeln!(
             formatter,
             "{}",
@@ -210,14 +224,17 @@ struct StackStatusTableRow {
     pr_visible_width: usize,
     check_symbol: String,
     review_symbol: String,
+    review_lag: ReviewLagCell,
     title: String,
     draft: bool,
+    merged: bool,
 }
 
 fn stack_status_table_rows(
     report: &PullRequestStackStatusReport,
     snapshot: &PullRequestStackSnapshot,
     color: bool,
+    display_names: &BTreeMap<String, String>,
 ) -> Vec<StackStatusTableRow> {
     snapshot
         .rows()
@@ -225,15 +242,34 @@ fn stack_status_table_rows(
         .map(|row| {
             let pull_request_number = row.node.pull_request_number();
             let status = pull_request_number.and_then(|number| report.statuses.get(&number));
-            let draft = stack_status_row_is_draft(row.node, status);
-            let pr_cell = stack_status_pr_cell(report, &row, status);
+            let merged = stack_status_row_is_merged(row.node, status);
+            let closed = stack_status_row_is_closed(status, merged);
+            let draft = stack_status_row_is_draft(row.node, status, merged, closed);
+            let pr_cell = stack_status_pr_cell(report, &row, status, merged, closed, color);
+            let review_lag =
+                pull_request_stack_review_lag(status, report.review_wait_threshold_seconds);
             StackStatusTableRow {
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
-                check_symbol: check_symbol(status, color && !draft),
-                review_symbol: review_symbol(status, color && !draft),
-                title: stack_status_title(&row, status, draft, color),
+                check_symbol: pull_request_check_symbol(status, merged, color && !draft),
+                review_symbol: pull_request_review_symbol(
+                    status,
+                    merged,
+                    color && !draft,
+                    review_lag.over_threshold,
+                ),
+                review_lag,
+                title: stack_status_title(
+                    &row,
+                    status,
+                    draft,
+                    merged,
+                    closed,
+                    color,
+                    display_names,
+                ),
                 draft,
+                merged,
             }
         })
         .collect()
@@ -248,18 +284,28 @@ fn stack_status_pr_cell(
     report: &PullRequestStackStatusReport,
     row: &PullRequestStackRow<'_>,
     status: Option<&PullRequestStatusRecord>,
+    merged: bool,
+    closed: bool,
+    color: bool,
 ) -> StackStatusPrCell {
     let target = row
         .node
         .pull_request_number()
         .map(|number| format!("#{number}"))
         .unwrap_or_else(|| row.node.branch.clone());
+    let styled_target = if merged && color {
+        format!("{GREEN_STYLE}{target}{RESET_STYLE}")
+    } else if closed && color {
+        format!("{RED_STYLE}{target}{RESET_STYLE}")
+    } else {
+        target.clone()
+    };
     let rendered_target = row.node.pull_request_number().map_or_else(
-        || target.clone(),
+        || styled_target.clone(),
         |number| {
             osc8_link(
                 &stack_status_pull_request_url(report, row.node, status, number),
-                &target,
+                &styled_target,
             )
         },
     );
@@ -293,33 +339,81 @@ fn stack_status_pull_request_url(
         .unwrap_or_else(|| format!("{}/pull/{number}", report.repository.github_url))
 }
 
-fn stack_status_row_is_draft(
+fn stack_status_row_is_merged(
     node: &PullRequestStackNode,
     status: Option<&PullRequestStatusRecord>,
 ) -> bool {
-    status.map_or(node.draft, |status| status.draft)
+    status.map_or(node.merged, |status| status.merged)
+}
+
+fn stack_status_row_is_closed(status: Option<&PullRequestStatusRecord>, merged: bool) -> bool {
+    !merged && status.is_some_and(|status| status.closed)
+}
+
+fn stack_status_row_is_draft(
+    node: &PullRequestStackNode,
+    status: Option<&PullRequestStatusRecord>,
+    merged: bool,
+    closed: bool,
+) -> bool {
+    !merged && !closed && status.map_or(node.draft, |status| status.draft)
 }
 
 fn stack_status_title(
     row: &PullRequestStackRow<'_>,
     status: Option<&PullRequestStatusRecord>,
     draft: bool,
+    merged: bool,
+    closed: bool,
     color: bool,
+    display_names: &BTreeMap<String, String>,
 ) -> String {
-    let mut title = status
-        .map(|status| status.title.trim())
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| row.node.display_title())
-        .to_owned();
+    let mut title = ellipsize_pull_request_title(
+        status
+            .map(|status| status.title.trim())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| row.node.display_title()),
+    );
+    if merged || closed {
+        let label_chips = status
+            .map(|status| muted_pull_request_label_chips(&status.labels, color))
+            .unwrap_or_default();
+        let (marker, style) = if merged {
+            ("●", GREEN_STYLE)
+        } else {
+            ("◯", RED_STYLE)
+        };
+        let mut title = if color {
+            format!("{style}{marker} {title}{RESET_STYLE}")
+        } else {
+            format!("{marker} {title}")
+        };
+        if !label_chips.is_empty() {
+            title.push(' ');
+            title.push_str(&label_chips.join(pull_request_label_separator(color)));
+        }
+        if merged {
+            let reviewer_tokens = status
+                .map(|status| pull_request_completed_reviewer_tokens(status, color, display_names))
+                .unwrap_or_default();
+            if !reviewer_tokens.is_empty() {
+                title.push(' ');
+                title.push_str(&reviewer_tokens.join(", "));
+            }
+        }
+        let prefix = compact_stack_prefix(&row.prefix);
+        return format!("{prefix}{title}");
+    }
+
     let label_chips = status
-        .map(|status| stack_status_label_chips(&status.labels, color, draft))
+        .map(|status| pull_request_label_chips(&status.labels, color, draft))
         .unwrap_or_default();
     if !label_chips.is_empty() {
         title.push(' ');
-        title.push_str(&label_chips.join(stack_status_label_separator(color)));
+        title.push_str(&label_chips.join(pull_request_label_separator(color)));
     }
     let reviewer_tokens = status
-        .map(|status| stack_status_reviewer_tokens(status, color && !draft))
+        .map(|status| pull_request_reviewer_tokens(status, color && !draft, display_names))
         .unwrap_or_default();
     if !reviewer_tokens.is_empty() {
         title.push(' ');
@@ -328,153 +422,6 @@ fn stack_status_title(
     let prefix = compact_stack_prefix(&row.prefix);
     let symbol = if draft { "◌" } else { "◯" };
     format!("{prefix}{symbol} {title}")
-}
-
-fn stack_status_label_chips(labels: &[PullRequestLabel], color: bool, draft: bool) -> Vec<String> {
-    labels
-        .iter()
-        .map(|label| stack_status_label_chip(label, color, draft))
-        .collect()
-}
-
-fn stack_status_label_separator(color: bool) -> &'static str {
-    if color {
-        ""
-    } else {
-        " "
-    }
-}
-
-fn stack_status_label_chip(label: &PullRequestLabel, color: bool, draft: bool) -> String {
-    if !color {
-        return plain_stack_status_label_chip(&label.name);
-    }
-    let (red, green, blue) = github_label_rgb(&label.color)
-        .map(|color| {
-            if draft {
-                pastel_github_label_rgb(color)
-            } else {
-                color
-            }
-        })
-        .unwrap_or_else(|| fallback_label_rgb(draft));
-    let (text_red, text_green, text_blue) = if draft {
-        draft_label_text_rgb()
-    } else {
-        github_label_text_rgb(red, green, blue)
-    };
-    let restore_style = if draft { DRAFT_ROW_STYLE } else { "" };
-    format!(
-        "\x1b[48;2;{red};{green};{blue}m\x1b[38;2;{text_red};{text_green};{text_blue}m {} {RESET_STYLE}{restore_style}",
-        label.name.as_str()
-    )
-}
-
-fn plain_stack_status_label_chip(name: &str) -> String {
-    format!("[{name}]")
-}
-
-fn pastel_github_label_rgb((red, green, blue): (u8, u8, u8)) -> (u8, u8, u8) {
-    const DRAFT_BLEND_TARGET: (u8, u8, u8) = (248, 246, 242);
-    const SOURCE_WEIGHT_PERCENT: u16 = 5;
-    (
-        blend_color_channel(red, DRAFT_BLEND_TARGET.0, SOURCE_WEIGHT_PERCENT),
-        blend_color_channel(green, DRAFT_BLEND_TARGET.1, SOURCE_WEIGHT_PERCENT),
-        blend_color_channel(blue, DRAFT_BLEND_TARGET.2, SOURCE_WEIGHT_PERCENT),
-    )
-}
-
-fn draft_label_text_rgb() -> (u8, u8, u8) {
-    DRAFT_TEXT_RGB
-}
-
-fn blend_color_channel(source: u8, target: u8, source_weight_percent: u16) -> u8 {
-    let target_weight_percent = 100 - source_weight_percent;
-    let value =
-        u16::from(source) * source_weight_percent + u16::from(target) * target_weight_percent + 50;
-    (value / 100) as u8
-}
-
-fn fallback_label_rgb(draft: bool) -> (u8, u8, u8) {
-    if draft {
-        (232, 228, 222)
-    } else {
-        (221, 221, 221)
-    }
-}
-
-fn github_label_rgb(color: &str) -> Option<(u8, u8, u8)> {
-    let color = color.trim().trim_start_matches('#');
-    if color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some((
-        u8::from_str_radix(&color[0..2], 16).ok()?,
-        u8::from_str_radix(&color[2..4], 16).ok()?,
-        u8::from_str_radix(&color[4..6], 16).ok()?,
-    ))
-}
-
-fn github_label_text_rgb(red: u8, green: u8, blue: u8) -> (u8, u8, u8) {
-    if relative_luminance(red, green, blue) > 0.179 {
-        (0, 0, 0)
-    } else {
-        (255, 255, 255)
-    }
-}
-
-fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
-    0.2126 * luminance_channel(red)
-        + 0.7152 * luminance_channel(green)
-        + 0.0722 * luminance_channel(blue)
-}
-
-fn luminance_channel(value: u8) -> f64 {
-    let value = f64::from(value) / 255.0;
-    if value <= 0.03928 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn stack_status_reviewer_tokens(status: &PullRequestStatusRecord, color: bool) -> Vec<String> {
-    let approved = status
-        .approved_reviewers
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let mut tokens = Vec::new();
-    for name in requested_reviewer_names(&status.requested_reviewers) {
-        if !approved.contains(name.as_str()) {
-            tokens.push(stack_status_reviewer_token(&name, false, color));
-        }
-    }
-    tokens.extend(
-        status
-            .approved_reviewers
-            .iter()
-            .map(|name| stack_status_reviewer_token(name, true, color)),
-    );
-    tokens
-}
-
-fn stack_status_reviewer_token(name: &str, approved: bool, color: bool) -> String {
-    if !color {
-        return name.to_owned();
-    }
-    let style = if approved {
-        GREEN_STYLE
-    } else {
-        BLACK_BOLD_STYLE
-    };
-    format!("{style}{name}{RESET_STYLE}")
-}
-
-fn requested_reviewer_names(reviewers: &ReviewerSelection) -> Vec<String> {
-    let mut names = reviewers.users.clone();
-    names.extend(reviewers.teams.iter().map(|team| format!("team/{team}")));
-    names
 }
 
 fn stack_status_repository_header(
@@ -506,8 +453,21 @@ fn stack_status_trunk_summary(trunk: &RemoteStatusReport) -> String {
 }
 
 fn stack_status_trunk_delta(trunk: &RemoteStatusReport) -> String {
-    let github_ahead = trunk.comparison.github_ahead_by;
     let local_ahead = trunk.comparison.github_behind_by + trunk.local_ahead_by;
+    if !trunk.comparison.counts_exact {
+        return match (trunk.comparison.state, local_ahead > 0) {
+            (StatusState::GithubAhead | StatusState::Diverged, false) => "behind".to_owned(),
+            (StatusState::GithubAhead | StatusState::Diverged, true) => {
+                format!("behind, {} ahead", commit_count_i64(local_ahead))
+            }
+            (StatusState::UpToDate | StatusState::LocalAhead, false) => "up to date".to_owned(),
+            (StatusState::UpToDate | StatusState::LocalAhead, true) => {
+                format!("{} ahead", commit_count_i64(local_ahead))
+            }
+        };
+    }
+
+    let github_ahead = trunk.comparison.github_ahead_by;
     match (github_ahead > 0, local_ahead > 0) {
         (true, false) => format!("{} behind", commit_count_i64(github_ahead)),
         (false, true) => format!("{} ahead", commit_count_i64(local_ahead)),
@@ -524,11 +484,7 @@ fn stack_status_report_needs_attention(report: &PullRequestStackStatusReport) ->
     visible_stack_status_snapshot(report)
         .nodes
         .iter()
-        .any(|node| {
-            node.pull_request_number()
-                .and_then(|number| report.statuses.get(&number))
-                .is_none_or(pull_request_status_needs_attention)
-        })
+        .any(|node| stack_status_node_needs_attention(node, report))
 }
 
 fn visible_stack_status_node_count(report: &PullRequestStackStatusReport) -> usize {
@@ -550,7 +506,6 @@ fn visible_stack_status_snapshot(
         .snapshot
         .nodes
         .iter()
-        .filter(|node| !stack_status_node_is_done(node, report))
         .map(|node| node.branch.clone())
         .collect::<BTreeSet<_>>();
     let nodes = report
@@ -590,13 +545,18 @@ fn visible_stack_status_snapshot(
     }
 }
 
-fn stack_status_node_is_done(
+fn stack_status_node_needs_attention(
     node: &PullRequestStackNode,
     report: &PullRequestStackStatusReport,
 ) -> bool {
-    node.pull_request_number()
-        .and_then(|number| report.statuses.get(&number))
-        .map_or(node.merged, |status| status.merged || status.closed)
+    let status = node
+        .pull_request_number()
+        .and_then(|number| report.statuses.get(&number));
+    let merged = stack_status_row_is_merged(node, status);
+    if merged || stack_status_row_is_closed(status, merged) {
+        return false;
+    }
+    status.is_none_or(pull_request_status_needs_attention)
 }
 
 fn pull_request_status_needs_attention(status: &PullRequestStatusRecord) -> bool {
@@ -625,69 +585,6 @@ fn lifecycle_label(
     }
 }
 
-fn check_symbol(status: Option<&PullRequestStatusRecord>, color: bool) -> String {
-    match status.map(|status| status.check_status) {
-        Some(PullRequestCheckStatus::Passing) => {
-            styled_stack_status_symbol("✓", SymbolStyle::Good, color)
-        }
-        Some(PullRequestCheckStatus::Failing) => {
-            styled_stack_status_symbol("✗", SymbolStyle::Bad, color)
-        }
-        Some(PullRequestCheckStatus::Pending) => {
-            styled_stack_status_symbol("◷", SymbolStyle::Warn, color)
-        }
-        Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => {
-            styled_stack_status_symbol("—", SymbolStyle::Muted, color)
-        }
-    }
-}
-
-fn review_symbol(status: Option<&PullRequestStatusRecord>, color: bool) -> String {
-    let Some(status) = status else {
-        return styled_stack_status_symbol("?", SymbolStyle::Warn, color);
-    };
-    match status.review_status {
-        PullRequestReviewStatus::Approved => {
-            styled_stack_status_symbol("✓", SymbolStyle::Good, color)
-        }
-        PullRequestReviewStatus::ChangesRequested => {
-            styled_stack_status_symbol("!", SymbolStyle::Bad, color)
-        }
-        PullRequestReviewStatus::ReviewRequested => {
-            styled_stack_status_symbol("◷", SymbolStyle::Info, color)
-        }
-        PullRequestReviewStatus::ReviewRequired | PullRequestReviewStatus::Unknown => {
-            styled_stack_status_symbol("?", SymbolStyle::Warn, color)
-        }
-        PullRequestReviewStatus::NotReviewed => {
-            styled_stack_status_symbol("—", SymbolStyle::Muted, color)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum SymbolStyle {
-    Good,
-    Bad,
-    Warn,
-    Info,
-    Muted,
-}
-
-fn styled_stack_status_symbol(symbol: &str, style: SymbolStyle, color: bool) -> String {
-    if !color {
-        return symbol.to_owned();
-    }
-    let style = match style {
-        SymbolStyle::Good => GREEN_STYLE,
-        SymbolStyle::Bad => RED_BOLD_STYLE,
-        SymbolStyle::Warn => YELLOW_STYLE,
-        SymbolStyle::Info => CYAN_STYLE,
-        SymbolStyle::Muted => DIM_STYLE,
-    };
-    format!("{style}{symbol}{RESET_STYLE}")
-}
-
 fn style_stack_status_row(line: String, draft: bool, color: bool) -> String {
     if color && draft {
         format!("{DRAFT_ROW_STYLE}{line}{RESET_STYLE}")
@@ -704,9 +601,9 @@ fn write_stack_status_legend(
     let indent = " ".repeat(indent);
     let lines = [
         "Legend:",
-        "  Title: ◯ ready, ◌ draft; labels and reviewers follow title",
+        "  Title: ● merged, ◯ ready/closed, ◌ draft; labels/reviewers follow",
         "  Chk: ✓ passing, ✗ failing, ◷ pending, — none/unknown",
-        "  Rev: ✓ approved, ! changes requested, ◷ waiting, ? required/unknown, — none",
+        "  Rev: ✓ approved, ! changes requested, ◷ waiting, ? required/unknown, — none; Lag: latest review, ready wait, or draft age",
     ];
     for line in lines {
         writeln!(
@@ -808,6 +705,7 @@ struct StackStatusTrunkJson {
     state: &'static str,
     github_ahead_by: i64,
     github_behind_by: i64,
+    counts_exact: bool,
 }
 
 impl From<&RemoteStatusReport> for StackStatusTrunkJson {
@@ -823,6 +721,7 @@ impl From<&RemoteStatusReport> for StackStatusTrunkJson {
             state: trunk.comparison.label(),
             github_ahead_by: trunk.comparison.github_ahead_by,
             github_behind_by: trunk.comparison.github_behind_by,
+            counts_exact: trunk.comparison.counts_exact,
         }
     }
 }
@@ -844,7 +743,13 @@ struct StackStatusPullRequestJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     requested_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    suggested_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     approved_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    commented_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    addressed_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     requested_teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -913,8 +818,17 @@ fn stack_status_pull_requests_json(
                 requested_users: status
                     .map(|status| status.requested_reviewers.users.clone())
                     .unwrap_or_default(),
+                suggested_users: status
+                    .map(|status| status.suggested_reviewers.clone())
+                    .unwrap_or_default(),
                 approved_users: status
                     .map(|status| status.approved_reviewers.clone())
+                    .unwrap_or_default(),
+                commented_users: status
+                    .map(|status| status.commented_reviewers.clone())
+                    .unwrap_or_default(),
+                addressed_users: status
+                    .map(|status| status.addressed_reviewers.clone())
                     .unwrap_or_default(),
                 requested_teams: status
                     .map(|status| status.requested_reviewers.teams.clone())

@@ -39,6 +39,9 @@ pub(super) fn handle_request(
         }
         CommandRequest::Shell(request) => handle_shell(request, environment)?,
         CommandRequest::Open(request) => handle_open(request, environment, services)?,
+        CommandRequest::Review(request) => {
+            handle_review(request, environment, services, progress, output)?
+        }
         CommandRequest::PreviousCommit => {
             services.previous_commit_log(environment.current_dir())?
         }
@@ -610,49 +613,8 @@ fn handle_work(
                 Ok(render_work_list(&workspaces))
             }
         }
-        WorkRequest::Complete(request) => {
-            if request.workspaces {
-                let context = LocalRepositoryContext::discover(environment)?;
-                let identity = workspace_identity(&context, environment)?;
-                let workspaces = services.workspace_entries(environment.current_dir())?;
-                let workspaces =
-                    deletable_workspace_entries(&context, &identity, &workspaces, environment)?;
-                let workspaces = filter_workspace_entries_by_prefix(&workspaces, &request.prefix);
-                return Ok(render_workspace_name_complete(&workspaces));
-            }
-
-            let config = WorkflowConfig::discover_global(environment)?;
-            if request.navigation {
-                let workspaces = current_navigation_workspaces(environment, services)?;
-                let locations = navigation_work_locations(&config, environment, &workspaces)?;
-                let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
-                Ok(render_work_complete(&locations))
-            } else if request.repositories {
-                let repositories = global_work_repositories(&config, environment)?;
-                let repositories =
-                    filter_work_repositories_by_prefix(&repositories, &request.prefix);
-                Ok(render_work_repository_complete(&repositories))
-            } else {
-                let locations = global_work_locations(&config, environment)?;
-                let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
-                Ok(render_work_complete(&locations))
-            }
-        }
-        WorkRequest::Root(request) => {
-            let config = WorkflowConfig::discover_global(environment)?;
-            let locations = if request.navigation {
-                let workspaces = current_navigation_workspaces(environment, services)?;
-                navigation_work_locations(&config, environment, &workspaces)?
-            } else {
-                global_work_locations(&config, environment)?
-            };
-            let root = if request.navigation {
-                resolve_navigation_work_location(&locations, &request.key, environment)?
-            } else {
-                resolve_work_location(&locations, &request.key)?
-            };
-            Ok(render_work_root(&root))
-        }
+        WorkRequest::Complete(request) => handle_work_complete(request, environment, services),
+        WorkRequest::Root(request) => handle_work_root(request, environment, services),
         WorkRequest::Trunk(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
             let identity = workspace_identity(&context, environment)?;
@@ -711,6 +673,300 @@ fn handle_work(
     }
 }
 
+fn handle_work_root(
+    request: WorkRootRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+) -> Result<String, CommandError> {
+    let mut span = PerfLog::from_environment(environment).start(
+        "work.root",
+        [
+            perf_attr("navigation", request.navigation),
+            perf_attr("query_len", request.key.len()),
+        ],
+    );
+    let result = handle_work_root_traced(request, environment, services, &mut span);
+    if let Err(error) = &result {
+        span.record_error(error);
+    }
+    span.end();
+    result
+}
+
+fn handle_work_root_traced(
+    request: WorkRootRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    span: &mut PerfSpan,
+) -> Result<String, CommandError> {
+    let config = span.measure("discover_global_config", Vec::new(), || {
+        WorkflowConfig::discover_global(environment)
+    })?;
+    let locations = if request.navigation {
+        let workspaces = span.measure_with_result_attrs(
+            "load_current_workspaces",
+            Vec::new(),
+            || current_navigation_workspaces(environment, services),
+            |result| count_result_attrs(result, "current_workspace_count"),
+        )?;
+        span.set([perf_attr("current_workspace_count", workspaces.len())]);
+        let local_root = span.measure(
+            "resolve_local_navigation_target",
+            [perf_attr("current_workspace_count", workspaces.len())],
+            || {
+                resolve_local_navigation_work_location(
+                    &config,
+                    environment,
+                    &workspaces,
+                    &request.key,
+                )
+                .map_err(CommandError::from)
+            },
+        )?;
+        span.set([perf_attr("local_resolution", local_root.is_some())]);
+        if let Some(root) = local_root {
+            return span.measure("render", Vec::new(), || {
+                Ok::<_, CommandError>(render_work_root(&root))
+            });
+        }
+
+        let global = span.measure_with_result_attrs(
+            "discover_global_work_locations",
+            Vec::new(),
+            || global_work_locations(&config, environment),
+            |result| count_result_attrs(result, "global_location_count"),
+        )?;
+        span.set([perf_attr("global_location_count", global.len())]);
+        span.measure_with_result_attrs(
+            "compose_navigation_locations",
+            [
+                perf_attr("current_workspace_count", workspaces.len()),
+                perf_attr("global_location_count", global.len()),
+            ],
+            || navigation_work_locations_from_global(&config, environment, &workspaces, global),
+            |result| count_result_attrs(result, "location_count"),
+        )?
+    } else {
+        let global = span.measure_with_result_attrs(
+            "discover_global_work_locations",
+            Vec::new(),
+            || global_work_locations(&config, environment),
+            |result| count_result_attrs(result, "global_location_count"),
+        )?;
+        span.set([perf_attr("global_location_count", global.len())]);
+        global
+    };
+    span.set([perf_attr("location_count", locations.len())]);
+
+    let root = if request.navigation {
+        span.measure(
+            "resolve_navigation_target",
+            [perf_attr("location_count", locations.len())],
+            || {
+                resolve_navigation_work_location(&locations, &request.key, environment)
+                    .map_err(CommandError::from)
+            },
+        )?
+    } else {
+        span.measure(
+            "resolve_work_location",
+            [perf_attr("location_count", locations.len())],
+            || resolve_work_location(&locations, &request.key).map_err(CommandError::from),
+        )?
+    };
+
+    span.measure("render", Vec::new(), || {
+        Ok::<_, CommandError>(render_work_root(&root))
+    })
+}
+
+fn handle_work_complete(
+    request: WorkCompleteRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+) -> Result<String, CommandError> {
+    let mut span = PerfLog::from_environment(environment).start(
+        "work.complete",
+        [
+            perf_attr("mode", work_complete_mode(&request)),
+            perf_attr("format", work_complete_format_label(request.format)),
+            perf_attr("has_prefix", !request.prefix.is_empty()),
+        ],
+    );
+    let result = handle_work_complete_traced(request, environment, services, &mut span);
+    if let Err(error) = &result {
+        span.record_error(error);
+    }
+    span.end();
+    result
+}
+
+fn handle_work_complete_traced(
+    request: WorkCompleteRequest,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    span: &mut PerfSpan,
+) -> Result<String, CommandError> {
+    if request.workspaces {
+        let context = span.measure("discover_local_context", Vec::new(), || {
+            LocalRepositoryContext::discover(environment)
+        })?;
+        let identity = span.measure("resolve_workspace_identity", Vec::new(), || {
+            workspace_identity(&context, environment)
+        })?;
+        let workspaces = span.measure_with_result_attrs(
+            "load_workspace_entries",
+            Vec::new(),
+            || {
+                services
+                    .workspace_entries(environment.current_dir())
+                    .map_err(CommandError::from)
+            },
+            |result| count_result_attrs(result, "workspace_count"),
+        )?;
+        let workspaces = span.measure_with_result_attrs(
+            "select_deletable_workspaces",
+            [perf_attr("workspace_count", workspaces.len())],
+            || deletable_workspace_entries(&context, &identity, &workspaces, environment),
+            |result| count_result_attrs(result, "deletable_workspace_count"),
+        )?;
+        let workspaces = span.measure_with_result_attrs(
+            "filter_candidates",
+            [perf_attr("prefix_len", request.prefix.len())],
+            || {
+                Ok::<_, CommandError>(filter_workspace_entries_by_prefix(
+                    &workspaces,
+                    &request.prefix,
+                ))
+            },
+            |result| count_result_attrs(result, "candidate_count"),
+        )?;
+        span.set([perf_attr("candidate_count", workspaces.len())]);
+        return span.measure("render", [perf_attr("format", "simple")], || {
+            Ok::<_, CommandError>(render_workspace_name_complete(&workspaces))
+        });
+    }
+
+    let config = span.measure("discover_global_config", Vec::new(), || {
+        WorkflowConfig::discover_global(environment)
+    })?;
+    if request.navigation {
+        let workspaces = span.measure_with_result_attrs(
+            "load_current_workspaces",
+            Vec::new(),
+            || current_navigation_workspaces(environment, services),
+            |result| count_result_attrs(result, "current_workspace_count"),
+        )?;
+        let global = span.measure_with_result_attrs(
+            "discover_global_work_locations",
+            Vec::new(),
+            || global_work_locations(&config, environment),
+            |result| count_result_attrs(result, "global_location_count"),
+        )?;
+        span.set([
+            perf_attr("current_workspace_count", workspaces.len()),
+            perf_attr("global_location_count", global.len()),
+        ]);
+        let locations = span.measure_with_result_attrs(
+            "compose_navigation_locations",
+            [
+                perf_attr("current_workspace_count", workspaces.len()),
+                perf_attr("global_location_count", global.len()),
+            ],
+            || navigation_work_locations_from_global(&config, environment, &workspaces, global),
+            |result| count_result_attrs(result, "location_count"),
+        )?;
+        let locations = span.measure_with_result_attrs(
+            "filter_candidates",
+            [perf_attr("prefix_len", request.prefix.len())],
+            || Ok::<_, CommandError>(filter_work_locations_by_prefix(&locations, &request.prefix)),
+            |result| count_result_attrs(result, "candidate_count"),
+        )?;
+        span.set([perf_attr("candidate_count", locations.len())]);
+        return span.measure(
+            "render",
+            [perf_attr(
+                "format",
+                work_complete_format_label(request.format),
+            )],
+            || Ok::<_, CommandError>(render_work_complete(&locations, request.format)),
+        );
+    }
+
+    if request.repositories {
+        let repositories = span.measure_with_result_attrs(
+            "discover_global_repositories",
+            Vec::new(),
+            || global_work_repositories(&config, environment),
+            |result| count_result_attrs(result, "repository_count"),
+        )?;
+        let repositories = span.measure_with_result_attrs(
+            "filter_candidates",
+            [perf_attr("prefix_len", request.prefix.len())],
+            || {
+                Ok::<_, CommandError>(filter_work_repositories_by_prefix(
+                    &repositories,
+                    &request.prefix,
+                ))
+            },
+            |result| count_result_attrs(result, "candidate_count"),
+        )?;
+        span.set([perf_attr("candidate_count", repositories.len())]);
+        return span.measure("render", [perf_attr("format", "simple")], || {
+            Ok::<_, CommandError>(render_work_repository_complete(&repositories))
+        });
+    }
+
+    let locations = span.measure_with_result_attrs(
+        "discover_global_work_locations",
+        Vec::new(),
+        || global_work_locations(&config, environment),
+        |result| count_result_attrs(result, "global_location_count"),
+    )?;
+    span.set([perf_attr("global_location_count", locations.len())]);
+    let locations = span.measure_with_result_attrs(
+        "filter_candidates",
+        [perf_attr("prefix_len", request.prefix.len())],
+        || Ok::<_, CommandError>(filter_work_locations_by_prefix(&locations, &request.prefix)),
+        |result| count_result_attrs(result, "candidate_count"),
+    )?;
+    span.set([perf_attr("candidate_count", locations.len())]);
+    span.measure(
+        "render",
+        [perf_attr(
+            "format",
+            work_complete_format_label(request.format),
+        )],
+        || Ok::<_, CommandError>(render_work_complete(&locations, request.format)),
+    )
+}
+
+fn count_result_attrs<T, E>(result: &Result<Vec<T>, E>, key: &str) -> Vec<PerfAttr> {
+    result
+        .as_ref()
+        .map(|items| vec![perf_attr(key, items.len())])
+        .unwrap_or_default()
+}
+
+fn work_complete_mode(request: &WorkCompleteRequest) -> &'static str {
+    if request.workspaces {
+        "workspaces"
+    } else if request.navigation {
+        "navigation"
+    } else if request.repositories {
+        "repositories"
+    } else {
+        "locations"
+    }
+}
+
+fn work_complete_format_label(format: WorkCompleteFormat) -> &'static str {
+    match format {
+        WorkCompleteFormat::Simple => "simple",
+        WorkCompleteFormat::Picker => "picker",
+    }
+}
+
 fn shell_cd_target(path: &Path) -> String {
     format!("{SHELL_CD_TARGET_PREFIX}{}\n", path.display())
 }
@@ -721,7 +977,8 @@ fn current_navigation_workspaces(
 ) -> Result<Vec<WorkspaceEntry>, CommandError> {
     if has_jj_workspace_ancestor(environment.current_dir()) {
         services
-            .workspace_entries(environment.current_dir())
+            .current_workspace_entry(environment.current_dir())
+            .map(|workspace| vec![workspace])
             .map_err(CommandError::from)
     } else {
         Ok(Vec::new())
@@ -934,7 +1191,12 @@ fn try_global_sync_for_repository(
         (false, _) => {}
     }
 
-    global_sync_existing_origin(context, services, origin_status.local_ahead_by)
+    global_sync_existing_origin(
+        context,
+        &repository_environment,
+        services,
+        origin_status.local_ahead_by,
+    )
 }
 
 fn origin_remote_status(
@@ -973,6 +1235,7 @@ fn origin_only_status_context(context: &RepositoryContext) -> RepositoryContext 
 
 fn global_sync_existing_origin(
     context: RepositoryContext,
+    environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     local_ahead_by: i64,
 ) -> Result<GlobalSyncOutcome, CommandError> {
@@ -987,8 +1250,9 @@ fn global_sync_existing_origin(
         changed |= advance_trunk_changed(&advance);
     }
     let push = services.push_syncable_tracked(&context)?;
-    changed |= tracked_push_changed(&push.pushed);
-    let manager = PullRequestStackManager::new(&context, services, PerfLog::disabled());
+    changed |= tracked_push_changed(&push.pushed) || !push.skipped_same_tree_bookmarks.is_empty();
+    let manager =
+        PullRequestStackManager::new(&context, services, PerfLog::disabled(), environment);
     let _ = manager.sync_pull_requests(&push.pushed)?;
 
     if let Some(detail) = sync_conflict_detail(&fetch, &push) {
@@ -1167,6 +1431,10 @@ fn sync_push_outcome_result_attrs<E>(result: &Result<SyncPushOutcome, E>) -> Vec
                 "skipped_conflicted_count",
                 push.skipped_conflicted_bookmarks.len(),
             ),
+            perf_attr(
+                "skipped_same_tree_count",
+                push.skipped_same_tree_bookmarks.len(),
+            ),
         ],
         Err(_) => Vec::new(),
     }
@@ -1260,6 +1528,11 @@ fn sync_push_metric_attrs(metrics: &SyncPushMetrics) -> Vec<PerfAttr> {
         perf_attr("tracked_update_count", metrics.tracked_update_count),
         perf_attr("pushable_update_count", metrics.pushable_update_count),
         perf_attr("skipped_conflicted_count", metrics.skipped_conflicted_count),
+        perf_attr("skipped_same_tree_count", metrics.skipped_same_tree_count),
+        perf_attr(
+            "adopted_remote_head_count",
+            metrics.adopted_remote_head_count,
+        ),
         perf_attr("pushed_ref_count", metrics.pushed_ref_count),
         perf_attr("pushed_bookmark_count", metrics.pushed_bookmark_count),
         perf_attr("unchanged_bookmark_count", metrics.unchanged_bookmark_count),
@@ -1315,8 +1588,12 @@ fn sync_current_stack_traced(
         || services.fetch_origin(&context),
         fetch_result_attrs,
     )?;
-    let manager =
-        PullRequestStackManager::new(&context, services, PerfLog::from_environment(environment));
+    let manager = PullRequestStackManager::new(
+        &context,
+        services,
+        PerfLog::from_environment(environment),
+        environment,
+    );
     progress.status("Selecting stack bookmarks…");
     let selection = span.measure_with_result_attrs(
         "select_stack_bookmarks",
@@ -1372,6 +1649,7 @@ pub(super) fn push_syncable_stack_branches(
         pushed_commits: Vec::new(),
     };
     let mut skipped_conflicted_bookmarks = Vec::new();
+    let mut skipped_same_tree_bookmarks = Vec::new();
     let mut seen_bookmarks = BTreeSet::new();
     let mut seen_commits = BTreeSet::new();
 
@@ -1391,11 +1669,13 @@ pub(super) fn push_syncable_stack_branches(
                 .filter(|commit| seen_commits.insert(commit.short_commit_id.clone())),
         );
         skipped_conflicted_bookmarks.extend(next.skipped_conflicted_bookmarks);
+        skipped_same_tree_bookmarks.extend(next.skipped_same_tree_bookmarks);
     }
 
     Ok(SyncPushOutcome {
         pushed,
         skipped_conflicted_bookmarks,
+        skipped_same_tree_bookmarks,
     })
 }
 
@@ -1459,8 +1739,12 @@ fn sync_selected_revision_traced(
         sync_push_outcome_result_attrs,
     )?;
     progress.status("Syncing pull request description…");
-    let manager =
-        PullRequestStackManager::new(&context, services, PerfLog::from_environment(environment));
+    let manager = PullRequestStackManager::new(
+        &context,
+        services,
+        PerfLog::from_environment(environment),
+        environment,
+    );
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
         [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
@@ -1702,8 +1986,12 @@ fn sync_existing_origin_traced(
     );
     let push = push_result?.outcome;
     progress.status("Syncing pull request descriptions…");
-    let manager =
-        PullRequestStackManager::new(&context, services, PerfLog::from_environment(environment));
+    let manager = PullRequestStackManager::new(
+        &context,
+        services,
+        PerfLog::from_environment(environment),
+        environment,
+    );
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
         [perf_attr("bookmark_count", push.pushed.bookmarks.len())],

@@ -49,7 +49,25 @@ pub async fn pull_request_plan(
         reviewer_selection_from_candidates(&reviewer_candidates),
         existing_reviewers,
     );
+    let existing_review_activity = existing_review_activity_for_pull_request(
+        github,
+        &context.origin.github,
+        existing_pull_request.as_ref(),
+    )
+    .await?;
+    add_existing_review_activity_to_candidates(
+        &mut reviewer_candidates,
+        existing_review_activity.as_ref(),
+    );
     let draft = readiness.desired_draft(existing_pull_request.as_ref());
+    let suggested_reviewers = suggested_reviewers_for_ready_draft(
+        github,
+        &context.origin.github,
+        existing_pull_request.as_ref(),
+        draft,
+    )
+    .await?;
+    add_suggested_reviewers_to_candidates(&mut reviewer_candidates, suggested_reviewers);
 
     Ok(PullRequestPlan {
         repository: bookmark_report.repository,
@@ -111,6 +129,80 @@ fn add_existing_reviewers_to_candidates(
             candidates,
             ReviewerTarget::team(slug.clone(), slug.clone()),
             "already requested",
+        );
+    }
+}
+
+async fn existing_review_activity_for_pull_request(
+    github: &dyn GitHubClient,
+    repository: &GitHubRepository,
+    existing_pull_request: Option<&PullRequestRecord>,
+) -> Result<Option<PullRequestStatusRecord>, WorkflowError> {
+    let Some(existing_pull_request) = existing_pull_request else {
+        return Ok(None);
+    };
+
+    Ok(github
+        .pull_request_statuses(repository, &[existing_pull_request.number])
+        .await?
+        .into_iter()
+        .find(|status| status.number == existing_pull_request.number))
+}
+
+fn add_existing_review_activity_to_candidates(
+    candidates: &mut Vec<ReviewerCandidate>,
+    status: Option<&PullRequestStatusRecord>,
+) {
+    let Some(status) = status else {
+        return;
+    };
+
+    for login in &status.approved_reviewers {
+        add_reviewer_candidate_reason(
+            candidates,
+            ReviewerTarget::user(login.clone()),
+            "already approved",
+        );
+    }
+    for login in &status.commented_reviewers {
+        add_reviewer_candidate_reason(candidates, ReviewerTarget::user(login.clone()), "commented");
+    }
+    for login in &status.addressed_reviewers {
+        add_reviewer_candidate_reason(
+            candidates,
+            ReviewerTarget::user(login.clone()),
+            "comments addressed",
+        );
+    }
+}
+
+async fn suggested_reviewers_for_ready_draft(
+    github: &dyn GitHubClient,
+    repository: &GitHubRepository,
+    existing_pull_request: Option<&PullRequestRecord>,
+    draft: bool,
+) -> Result<Vec<String>, WorkflowError> {
+    let Some(existing_pull_request) = existing_pull_request else {
+        return Ok(Vec::new());
+    };
+    if !existing_pull_request.draft || draft {
+        return Ok(Vec::new());
+    }
+
+    Ok(github
+        .pull_request_suggested_reviewers(repository, existing_pull_request.number)
+        .await?)
+}
+
+fn add_suggested_reviewers_to_candidates(
+    candidates: &mut Vec<ReviewerCandidate>,
+    suggested_reviewers: Vec<String>,
+) {
+    for login in suggested_reviewers {
+        add_reviewer_candidate_reason(
+            candidates,
+            ReviewerTarget::user(login),
+            "suggested by GitHub",
         );
     }
 }
@@ -435,8 +527,19 @@ fn prepend_task_id_to_description(
 }
 
 fn canonical_task_title(task_id: &str, title: &str) -> String {
-    let title = strip_task_prefix(title, task_id).unwrap_or(title).trim();
-    if title.is_empty() {
+    let title = title.trim();
+    if let Some(title) = strip_task_prefix(title, task_id) {
+        let title = title.trim();
+        return if title.is_empty() {
+            task_id.to_owned()
+        } else {
+            format!("{task_id}: {title}")
+        };
+    }
+
+    if title_has_task_reference(title) {
+        title.to_owned()
+    } else if title.is_empty() {
         task_id.to_owned()
     } else {
         format!("{task_id}: {title}")
@@ -494,15 +597,93 @@ fn strip_bare_task_prefix<'a>(title: &'a str, task_id: &str) -> Option<&'a str> 
 
 fn is_task_prefix(candidate: &str, task_id: &str) -> bool {
     candidate.eq_ignore_ascii_case(task_id)
-        || candidate.contains('-')
-            && candidate
-                .chars()
-                .any(|character| character.is_ascii_digit())
-            && candidate.chars().all(|character| {
-                character.is_ascii_uppercase()
-                    || character.is_ascii_digit()
-                    || matches!(character, '-' | '_')
-            })
+}
+
+/// Returns a leading work item identifier from a title, such as `ABC-123`.
+pub fn work_id_from_title_prefix(title: &str) -> Option<String> {
+    let title = title.trim();
+    let bracketed = title
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .map(|(candidate, _)| candidate.trim());
+    if let Some(candidate) = bracketed.filter(|candidate| is_task_reference(candidate)) {
+        return Some(candidate.to_owned());
+    }
+
+    let prefix_len = title
+        .char_indices()
+        .take_while(|(_, character)| is_task_token_character(*character))
+        .map(|(index, character)| index + character.len_utf8())
+        .last()?;
+    let candidate = &title[..prefix_len];
+    is_task_reference(candidate).then(|| candidate.to_owned())
+}
+
+/// Returns related work IDs from a commit description, task context, and explicit fixes.
+pub fn pull_request_work_ids_from_description(
+    description: &str,
+    task_id: Option<&str>,
+    fixes: &[String],
+) -> Vec<String> {
+    let title = pull_request_description_from_text(description)
+        .map(|(title, _)| title)
+        .unwrap_or_default();
+    pull_request_work_ids(&title, task_id, fixes)
+}
+
+/// Returns the related work IDs to preserve for a pull request node.
+pub fn pull_request_work_ids(title: &str, task_id: Option<&str>, fixes: &[String]) -> Vec<String> {
+    let mut work_ids = Vec::new();
+    if let Some(work_id) = work_id_from_title_prefix(title) {
+        push_unique_work_id(&mut work_ids, work_id);
+    } else if let Some(task_id) = task_id {
+        push_unique_work_id(&mut work_ids, task_id.to_owned());
+    }
+    for work_id in fixes {
+        push_unique_work_id(&mut work_ids, work_id.clone());
+    }
+    work_ids
+}
+
+fn push_unique_work_id(work_ids: &mut Vec<String>, work_id: String) {
+    let work_id = work_id.trim();
+    if !work_id.is_empty() && !work_ids.iter().any(|existing| existing == work_id) {
+        work_ids.push(work_id.to_owned());
+    }
+}
+
+fn title_has_task_reference(title: &str) -> bool {
+    let mut token_start = None;
+    for (index, character) in title.char_indices() {
+        if is_task_token_character(character) {
+            token_start.get_or_insert(index);
+            continue;
+        }
+
+        if let Some(start) = token_start.take() {
+            if is_task_reference(&title[start..index]) {
+                return true;
+            }
+        }
+    }
+
+    token_start.is_some_and(|start| is_task_reference(&title[start..]))
+}
+
+fn is_task_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+}
+
+fn is_task_reference(candidate: &str) -> bool {
+    candidate.contains('-')
+        && candidate
+            .chars()
+            .any(|character| character.is_ascii_digit())
+        && candidate.chars().all(|character| {
+            character.is_ascii_uppercase()
+                || character.is_ascii_digit()
+                || matches!(character, '-' | '_')
+        })
 }
 
 fn trim_task_prefix_separator(value: &str) -> &str {

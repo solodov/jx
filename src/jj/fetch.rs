@@ -1,73 +1,236 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 impl JjWorkspace {
     /// Fetches tracked `origin` refs plus trunk, then rebases mutable pre-fetch trunk children.
     /// Commits whose changes are already present upstream are abandoned so remaining local work
     /// sits directly on the updated trunk.
     pub fn fetch_origin(&mut self) -> Result<FetchOutcome, JjError> {
+        let mut trace = |_| {};
+        self.fetch_origin_with_trace(&mut trace)
+    }
+
+    /// Fetches origin while emitting fetch substeps as they complete.
+    pub fn fetch_origin_with_trace(
+        &mut self,
+        trace: &mut dyn FnMut(FetchTraceStep),
+    ) -> Result<FetchOutcome, JjError> {
         self.ensure_git_backed()?;
 
-        let current_before = self.current_commit()?;
+        let current_before = measure_fetch_step(
+            trace,
+            "current_commit",
+            [
+                fetch_trace_attr("workspace", self.workspace.workspace_name().as_str()),
+                fetch_trace_attr("op_id_before", self.repo.op_id().hex()),
+            ],
+            || self.current_commit(),
+            |result| match result {
+                Ok(commit) => vec![
+                    fetch_trace_attr("current_commit", commit.id().hex()),
+                    fetch_trace_attr("current_change", commit.change_id().hex()),
+                ],
+                Err(_) => Vec::new(),
+            },
+        )?;
         let current_before_tree = current_before.tree();
-        let fetch_trunk = self.resolve_fetch_trunk(&current_before)?;
-        let trunk_children_before = collect_child_ids(self.repo.as_ref(), fetch_trunk.commit.id())?;
+        let fetch_trunk = measure_fetch_step(
+            trace,
+            "resolve_fetch_trunk",
+            [fetch_trace_attr(
+                "current_commit",
+                current_before.id().hex(),
+            )],
+            || self.resolve_fetch_trunk(&current_before),
+            |result| match result {
+                Ok(selection) => vec![
+                    fetch_trace_attr("branch", &selection.branch),
+                    fetch_trace_attr("trunk_commit", selection.commit.id().hex()),
+                    fetch_trace_attr("refresh_bookmark_count", selection.refresh_bookmarks.len()),
+                    fetch_trace_attr(
+                        "refresh_bookmarks",
+                        joined_fetch_values(&selection.refresh_bookmarks),
+                    ),
+                ],
+                Err(_) => Vec::new(),
+            },
+        )?;
+        let trunk_children_before = measure_fetch_step(
+            trace,
+            "collect_trunk_children",
+            [
+                fetch_trace_attr("branch", &fetch_trunk.branch),
+                fetch_trace_attr("trunk_commit", fetch_trunk.commit.id().hex()),
+            ],
+            || collect_child_ids(self.repo.as_ref(), fetch_trunk.commit.id()),
+            |result| match result {
+                Ok(children) => vec![fetch_trace_attr("child_count", children.len())],
+                Err(_) => Vec::new(),
+            },
+        )?;
 
         let mut tx = self.repo.start_transaction();
         let import_stats = fetch_origin_refs(
             tx.repo_mut(),
             &fetch_trunk.branch,
             &fetch_trunk.refresh_bookmarks,
+            trace,
         )?;
-        let updated_trunk = load_origin_branch(tx.repo(), &fetch_trunk.branch)?;
-        let mut rebase_stats = pollster::block_on(rebase_trunk_children_onto_updated_trunk(
-            tx.repo_mut(),
-            &trunk_children_before,
-            &updated_trunk,
-        ))?;
+        let updated_trunk = measure_fetch_step(
+            trace,
+            "load_updated_trunk",
+            [fetch_trace_attr("branch", &fetch_trunk.branch)],
+            || load_origin_branch(tx.repo(), &fetch_trunk.branch),
+            |result| match result {
+                Ok(commit) => vec![fetch_trace_attr("updated_trunk", commit.id().hex())],
+                Err(_) => Vec::new(),
+            },
+        )?;
+        let mut rebase_stats = measure_fetch_step(
+            trace,
+            "rebase_trunk_children",
+            [
+                fetch_trace_attr("branch", &fetch_trunk.branch),
+                fetch_trace_attr("previous_trunk", fetch_trunk.commit.id().hex()),
+                fetch_trace_attr("updated_trunk", updated_trunk.id().hex()),
+                fetch_trace_attr("child_count", trunk_children_before.len()),
+            ],
+            || {
+                pollster::block_on(rebase_trunk_children_onto_updated_trunk(
+                    tx.repo_mut(),
+                    &trunk_children_before,
+                    &updated_trunk,
+                ))
+            },
+            fetch_rebase_stats_attrs,
+        )?;
 
-        let repair_stats = pollster::block_on(repair_immutable_working_copy(
-            tx.repo_mut(),
-            self.workspace.workspace_name().to_owned(),
-            current_before.id(),
-            fetch_trunk.commit.id(),
-            &updated_trunk,
-        ))?;
+        let workspace_name = self.workspace.workspace_name().to_owned();
+        let repair_stats = measure_fetch_step(
+            trace,
+            "repair_working_copy",
+            [
+                fetch_trace_attr("workspace", workspace_name.as_str()),
+                fetch_trace_attr("current_before", current_before.id().hex()),
+                fetch_trace_attr("previous_trunk", fetch_trunk.commit.id().hex()),
+                fetch_trace_attr("updated_trunk", updated_trunk.id().hex()),
+            ],
+            || {
+                pollster::block_on(repair_immutable_working_copy(
+                    tx.repo_mut(),
+                    workspace_name.clone(),
+                    current_before.id(),
+                    fetch_trunk.commit.id(),
+                    &updated_trunk,
+                ))
+            },
+            |result| match result {
+                Ok(stats) => vec![
+                    fetch_trace_attr("repaired", stats.repaired),
+                    fetch_trace_attr("rebased_descendants", stats.rebased_descendants),
+                ],
+                Err(_) => Vec::new(),
+            },
+        )?;
         rebase_stats.rebased_descendants += repair_stats.rebased_descendants;
-        export_git_refs(tx.repo_mut())?;
-        let final_current_id = tx
-            .repo()
-            .view()
-            .get_wc_commit_id(self.workspace.workspace_name())
-            .cloned()
-            .ok_or_else(|| JjError::MissingWorkingCopy {
-                workspace: self.workspace.workspace_name().as_str().to_owned(),
-            })?;
+        measure_fetch_step(
+            trace,
+            "export_git_refs",
+            Vec::new(),
+            || export_git_refs(tx.repo_mut()),
+            |_| Vec::new(),
+        )?;
+        let final_current_id = measure_fetch_step(
+            trace,
+            "resolve_final_current",
+            [fetch_trace_attr(
+                "workspace",
+                self.workspace.workspace_name().as_str(),
+            )],
+            || {
+                tx.repo()
+                    .view()
+                    .get_wc_commit_id(self.workspace.workspace_name())
+                    .cloned()
+                    .ok_or_else(|| JjError::MissingWorkingCopy {
+                        workspace: self.workspace.workspace_name().as_str().to_owned(),
+                    })
+            },
+            |result| match result {
+                Ok(commit_id) => vec![fetch_trace_attr("final_current", commit_id.hex())],
+                Err(_) => Vec::new(),
+            },
+        )?;
 
-        let repo = pollster::block_on(
-            tx.commit(format!("jx fetch {remote}", remote = ORIGIN_REMOTE_NAME)),
-        )
-        .map_err(|error| JjError::Transaction {
-            message: error.to_string(),
-        })?;
+        let repo = measure_fetch_step(
+            trace,
+            "commit_transaction",
+            Vec::new(),
+            || {
+                pollster::block_on(
+                    tx.commit(format!("jx fetch {remote}", remote = ORIGIN_REMOTE_NAME)),
+                )
+                .map_err(|error| JjError::Transaction {
+                    message: error.to_string(),
+                })
+            },
+            |result| match result {
+                Ok(repo) => vec![fetch_trace_attr("op_id", repo.op_id().hex())],
+                Err(_) => Vec::new(),
+            },
+        )?;
 
         let current_repaired = repair_stats.repaired || final_current_id != *current_before.id();
         if current_repaired {
-            let final_current = load_commit_from_repo(repo.as_ref(), &final_current_id)?;
-            pollster::block_on(self.workspace.check_out(
-                repo.op_id().clone(),
-                Some(&current_before_tree),
-                &final_current,
-            ))
-            .map_err(|error| JjError::WorkingCopyCheckout {
-                message: error.to_string(),
-            })?;
+            let final_current = measure_fetch_step(
+                trace,
+                "load_final_current",
+                [fetch_trace_attr("final_current", final_current_id.hex())],
+                || load_commit_from_repo(repo.as_ref(), &final_current_id),
+                |_| Vec::new(),
+            )?;
+            measure_fetch_step(
+                trace,
+                "checkout_working_copy",
+                [
+                    fetch_trace_attr("workspace", self.workspace.workspace_name().as_str()),
+                    fetch_trace_attr("current_before", current_before.id().hex()),
+                    fetch_trace_attr("final_current", final_current.id().hex()),
+                    fetch_trace_attr("op_id", repo.op_id().hex()),
+                ],
+                || {
+                    pollster::block_on(self.workspace.check_out(
+                        repo.op_id().clone(),
+                        Some(&current_before_tree),
+                        &final_current,
+                    ))
+                    .map_err(|error| JjError::WorkingCopyCheckout {
+                        message: error.to_string(),
+                    })
+                },
+                |_| Vec::new(),
+            )?;
         }
 
-        let rebased_commits = rebased_commit_summaries(
-            repo.as_ref(),
-            rebase_stats.rebased_commits,
-            Some(updated_trunk.id()),
-            self.workspace.workspace_name(),
+        let rebased_commits = measure_fetch_step(
+            trace,
+            "summarize_rebased_commits",
+            [fetch_trace_attr(
+                "rebased_commit_count",
+                rebase_stats.rebased_commits.len(),
+            )],
+            || {
+                rebased_commit_summaries(
+                    repo.as_ref(),
+                    rebase_stats.rebased_commits,
+                    Some(updated_trunk.id()),
+                    self.workspace.workspace_name(),
+                )
+            },
+            |result| match result {
+                Ok(commits) => vec![fetch_trace_attr("rebased_commit_count", commits.len())],
+                Err(_) => Vec::new(),
+            },
         )?;
         self.repo = repo;
 
@@ -129,6 +292,57 @@ impl JjWorkspace {
             Err(error) => Err(error),
         }
     }
+}
+
+fn measure_fetch_step<T>(
+    trace: &mut dyn FnMut(FetchTraceStep),
+    name: impl Into<String>,
+    attrs: impl IntoIterator<Item = FetchTraceAttr>,
+    operation: impl FnOnce() -> Result<T, JjError>,
+    result_attrs: impl FnOnce(&Result<T, JjError>) -> Vec<FetchTraceAttr>,
+) -> Result<T, JjError> {
+    let name = name.into();
+    let started = Instant::now();
+    let result = operation();
+    let mut attrs = attrs.into_iter().collect::<Vec<_>>();
+    attrs.extend(result_attrs(&result));
+    trace(FetchTraceStep {
+        name,
+        duration_us: fetch_duration_us(started.elapsed()),
+        attrs,
+        error: result.as_ref().err().map(ToString::to_string),
+    });
+    result
+}
+
+fn fetch_rebase_stats_attrs(result: &Result<FetchRebaseStats, JjError>) -> Vec<FetchTraceAttr> {
+    match result {
+        Ok(stats) => vec![
+            fetch_trace_attr("rebased_trunk_children", stats.rebased_trunk_children),
+            fetch_trace_attr("rebased_descendants", stats.rebased_descendants),
+            fetch_trace_attr("skipped_trunk_children", stats.skipped_trunk_children),
+            fetch_trace_attr("abandoned_empty_commits", stats.abandoned_empty_commits),
+            fetch_trace_attr("rebased_commit_count", stats.rebased_commits.len()),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn joined_fetch_values(values: &[String]) -> String {
+    const MAX_VALUES: usize = 20;
+    if values.len() <= MAX_VALUES {
+        return values.join(",");
+    }
+
+    format!(
+        "{},…(+{})",
+        values[..MAX_VALUES].join(","),
+        values.len() - MAX_VALUES
+    )
+}
+
+fn fetch_duration_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 /// Trunk selection plus extra refs fetch should refresh to prune stale ambiguous candidates.

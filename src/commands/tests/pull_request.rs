@@ -30,6 +30,75 @@ fn pull_request_accepts_short_task_id_flag_and_renders_published_pr() {
 }
 
 #[test]
+fn pull_request_fixes_flag_records_work_id_and_supplies_task_context() {
+    // Verifies: a single fixing work ID doubles as task context when -t is omitted.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        expected_task_id: Some(Some("ABC-123".to_owned())),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@", "-F", "ABC-123"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
+
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes[0].work_ids, ["ABC-123".to_owned()]);
+    assert_eq!(metadata.nodes[0].fixes_work_ids, ["ABC-123".to_owned()]);
+}
+
+#[test]
+fn pull_request_bare_fixes_uses_workspace_task_id() {
+    // Verifies: -F without a value marks the already attached workspace task as fixed.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+        },
+    )
+    .expect("workspace metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        expected_task_id: Some(Some("ABC-123".to_owned())),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "@", "-F"],
+        &environment,
+        &services,
+    )
+    .expect("pull request publishes");
+
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(metadata.nodes[0].work_ids, ["ABC-123".to_owned()]);
+    assert_eq!(metadata.nodes[0].fixes_work_ids, ["ABC-123".to_owned()]);
+}
+
+#[test]
 fn pull_request_records_published_pr_in_stack_state() {
     // Verifies: Publishing a PR upserts durable stack state even before a full stack exists.
     let workspace = TestWorkspace::new();
@@ -70,6 +139,7 @@ fn pull_request_records_published_pr_in_stack_state() {
         read_stack_metadata(&workspace.path()).expect("stack metadata reads"),
         StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "example-user/02-zzzzzzzz".to_owned(),
                 base_branch: "example-user/01-ancestor".to_owned(),
@@ -80,6 +150,8 @@ fn pull_request_records_published_pr_in_stack_state() {
                 url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         }
     );
@@ -99,6 +171,7 @@ fn pull_request_refreshes_stack_context_for_published_stack_component() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/root".to_owned(),
                 base_branch: "main".to_owned(),
@@ -109,6 +182,8 @@ fn pull_request_refreshes_stack_context_for_published_stack_component() {
                 url: None,
                 draft: false,
                 merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -175,7 +250,7 @@ fn pull_request_refreshes_stack_context_for_published_stack_component() {
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(
         stack_metadata_rows(&metadata.nodes),
-        vec!["◯ #10     Root", "└─ ◯ #42     example change"]
+        vec!["◯ #10     Root", "└ ◯ #42     example change"]
     );
     assert_eq!(
         metadata.nodes[1].parent_branch.as_deref(),
@@ -198,6 +273,7 @@ fn pull_request_preserves_stored_parent_when_base_pr_is_missing() {
         &workspace.path(),
         &StackMetadata {
             version: 1,
+            work_item_handler_runs: Vec::new(),
             nodes: vec![StackMetadataNode {
                 branch: "topic/root".to_owned(),
                 base_branch: "main".to_owned(),
@@ -208,6 +284,8 @@ fn pull_request_preserves_stored_parent_when_base_pr_is_missing() {
                 url: None,
                 draft: false,
                 merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
             }],
         },
     )
@@ -256,7 +334,7 @@ fn pull_request_preserves_stored_parent_when_base_pr_is_missing() {
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(
         stack_metadata_rows(&metadata.nodes),
-        vec!["✓ #10     Root", "└─ ◯ #42     example change"]
+        vec!["✓ #10     Root", "└ ◯ #42     example change"]
     );
     assert_eq!(
         metadata.nodes[1].parent_branch.as_deref(),
@@ -789,7 +867,7 @@ fn pull_request_accepts_repeated_reviewer_flags() {
             "publish",
             "-r",
             "@",
-            "--reviewer",
+            "-R",
             "example-reviewer",
             "--reviewer",
             "ExampleOrg/frontend",
@@ -1000,6 +1078,48 @@ fn stack_publish_preselects_existing_and_cli_reviewers() {
 }
 
 #[test]
+fn stack_publish_preselects_already_approved_reviewers() {
+    // Verifies: prior approvals stay checked so updating a PR can request another look.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        existing_pull_request: Some(existing_pull_request(false)),
+        reviewer_candidates: vec![ReviewerCandidate::new(
+            ReviewerTarget::user("approved-reviewer"),
+            vec!["already approved".to_owned()],
+        )],
+        expected_reviewers: Some(ReviewerSelection::new(
+            ["approved-reviewer"],
+            Vec::<String>::new(),
+        )),
+        pull_request_action: PullRequestAction::Updated,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_reviewer_selector(
+        ["jx", "stack", "publish", "-r", "@"],
+        &environment,
+        &services,
+        &CheckedReviewerSelector,
+    )
+    .expect("pull request publishes with approved reviewer selected");
+
+    assert_eq!(
+        result.stdout,
+        format!("Updated {}\n", example_pull_request_link(42))
+    );
+}
+
+#[test]
 fn pull_request_uses_interactively_selected_reviewers() {
     // Verifies: PR publishing syncs only the configured reviewers selected by the operator.
     let workspace = TestWorkspace::new();
@@ -1045,8 +1165,8 @@ fn pull_request_uses_interactively_selected_reviewers() {
 }
 
 #[test]
-fn pull_request_previews_before_reviewer_selection() {
-    // Verifies: Operators see the PR description before deciding which reviewers to request.
+fn pull_request_previews_next_to_final_confirmation() {
+    // Verifies: PR previews stay adjacent to the confirmation prompt they describe.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1096,7 +1216,7 @@ fn pull_request_previews_before_reviewer_selection() {
     )
     .expect("pull request publishes");
 
-    assert_eq!(events.borrow().as_slice(), &["preview", "reviewers"]);
+    assert_eq!(events.borrow().as_slice(), &["reviewers", "preview"]);
     assert_eq!(
         result.stdout,
         format!("Created {}\n", example_pull_request_link(42))

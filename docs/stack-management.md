@@ -57,9 +57,25 @@ jx stack              # show the locally stored stack
 jx sync -s            # push/sync the current stack component later
 ```
 
-Publishing a child PR records its base relationship. Publishing or updating any
-PR in the component refreshes generated stack context for the component, including
-root PRs whose body may need stale stack context removed.
+Publishing records related work IDs in local stack metadata from each PR title
+prefix. Publish intent flags such as `-t/--task-id`, `-F/--fixes`,
+`--label`, `--reviewer`, and bare `--ready`/`--draft` apply only to the
+current commit in an inferred stack, or to a single explicitly selected
+revision. Pass `-A/--apply-to-stack` to apply task IDs, labels, reviewers, and
+bare readiness to every published PR. `-F/--fixes WORK_ID` records explicit fix
+intent for future merge side
+effects; when `-t/--task-id` is omitted and there is exactly one `--fixes`
+value, that work ID also supplies the publish task context. Use bare
+`-F/--fixes` to mark the already attached work ID from the workspace task
+context or title prefix as fixed. With `-A/--apply-to-stack`, fix intent is
+recorded only on the final published PR in the stack.
+
+Publishing a child PR records its base relationship. Existing non-current PRs in
+the stack are maintained automatically: `jx` keeps their base, description, and
+generated stack context current without asking for confirmation or applying
+publish intent flags. Publishing or updating any PR in the component refreshes
+generated stack context for the component, including root PRs whose body may
+need stale stack context removed.
 
 ## Stack context in PR descriptions
 
@@ -168,7 +184,11 @@ known PR URL or number are selectable.
 
 Stack sync updates GitHub from local stack state:
 
-- pushes selected stack bookmarks when the command includes a push phase;
+- pushes selected stack bookmarks when the command includes a push phase and
+  local file-tree content differs from the GitHub head;
+- skips redundant same-tree bookmark pushes so already-green PR heads keep their
+  existing CI and review state, adopting the remote head locally when no
+  workspace is checked out at the redundant local commit;
 - updates PR base branches to match local parent relationships;
 - updates generated stack context in PR descriptions;
 - preserves labels, reviewers, and other PR fields outside the specific publish
