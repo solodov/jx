@@ -879,14 +879,17 @@ impl<'a> StackStatusMetadataMaintainer<'a> {
         metadata: &StackMetadata,
         statuses: &[PullRequestStatusRecord],
     ) -> Result<StackStatusMetadataMaintenance, CommandError> {
-        let mut maintained =
-            domain::maintain_stack_metadata_pull_request_statuses(statuses, metadata);
+        let mut refreshed =
+            domain::refresh_stack_metadata_pull_request_statuses(statuses, metadata);
+        // Reconcile side effects before completed stacks age out so missing ledgers do not skip configured cleanup.
         apply_work_item_effects(
             self.context,
             &self.context.repository_root,
-            &mut maintained,
+            &mut refreshed,
             &self.work_item_handler_log,
         )?;
+        let maintained =
+            domain::maintain_stack_metadata_pull_request_statuses(statuses, &refreshed);
         if &maintained != metadata {
             write_stack_metadata(&self.context.repository_root, &maintained)?;
         }

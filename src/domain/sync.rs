@@ -183,7 +183,6 @@ fn render_pull_request_stack_context(
         output.push_str(&stack_context_row(row, repository_url));
         output.push('\n');
     }
-    output.push('\n');
     output.push_str(STACK_CONTEXT_END);
     Some(output)
 }
@@ -226,6 +225,28 @@ fn stack_context_link(node: &PullRequestStackNode, repository_url: &str) -> Stri
         }
         None => escape_markdown_link_text(&label),
     }
+}
+
+/// Removes generated stack delimiter comments for renderers that should show only visible PR content.
+pub fn pull_request_description_without_stack_context_markers(description: &str) -> String {
+    if !description.contains(STACK_CONTEXT_START) && !description.contains(STACK_CONTEXT_END) {
+        return description.to_owned();
+    }
+
+    let mut lines: Vec<&str> = Vec::new();
+    for line in description.lines() {
+        match line.trim() {
+            STACK_CONTEXT_START => continue,
+            STACK_CONTEXT_END => {
+                if matches!(lines.last(), Some(previous) if previous.trim().is_empty()) {
+                    lines.pop();
+                }
+            }
+            _ => lines.push(line),
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn replace_generated_stack_context(body: &str, block: Option<&str>) -> String {

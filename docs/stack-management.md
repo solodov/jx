@@ -92,7 +92,6 @@ For the middle PR in a three-PR stack, GitHub might show:
 ✓ [#10 Prepare API shape](https://github.com/example-org/example-repo/pull/10)
 **◉ [#12 Add service layer](https://github.com/example-org/example-repo/pull/12)** — this PR
 └─ ◌ [#13 Wire UI to service](https://github.com/example-org/example-repo/pull/13) — draft
-
 <!-- jx-stack:end -->
 ```
 
@@ -106,7 +105,6 @@ current marker moved to that PR:
 ✓ [#10 Prepare API shape](https://github.com/example-org/example-repo/pull/10)
 ◯ [#12 Add service layer](https://github.com/example-org/example-repo/pull/12)
 └─ **◉ [#13 Wire UI to service](https://github.com/example-org/example-repo/pull/13)** — this PR
-
 <!-- jx-stack:end -->
 ```
 
@@ -120,7 +118,6 @@ Nested trees preserve indentation for GitHub markdown:
 ├─ ◯ [#21 Add layout parser](https://github.com/example-org/example-repo/pull/21)
 └─ ◯ [#22 Add workspace commands](https://github.com/example-org/example-repo/pull/22)
 &nbsp;&nbsp;&nbsp;└─ **◉ [#23 Add workspace cleanup](https://github.com/example-org/example-repo/pull/23)** — this PR
-
 <!-- jx-stack:end -->
 ```
 

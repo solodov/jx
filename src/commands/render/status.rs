@@ -40,8 +40,9 @@ pub(in crate::commands) fn render_workspace_status_with_width(
 }
 
 pub(in crate::commands) fn render_status_description(description: &str, width: usize) -> String {
+    let description = domain::pull_request_description_without_stack_context_markers(description);
     MadSkin::default_light()
-        .text(description, Some(width.max(20)))
+        .text(&description, Some(width.max(20)))
         .to_string()
 }
 

@@ -174,6 +174,23 @@ fn workspace_status_renderer_renders_markdown_description_without_preview_indent
 }
 
 #[test]
+fn workspace_status_renderer_hides_stack_context_comment_markers() {
+    // Verifies: local markdown rendering does not expose sync-only PR stack anchors.
+    let status = WorkspaceStatus {
+        commit_lines: vec!["Working copy  (@) : kvxvwztp b9e8f888".to_owned()],
+        description: "Title\n\n<!-- jx-stack:start -->\nPull request stack\n\n◯ Root\n└ ◉ Child — this PR\n<!-- jx-stack:end -->".to_owned(),
+        change_lines: Vec::new(),
+        extra_lines: Vec::new(),
+    };
+
+    let rendered = render_workspace_status_with_width(&status, 120);
+
+    assert!(!rendered.contains("jx-stack"), "{rendered:?}");
+    assert!(!rendered.contains("<!--"), "{rendered:?}");
+    assert!(rendered.contains("Pull request stack"), "{rendered:?}");
+}
+
+#[test]
 fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     // Verifies: PR preview omits commit headers while keeping description, planned changed files, and metadata.
     let mut plan = preview_plan();

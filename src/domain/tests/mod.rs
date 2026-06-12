@@ -2506,7 +2506,7 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
             PullRequestUpdate {
                 title: None,
                 body: Some(
-                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n\n<!-- jx-stack:end -->"
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->"
                         .to_owned()
                 ),
                 base: None,
@@ -2598,7 +2598,7 @@ fn sync_pull_requests_falls_back_to_metadata_number_when_head_lookup_misses() {
             PullRequestUpdate {
                 title: None,
                 body: Some(
-                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n\n<!-- jx-stack:end -->"
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n<!-- jx-stack:end -->"
                         .to_owned()
                 ),
                 base: None,
@@ -2660,6 +2660,17 @@ fn sync_pull_requests_removes_stack_context_for_untracked_pr() {
                 base: None,
             }
         )]
+    );
+}
+
+#[test]
+fn pull_request_description_without_stack_context_markers_hides_delimiters() {
+    // Verifies: local renderers can show stack context without exposing sync-only HTML anchors.
+    assert_eq!(
+        pull_request_description_without_stack_context_markers(
+            "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ Root\n└ ◉ Child — this PR\n\n<!-- jx-stack:end -->\n\nFooter",
+        ),
+        "Authored body\n\n### Pull request stack\n\n◯ Root\n└ ◉ Child — this PR\n\nFooter"
     );
 }
 

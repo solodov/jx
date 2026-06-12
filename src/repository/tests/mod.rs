@@ -248,6 +248,28 @@ fn stack_metadata_write_creates_ignored_state_file() {
 }
 
 #[test]
+fn stack_metadata_write_preserves_handler_ledger_without_nodes() {
+    // Verifies: completed-stack pruning does not erase the side-effect ledger needed to avoid duplicate handlers.
+    let workspace = TestWorkspace::new();
+    let metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: vec![StackMetadataWorkItemHandlerRun {
+            handler: "resolve-work".to_owned(),
+            work_id: "ABC-123".to_owned(),
+            pull_request: 101,
+        }],
+        nodes: Vec::new(),
+    };
+
+    write_stack_metadata(&workspace.path(), &metadata).expect("metadata writes");
+
+    assert_eq!(
+        read_stack_metadata(&workspace.path()).expect("metadata reads"),
+        metadata
+    );
+}
+
+#[test]
 fn discovers_workspace_from_nested_directory() {
     // Verifies: Discovers workspace from nested directory.
     let workspace = TestWorkspace::new();

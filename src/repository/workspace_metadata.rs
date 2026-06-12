@@ -112,7 +112,7 @@ pub fn write_workspace_metadata(
 /// Writes repo-local stack metadata and keeps generated local metadata ignored by Git.
 pub fn write_stack_metadata(root: &Path, metadata: &StackMetadata) -> Result<(), RepositoryError> {
     let file = stack_metadata_file(root);
-    if metadata.nodes.is_empty() {
+    if metadata.nodes.is_empty() && metadata.work_item_handler_runs.is_empty() {
         ensure_metadata_directory_ignored(root)?;
         remove_metadata_file(file)?;
     } else {
