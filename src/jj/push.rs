@@ -113,13 +113,17 @@ impl JjWorkspace {
     }
 
     /// Pushes tracked bookmarks whose push ranges do not contain conflicted commits.
-    pub fn push_syncable_tracked(&mut self) -> Result<SyncPushOutcome, JjError> {
-        Ok(self.push_syncable_tracked_with_metrics()?.outcome)
+    pub fn push_syncable_tracked(
+        &mut self,
+        options: SyncPushOptions,
+    ) -> Result<SyncPushOutcome, JjError> {
+        Ok(self.push_syncable_tracked_with_metrics(options)?.outcome)
     }
 
     /// Pushes syncable tracked bookmarks and returns jj-internal timings.
     pub fn push_syncable_tracked_with_metrics(
         &mut self,
+        options: SyncPushOptions,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
         self.ensure_git_backed()?;
         let total = Instant::now();
@@ -142,8 +146,11 @@ impl JjWorkspace {
         metrics.split_conflicted_updates_us = duration_us(started.elapsed());
         metrics.skipped_conflicted_count = split.skipped_conflicted.len();
 
-        let same_tree =
-            self.split_same_tree_tracked_bookmark_updates(split.pushable, trunk.as_ref())?;
+        let same_tree = if options.skip_same_tree_pushes {
+            self.split_same_tree_tracked_bookmark_updates(split.pushable, trunk.as_ref())?
+        } else {
+            SameTreeBookmarkUpdates::push_all(split.pushable)
+        };
         metrics.pushable_update_count = same_tree.pushable.len();
         metrics.skipped_same_tree_count = same_tree.skipped.len();
         metrics.adopted_remote_head_count = same_tree
@@ -200,6 +207,7 @@ impl JjWorkspace {
     pub fn push_syncable_revision(
         &mut self,
         revision: Option<&str>,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
         self.ensure_git_backed()?;
         let selection = self.sync_bookmark_selection_for_revision(revision)?;
@@ -240,8 +248,11 @@ impl JjWorkspace {
             update,
         )])?;
         let trunk = self.tracked_push_trunk();
-        let same_tree =
-            self.split_same_tree_tracked_bookmark_updates(split.pushable, trunk.as_ref())?;
+        let same_tree = if options.skip_same_tree_pushes {
+            self.split_same_tree_tracked_bookmark_updates(split.pushable, trunk.as_ref())?
+        } else {
+            SameTreeBookmarkUpdates::push_all(split.pushable)
+        };
         let mut pushed = self.push_tracked_updates(
             same_tree.pushable,
             format!("jx sync push {}", selection.branch),
@@ -439,9 +450,10 @@ impl JjWorkspace {
         for (branch, update) in updates {
             let branch_name = branch.as_str();
             let line = match (&update.before, &update.after) {
-                (Some(remote), Some(_local)) if self.same_tree_update(&update)?.is_some() => {
+                (Some(remote), Some(local)) if self.same_tree_update(&update)?.is_some() => {
                     format!(
-                        "  ≈ {branch_name} same code as GitHub {}; sync skips code push",
+                        "  ≈ {branch_name} local code {} matches GitHub {}; sync will update remote head",
+                        short_commit_id(local),
                         short_commit_id(remote)
                     )
                 }
@@ -836,6 +848,16 @@ struct SameTreeBookmarkUpdates {
     pushable: Vec<BookmarkPushUpdate>,
     skipped: Vec<SkippedSameTreeBookmarkSummary>,
     metadata_bookmarks: Vec<PushedBookmarkSummary>,
+}
+
+impl SameTreeBookmarkUpdates {
+    fn push_all(pushable: Vec<BookmarkPushUpdate>) -> Self {
+        Self {
+            pushable,
+            skipped: Vec::new(),
+            metadata_bookmarks: Vec::new(),
+        }
+    }
 }
 
 pub(super) fn classify_push_bookmark_update(

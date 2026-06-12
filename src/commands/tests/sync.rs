@@ -64,6 +64,45 @@ fn global_sync_renderer_does_not_require_current_workspace_for_color_output() {
 }
 
 #[test]
+fn sync_pushes_same_tree_heads_by_default_unless_experimental_flag_is_set() {
+    // Verifies: the same-tree push shortcut is opt-in so normal sync updates GitHub heads.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    run_with_args_and_services(["jx", "sync"], &environment, &services)
+        .expect("default sync succeeds");
+
+    assert_eq!(
+        services.sync_push_options.borrow().as_slice(),
+        &[SyncPushOptions {
+            skip_same_tree_pushes: false,
+        }]
+    );
+
+    let services = FakeServices::default();
+    run_with_args_and_services(
+        ["jx", "sync", "--experimental-skip-same-tree-push"],
+        &environment,
+        &services,
+    )
+    .expect("experimental sync succeeds");
+
+    assert_eq!(
+        services.sync_push_options.borrow().as_slice(),
+        &[SyncPushOptions {
+            skip_same_tree_pushes: true,
+        }]
+    );
+}
+
+#[test]
 fn sync_all_shorthand_syncs_writable_repositories_when_origin_does_not_need_pulling() {
     // Verifies: -a selects global sync and can push tracked state even with local jj work present.
     let workspace = TestWorkspace::new();

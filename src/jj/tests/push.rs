@@ -175,7 +175,7 @@ fn syncable_tracked_push_includes_unchanged_bookmark_pr_metadata() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .push_syncable_tracked()
+        .push_syncable_tracked(SyncPushOptions::default())
         .expect("syncable tracked push succeeds");
 
     assert_eq!(outcome.pushed.pushed_refs, 0);
@@ -202,8 +202,8 @@ fn syncable_tracked_push_includes_unchanged_bookmark_pr_metadata() {
 }
 
 #[test]
-fn syncable_tracked_push_skips_same_tree_update_and_adopts_non_current_bookmark() {
-    // Verifies: Sync preserves a green remote PR head when local code is identical and the PR bookmark is not current.
+fn experimental_syncable_tracked_push_skips_same_tree_update_and_adopts_non_current_bookmark() {
+    // Verifies: The experimental mode preserves a green remote PR head when local code is identical and the PR bookmark is not current.
     let fixture = TestWorkspace::new("push-syncable-same-tree-adopt");
     let settings = user_settings().expect("settings");
     let (workspace, repo, remote, local) = pollster::block_on(async {
@@ -255,13 +255,16 @@ fn syncable_tracked_push_skips_same_tree_update_and_adopts_non_current_bookmark(
             .filter(|line| line.contains("example-user/topic"))
             .collect::<Vec<_>>(),
         vec![format!(
-            "  ≈ example-user/topic same code as GitHub {}; sync skips code push",
+            "  ≈ example-user/topic local code {} matches GitHub {}; sync will update remote head",
+            short_commit_id(local.id()),
             short_commit_id(remote.id())
         )]
     );
 
     let outcome = subject
-        .push_syncable_tracked()
+        .push_syncable_tracked(SyncPushOptions {
+            skip_same_tree_pushes: true,
+        })
         .expect("syncable tracked push succeeds");
 
     assert_eq!(outcome.pushed.pushed_refs, 0);
@@ -294,8 +297,8 @@ fn syncable_tracked_push_skips_same_tree_update_and_adopts_non_current_bookmark(
 }
 
 #[test]
-fn syncable_tracked_push_skips_same_tree_current_bookmark_without_adopting() {
-    // Verifies: Sync preserves remote CI without moving the bookmark away from the current working copy.
+fn experimental_syncable_tracked_push_skips_same_tree_current_bookmark_without_adopting() {
+    // Verifies: The experimental mode preserves remote CI without moving the bookmark away from the current working copy.
     let fixture = TestWorkspace::new("push-syncable-same-tree-current");
     let settings = user_settings().expect("settings");
     let (workspace, repo, remote, local) = pollster::block_on(async {
@@ -338,7 +341,9 @@ fn syncable_tracked_push_skips_same_tree_current_bookmark_without_adopting() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .push_syncable_tracked()
+        .push_syncable_tracked(SyncPushOptions {
+            skip_same_tree_pushes: true,
+        })
         .expect("syncable tracked push succeeds");
 
     assert_eq!(outcome.pushed.pushed_refs, 0);

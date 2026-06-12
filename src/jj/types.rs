@@ -497,6 +497,13 @@ pub struct TrackedPushOutcome {
     pub pushed_commits: Vec<PushedCommitSummary>,
 }
 
+/// Options that control experimental sync push behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SyncPushOptions {
+    /// Skips pushing local heads whose file tree already matches GitHub.
+    pub skip_same_tree_pushes: bool,
+}
+
 /// Result of pushing only the tracked bookmarks that can be safely synced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPushOutcome {

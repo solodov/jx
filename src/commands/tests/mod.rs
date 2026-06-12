@@ -412,6 +412,7 @@ struct FakeServices {
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
+    sync_push_options: std::cell::RefCell<Vec<SyncPushOptions>>,
     fetch: FetchOutcome,
     rebase_on_trunk: RebaseOnTrunkOutcome,
     expected_rebase_sources: Option<Vec<String>>,
@@ -554,6 +555,7 @@ impl Default for FakeServices {
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
+            sync_push_options: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
                 changed_remote_bookmarks: 1,
@@ -1354,6 +1356,7 @@ impl CommandServices for FakeServices {
         &self,
         context: &RepositoryContext,
         revision: Option<&str>,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
         self.push_tracked_roots
             .borrow_mut()
@@ -1361,6 +1364,7 @@ impl CommandServices for FakeServices {
         self.push_syncable_revision_requests
             .borrow_mut()
             .push(revision.map(str::to_owned));
+        self.sync_push_options.borrow_mut().push(options);
         Ok(SyncPushOutcome {
             pushed: self.tracked_push.clone(),
             skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
@@ -1371,10 +1375,12 @@ impl CommandServices for FakeServices {
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
         self.push_tracked_roots
             .borrow_mut()
             .push(context.workspace_root.clone());
+        self.sync_push_options.borrow_mut().push(options);
         let pushed = if self.up_to_date_sync_roots.contains(&context.workspace_root) {
             TrackedPushOutcome {
                 pushed_refs: 0,

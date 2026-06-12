@@ -466,20 +466,23 @@ pub(super) trait CommandServices {
         &self,
         context: &RepositoryContext,
         revision: Option<&str>,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError>;
 
     /// Pushes tracked bookmarks whose updates do not contain conflicted commits.
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError>;
 
     /// Pushes syncable tracked bookmarks and returns jj-internal timing metrics.
     fn push_syncable_tracked_with_metrics(
         &self,
         context: &RepositoryContext,
+        options: SyncPushOptions,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
-        self.push_syncable_tracked(context)
+        self.push_syncable_tracked(context, options)
             .map(SyncPushMetricsOutcome::from_outcome)
     }
 
@@ -2309,22 +2312,26 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
         revision: Option<&str>,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_revision(revision)
+        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_revision(revision, options)
     }
 
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
+        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_tracked()
+        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_tracked(options)
     }
 
     fn push_syncable_tracked_with_metrics(
         &self,
         context: &RepositoryContext,
+        options: SyncPushOptions,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_tracked_with_metrics()
+        JjWorkspace::load(context.workspace_root.clone())?
+            .push_syncable_tracked_with_metrics(options)
     }
 
     fn sync_pull_requests(

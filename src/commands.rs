@@ -56,9 +56,9 @@ use crate::{
         PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary, RebaseOnTrunkOutcome,
         StackMoveOutcome, StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
         StackPublishSelection, StatusWorkspaceFacts, StatusWorkspaceMetrics, SyncPushMetrics,
-        SyncPushMetricsOutcome, SyncPushOutcome, TrackedPushOutcome, WorkspaceAddOptions,
-        WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus,
-        WorkspaceVisibility,
+        SyncPushMetricsOutcome, SyncPushOptions, SyncPushOutcome, TrackedPushOutcome,
+        WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions,
+        WorkspaceStatus, WorkspaceVisibility,
     },
     repository::{
         read_github_user_name_cache, read_stack_metadata, read_workspace_metadata,

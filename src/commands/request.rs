@@ -217,6 +217,7 @@ pub(super) struct SyncRequest {
     pub(super) stack: bool,
     pub(super) revision: Option<String>,
     pub(super) repo_filters: Vec<String>,
+    pub(super) sync_push_options: SyncPushOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +351,10 @@ impl CommandRequest {
                 perf_attr("stack", request.stack),
                 perf_attr("has_revision", request.revision.is_some()),
                 perf_attr("repo_filter_count", request.repo_filters.len()),
+                perf_attr(
+                    "skip_same_tree_pushes",
+                    request.sync_push_options.skip_same_tree_pushes,
+                ),
             ]),
         }
         attrs
@@ -799,6 +804,9 @@ fn sync_request(matches: &ArgMatches) -> Result<SyncRequest, clap::Error> {
         stack: matches.get_flag("stack"),
         revision,
         repo_filters,
+        sync_push_options: SyncPushOptions {
+            skip_same_tree_pushes: matches.get_flag("experimental-skip-same-tree-push"),
+        },
     })
 }
 
@@ -1231,6 +1239,7 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(sync_all_arg())
                 .arg(sync_repo_arg())
                 .arg(sync_stack_arg())
+                .arg(sync_experimental_skip_same_tree_push_arg())
                 .arg(sync_revision_arg()),
         )
 }
@@ -1620,6 +1629,15 @@ fn sync_stack_arg() -> Arg {
         .action(ArgAction::SetTrue)
         .conflicts_with_all(["all", "repo", "target"])
         .help("Sync every bookmark in the current pull-request stack")
+}
+
+fn sync_experimental_skip_same_tree_push_arg() -> Arg {
+    Arg::new("experimental-skip-same-tree-push")
+        .long("experimental-skip-same-tree-push")
+        .action(ArgAction::SetTrue)
+        .help(
+            "Experimentally preserve same-code GitHub PR heads instead of pushing local commit ids",
+        )
 }
 
 fn sync_revision_arg() -> Arg {
