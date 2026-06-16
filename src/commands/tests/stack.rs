@@ -1272,9 +1272,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
     assert!(result
         .stdout
         .contains("\x1b[3m\x1b[30mreviewer-addressed\x1b[0m"));
-    assert!(result
-        .stdout
-        .contains("\x1b[38;2;118;108;96mreviewer-approved\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[32mreviewer-approved\x1b[0m"));
     assert!(result.stdout.contains(
         "\x1b[48;2;246;237;234m\x1b[38;2;190;184;176m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
     ));
@@ -1306,9 +1304,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .contains("\x1b[2m\x1b[38;2;190;184;176mLegend:"));
     assert!(!result.stdout.contains("[ui]"));
     assert!(!result.stdout.contains("\x1b[1m\x1b[30mdraft-pending"));
-    assert!(!result
-        .stdout
-        .contains("\x1b[38;2;118;108;96mdraft-approved"));
+    assert!(!result.stdout.contains("\x1b[32mdraft-approved"));
 }
 
 #[test]
