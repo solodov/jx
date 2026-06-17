@@ -1928,16 +1928,22 @@ fn stack_preselected_reviewers(
             }
         }
         for candidate in &plan.reviewer_candidates {
-            if candidate
-                .reasons
-                .iter()
-                .any(|reason| reason == "already approved")
-            {
+            if reviewer_candidate_keeps_existing_review_selection(candidate) {
                 push_reviewer_target(&mut reviewers, candidate.target.clone());
             }
         }
     }
     reviewers
+}
+
+/// Returns whether prior PR activity should keep a reviewer checked after GitHub clears a request.
+fn reviewer_candidate_keeps_existing_review_selection(candidate: &ReviewerCandidate) -> bool {
+    candidate.reasons.iter().any(|reason| {
+        matches!(
+            reason.as_str(),
+            "already requested" | "already approved" | "commented" | "comments addressed"
+        )
+    })
 }
 
 fn push_reviewer_target(reviewers: &mut Vec<ReviewerTarget>, reviewer: ReviewerTarget) {

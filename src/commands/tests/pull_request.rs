@@ -1078,8 +1078,8 @@ fn stack_publish_preselects_existing_and_cli_reviewers() {
 }
 
 #[test]
-fn stack_publish_preselects_already_approved_reviewers() {
-    // Verifies: prior approvals stay checked so updating a PR can request another look.
+fn stack_publish_preselects_existing_review_activity() {
+    // Verifies: prior reviewer activity stays checked so updating a PR can request another look.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1093,12 +1093,30 @@ fn stack_publish_preselects_already_approved_reviewers() {
     );
     let services = FakeServices {
         existing_pull_request: Some(existing_pull_request(false)),
-        reviewer_candidates: vec![ReviewerCandidate::new(
-            ReviewerTarget::user("approved-reviewer"),
-            vec!["already approved".to_owned()],
-        )],
+        reviewer_candidates: vec![
+            ReviewerCandidate::new(
+                ReviewerTarget::user("approved-reviewer"),
+                vec!["already approved".to_owned()],
+            ),
+            ReviewerCandidate::new(
+                ReviewerTarget::user("commented-reviewer"),
+                vec!["commented".to_owned()],
+            ),
+            ReviewerCandidate::new(
+                ReviewerTarget::user("addressed-reviewer"),
+                vec!["comments addressed".to_owned()],
+            ),
+            ReviewerCandidate::new(
+                ReviewerTarget::user("suggested-reviewer"),
+                vec!["suggested by GitHub".to_owned()],
+            ),
+        ],
         expected_reviewers: Some(ReviewerSelection::new(
-            ["approved-reviewer"],
+            [
+                "addressed-reviewer",
+                "approved-reviewer",
+                "commented-reviewer",
+            ],
             Vec::<String>::new(),
         )),
         pull_request_action: PullRequestAction::Updated,
@@ -1111,7 +1129,7 @@ fn stack_publish_preselects_already_approved_reviewers() {
         &services,
         &CheckedReviewerSelector,
     )
-    .expect("pull request publishes with approved reviewer selected");
+    .expect("pull request publishes with active reviewer selected");
 
     assert_eq!(
         result.stdout,
