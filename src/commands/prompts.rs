@@ -300,7 +300,7 @@ impl PullRequestConfirmer for TerminalPullRequestConfirmer {
         let theme = PlainPromptTheme;
         let confirmed = Confirm::with_theme(&theme)
             .with_prompt(pull_request_confirmation_prompt(plan))
-            .default(false)
+            .default(true)
             .show_default(false)
             .report(false)
             .interact_opt()
