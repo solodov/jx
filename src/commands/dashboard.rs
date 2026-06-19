@@ -8,10 +8,11 @@ use std::{
     process::Command as ProcessCommand,
     sync::{mpsc, Arc},
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
+const DASHBOARD_IDLE_POLL: Duration = Duration::from_millis(500);
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub(super) type DashboardFrameLoader = Arc<dyn Fn() -> Result<String, String> + Send + Sync>;
@@ -105,12 +106,11 @@ pub(super) fn run_interactive_dashboard(
             }
         }
 
-        let next_refresh = Instant::now() + Duration::from_secs(refresh_seconds);
-        while Instant::now() < next_refresh {
+        while let Some(wait_duration) = dashboard_wait_duration(Local::now(), next_refresh_at) {
             if watcher.changed() {
                 return restart_dashboard_process();
             }
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(wait_duration);
         }
     }
 }
@@ -129,6 +129,19 @@ fn next_dashboard_refresh_time(
 ) -> Option<DateTime<Local>> {
     let seconds = i64::try_from(refresh_seconds).ok()?;
     refreshed_at.checked_add_signed(chrono::Duration::seconds(seconds))
+}
+
+/// Returns the next short sleep before a dashboard refresh is due.
+fn dashboard_wait_duration(
+    now: DateTime<Local>,
+    next_refresh_at: Option<DateTime<Local>>,
+) -> Option<Duration> {
+    let next_refresh_at = next_refresh_at?;
+    let remaining = next_refresh_at.signed_duration_since(now).to_std().ok()?;
+    if remaining.is_zero() {
+        return None;
+    }
+    Some(remaining.min(DASHBOARD_IDLE_POLL))
 }
 
 fn render_dashboard_frame(
@@ -267,4 +280,42 @@ impl ProgressSink for SilentProgress {
     fn status(&self, _message: &str) {}
 
     fn finish(&self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    #[test]
+    fn dashboard_wait_duration_treats_due_or_overdue_refreshes_as_ready() {
+        let now = local_test_time();
+
+        assert_eq!(dashboard_wait_duration(now, Some(now)), None);
+        assert_eq!(
+            dashboard_wait_duration(now, Some(now - chrono::Duration::seconds(30))),
+            None
+        );
+    }
+
+    #[test]
+    fn dashboard_wait_duration_sleeps_in_short_wall_clock_chunks() {
+        let now = local_test_time();
+
+        assert_eq!(
+            dashboard_wait_duration(now, Some(now + chrono::Duration::seconds(30))),
+            Some(DASHBOARD_IDLE_POLL)
+        );
+        assert_eq!(
+            dashboard_wait_duration(now, Some(now + chrono::Duration::milliseconds(100))),
+            Some(Duration::from_millis(100))
+        );
+    }
+
+    fn local_test_time() -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(2026, 1, 15, 12, 0, 0)
+            .single()
+            .expect("test time is unambiguous in the local timezone")
+    }
 }
