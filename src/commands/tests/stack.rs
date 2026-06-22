@@ -1161,10 +1161,14 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         ],
         std::iter::empty::<&str>(),
     );
-    ready_status.approved_reviewers = vec!["reviewer-approved".to_owned()];
+    ready_status.approved_reviewers = vec![
+        "reviewer-approved".to_owned(),
+        "reviewer-commented-approved".to_owned(),
+    ];
     ready_status.commented_reviewers = vec![
         "reviewer-commented-requested".to_owned(),
         "reviewer-commented".to_owned(),
+        "reviewer-commented-approved".to_owned(),
     ];
     ready_status.addressed_reviewers = vec!["reviewer-addressed".to_owned()];
     let mut draft_status = stack_status_record(
@@ -1273,6 +1277,9 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .stdout
         .contains("\x1b[3m\x1b[30mreviewer-addressed\x1b[0m"));
     assert!(result.stdout.contains("\x1b[32mreviewer-approved\x1b[0m"));
+    assert!(result
+        .stdout
+        .contains("\x1b[3m\x1b[32mreviewer-commented-approved\x1b[0m"));
     assert!(result.stdout.contains(
         "\x1b[48;2;246;237;234m\x1b[38;2;190;184;176m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
     ));

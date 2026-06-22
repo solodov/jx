@@ -8,6 +8,7 @@ pub(in crate::commands) const DIM_STYLE: &str = "\x1b[2m";
 pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
 const DRAFT_TEXT_RGB: (u8, u8, u8) = (190, 184, 176);
 pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
+const GREEN_ITALIC_STYLE: &str = "\x1b[3m\x1b[32m";
 const MERGED_APPROVED_REVIEWER_STYLE: &str = "\x1b[38;2;118;108;96m";
 const ORANGE_STYLE: &str = "\x1b[38;2;194;95;0m";
 pub(in crate::commands) const RED_STYLE: &str = "\x1b[31m";
@@ -283,13 +284,12 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
         })
     }));
     tokens.extend(status.approved_reviewers.iter().map(|name| {
-        pull_request_reviewer_token(
-            name,
-            ReviewerTokenState::Approved,
-            None,
-            color,
-            display_names,
-        )
+        let state = if commented.contains(name.as_str()) {
+            ReviewerTokenState::ApprovedWithComments
+        } else {
+            ReviewerTokenState::Approved
+        };
+        pull_request_reviewer_token(name, state, None, color, display_names)
     }));
     tokens
 }
@@ -469,6 +469,7 @@ enum ReviewerTokenState {
     Commented,
     Addressed,
     Approved,
+    ApprovedWithComments,
     MergedApproved,
 }
 
@@ -492,6 +493,7 @@ fn pull_request_reviewer_token(
         ReviewerTokenState::Commented => ORANGE_STYLE,
         ReviewerTokenState::Addressed => BLACK_ITALIC_STYLE,
         ReviewerTokenState::Approved => GREEN_STYLE,
+        ReviewerTokenState::ApprovedWithComments => GREEN_ITALIC_STYLE,
         ReviewerTokenState::MergedApproved => MERGED_APPROVED_REVIEWER_STYLE,
     };
     format!("{style}{label}{RESET_STYLE}")
