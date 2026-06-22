@@ -767,49 +767,12 @@ fn parse_review_gate_checks(
     key: &str,
     value: &toml::Value,
 ) -> Result<Vec<ReviewGateCheckConfig>, RepositoryError> {
-    let Some(rules) = value.as_array() else {
-        return Err(RepositoryError::InvalidConfig {
-            file: file.to_owned(),
-            message: format!("`{key}` must be an array of tables"),
-        });
-    };
-
-    rules
-        .iter()
-        .enumerate()
-        .map(|(index, value)| parse_review_gate_check(file, key, index, value))
-        .collect()
-}
-
-fn parse_review_gate_check(
-    file: &str,
-    key: &str,
-    index: usize,
-    value: &toml::Value,
-) -> Result<ReviewGateCheckConfig, RepositoryError> {
-    let Some(table) = value.as_table() else {
-        return Err(RepositoryError::InvalidConfig {
-            file: file.to_owned(),
-            message: format!("`{key}[{index}]` must be a table"),
-        });
-    };
-
-    for name in table.keys() {
-        if !matches!(name.as_str(), "name") {
-            return Err(RepositoryError::UnsupportedConfigKey {
-                file: file.to_owned(),
-                key: format!("{key}[{index}].{name}"),
-            });
-        }
-    }
-
-    let name = required_non_empty_string(file, table, &format!("{key}[{index}].name"))?;
-    Glob::new(&name).map_err(|source| RepositoryError::InvalidConfig {
-        file: file.to_owned(),
-        message: format!("`{key}[{index}].name` must be a valid check-name glob: {source}"),
-    })?;
-
-    Ok(ReviewGateCheckConfig { name })
+    parse_named_glob_rules(file, key, value, "check-name glob").map(|rules| {
+        rules
+            .into_iter()
+            .map(|name| ReviewGateCheckConfig { name })
+            .collect()
+    })
 }
 
 fn parse_title_rewrites(

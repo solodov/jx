@@ -785,8 +785,8 @@ fn stack_status_moves_configured_review_gate_failures_to_review_column() {
 [[repo.rules]]
 repo = "example-owner/example-repo"
 
-[[repo.rules.stack_status.review_gate_checks]]
-name = "approval gate"
+[repo.rules.stack_status]
+review_gate_checks = ["approval gate"]
 
 [[repo.rules.stack_status.ignored_checks]]
 name = "^ci/noisy-advisory$"
@@ -868,6 +868,80 @@ name = "ignored-bot"
     )));
     assert!(!result.stdout.contains("generated-noise"));
     assert!(!result.stdout.contains("ignored-bot"));
+}
+
+#[test]
+fn stack_status_counts_passing_review_gate_checks_as_approved() {
+    // Verifies: repo-defined gate checks can make the review column green without encoding repo-specific names in code.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[repo.rules.stack_status]
+review_gate_checks = ["approval gate", "committer gate"]
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                121,
+                "topic/review-gate-approved",
+                "main",
+                "Review gate approved",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        121,
+        "Review gate approved",
+        "topic/review-gate-approved",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::NotReviewed,
+        ReviewerSelection::default(),
+    );
+    status.checks = vec![
+        PullRequestCheck {
+            name: "approval gate".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+        PullRequestCheck {
+            name: "committer gate".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+    ];
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/review-gate-approved".to_owned()],
+        pull_request_statuses: BTreeMap::from([(121, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ✓    —     ◯ Review gate approved",
+        stack_status_pull_request_cell(121)
+    )));
 }
 
 #[test]

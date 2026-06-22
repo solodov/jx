@@ -37,35 +37,25 @@ pub fn apply_pull_request_status_policy(
         if had_checks {
             status.check_status = aggregate_check_status(&[]);
         }
+        if !config.review_gate_checks.is_empty() {
+            status.review_status =
+                review_status_with_review_gate(status.review_status, &[], config);
+        }
         return status;
     }
 
     let checks = latest_checks_by_name(&status.checks);
-    status.check_status = aggregate_check_status(&checks);
-    status.checks = checks.clone();
-
-    if config.review_gate_checks.is_empty() {
-        return status;
-    }
-
-    let mut found_failing_review_gate = false;
     let remaining_checks = checks
         .iter()
-        .filter(|check| {
-            let is_review_gate_failure = check.status == PullRequestCheckStatus::Failing
-                && config
-                    .review_gate_checks
-                    .iter()
-                    .any(|rule| rule.matches(&check.name));
-            found_failing_review_gate |= is_review_gate_failure;
-            !is_review_gate_failure
-        })
+        .filter(|check| !config.matches_review_gate_check(&check.name))
         .cloned()
         .collect::<Vec<_>>();
+    status.check_status = aggregate_check_status(&remaining_checks);
+    status.checks = remaining_checks;
 
-    if found_failing_review_gate {
-        status.check_status = aggregate_check_status(&remaining_checks);
-        status.review_status = review_status_with_review_gate(status.review_status);
+    if !config.review_gate_checks.is_empty() {
+        status.review_status =
+            review_status_with_review_gate(status.review_status, &checks, config);
     }
     status
 }
@@ -164,11 +154,29 @@ fn aggregate_check_status(checks: &[PullRequestCheck]) -> PullRequestCheckStatus
     PullRequestCheckStatus::Passing
 }
 
-fn review_status_with_review_gate(status: PullRequestReviewStatus) -> PullRequestReviewStatus {
+fn review_status_with_review_gate(
+    status: PullRequestReviewStatus,
+    checks: &[PullRequestCheck],
+    config: &RepoStackStatusConfig,
+) -> PullRequestReviewStatus {
     match status {
         PullRequestReviewStatus::ChangesRequested => PullRequestReviewStatus::ChangesRequested,
+        _ if review_gate_checks_approve(checks, config) => PullRequestReviewStatus::Approved,
         _ => PullRequestReviewStatus::ReviewRequested,
     }
+}
+
+fn review_gate_checks_approve(checks: &[PullRequestCheck], config: &RepoStackStatusConfig) -> bool {
+    config.review_gate_checks.iter().all(|rule| {
+        let mut found_match = false;
+        for check in checks.iter().filter(|check| rule.matches(&check.name)) {
+            found_match = true;
+            if check.status != PullRequestCheckStatus::Passing {
+                return false;
+            }
+        }
+        found_match
+    })
 }
 
 /// Renderer-agnostic view of the repository's pull-request stack state.

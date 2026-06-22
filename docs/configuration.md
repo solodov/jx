@@ -146,13 +146,15 @@ the created jj workspace, and shell integration does not enter it.
 Stack status and review views can classify repository-specific approval gate
 checks separately from test health, highlight stale review wait time, omit noisy
 checks, labels, or reviewer identities, hide pre-merge-only labels after merge,
-and rewrite title prefixes before display ellipsizing. A failed matching
-review-gate check is removed from the `Chk` aggregate and reported as waiting
-review instead, while ignored checks are removed without affecting check or
-review state. Remaining checks still decide whether `Chk` is passing, pending, or
+and rewrite title prefixes before display ellipsizing. Matching review-gate
+checks are removed from the `Chk` aggregate and drive the review state instead:
+all configured gate globs must have passing matching checks for the PR to render
+approved, while missing, pending, unknown, or failing gate checks render as
+waiting review. Ignored checks are removed without affecting check or review
+state. Remaining checks still decide whether `Chk` is passing, pending, or
 failing. Review-wait thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
-stay green. Check ignore entries are Rust regexes; label and reviewer ignore
+stay green. Check ignore entries are Rust regexes; review-gate, label, and reviewer
 entries are globs. `ignored_labels_when_merged` uses the same glob syntax as
 `ignored_labels`, but only applies after a PR has merged. Title rewrites use Rust
 regex capture replacements:
@@ -166,14 +168,12 @@ ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
 ignored_labels = ["generated-*"]
 ignored_labels_when_merged = ["auto-merge", "run-ci"]
 ignored_reviewers = ["automation-bot"]
+review_gate_checks = ["approval gate"]
 review_wait_threshold = "4h"
 
 [[repo.rules.stack_status.title_rewrites]]
 pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
 replace = "$1: $2"
-
-[[repo.rules.stack_status.review_gate_checks]]
-name = "approval gate"
 ```
 
 Event handlers run configured PR automation while `jx stack publish` prepares,

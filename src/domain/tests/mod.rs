@@ -560,6 +560,82 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
 }
 
 #[test]
+fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
+    // Verifies: repo-defined gate checks, rather than stale GitHub review decisions, decide approval when configured.
+    let config = crate::repository::RepoStackStatusConfig {
+        review_gate_checks: vec![
+            crate::repository::ReviewGateCheckConfig {
+                name: "approval gate".to_owned(),
+            },
+            crate::repository::ReviewGateCheckConfig {
+                name: "committer gate".to_owned(),
+            },
+        ],
+        ..Default::default()
+    };
+    let mut gate_approved = pull_request_status(32, "Gate approved", false);
+    gate_approved.review_status = crate::github::PullRequestReviewStatus::NotReviewed;
+    gate_approved.checks = vec![
+        crate::github::PullRequestCheck {
+            name: "approval gate".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+        crate::github::PullRequestCheck {
+            name: "committer gate".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+        crate::github::PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+    ];
+    let mut stale_github_approval = pull_request_status(33, "Stale approval", false);
+    stale_github_approval.review_status = crate::github::PullRequestReviewStatus::Approved;
+    stale_github_approval.checks = vec![
+        crate::github::PullRequestCheck {
+            name: "approval gate".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+        crate::github::PullRequestCheck {
+            name: "committer gate".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Failing,
+        },
+        crate::github::PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+    ];
+
+    let gate_approved = apply_pull_request_status_policy(gate_approved, &config);
+    let stale_github_approval = apply_pull_request_status_policy(stale_github_approval, &config);
+
+    assert_eq!(
+        gate_approved.review_status,
+        crate::github::PullRequestReviewStatus::Approved
+    );
+    assert_eq!(
+        gate_approved.check_status,
+        crate::github::PullRequestCheckStatus::Passing
+    );
+    assert_eq!(
+        gate_approved
+            .checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ci/build"]
+    );
+    assert_eq!(
+        stale_github_approval.review_status,
+        crate::github::PullRequestReviewStatus::ReviewRequested
+    );
+    assert_eq!(
+        stale_github_approval.check_status,
+        crate::github::PullRequestCheckStatus::Passing
+    );
+}
+
+#[test]
 fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
     // Verifies: labels that only matter before merge stay visible on open PRs but disappear from merged rows.
     let mut open_status = pull_request_status(32, "Open labels", false);

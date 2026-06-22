@@ -681,14 +681,12 @@ ignored_checks = ["^global-noise-check$"]
 ignored_labels = ["global-noise"]
 ignored_labels_when_merged = ["global-merge-noise"]
 ignored_reviewers = ["global-bot"]
+review_gate_checks = ["global approval"]
 review_wait_threshold = "8h"
 
 [[repo.stack_status.title_rewrites]]
 pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
 replace = "$1: $2"
-
-[[repo.stack_status.review_gate_checks]]
-name = "global approval"
 
 [[repo.rules]]
 repo = "example-owner/*"
@@ -698,14 +696,12 @@ ignored_checks = ["^repo-noise-check.*"]
 ignored_labels = ["repo-noise*"]
 ignored_labels_when_merged = ["repo-merge-noise*"]
 ignored_reviewers = ["repo-bot*"]
+review_gate_checks = ["repo approval*"]
 review_wait_threshold = "4h"
 
 [[repo.rules.stack_status.title_rewrites]]
 pattern = "^Draft: (.+)$"
 replace = "$1"
-
-[[repo.rules.stack_status.review_gate_checks]]
-name = "repo approval*"
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), []);

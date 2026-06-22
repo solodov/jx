@@ -268,6 +268,13 @@ impl RepoStackStatusConfig {
         self.ignored_checks.iter().any(|rule| rule.matches(check))
     }
 
+    /// Returns whether a GitHub check contributes to the repository-specific review gate.
+    pub fn matches_review_gate_check(&self, check: &str) -> bool {
+        self.review_gate_checks
+            .iter()
+            .any(|rule| rule.matches(check))
+    }
+
     /// Returns whether a pull-request label should be omitted from stack/review status views.
     pub fn ignores_label(&self, label: &str) -> bool {
         self.ignored_labels.iter().any(|rule| rule.matches(label))
@@ -359,7 +366,7 @@ impl IgnoredReviewerConfig {
     }
 }
 
-/// Check-name glob that reports approval requirements instead of test failures.
+/// Check-name glob whose matching status contexts encode repository approval policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewGateCheckConfig {
     pub name: String,
