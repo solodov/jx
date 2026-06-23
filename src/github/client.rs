@@ -2005,8 +2005,7 @@ fn map_review_status(decision: Option<&str>, has_review_requests: bool) -> PullR
     match decision {
         Some("APPROVED") => PullRequestReviewStatus::Approved,
         Some("CHANGES_REQUESTED") => PullRequestReviewStatus::ChangesRequested,
-        Some("REVIEW_REQUIRED") if has_review_requests => PullRequestReviewStatus::ReviewRequested,
-        Some("REVIEW_REQUIRED") => PullRequestReviewStatus::Unknown,
+        Some("REVIEW_REQUIRED") => PullRequestReviewStatus::ReviewRequired,
         Some(_) => PullRequestReviewStatus::Unknown,
         None if has_review_requests => PullRequestReviewStatus::ReviewRequested,
         None => PullRequestReviewStatus::NotReviewed,

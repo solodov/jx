@@ -161,6 +161,7 @@ fn review_status_with_review_gate(
 ) -> PullRequestReviewStatus {
     match status {
         PullRequestReviewStatus::ChangesRequested => PullRequestReviewStatus::ChangesRequested,
+        PullRequestReviewStatus::ReviewRequired => PullRequestReviewStatus::ReviewRequired,
         _ if review_gate_checks_approve(checks, config) => PullRequestReviewStatus::Approved,
         _ => PullRequestReviewStatus::ReviewRequested,
     }

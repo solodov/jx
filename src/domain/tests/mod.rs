@@ -561,7 +561,8 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
 
 #[test]
 fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
-    // Verifies: repo-defined gate checks, rather than stale GitHub review decisions, decide approval when configured.
+    // Verifies: repo-defined gate checks decide approval unless GitHub still
+    // requires protected review.
     let config = crate::repository::RepoStackStatusConfig {
         review_gate_checks: vec![
             crate::repository::ReviewGateCheckConfig {
@@ -589,6 +590,9 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
             status: crate::github::PullRequestCheckStatus::Passing,
         },
     ];
+    let mut github_required_review = pull_request_status(34, "Requires review", false);
+    github_required_review.review_status = crate::github::PullRequestReviewStatus::ReviewRequired;
+    github_required_review.checks = gate_approved.checks.clone();
     let mut stale_github_approval = pull_request_status(33, "Stale approval", false);
     stale_github_approval.review_status = crate::github::PullRequestReviewStatus::Approved;
     stale_github_approval.checks = vec![
@@ -607,6 +611,7 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
     ];
 
     let gate_approved = apply_pull_request_status_policy(gate_approved, &config);
+    let github_required_review = apply_pull_request_status_policy(github_required_review, &config);
     let stale_github_approval = apply_pull_request_status_policy(stale_github_approval, &config);
 
     assert_eq!(
@@ -624,6 +629,10 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>(),
         ["ci/build"]
+    );
+    assert_eq!(
+        github_required_review.review_status,
+        crate::github::PullRequestReviewStatus::ReviewRequired
     );
     assert_eq!(
         stale_github_approval.review_status,

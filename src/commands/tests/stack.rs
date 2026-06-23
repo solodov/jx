@@ -945,6 +945,81 @@ review_gate_checks = ["approval gate", "committer gate"]
 }
 
 #[test]
+fn stack_status_preserves_github_review_required_with_passing_review_gate_checks() {
+    // Verifies: protected human approval is not hidden by passing
+    // repo-specific gates.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[repo.rules.stack_status]
+review_gate_checks = ["approval gate", "committer gate"]
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                122,
+                "topic/review-required",
+                "main",
+                "Review required",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        122,
+        "Review required",
+        "topic/review-required",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequired,
+        ReviewerSelection::new(["human-reviewer"], Vec::<String>::new()),
+    );
+    status.checks = vec![
+        PullRequestCheck {
+            name: "approval gate".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+        PullRequestCheck {
+            name: "committer gate".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+    ];
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/review-required".to_owned()],
+        pull_request_statuses: BTreeMap::from([(122, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ?    —     ◯ Review required human-reviewer",
+        stack_status_pull_request_cell(122)
+    )));
+}
+
+#[test]
 fn stack_status_uses_latest_contexts_when_rollup_has_stale_failure() {
     // Verifies: stale duplicate GitHub contexts do not keep Chk failing after a newer success.
     let workspace = TestWorkspace::new();

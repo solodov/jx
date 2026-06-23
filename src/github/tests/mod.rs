@@ -393,7 +393,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         }]
     );
 
-    let waiting = map_graphql_pull_request_status(GraphQlPullRequestStatus {
+    let review_required = map_graphql_pull_request_status(GraphQlPullRequestStatus {
         number: 43,
         title: "Waiting change".to_owned(),
         url: "https://github.com/example-owner/example-repo/pull/43".to_owned(),
@@ -427,11 +427,11 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     });
 
     assert_eq!(
-        waiting.review_status,
-        PullRequestReviewStatus::ReviewRequested
+        review_required.review_status,
+        PullRequestReviewStatus::ReviewRequired
     );
     assert_eq!(
-        waiting.requested_reviewers.users,
+        review_required.requested_reviewers.users,
         ["reviewer-two".to_owned()]
     );
 }

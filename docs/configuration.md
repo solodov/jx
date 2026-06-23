@@ -149,10 +149,11 @@ checks, labels, or reviewer identities, hide pre-merge-only labels after merge,
 and rewrite title prefixes before display ellipsizing. Matching review-gate
 checks are removed from the `Chk` aggregate and drive the review state instead:
 all configured gate globs must have passing matching checks for the PR to render
-approved, while missing, pending, unknown, or failing gate checks render as
-waiting review. Ignored checks are removed without affecting check or review
-state. Remaining checks still decide whether `Chk` is passing, pending, or
-failing. Review-wait thresholds accept `m`, `h`, or `d` suffixes; fresh waits
+approved unless GitHub still reports a protected review requirement, while
+missing, pending, unknown, or failing gate checks render as waiting review.
+Ignored checks are removed without affecting check or review state. Remaining
+checks still decide whether `Chk` is passing, pending, or failing. Review-wait
+thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
 stay green. Check ignore entries are Rust regexes; review-gate, label, and reviewer
 entries are globs. `ignored_labels_when_merged` uses the same glob syntax as
