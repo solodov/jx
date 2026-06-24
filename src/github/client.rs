@@ -777,24 +777,18 @@ impl GitHubClient for OctocrabGitHubClient {
         for chunk in logins.chunks(USER_PROFILE_QUERY_CHUNK_SIZE) {
             let query = user_profiles_query(chunk);
             let variables = user_profiles_variables(chunk);
-            let data: BTreeMap<String, Option<GraphQlUserProfile>> = self
-                .graphql(&query, variables, "load user profiles")
-                .await?;
-            profiles.extend(chunk.iter().enumerate().map(|(index, requested_login)| {
-                let alias = user_profile_alias(index);
-                data.get(&alias)
-                    .and_then(|profile| profile.as_ref())
-                    .map_or_else(
-                        || GitHubUserProfile {
-                            login: requested_login.clone(),
-                            name: None,
-                        },
-                        |profile| GitHubUserProfile {
-                            login: profile.login.clone(),
-                            name: normalize_user_profile_name(profile.name.as_deref()),
-                        },
-                    )
-            }));
+            let response: GraphQlResponse<BTreeMap<String, Option<GraphQlUserProfile>>> = self
+                .crab
+                .post(
+                    "/graphql",
+                    Some(&GraphQlRequest {
+                        query: &query,
+                        variables,
+                    }),
+                )
+                .await
+                .map_err(|source| api_error("load user profiles", source))?;
+            profiles.extend(user_profiles_from_graphql_response(chunk, response)?);
         }
         Ok(profiles)
     }
@@ -1309,6 +1303,59 @@ fn user_profiles_variables(logins: &[String]) -> BTreeMap<String, &str> {
         .collect()
 }
 
+pub(super) fn user_profiles_from_graphql_response(
+    logins: &[String],
+    response: GraphQlResponse<BTreeMap<String, Option<GraphQlUserProfile>>>,
+) -> Result<Vec<GitHubUserProfile>, GitHubError> {
+    let data = user_profiles_data_from_graphql_response(response)?;
+    Ok(logins
+        .iter()
+        .enumerate()
+        .map(|(index, requested_login)| {
+            let alias = user_profile_alias(index);
+            data.get(&alias)
+                .and_then(|profile| profile.as_ref())
+                .map_or_else(
+                    || GitHubUserProfile {
+                        login: requested_login.clone(),
+                        name: None,
+                    },
+                    |profile| GitHubUserProfile {
+                        login: profile.login.clone(),
+                        name: normalize_user_profile_name(profile.name.as_deref()),
+                    },
+                )
+        })
+        .collect())
+}
+
+fn user_profiles_data_from_graphql_response(
+    response: GraphQlResponse<BTreeMap<String, Option<GraphQlUserProfile>>>,
+) -> Result<BTreeMap<String, Option<GraphQlUserProfile>>, GitHubError> {
+    let GraphQlResponse { data, errors } = response;
+    let fatal_errors = errors
+        .into_iter()
+        .filter(|error| !is_missing_user_profile_error(error))
+        .map(|error| error.message)
+        .collect::<Vec<_>>();
+    if !fatal_errors.is_empty() {
+        return Err(GitHubError::GraphQl {
+            operation: "load user profiles",
+            message: fatal_errors.join("; "),
+        });
+    }
+    data.ok_or_else(|| GitHubError::GraphQl {
+        operation: "load user profiles",
+        message: "missing GraphQL data".to_owned(),
+    })
+}
+
+fn is_missing_user_profile_error(error: &GraphQlError) -> bool {
+    error
+        .message
+        .starts_with("Could not resolve to a User with the login of ")
+}
+
 fn user_profile_alias(index: usize) -> String {
     format!("user{index}")
 }
@@ -1346,10 +1393,10 @@ struct GraphQlRequest<'a, V> {
 }
 
 #[derive(Debug, Deserialize)]
-struct GraphQlResponse<T> {
-    data: Option<T>,
+pub(super) struct GraphQlResponse<T> {
+    pub(super) data: Option<T>,
     #[serde(default)]
-    errors: Vec<GraphQlError>,
+    pub(super) errors: Vec<GraphQlError>,
 }
 
 impl<T> GraphQlResponse<T> {
@@ -1373,8 +1420,8 @@ impl<T> GraphQlResponse<T> {
 }
 
 #[derive(Debug, Deserialize)]
-struct GraphQlError {
-    message: String,
+pub(super) struct GraphQlError {
+    pub(super) message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1656,9 +1703,9 @@ pub(super) struct GraphQlSuggestedReviewerUser {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct GraphQlUserProfile {
-    login: String,
-    name: Option<String>,
+pub(super) struct GraphQlUserProfile {
+    pub(super) login: String,
+    pub(super) name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

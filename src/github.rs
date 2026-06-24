@@ -25,15 +25,15 @@ pub use client::*;
 #[cfg(test)]
 use client::{
     map_comparison_status, map_graphql_pull_request_status, pull_request_status_query,
-    suggested_reviewers_from_graphql, user_profiles_query, CompareCommitsResponse,
-    CompareCommitsStatus, GraphQlLabelNode, GraphQlLabels, GraphQlPullRequestStatus,
-    GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
-    GraphQlPullRequestStatusCommits, GraphQlRequestedReviewer, GraphQlReviewAuthor,
-    GraphQlReviewNode, GraphQlReviewRequestNode, GraphQlReviewRequests,
+    suggested_reviewers_from_graphql, user_profiles_from_graphql_response, user_profiles_query,
+    CompareCommitsResponse, CompareCommitsStatus, GraphQlError, GraphQlLabelNode, GraphQlLabels,
+    GraphQlPullRequestStatus, GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
+    GraphQlPullRequestStatusCommits, GraphQlRequestedReviewer, GraphQlResponse,
+    GraphQlReviewAuthor, GraphQlReviewNode, GraphQlReviewRequestNode, GraphQlReviewRequests,
     GraphQlReviewThreadCommentNode, GraphQlReviewThreadComments, GraphQlReviewThreadNode,
     GraphQlReviewThreads, GraphQlReviews, GraphQlStatusCheckContextNode,
     GraphQlStatusCheckContexts, GraphQlStatusCheckRollup, GraphQlSuggestedReviewer,
-    GraphQlSuggestedReviewerUser, PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY,
+    GraphQlSuggestedReviewerUser, GraphQlUserProfile, PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY,
     REVIEW_REQUEST_SEARCH_QUERIES,
 };
 pub use error::*;

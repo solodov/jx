@@ -506,6 +506,66 @@ fn user_profiles_query_batches_logins_with_aliases() {
 }
 
 #[test]
+fn user_profiles_mapper_treats_missing_logins_as_cacheable_misses() {
+    // Verifies: one deleted/non-user login does not make display-name enrichment fail repeatedly.
+    let logins = vec!["faire-review".to_owned(), "human-reviewer".to_owned()];
+    let response = GraphQlResponse {
+        data: Some(BTreeMap::from([
+            ("user0".to_owned(), None),
+            (
+                "user1".to_owned(),
+                Some(GraphQlUserProfile {
+                    login: "human-reviewer".to_owned(),
+                    name: Some(" Human Reviewer ".to_owned()),
+                }),
+            ),
+        ])),
+        errors: vec![GraphQlError {
+            message: "Could not resolve to a User with the login of 'faire-review'.".to_owned(),
+        }],
+    };
+
+    let profiles =
+        user_profiles_from_graphql_response(&logins, response).expect("missing user is tolerated");
+
+    assert_eq!(
+        profiles,
+        vec![
+            GitHubUserProfile {
+                login: "faire-review".to_owned(),
+                name: None,
+            },
+            GitHubUserProfile {
+                login: "human-reviewer".to_owned(),
+                name: Some("Human Reviewer".to_owned()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn user_profiles_mapper_keeps_unexpected_graphql_errors_fatal() {
+    let error = user_profiles_from_graphql_response(
+        &["human-reviewer".to_owned()],
+        GraphQlResponse {
+            data: Some(BTreeMap::new()),
+            errors: vec![GraphQlError {
+                message: "rate limit exceeded".to_owned(),
+            }],
+        },
+    )
+    .expect_err("unexpected GraphQL errors stay fatal");
+
+    assert!(matches!(
+        error,
+        GitHubError::GraphQl {
+            operation: "load user profiles",
+            message,
+        } if message == "rate limit exceeded"
+    ));
+}
+
+#[test]
 fn pull_request_suggested_reviewers_query_uses_direct_list_field() {
     // Verifies: GitHub suggested reviewers are loaded from the direct GraphQL list shape.
     let query = PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY;
