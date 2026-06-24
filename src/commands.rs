@@ -142,7 +142,7 @@ pub enum CommandError {
     #[error(transparent)]
     Jj(#[from] JjError),
     #[error(transparent)]
-    Workflow(#[from] WorkflowError),
+    Workflow(Box<WorkflowError>),
     #[error(transparent)]
     PullRequestSelection(#[from] PullRequestSelectionError),
     #[error(transparent)]
@@ -171,6 +171,12 @@ pub enum CommandError {
         destination: PathBuf,
         message: String,
     },
+}
+
+impl From<WorkflowError> for CommandError {
+    fn from(error: WorkflowError) -> Self {
+        Self::Workflow(Box::new(error))
+    }
 }
 
 impl From<WorkAddSetupError> for CommandError {

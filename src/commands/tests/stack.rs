@@ -3896,8 +3896,8 @@ fn stack_interactive_reports_missing_stack_state() {
 
     assert!(matches!(
         error,
-        CommandError::Workflow(WorkflowError::MissingLocalBookmarkPullRequests { repository })
-            if repository == "example-owner/example-repo"
+        CommandError::Workflow(error)
+            if matches!(*error, WorkflowError::MissingLocalBookmarkPullRequests { ref repository } if repository == "example-owner/example-repo")
     ));
     assert!(services.open_pull_request_selectors.borrow().is_empty());
     assert_eq!(services.pull_request_bookmark_calls.get(), 0);

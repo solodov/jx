@@ -6,6 +6,7 @@ use crate::github::{
 };
 use chrono::Utc;
 use futures::{stream, StreamExt};
+use std::future::Future;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::{
     collections::BTreeSet,
@@ -834,7 +835,11 @@ impl<C> TracedGitHubClient<C> {
     {
         for attempt in 1..=PULL_REQUEST_STATUS_MAX_ATTEMPTS {
             let started = Instant::now();
-            let result = self.inner.pull_request_statuses(repository, chunk).await;
+            let result = github_request(
+                "load pull request statuses",
+                self.inner.pull_request_statuses(repository, chunk),
+            )
+            .await;
             let duration_us = duration_us(started.elapsed());
             let base_attrs = || {
                 pull_request_status_chunk_attrs(
@@ -922,9 +927,36 @@ fn unique_pull_request_numbers(numbers: &[u64]) -> Vec<u64> {
         .collect()
 }
 
+const GITHUB_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE: usize = 10;
 const PULL_REQUEST_STATUS_MAX_ATTEMPTS: usize = 2;
 const PULL_REQUEST_STATUS_RETRY_DELAY_MS: u64 = 250;
+
+async fn github_request<T, F>(operation: &'static str, future: F) -> Result<T, GitHubError>
+where
+    T: Send,
+    F: Future<Output = Result<T, GitHubError>> + Send,
+{
+    github_request_with_timeout(operation, GITHUB_API_REQUEST_TIMEOUT, future).await
+}
+
+async fn github_request_with_timeout<T, F>(
+    operation: &'static str,
+    timeout: Duration,
+    future: F,
+) -> Result<T, GitHubError>
+where
+    T: Send,
+    F: Future<Output = Result<T, GitHubError>> + Send,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(result) => result,
+        Err(_) => Err(GitHubError::Timeout {
+            operation,
+            timeout_ms: timeout.as_millis(),
+        }),
+    }
+}
 
 fn pull_request_status_chunk_attrs(
     numbers: &[u64],
@@ -951,6 +983,7 @@ fn pull_request_status_chunk_attrs(
 
 fn transient_github_error_kind(error: &GitHubError) -> Option<&'static str> {
     match error {
+        GitHubError::Timeout { .. } => Some("timeout"),
         GitHubError::Api { source, .. } => transient_octocrab_error_kind(source),
         GitHubError::ApiResponse { status, .. } if *status == 429 => Some("rate_limit"),
         GitHubError::ApiResponse { status, .. } if (500..=599).contains(status) => Some("server"),
@@ -1002,7 +1035,8 @@ where
             return self.finish(span, Ok(user), [perf_attr("cache_hit", true)]);
         }
 
-        let result = self.inner.authenticated_user().await;
+        let result =
+            github_request("load authenticated user", self.inner.authenticated_user()).await;
         if let Ok(user) = &result {
             self.cache
                 .lock()
@@ -1029,7 +1063,11 @@ where
             return self.finish(span, Ok(access), [perf_attr("cache_hit", true)]);
         }
 
-        let result = self.inner.repository_access(repository).await;
+        let result = github_request(
+            "check repository access",
+            self.inner.repository_access(repository),
+        )
+        .await;
         if let Ok(access) = &result {
             self.cache
                 .lock()
@@ -1045,7 +1083,11 @@ where
         repository: &GitHubRepository,
     ) -> Result<Option<RepositoryFork>, GitHubError> {
         let span = self.start_span("github.repository_fork", Some(repository), Vec::new());
-        let result = self.inner.repository_fork(repository).await;
+        let result = github_request(
+            "load repository fork source",
+            self.inner.repository_fork(repository),
+        )
+        .await;
         let attrs = result
             .as_ref()
             .map(|fork| vec![perf_attr("found", fork.is_some())])
@@ -1063,7 +1105,11 @@ where
             Some(repository),
             [perf_attr("private", private)],
         );
-        let result = self.inner.create_repository(repository, private).await;
+        let result = github_request(
+            "create repository",
+            self.inner.create_repository(repository, private),
+        )
+        .await;
         self.finish(span, result, Vec::new())
     }
 
@@ -1077,7 +1123,11 @@ where
             Some(repository),
             [perf_attr("branch", branch)],
         );
-        let result = self.inner.branch_head_sha(repository, branch).await;
+        let result = github_request(
+            "get branch head",
+            self.inner.branch_head_sha(repository, branch),
+        )
+        .await;
         let attrs = result
             .as_ref()
             .map(|sha| vec![perf_attr("head_sha", sha)])
@@ -1096,7 +1146,11 @@ where
             Some(repository),
             [perf_attr("base", base), perf_attr("head", head)],
         );
-        let result = self.inner.compare_commits(repository, base, head).await;
+        let result = github_request(
+            "compare commits",
+            self.inner.compare_commits(repository, base, head),
+        )
+        .await;
         let attrs = result
             .as_ref()
             .map(compare_commits_result_attrs)
@@ -1136,10 +1190,12 @@ where
             return self.finish(span, result, attrs);
         }
 
-        let result = self
-            .inner
-            .find_authored_open_pull_request_for_head(repository, head, author)
-            .await;
+        let result = github_request(
+            "find authored open pull request",
+            self.inner
+                .find_authored_open_pull_request_for_head(repository, head, author),
+        )
+        .await;
         self.cache_authored_open_pull_request_lookup(repository, head, author, &result);
         let attrs = uncached_pull_request_lookup_attrs(&result);
         self.finish(span, result, attrs)
@@ -1155,10 +1211,11 @@ where
             Some(repository),
             [perf_attr("author", author)],
         );
-        let result = self
-            .inner
-            .authored_open_pull_requests(repository, author)
-            .await;
+        let result = github_request(
+            "search authored open pull requests",
+            self.inner.authored_open_pull_requests(repository, author),
+        )
+        .await;
         let attrs = result
             .as_ref()
             .map(|pull_requests| vec![perf_attr("pull_request_count", pull_requests.len())])
@@ -1193,7 +1250,11 @@ where
             return self.finish(span, result, attrs);
         }
 
-        let result = self.inner.find_open_pull_request(repository, head).await;
+        let result = github_request(
+            "find open pull request",
+            self.inner.find_open_pull_request(repository, head),
+        )
+        .await;
         self.cache_open_pull_request_lookup(repository, head, &result);
         let attrs = uncached_pull_request_lookup_attrs(&result);
         self.finish(span, result, attrs)
@@ -1226,10 +1287,11 @@ where
             return self.finish(span, result, attrs);
         }
 
-        let result = self
-            .inner
-            .find_pull_request_for_head(repository, head)
-            .await;
+        let result = github_request(
+            "find pull request",
+            self.inner.find_pull_request_for_head(repository, head),
+        )
+        .await;
         self.cache_pull_request_for_head_lookup(repository, head, &result);
         let attrs = uncached_pull_request_lookup_attrs(&result);
         self.finish(span, result, attrs)
@@ -1259,10 +1321,11 @@ where
             return self.finish(span, result, attrs);
         }
 
-        let result = self
-            .inner
-            .find_pull_request_by_number(repository, number)
-            .await;
+        let result = github_request(
+            "find pull request by number",
+            self.inner.find_pull_request_by_number(repository, number),
+        )
+        .await;
         self.cache_pull_request_by_number_lookup(repository, number, &result);
         let attrs = uncached_pull_request_lookup_attrs(&result);
         self.finish(span, result, attrs)
@@ -1303,10 +1366,12 @@ where
         };
 
         if !missing_numbers.is_empty() {
-            let loaded_pull_requests = match self
-                .inner
-                .find_pull_requests_by_numbers(repository, &missing_numbers)
-                .await
+            let loaded_pull_requests = match github_request(
+                "load pull requests by number",
+                self.inner
+                    .find_pull_requests_by_numbers(repository, &missing_numbers),
+            )
+            .await
             {
                 Ok(pull_requests) => pull_requests,
                 Err(error) => return self.finish(span, Err(error), Vec::new()),
@@ -1403,7 +1468,7 @@ where
 
     async fn review_requests(&self) -> Result<PullRequestReviewRequests, GitHubError> {
         let span = self.start_span("github.review_requests", None, Vec::new());
-        let result = self.inner.review_requests().await;
+        let result = github_request("search review requests", self.inner.review_requests()).await;
         let attrs = result
             .as_ref()
             .map(|inbox| {
@@ -1432,7 +1497,7 @@ where
             None,
             [perf_attr("login_count", logins.len())],
         );
-        let result = self.inner.user_profiles(logins).await;
+        let result = github_request("load user profiles", self.inner.user_profiles(logins)).await;
         let attrs = result
             .as_ref()
             .map(|profiles| vec![perf_attr("profile_count", profiles.len())])
@@ -1450,10 +1515,12 @@ where
             Some(repository),
             [perf_attr("number", number)],
         );
-        let result = self
-            .inner
-            .pull_request_suggested_reviewers(repository, number)
-            .await;
+        let result = github_request(
+            "load suggested reviewers",
+            self.inner
+                .pull_request_suggested_reviewers(repository, number),
+        )
+        .await;
         let attrs = result
             .as_ref()
             .map(|reviewers| vec![perf_attr("reviewer_count", reviewers.len())])
@@ -1476,7 +1543,11 @@ where
                 perf_attr("draft", request.draft),
             ],
         );
-        let result = self.inner.create_pull_request(repository, request).await;
+        let result = github_request(
+            "create pull request",
+            self.inner.create_pull_request(repository, request),
+        )
+        .await;
         self.cache_mutated_pull_request(repository, &result);
         let attrs = pull_request_record_attrs(&result);
         self.finish(span, result, attrs)
@@ -1498,10 +1569,11 @@ where
                 perf_attr("update_base", request.base.is_some()),
             ],
         );
-        let result = self
-            .inner
-            .update_pull_request(repository, number, request)
-            .await;
+        let result = github_request(
+            "update pull request",
+            self.inner.update_pull_request(repository, number, request),
+        )
+        .await;
         self.cache_mutated_pull_request(repository, &result);
         let attrs = pull_request_record_attrs(&result);
         self.finish(span, result, attrs)
@@ -1517,7 +1589,11 @@ where
             Some(repository),
             [perf_attr("number", number)],
         );
-        let result = self.inner.mark_pull_request_ready(repository, number).await;
+        let result = github_request(
+            "mark pull request ready",
+            self.inner.mark_pull_request_ready(repository, number),
+        )
+        .await;
         self.cache_mutated_pull_request(repository, &result);
         let attrs = pull_request_record_attrs(&result);
         self.finish(span, result, attrs)
@@ -1533,10 +1609,11 @@ where
             Some(repository),
             [perf_attr("number", number)],
         );
-        let result = self
-            .inner
-            .convert_pull_request_to_draft(repository, number)
-            .await;
+        let result = github_request(
+            "convert pull request to draft",
+            self.inner.convert_pull_request_to_draft(repository, number),
+        )
+        .await;
         self.cache_mutated_pull_request(repository, &result);
         let attrs = pull_request_record_attrs(&result);
         self.finish(span, result, attrs)
@@ -1552,7 +1629,11 @@ where
             Some(repository),
             [perf_attr("number", number)],
         );
-        let result = self.inner.pull_request_labels(repository, number).await;
+        let result = github_request(
+            "load pull request labels",
+            self.inner.pull_request_labels(repository, number),
+        )
+        .await;
         let attrs = result
             .as_ref()
             .map(|labels| vec![perf_attr("label_count", labels.len())])
@@ -1574,7 +1655,11 @@ where
                 perf_attr("label_count", labels.len()),
             ],
         );
-        let result = self.inner.add_labels(repository, number, labels).await;
+        let result = github_request(
+            "add pull request labels",
+            self.inner.add_labels(repository, number, labels),
+        )
+        .await;
         self.finish(span, result, Vec::new())
     }
 
@@ -1593,7 +1678,11 @@ where
                 perf_attr("team_count", desired.teams.len()),
             ],
         );
-        let result = self.inner.sync_reviewers(repository, number, desired).await;
+        let result = github_request(
+            "sync pull request reviewers",
+            self.inner.sync_reviewers(repository, number, desired),
+        )
+        .await;
         self.finish(span, result, Vec::new())
     }
 }
@@ -3450,6 +3539,28 @@ mod tests {
     }
 
     #[test]
+    fn github_request_with_timeout_fails_slow_operations() {
+        let runtime = test_github_runtime();
+
+        let result = runtime.block_on(github_request_with_timeout(
+            "test slow operation",
+            Duration::from_millis(1),
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok::<_, GitHubError>(())
+            },
+        ));
+
+        assert!(matches!(
+            result,
+            Err(GitHubError::Timeout {
+                operation: "test slow operation",
+                timeout_ms: 1,
+            })
+        ));
+    }
+
+    #[test]
     fn traced_github_client_caches_facts_and_pull_request_lookups() {
         let inner = CountingGitHub::default();
         let calls = Arc::clone(&inner.calls);
@@ -3465,29 +3576,44 @@ mod tests {
         };
         let head = PullRequestHead::same_repository("example-owner", "topic/root");
 
-        pollster::block_on(client.authenticated_user()).expect("first user loads");
-        pollster::block_on(client.authenticated_user()).expect("second user is cached");
-        pollster::block_on(client.repository_access(&repository)).expect("first access loads");
-        pollster::block_on(client.repository_access(&repository)).expect("second access is cached");
-        pollster::block_on(client.find_open_pull_request(&repository, &head))
+        let runtime = test_github_runtime();
+        runtime
+            .block_on(client.authenticated_user())
+            .expect("first user loads");
+        runtime
+            .block_on(client.authenticated_user())
+            .expect("second user is cached");
+        runtime
+            .block_on(client.repository_access(&repository))
+            .expect("first access loads");
+        runtime
+            .block_on(client.repository_access(&repository))
+            .expect("second access is cached");
+        runtime
+            .block_on(client.find_open_pull_request(&repository, &head))
             .expect("first head lookup loads");
-        pollster::block_on(client.find_open_pull_request(&repository, &head))
+        runtime
+            .block_on(client.find_open_pull_request(&repository, &head))
             .expect("second head lookup is cached");
-        pollster::block_on(client.find_pull_request_by_number(&repository, 7))
+        runtime
+            .block_on(client.find_pull_request_by_number(&repository, 7))
             .expect("number lookup reuses head result");
-        pollster::block_on(client.pull_request_statuses(&repository, &[7]))
+        runtime
+            .block_on(client.pull_request_statuses(&repository, &[7]))
             .expect("status lookup is traced");
-        pollster::block_on(client.update_pull_request(
-            &repository,
-            7,
-            PullRequestUpdate {
-                title: Some("Updated title".to_owned()),
-                body: None,
-                base: None,
-            },
-        ))
-        .expect("mutation refreshes cache");
-        let updated = pollster::block_on(client.find_open_pull_request(&repository, &head))
+        runtime
+            .block_on(client.update_pull_request(
+                &repository,
+                7,
+                PullRequestUpdate {
+                    title: Some("Updated title".to_owned()),
+                    body: None,
+                    base: None,
+                },
+            ))
+            .expect("mutation refreshes cache");
+        let updated = runtime
+            .block_on(client.find_open_pull_request(&repository, &head))
             .expect("post-update lookup is cached")
             .expect("cached PR exists");
 
@@ -3498,6 +3624,13 @@ mod tests {
         assert_eq!(calls.find_pull_request_by_number.load(Ordering::Relaxed), 0);
         assert_eq!(calls.pull_request_statuses.load(Ordering::Relaxed), 1);
         assert_eq!(calls.update_pull_request.load(Ordering::Relaxed), 1);
+    }
+
+    fn test_github_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime builds")
     }
 
     fn test_pull_request(

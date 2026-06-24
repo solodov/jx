@@ -8,7 +8,7 @@ pub enum GitHubError {
     #[error(transparent)]
     TokenRead(#[from] TokenReadError),
     #[error("Could not initialize GitHub client: {source}")]
-    ClientBuild { source: octocrab::Error },
+    ClientBuild { source: Box<octocrab::Error> },
     #[error("GitHub authentication failed while trying to {operation}: {message}")]
     AuthenticationFailed {
         operation: &'static str,
@@ -38,10 +38,15 @@ pub enum GitHubError {
         operation: &'static str,
         message: String,
     },
+    #[error("Timed out after {timeout_ms}ms while trying to {operation} through GitHub")]
+    Timeout {
+        operation: &'static str,
+        timeout_ms: u128,
+    },
     #[error("Could not {operation} through GitHub: {source}")]
     Api {
         operation: &'static str,
-        source: octocrab::Error,
+        source: Box<octocrab::Error>,
     },
 }
 
@@ -66,7 +71,10 @@ pub(super) fn api_error(operation: &'static str, source: octocrab::Error) -> Git
         return GitHubError::AuthenticationFailed { operation, message };
     }
 
-    GitHubError::Api { operation, source }
+    GitHubError::Api {
+        operation,
+        source: Box::new(source),
+    }
 }
 
 pub(super) fn compare_error(base: &str, head: &str, source: octocrab::Error) -> GitHubError {

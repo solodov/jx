@@ -666,7 +666,7 @@ fn sync_stack_skips_completed_tree_without_pruning_cached_progress() {
 
     assert!(matches!(
         error,
-        CommandError::Workflow(WorkflowError::MissingPullRequest)
+        CommandError::Workflow(error) if matches!(*error, WorkflowError::MissingPullRequest)
     ));
     assert!(services.push_syncable_revision_requests.borrow().is_empty());
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");

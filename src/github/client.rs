@@ -396,7 +396,9 @@ impl OctocrabGitHubClient {
         let crab = Octocrab::builder()
             .personal_token(token.into())
             .build()
-            .map_err(|source| GitHubError::ClientBuild { source })?;
+            .map_err(|source| GitHubError::ClientBuild {
+                source: Box::new(source),
+            })?;
 
         Ok(Self::new(crab))
     }

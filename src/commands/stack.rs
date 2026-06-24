@@ -1330,9 +1330,7 @@ fn non_empty_stack_publish_facts(
         .filter(|index| stack_publish_node_has_changes(&facts.nodes[*index]))
         .collect();
     if facts.publish_indexes.is_empty() {
-        return Err(CommandError::Workflow(
-            WorkflowError::EmptyPullRequestChange,
-        ));
+        return Err(WorkflowError::EmptyPullRequestChange.into());
     }
     facts.metrics.publish_count = facts.publish_indexes.len();
     Ok(facts)

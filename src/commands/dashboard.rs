@@ -8,11 +8,12 @@ use std::{
     process::Command as ProcessCommand,
     sync::{mpsc, Arc},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
 const DASHBOARD_IDLE_POLL: Duration = Duration::from_millis(500);
+const DASHBOARD_REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub(super) type DashboardFrameLoader = Arc<dyn Fn() -> Result<String, String> + Send + Sync>;
@@ -31,6 +32,7 @@ pub(super) fn run_interactive_dashboard(
 
     loop {
         let receiver = spawn_dashboard_load(Arc::clone(&loader));
+        let refresh_started = Instant::now();
         let mut spinner_index = 0usize;
         render_dashboard_frame(
             title,
@@ -78,6 +80,21 @@ pub(super) fn run_interactive_dashboard(
                     break;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if dashboard_refresh_timed_out(refresh_started.elapsed()) {
+                        last_error = Some(dashboard_refresh_timeout_error());
+                        next_refresh_at =
+                            next_dashboard_refresh_time(Local::now(), refresh_seconds);
+                        render_dashboard_frame(
+                            title,
+                            last_frame.as_deref(),
+                            last_refreshed,
+                            false,
+                            last_error.as_deref(),
+                            spinner_index,
+                            next_refresh_at,
+                        )?;
+                        break;
+                    }
                     spinner_index = spinner_index.wrapping_add(1);
                     render_dashboard_frame(
                         title,
@@ -129,6 +146,17 @@ fn next_dashboard_refresh_time(
 ) -> Option<DateTime<Local>> {
     let seconds = i64::try_from(refresh_seconds).ok()?;
     refreshed_at.checked_add_signed(chrono::Duration::seconds(seconds))
+}
+
+fn dashboard_refresh_timed_out(elapsed: Duration) -> bool {
+    elapsed >= DASHBOARD_REFRESH_TIMEOUT
+}
+
+fn dashboard_refresh_timeout_error() -> String {
+    format!(
+        "dashboard refresh timed out after {}s; keeping the previous frame",
+        DASHBOARD_REFRESH_TIMEOUT.as_secs()
+    )
 }
 
 /// Returns the next short sleep before a dashboard refresh is due.
@@ -296,6 +324,15 @@ mod tests {
             dashboard_wait_duration(now, Some(now - chrono::Duration::seconds(30))),
             None
         );
+    }
+
+    #[test]
+    fn dashboard_refresh_timeout_keeps_slow_workers_from_spinning_forever() {
+        assert!(!dashboard_refresh_timed_out(
+            DASHBOARD_REFRESH_TIMEOUT - Duration::from_millis(1)
+        ));
+        assert!(dashboard_refresh_timed_out(DASHBOARD_REFRESH_TIMEOUT));
+        assert!(dashboard_refresh_timeout_error().contains("keeping the previous frame"));
     }
 
     #[test]
