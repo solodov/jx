@@ -162,14 +162,23 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         closed_at: None,
         review_decision: Some("CHANGES_REQUESTED".to_owned()),
         review_requests: GraphQlReviewRequests {
-            total_count: 1,
-            nodes: vec![GraphQlReviewRequestNode {
-                requested_reviewer: Some(GraphQlRequestedReviewer {
-                    type_name: "User".to_owned(),
-                    login: Some("reviewer-one".to_owned()),
-                    slug: None,
-                }),
-            }],
+            total_count: 2,
+            nodes: vec![
+                GraphQlReviewRequestNode {
+                    requested_reviewer: Some(GraphQlRequestedReviewer {
+                        type_name: "User".to_owned(),
+                        login: Some("reviewer-one".to_owned()),
+                        slug: None,
+                    }),
+                },
+                GraphQlReviewRequestNode {
+                    requested_reviewer: Some(GraphQlRequestedReviewer {
+                        type_name: "Team".to_owned(),
+                        login: None,
+                        slug: Some("platform".to_owned()),
+                    }),
+                },
+            ],
         },
         suggested_reviewers: vec![GraphQlSuggestedReviewer {
             reviewer: Some(GraphQlSuggestedReviewerUser {
@@ -196,6 +205,13 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
                         login: "reviewer-commented-approved".to_owned(),
+                    }),
+                },
+                GraphQlReviewNode {
+                    state: "DISMISSED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "reviewer-dismissed".to_owned(),
                     }),
                 },
             ],
@@ -303,6 +319,14 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                         slug: None,
                     }),
                 },
+                GraphQlTimelineItemNode::ReviewRequested {
+                    created_at: "2026-01-01T02:31:00Z".to_owned(),
+                    requested_reviewer: Some(GraphQlRequestedReviewer {
+                        type_name: "Team".to_owned(),
+                        login: None,
+                        slug: Some("platform".to_owned()),
+                    }),
+                },
             ],
         },
         commits: GraphQlPullRequestStatusCommits {
@@ -360,6 +384,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         status.requested_reviewers.users,
         ["reviewer-one".to_owned()]
     );
+    assert_eq!(status.requested_reviewers.teams, ["platform".to_owned()]);
     assert_eq!(
         status.suggested_reviewers,
         ["reviewer-suggested".to_owned()]
@@ -373,13 +398,21 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         status.addressed_reviewers,
         ["reviewer-addressed".to_owned()]
     );
+    assert_eq!(
+        status.dismissed_reviewers,
+        ["reviewer-dismissed".to_owned()]
+    );
     assert!(status.review_activity.iter().any(|activity| {
         activity.reviewer == "reviewer-approved" && activity.reviewed_at == "2026-01-02T03:04:05Z"
     }));
-    assert_eq!(status.timeline_events.len(), 3);
+    assert_eq!(status.timeline_events.len(), 4);
     assert!(status.timeline_events.iter().any(|event| {
         event.kind == PullRequestTimelineEventKind::ReadyForReview
             && event.created_at == "2026-01-01T02:00:00Z"
+    }));
+    assert!(status.timeline_events.iter().any(|event| {
+        event.kind == PullRequestTimelineEventKind::ReviewRequested
+            && event.reviewer.as_deref() == Some("team/platform")
     }));
     assert_eq!(
         status.latest_commit_oid.as_deref(),

@@ -220,6 +220,61 @@ fn stack_status_renders_check_and_review_summary() {
 }
 
 #[test]
+fn stack_status_renders_dismissed_reviewers_without_active_requests() {
+    // Verifies: stale GitHub review state stays visible after dismissed reviews clear active requests.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                103,
+                "topic/dismissed",
+                "main",
+                "Dismissed reviewers",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        103,
+        "Dismissed reviewers",
+        "topic/dismissed",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequired,
+        ReviewerSelection::default(),
+    );
+    status.dismissed_reviewers = vec![
+        "reviewer-one".to_owned(),
+        "reviewer-two".to_owned(),
+        "reviewer-three".to_owned(),
+    ];
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/dismissed".to_owned()],
+        pull_request_statuses: BTreeMap::from([(103, status)]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    ?    —     ◯ Dismissed reviewers reviewer-one, reviewer-two, reviewer-three",
+        stack_status_pull_request_cell(103)
+    )));
+}
+
+#[test]
 fn stack_status_styles_review_wait_threshold() {
     // Verifies: configured review SLA styling highlights stale review waits without distracting fresh, draft, or merged rows.
     let workspace = TestWorkspace::new();
@@ -1666,6 +1721,7 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
             }];
             status.commented_reviewers = vec!["reviewer-commented".to_owned()];
             status.addressed_reviewers = vec!["reviewer-addressed".to_owned()];
+            status.dismissed_reviewers = vec!["reviewer-dismissed".to_owned()];
             status
         })]),
         ..FakeServices::default()
@@ -1713,6 +1769,10 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["addressedUsers"][0],
         "reviewer-addressed"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["dismissedUsers"][0],
+        "reviewer-dismissed"
     );
 }
 
@@ -2157,6 +2217,7 @@ fn stack_status_record(
         approved_reviewers: Vec::new(),
         commented_reviewers: Vec::new(),
         addressed_reviewers: Vec::new(),
+        dismissed_reviewers: Vec::new(),
         review_activity: Vec::new(),
         timeline_events: Vec::new(),
         labels: Vec::new(),

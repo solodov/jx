@@ -182,6 +182,7 @@ fn pull_request_status_user_login_iter(
         .chain(status.approved_reviewers.iter())
         .chain(status.commented_reviewers.iter())
         .chain(status.addressed_reviewers.iter())
+        .chain(status.dismissed_reviewers.iter())
         .map(String::as_str)
 }
 
@@ -202,6 +203,11 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
         .collect::<BTreeSet<_>>();
     let addressed = status
         .addressed_reviewers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let dismissed = status
+        .dismissed_reviewers
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -267,11 +273,33 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
                 )
             }),
     );
+    // Dismissed reviews are stale reviewer context, not an active GitHub request.
+    tokens.extend(
+        status
+            .dismissed_reviewers
+            .iter()
+            .filter(|name| {
+                !approved.contains(name.as_str())
+                    && !commented.contains(name.as_str())
+                    && !addressed.contains(name.as_str())
+                    && !requested.contains(name.as_str())
+            })
+            .map(|name| {
+                pull_request_reviewer_token(
+                    name,
+                    ReviewerTokenState::Addressed,
+                    None,
+                    color,
+                    display_names,
+                )
+            }),
+    );
     tokens.extend(suggested_names.iter().filter_map(|name| {
         let name = name.as_str();
         (!approved.contains(name)
             && !commented.contains(name)
             && !addressed.contains(name)
+            && !dismissed.contains(name)
             && !requested.contains(name))
         .then(|| {
             pull_request_reviewer_token(

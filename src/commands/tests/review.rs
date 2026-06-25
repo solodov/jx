@@ -563,6 +563,7 @@ fn review_status_record(
         approved_reviewers: Vec::new(),
         commented_reviewers: Vec::new(),
         addressed_reviewers: Vec::new(),
+        dismissed_reviewers: Vec::new(),
         review_activity: Vec::new(),
         timeline_events: Vec::new(),
         labels: vec![PullRequestLabel {

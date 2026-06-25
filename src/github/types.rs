@@ -205,6 +205,8 @@ pub struct PullRequestStatusRecord {
     pub approved_reviewers: Vec<String>,
     pub commented_reviewers: Vec<String>,
     pub addressed_reviewers: Vec<String>,
+    /// Reviewers whose latest submitted review was dismissed by GitHub.
+    pub dismissed_reviewers: Vec<String>,
     pub review_activity: Vec<PullRequestReviewActivity>,
     pub timeline_events: Vec<PullRequestTimelineEvent>,
     pub labels: Vec<PullRequestLabel>,

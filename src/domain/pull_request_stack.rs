@@ -103,6 +103,9 @@ fn apply_ignored_pull_request_status_facts(
         .addressed_reviewers
         .retain(|reviewer| !config.ignores_reviewer(reviewer));
     status
+        .dismissed_reviewers
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
         .review_activity
         .retain(|activity| !config.ignores_reviewer(&activity.reviewer));
     status

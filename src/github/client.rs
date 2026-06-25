@@ -1933,7 +1933,9 @@ pub(super) fn map_graphql_pull_request_status(
         pull_request_author,
     );
     let approved_reviewers =
-        approved_reviewers_from_graphql(latest_review_nodes, pull_request_author);
+        approved_reviewers_from_graphql(&latest_review_nodes, pull_request_author);
+    let dismissed_reviewers =
+        dismissed_reviewers_from_graphql(&latest_review_nodes, pull_request_author);
     let thread_reviewers =
         review_thread_reviewers_from_graphql(review_thread_nodes, pull_request_author);
     let commented_reviewers = active_commented_reviewers(
@@ -1987,6 +1989,7 @@ pub(super) fn map_graphql_pull_request_status(
         approved_reviewers,
         commented_reviewers,
         addressed_reviewers,
+        dismissed_reviewers,
         review_activity,
         timeline_events,
         labels,
@@ -2063,12 +2066,15 @@ fn map_review_status(decision: Option<&str>, has_review_requests: bool) -> PullR
 
 fn reviewer_selection_from_graphql(nodes: Vec<GraphQlReviewRequestNode>) -> ReviewerSelection {
     let mut users = Vec::new();
+    let mut teams = Vec::new();
     for node in nodes.into_iter().filter_map(|node| node.requested_reviewer) {
-        if node.type_name.as_str() == "User" {
-            users.extend(node.login);
+        match node.type_name.as_str() {
+            "User" => users.extend(node.login),
+            "Team" => teams.extend(node.slug),
+            _ => {}
         }
     }
-    ReviewerSelection::new(users, Vec::<String>::new())
+    ReviewerSelection::new(users, teams)
 }
 
 pub(super) fn suggested_reviewers_from_graphql(
@@ -2192,14 +2198,29 @@ fn record_review_activity(
 }
 
 fn approved_reviewers_from_graphql(
-    nodes: Vec<GraphQlReviewNode>,
+    nodes: &[GraphQlReviewNode],
+    pull_request_author: Option<&str>,
+) -> Vec<String> {
+    review_state_authors_from_graphql(nodes, "APPROVED", pull_request_author)
+}
+
+fn dismissed_reviewers_from_graphql(
+    nodes: &[GraphQlReviewNode],
+    pull_request_author: Option<&str>,
+) -> Vec<String> {
+    review_state_authors_from_graphql(nodes, "DISMISSED", pull_request_author)
+}
+
+fn review_state_authors_from_graphql(
+    nodes: &[GraphQlReviewNode],
+    state: &str,
     pull_request_author: Option<&str>,
 ) -> Vec<String> {
     let mut reviewers = Vec::new();
     let mut seen = BTreeSet::new();
     for node in nodes {
-        if node.state == "APPROVED" {
-            let Some(author) = node.author else {
+        if node.state == state {
+            let Some(author) = &node.author else {
                 continue;
             };
             let login = author.login.trim();

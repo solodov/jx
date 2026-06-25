@@ -483,6 +483,7 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
     status.approved_reviewers = vec!["human-reviewer".to_owned(), "ignored-bot".to_owned()];
     status.commented_reviewers = vec!["commenter".to_owned(), "ignored-bot".to_owned()];
     status.addressed_reviewers = vec!["addressed".to_owned(), "ignored-bot".to_owned()];
+    status.dismissed_reviewers = vec!["dismissed".to_owned(), "ignored-bot".to_owned()];
     status.check_status = crate::github::PullRequestCheckStatus::Failing;
     status.checks = vec![
         crate::github::PullRequestCheck {
@@ -555,6 +556,7 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
     assert_eq!(filtered.approved_reviewers, ["human-reviewer"]);
     assert_eq!(filtered.commented_reviewers, ["commenter"]);
     assert_eq!(filtered.addressed_reviewers, ["addressed"]);
+    assert_eq!(filtered.dismissed_reviewers, ["dismissed"]);
     assert_eq!(filtered.review_activity.len(), 1);
     assert_eq!(filtered.review_activity[0].reviewer, "commenter");
 }
@@ -888,6 +890,7 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         approved_reviewers: Vec::new(),
         commented_reviewers: Vec::new(),
         addressed_reviewers: Vec::new(),
+        dismissed_reviewers: Vec::new(),
         review_activity: Vec::new(),
         timeline_events: Vec::new(),
         labels: Vec::new(),

@@ -751,6 +751,8 @@ struct StackStatusPullRequestJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     addressed_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    dismissed_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     requested_teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_commit_oid: Option<String>,
@@ -829,6 +831,9 @@ fn stack_status_pull_requests_json(
                     .unwrap_or_default(),
                 addressed_users: status
                     .map(|status| status.addressed_reviewers.clone())
+                    .unwrap_or_default(),
+                dismissed_users: status
+                    .map(|status| status.dismissed_reviewers.clone())
                     .unwrap_or_default(),
                 requested_teams: status
                     .map(|status| status.requested_reviewers.teams.clone())
