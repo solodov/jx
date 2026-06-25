@@ -846,6 +846,114 @@ labels = ["buz", "buz"]
 }
 
 #[test]
+fn repo_hooks_compose_override_disable_and_filter_by_event() {
+    // Verifies: Lifecycle hooks compose by repo rule, replace by id, and can be disabled.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".config/jx/config.toml",
+        r#"
+[[repo.hooks]]
+id = "bazel-shutdown"
+on = "workspace.delete.before"
+command = ["bazel", "shutdown", "--base"]
+
+[[repo.hooks]]
+id = "keep"
+on = "workspace.delete.before"
+command = ["keep"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.hooks]]
+id = "bazel-shutdown"
+on = "workspace.delete.before"
+command = ["bazel", "shutdown"]
+
+[[repo.rules.hooks]]
+id = "keep"
+enabled = false
+
+[[repo.rules.hooks]]
+id = "bazel-expunge"
+on = "workspace.delete.before"
+command = ["bazel", "clean", "--expunge"]
+
+[[repo.rules]]
+repo = "other-owner/*"
+
+[[repo.rules.hooks]]
+id = "ignored"
+on = "workspace.delete.before"
+command = ["ignored"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let hooks = context
+        .config
+        .repo
+        .hooks_for(&context.origin.github, RepoHookEvent::WorkspaceDeleteBefore);
+
+    assert_eq!(hooks.len(), 2);
+    assert_eq!(hooks[0].id, "bazel-shutdown");
+    assert_eq!(
+        hooks[0].command,
+        vec!["bazel".to_owned(), "shutdown".to_owned()]
+    );
+    assert_eq!(hooks[1].id, "bazel-expunge");
+    assert_eq!(
+        hooks[1].command,
+        vec![
+            "bazel".to_owned(),
+            "clean".to_owned(),
+            "--expunge".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn repo_hooks_reject_invalid_shape() {
+    // Verifies: Hook config requires explicit ids, supported events, and command argv.
+    let cases = [
+        (
+            "[[repo.hooks]]\non = \"workspace.delete.before\"\ncommand = [\"cleanup\"]",
+            "id",
+        ),
+        (
+            "[[repo.hooks]]\nid = \"bad-event\"\non = \"workspace.delete.after\"\ncommand = [\"cleanup\"]",
+            "unsupported repo hook event",
+        ),
+        (
+            "[[repo.hooks]]\nid = \"missing-command\"\non = \"workspace.delete.before\"",
+            "command",
+        ),
+        (
+            "[[repo.hooks]]\nid = \"empty-command\"\non = \"workspace.delete.before\"\ncommand = []",
+            "must not be empty",
+        ),
+        ("[[repo.hooks]]\nid = \"disabled\"\nenabled = false", ""),
+    ];
+
+    for (contents, expected) in cases {
+        let workspace = TestWorkspace::new();
+        workspace.write_git_config(origin_config());
+        workspace.write_file(".jx/config.toml", contents);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+        let result = RepositoryContext::discover(&environment);
+
+        if expected.is_empty() {
+            result.expect("disabled hook with id is accepted");
+        } else {
+            let error = result.expect_err("invalid hook is rejected");
+            assert!(error.to_string().contains(expected), "{contents}: {error}");
+        }
+    }
+}
+
+#[test]
 fn repo_checks_compose_override_and_match_changed_files() {
     // Verifies: Check commands compose by repo rule, replace by id, and run only for matching paths.
     let workspace = TestWorkspace::new();

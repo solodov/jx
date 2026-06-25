@@ -32,7 +32,7 @@ pub(super) fn handle_request(
             render_clone(&plan, &display_path(&plan.destination, environment))
         }
         CommandRequest::Work(request) => {
-            handle_work(request, environment, services, progress, &prompts)?
+            handle_work(request, environment, services, progress, &prompts, output)?
         }
         CommandRequest::Stack(request) => {
             return handle_stack(request, environment, services, progress, &prompts, output);
@@ -584,6 +584,7 @@ fn handle_work(
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
     prompts: &PromptHandlers<'_>,
+    output_mode: OutputMode,
 ) -> Result<String, CommandError> {
     match request {
         WorkRequest::Add(request) => {
@@ -647,6 +648,24 @@ fn handle_work(
                 return Ok("cancelled\n".to_owned());
             }
 
+            let hooks = context.config.repo.hooks_for(
+                &identity.github_repository(),
+                RepoHookEvent::WorkspaceDeleteBefore,
+            );
+            let hook_effects = if hooks.is_empty() {
+                Vec::new()
+            } else {
+                progress.status("Running workspace delete hooks…");
+                run_repo_hooks(
+                    environment,
+                    services,
+                    &identity.github_repository(),
+                    &removal.workspace,
+                    RepoHookEvent::WorkspaceDeleteBefore,
+                    hooks,
+                )?
+            };
+
             progress.status("Deleting workspace…");
             services.remove_workspace(
                 &removal.operation_dir,
@@ -661,6 +680,11 @@ fn handle_work(
             )?;
             progress.finish();
             let mut output = render_work_delete(&removal.workspace);
+            append_repo_hook_effects(
+                &mut output,
+                &hook_effects,
+                output_mode.color || request.shell_cd_target,
+            );
             if request.shell_cd_target {
                 if let Some(target) = removal.cd_target {
                     output.push_str(SHELL_CD_TARGET_PREFIX);

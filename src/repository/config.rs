@@ -209,7 +209,7 @@ pub enum RepositoryError {
         source: toml::de::Error,
     },
     #[error(
-        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes and hooks are not configurable."
+        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.hooks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, and `[shell]`; remotes are not configurable."
     )]
     UnsupportedConfigKey { file: String, key: String },
     #[error("Invalid workflow config `{file}`: {message}")]

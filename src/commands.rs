@@ -64,16 +64,17 @@ use crate::{
         read_github_user_name_cache, read_stack_metadata, read_workspace_metadata,
         validate_workspace_name, write_github_user_name_cache, write_stack_metadata,
         write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote, GitHubRepository,
-        LayoutConfig, LocalRepositoryContext, RepoCheckConfig, RepoCheckTrigger, RepoWorkItemEvent,
-        RepoWorkItemHandler, RepositoryContext, RepositoryError, RepositoryIdentity,
-        RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata, TokenSource,
-        WorkflowConfig, WorkspaceMetadata,
+        LayoutConfig, LocalRepositoryContext, RepoCheckConfig, RepoCheckTrigger, RepoHook,
+        RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext, RepositoryError,
+        RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
+        TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 
 mod checks;
 mod dashboard;
 mod handlers;
+mod hooks;
 mod perf;
 mod progress;
 mod prompts;
@@ -89,6 +90,7 @@ mod work;
 use checks::*;
 use dashboard::*;
 use handlers::*;
+use hooks::*;
 use perf::*;
 use progress::*;
 use prompts::*;
@@ -165,6 +167,8 @@ pub enum CommandError {
     },
     #[error("{message}")]
     Check { message: String },
+    #[error("{message}")]
+    Hook { message: String },
     #[error("Workspace `{workspace}` was created at {destination}, but post-create setup failed: {message}. The workspace was not rolled back; repair or delete it manually.")]
     WorkAddSetup {
         workspace: String,

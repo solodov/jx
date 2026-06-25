@@ -384,6 +384,9 @@ struct FakeServices {
     check_snapshots: std::cell::RefCell<Vec<WorkingCopySnapshot>>,
     check_command_outputs: std::cell::RefCell<Vec<CheckCommandOutput>>,
     check_command_calls: std::cell::RefCell<Vec<RepoCheckConfig>>,
+    hook_command_outputs: std::cell::RefCell<Vec<HookCommandOutput>>,
+    hook_command_calls: std::cell::RefCell<Vec<(PathBuf, RepoHook)>>,
+    workspace_delete_events: std::cell::RefCell<Vec<String>>,
     status_workspace: StatusWorkspaceFacts,
     check: CheckReport,
     status: StatusReport,
@@ -496,6 +499,9 @@ impl Default for FakeServices {
             check_snapshots: std::cell::RefCell::new(Vec::new()),
             check_command_outputs: std::cell::RefCell::new(Vec::new()),
             check_command_calls: std::cell::RefCell::new(Vec::new()),
+            hook_command_outputs: std::cell::RefCell::new(Vec::new()),
+            hook_command_calls: std::cell::RefCell::new(Vec::new()),
+            workspace_delete_events: std::cell::RefCell::new(Vec::new()),
             status_workspace: status_workspace_facts(),
             check: CheckReport {
                 repository: repository.clone(),
@@ -901,6 +907,9 @@ impl CommandServices for FakeServices {
         current_dir: &Path,
         options: &WorkspaceRemoveOptions,
     ) -> Result<(), JjError> {
+        self.workspace_delete_events
+            .borrow_mut()
+            .push(format!("remove:{}", options.name));
         self.workspace_remove_current_dirs
             .borrow_mut()
             .push(current_dir.to_path_buf());
@@ -1016,6 +1025,25 @@ impl CommandServices for FakeServices {
         let mut outputs = self.check_command_outputs.borrow_mut();
         if outputs.is_empty() {
             Ok(CheckCommandOutput::success())
+        } else {
+            Ok(outputs.remove(0))
+        }
+    }
+
+    fn run_hook_command(
+        &self,
+        workspace_root: &Path,
+        hook: &RepoHook,
+    ) -> io::Result<HookCommandOutput> {
+        self.workspace_delete_events
+            .borrow_mut()
+            .push(format!("hook:{}", hook.id));
+        self.hook_command_calls
+            .borrow_mut()
+            .push((workspace_root.to_path_buf(), hook.clone()));
+        let mut outputs = self.hook_command_outputs.borrow_mut();
+        if outputs.is_empty() {
+            Ok(HookCommandOutput::success())
         } else {
             Ok(outputs.remove(0))
         }

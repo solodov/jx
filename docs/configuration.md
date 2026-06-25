@@ -132,6 +132,35 @@ command prints its captured output and aborts the operation. If a command exits
 successfully but modifies tracked working-copy content, `jx` aborts and leaves
 the changes visible for review or revert.
 
+Lifecycle hooks run configured mutating commands at selected repository workflow
+points. Commands are argv arrays. `workspace.delete.before` hooks run after delete
+confirmation but before the workspace is moved or removed, always with the
+workspace being deleted as the current directory. Successful hooks are reported
+in command output as `Event[hook-id]: ran ...`, including the command argv. Each hook start,
+success, and error is appended to `~/.local/state/jx/jx-hooks.log` as JSONL; set
+`JX_HOOK_LOG=/path/to/log` to override the path or `off` to disable this log. A
+failing hook prints captured output, aborts deletion, and leaves the workspace
+intact:
+
+```toml
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.hooks]]
+id = "stop-build-server"
+on = "workspace.delete.before"
+command = ["build-tool", "shutdown"]
+
+[[repo.rules.hooks]]
+id = "clear-build-cache"
+on = "workspace.delete.before"
+command = ["build-tool", "clean", "--all"]
+```
+
+Matching rule hooks compose after base hooks. A matching rule can replace a
+previous hook with the same `id`, or disable it with `id = "..."` and
+`enabled = false`.
+
 `workspace_shared_paths` lists repo-relative local-only paths that managed
 `jx work add` workspaces should symlink from the primary checkout after jj
 creates the workspace. This is intended for ignored checkout state such as `.pi`.

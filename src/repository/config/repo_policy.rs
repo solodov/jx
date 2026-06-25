@@ -56,6 +56,16 @@ impl RepoConfig {
         handlers
     }
 
+    /// Returns effective lifecycle hooks for this repository and event in deterministic execution order.
+    pub fn hooks_for(&self, repository: &GitHubRepository, event: RepoHookEvent) -> Vec<RepoHook> {
+        let mut hooks = Vec::new();
+        apply_hook_configs(&mut hooks, &self.base.hooks);
+        for rule in self.matching_rules(repository) {
+            apply_hook_configs(&mut hooks, &rule.policy.hooks);
+        }
+        hooks.into_iter().filter(|hook| hook.on == event).collect()
+    }
+
     /// Returns whether any lifecycle check is configured for the trigger after repo overrides.
     pub fn has_checks_for_trigger(
         &self,
@@ -190,6 +200,7 @@ pub struct RepoPolicyConfig {
     pub event_handlers: Vec<RepoEventHandlerConfig>,
     pub work_items: RepoWorkItemsConfig,
     pub work_item_handlers: Vec<RepoWorkItemHandlerConfig>,
+    pub hooks: Vec<RepoHookConfig>,
     pub checks: Vec<RepoCheckConfig>,
     pub reviewers: Vec<ReviewerTarget>,
     pub reviewer_rules: Vec<ReviewerPathRule>,
@@ -205,6 +216,7 @@ impl RepoPolicyConfig {
         merge_event_handler_configs(&mut self.event_handlers, &layer.event_handlers);
         self.work_items.apply_layer(layer.work_items);
         merge_work_item_handler_configs(&mut self.work_item_handlers, &layer.work_item_handlers);
+        merge_hook_configs(&mut self.hooks, &layer.hooks);
         merge_check_configs(&mut self.checks, &layer.checks);
         merge_reviewers(&mut self.reviewers, layer.reviewers);
         self.reviewer_rules.extend(layer.reviewer_rules);
@@ -396,6 +408,13 @@ pub enum RepoWorkItemHandlerConfig {
     Disable { id: String },
 }
 
+/// One configured lifecycle hook or a disabling override by hook id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoHookConfig {
+    Hook(RepoHook),
+    Disable { id: String },
+}
+
 /// Check-only command that can block selected lifecycle operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoCheckConfig {
@@ -459,6 +478,14 @@ pub struct RepoWorkItemHandler {
     pub command: Vec<String>,
 }
 
+/// Mutating command to run at a configured repository lifecycle point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoHook {
+    pub id: String,
+    pub on: RepoHookEvent,
+    pub command: Vec<String>,
+}
+
 /// Repository events supported by configured handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoEvent {
@@ -489,6 +516,21 @@ impl RepoWorkItemEvent {
     pub fn label(self) -> &'static str {
         match self {
             Self::Fixed => "work_item.fixed",
+        }
+    }
+}
+
+/// Repository lifecycle events supported by configured hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoHookEvent {
+    WorkspaceDeleteBefore,
+}
+
+impl RepoHookEvent {
+    /// Stable config label for this hook event.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::WorkspaceDeleteBefore => "workspace.delete.before",
         }
     }
 }
@@ -669,6 +711,41 @@ fn work_item_handler_config_id(config: &RepoWorkItemHandlerConfig) -> Option<&st
     match config {
         RepoWorkItemHandlerConfig::Handler(handler) => handler.id.as_deref(),
         RepoWorkItemHandlerConfig::Disable { id } => Some(id.as_str()),
+    }
+}
+
+fn apply_hook_configs(target: &mut Vec<RepoHook>, configs: &[RepoHookConfig]) {
+    for config in configs {
+        match config {
+            RepoHookConfig::Hook(hook) => {
+                target.retain(|existing| existing.id.as_str() != hook.id.as_str());
+                target.push(hook.clone());
+            }
+            RepoHookConfig::Disable { id } => {
+                target.retain(|hook| hook.id.as_str() != id.as_str());
+            }
+        }
+    }
+}
+
+fn merge_hook_configs(target: &mut Vec<RepoHookConfig>, configs: &[RepoHookConfig]) {
+    for config in configs {
+        match config {
+            RepoHookConfig::Hook(hook) => {
+                target.retain(|existing| hook_config_id(existing) != hook.id.as_str());
+                target.push(config.clone());
+            }
+            RepoHookConfig::Disable { id } => {
+                target.retain(|existing| hook_config_id(existing) != id.as_str());
+            }
+        }
+    }
+}
+
+fn hook_config_id(config: &RepoHookConfig) -> &str {
+    match config {
+        RepoHookConfig::Hook(hook) => &hook.id,
+        RepoHookConfig::Disable { id } => id,
     }
 }
 

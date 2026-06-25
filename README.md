@@ -195,8 +195,8 @@ Config files are TOML and compose in this order:
 2. workspace-root `.jx/config.toml`
 
 Supported config covers clone/workspace layout, repo policy, lifecycle checks,
-reviewers, file-based reviewer rules, named diff renderers, and optional
-keychain token lookup:
+lifecycle hooks, reviewers, file-based reviewer rules, named diff renderers, and
+optional keychain token lookup:
 
 ```toml
 [layout]
@@ -253,6 +253,7 @@ Notes:
 - Repo rules match the fixed `origin` GitHub repo with `owner/repo` globs.
 - Repo checks run check-only commands before selected lifecycle operations when
   changed files match configured globs.
+- Repo hooks run configured mutating commands at selected lifecycle points.
 - `workspace_shared_paths` symlink existing local-only paths such as `.pi` from
   the primary checkout into managed `jx work add` workspaces; missing sources
   are skipped, and configured paths must be untracked at the exact selected

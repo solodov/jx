@@ -113,6 +113,13 @@ pub(super) trait CommandServices {
         check: &RepoCheckConfig,
     ) -> io::Result<CheckCommandOutput>;
 
+    /// Runs a configured lifecycle hook from the target workspace root with combined captured output.
+    fn run_hook_command(
+        &self,
+        workspace_root: &Path,
+        hook: &RepoHook,
+    ) -> io::Result<HookCommandOutput>;
+
     /// Loads jj facts for the working copy or an explicitly selected revision.
     fn workspace_facts(
         &self,
@@ -1746,6 +1753,33 @@ fn pull_request_record_attrs(result: &Result<PullRequestRecord, GitHubError>) ->
     }
 }
 
+struct CapturedCommandOutput {
+    status: std::process::ExitStatus,
+    output: String,
+}
+
+fn run_captured_command(cwd: &Path, command: &[String]) -> io::Result<CapturedCommandOutput> {
+    let mut command = command.iter();
+    let program = command
+        .next()
+        .expect("configured commands are validated as non-empty");
+    let mut output_file = tempfile::tempfile()?;
+    let status = ProcessCommand::new(program)
+        .args(command)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output_file.try_clone()?))
+        .stderr(Stdio::from(output_file.try_clone()?))
+        .status()?;
+
+    output_file.seek(SeekFrom::Start(0))?;
+    let mut output = Vec::new();
+    output_file.read_to_end(&mut output)?;
+    let output = String::from_utf8_lossy(&output).into_owned();
+
+    Ok(CapturedCommandOutput { status, output })
+}
+
 impl CommandServices for ProductionServices<'_> {
     fn workspace_log(&self) -> Result<String, JjError> {
         JjWorkspace::current_workspace_log(self.environment.current_dir())
@@ -1878,25 +1912,23 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         check: &RepoCheckConfig,
     ) -> io::Result<CheckCommandOutput> {
-        let mut command = check.command.iter();
-        let program = command
-            .next()
-            .expect("check command is validated as non-empty");
-        let mut output_file = tempfile::tempfile()?;
-        let status = ProcessCommand::new(program)
-            .args(command)
-            .current_dir(&context.workspace_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(output_file.try_clone()?))
-            .stderr(Stdio::from(output_file.try_clone()?))
-            .status()?;
+        let output = run_captured_command(&context.workspace_root, &check.command)?;
+        Ok(CheckCommandOutput::from_process_status(
+            output.status,
+            output.output,
+        ))
+    }
 
-        output_file.seek(SeekFrom::Start(0))?;
-        let mut output = Vec::new();
-        output_file.read_to_end(&mut output)?;
-        let output = String::from_utf8_lossy(&output).into_owned();
-
-        Ok(CheckCommandOutput::from_process_status(status, output))
+    fn run_hook_command(
+        &self,
+        workspace_root: &Path,
+        hook: &RepoHook,
+    ) -> io::Result<HookCommandOutput> {
+        let output = run_captured_command(workspace_root, &hook.command)?;
+        Ok(HookCommandOutput::from_process_status(
+            output.status,
+            output.output,
+        ))
     }
 
     fn check_readiness(

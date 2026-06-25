@@ -1227,10 +1227,14 @@ path = "{repo}"
 }
 
 fn work_perf_events(path: &Path) -> Vec<serde_json::Value> {
+    read_jsonl_events(path, "perf event is json")
+}
+
+fn read_jsonl_events(path: &Path, expectation: &str) -> Vec<serde_json::Value> {
     fs::read_to_string(path)
-        .expect("perf log is written")
+        .expect("jsonl log is written")
         .lines()
-        .map(|line| serde_json::from_str(line).expect("perf event is json"))
+        .map(|line| serde_json::from_str(line).expect(expectation))
         .collect()
 }
 
@@ -1446,6 +1450,260 @@ path = "{repo}"
             cleanup_root: workspace.home.join("projects/.work"),
         }]
     );
+}
+
+#[test]
+fn work_delete_runs_configured_hooks_from_target_workspace_before_removal() {
+    // Verifies: Delete hooks run from the workspace being deleted, even when invoked elsewhere.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.hooks]]
+id = "bazel-shutdown"
+on = "workspace.delete.before"
+command = ["bazel", "shutdown"]
+
+[[repo.rules.hooks]]
+id = "bazel-expunge"
+on = "workspace.delete.before"
+command = ["bazel", "clean", "--expunge"]
+"#,
+    );
+    let target = workspace.home.join("projects/.work/jx/fix");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: project_workspaces(&workspace),
+        ..FakeServices::default()
+    };
+    let confirmer = FixedWorkspaceRemoveConfirmer { confirmed: true };
+
+    let result = run_with_args_and_workspace_remove_confirmer(
+        ["jx", "work", "delete", "fix"],
+        &environment,
+        &services,
+        &confirmer,
+    )
+    .expect("workspace deletion succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Deleted workspace: fix\nEvent[bazel-shutdown]: ran `bazel shutdown`\nEvent[bazel-expunge]: ran `bazel clean --expunge`\n"
+    );
+    let hook_calls = services.hook_command_calls.borrow();
+    assert_eq!(hook_calls.len(), 2);
+    assert_eq!(hook_calls[0].0, target);
+    assert_eq!(hook_calls[0].1.id, "bazel-shutdown");
+    assert_eq!(
+        hook_calls[0].1.command,
+        vec!["bazel".to_owned(), "shutdown".to_owned()]
+    );
+    assert_eq!(
+        hook_calls[1].0,
+        workspace.home.join("projects/.work/jx/fix")
+    );
+    assert_eq!(hook_calls[1].1.id, "bazel-expunge");
+    assert_eq!(
+        hook_calls[1].1.command,
+        vec![
+            "bazel".to_owned(),
+            "clean".to_owned(),
+            "--expunge".to_owned()
+        ]
+    );
+    assert_eq!(
+        services.workspace_delete_events.borrow().as_slice(),
+        ["hook:bazel-shutdown", "hook:bazel-expunge", "remove:fix"]
+    );
+    let log = read_jsonl_events(
+        &workspace.home.join(".local/state/jx/jx-hooks.log"),
+        "hook log event is json",
+    );
+    assert_eq!(log.len(), 4);
+    assert_eq!(log[0]["status"], "start");
+    assert_eq!(log[0]["hook"], "bazel-shutdown");
+    assert_eq!(log[0]["event"], "workspace.delete.before");
+    assert_eq!(log[0]["repo"], "example-owner/jx");
+    assert_eq!(log[0]["workspace"], "fix");
+    assert_eq!(
+        log[0]["cwd"],
+        workspace
+            .home
+            .join("projects/.work/jx/fix")
+            .display()
+            .to_string()
+    );
+    assert_eq!(log[1]["status"], "success");
+    assert_eq!(log[2]["hook"], "bazel-expunge");
+    assert_eq!(log[3]["status"], "success");
+}
+
+#[test]
+fn work_delete_shell_cd_output_keeps_hook_events_subdued() {
+    // Verifies: Shell integration still renders hook event lines with the same subdued style as stack publish.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.hooks]]
+id = "cleanup"
+on = "workspace.delete.before"
+command = ["./cleanup"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: project_workspaces(&workspace),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "delete", "fix", "--shell-cd-target"],
+        &environment,
+        &services,
+    )
+    .expect("workspace deletion succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Deleted workspace: fix\n\u{1b}[2m\u{1b}[38;5;244mEvent[cleanup]: ran `./cleanup`\u{1b}[0m\n"
+    );
+}
+
+#[test]
+fn work_delete_runs_configured_hooks_from_current_workspace_before_safe_removal() {
+    // Verifies: Current-workspace deletion runs hooks before moving the process to the safe operation directory.
+    let workspace = TestWorkspace::new_under("projects/.work/tool/fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.hooks]]
+id = "cleanup"
+on = "workspace.delete.before"
+command = ["./cleanup"]
+"#,
+    );
+    let primary = workspace.home.join("projects/tool");
+    let managed = workspace.home.join("projects/.work/tool/fix");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: primary.clone(),
+                is_current: false,
+            },
+            WorkspaceEntry {
+                name: "fix".to_owned(),
+                root: managed.clone(),
+                is_current: true,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "work", "delete"], &environment, &services)
+        .expect("current workspace deletion succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Deleted workspace: fix\nEvent[cleanup]: ran `./cleanup`\n"
+    );
+    assert_eq!(services.hook_command_calls.borrow()[0].0, managed);
+    assert_eq!(
+        services.workspace_remove_current_dirs.borrow().as_slice(),
+        [primary]
+    );
+    assert_eq!(
+        services.workspace_delete_events.borrow().as_slice(),
+        ["hook:cleanup", "remove:fix"]
+    );
+}
+
+#[test]
+fn work_delete_aborts_without_removing_when_configured_hook_fails() {
+    // Verifies: Hook failures keep the workspace intact so cleanup problems can be fixed and retried.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.hooks]]
+id = "cleanup"
+on = "workspace.delete.before"
+command = ["./cleanup"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: project_workspaces(&workspace),
+        hook_command_outputs: std::cell::RefCell::new(vec![HookCommandOutput::failure(
+            "exit code 7",
+            "cleanup failed\n",
+        )]),
+        ..FakeServices::default()
+    };
+    let confirmer = FixedWorkspaceRemoveConfirmer { confirmed: true };
+
+    let error = run_with_args_and_workspace_remove_confirmer(
+        ["jx", "work", "delete", "fix"],
+        &environment,
+        &services,
+        &confirmer,
+    )
+    .expect_err("failing hook aborts deletion");
+
+    assert!(matches!(error, CommandError::Hook { .. }));
+    assert!(error.to_string().contains("cleanup failed"));
+    assert_eq!(
+        services.workspace_delete_events.borrow().as_slice(),
+        ["hook:cleanup"]
+    );
+    assert!(services.workspace_removes.borrow().is_empty());
+    let log = read_jsonl_events(
+        &workspace.home.join(".local/state/jx/jx-hooks.log"),
+        "hook log event is json",
+    );
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["status"], "start");
+    assert_eq!(log[1]["status"], "error");
+    assert_eq!(log[1]["message"], "exit code 7");
+    assert_eq!(log[1]["output"], "cleanup failed");
 }
 
 #[test]

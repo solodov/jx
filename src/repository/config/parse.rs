@@ -494,6 +494,7 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
                 | "event_handlers"
                 | "work_items"
                 | "work_item_handlers"
+                | "hooks"
                 | "checks"
                 | "reviewers"
                 | "path_reviewers"
@@ -557,6 +558,7 @@ fn parse_repo_rule(
                 | "event_handlers"
                 | "work_items"
                 | "work_item_handlers"
+                | "hooks"
                 | "checks"
                 | "reviewers"
                 | "path_reviewers"
@@ -604,6 +606,11 @@ fn parse_repo_policy(
         })
         .transpose()?
         .unwrap_or_default();
+    let hooks = table
+        .get("hooks")
+        .map(|value| parse_repo_hooks(file, &format!("{key_prefix}.hooks"), value))
+        .transpose()?
+        .unwrap_or_default();
     let checks = table
         .get("checks")
         .map(|value| parse_repo_checks(file, &format!("{key_prefix}.checks"), value))
@@ -637,6 +644,7 @@ fn parse_repo_policy(
         event_handlers,
         work_items,
         work_item_handlers,
+        hooks,
         checks,
         reviewers,
         reviewer_rules,
@@ -1224,6 +1232,85 @@ fn parse_work_item_event(
         event => Err(RepositoryError::InvalidConfig {
             file: file.to_owned(),
             message: format!("unsupported work item handler event `{event}`"),
+        }),
+    }
+}
+
+fn parse_repo_hooks(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<RepoHookConfig>, RepositoryError> {
+    let Some(hooks) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    hooks
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_repo_hook(file, key, index, value))
+        .collect()
+}
+
+fn parse_repo_hook(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoHookConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "id" | "enabled" | "on" | "command") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let id = required_non_empty_string(file, table, &format!("{key}[{index}].id"))?;
+    let enabled = table
+        .get("enabled")
+        .map(|value| parse_bool_value(file, &format!("{key}[{index}].enabled"), value))
+        .transpose()?
+        .unwrap_or(true);
+    if !enabled {
+        return Ok(RepoHookConfig::Disable { id });
+    }
+
+    let on = parse_repo_hook_event(file, key, index, required_value(file, table, "on")?)?;
+    let command_key = format!("{key}[{index}].command");
+    let command = parse_string_array(file, &command_key, required_value(file, table, "command")?)?;
+    if command.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{command_key}` must not be empty"),
+        });
+    }
+
+    Ok(RepoHookConfig::Hook(RepoHook { id, on, command }))
+}
+
+fn parse_repo_hook_event(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoHookEvent, RepositoryError> {
+    match parse_non_empty_string_value(file, &format!("{key}[{index}].on"), value)?.as_str() {
+        "workspace.delete.before" => Ok(RepoHookEvent::WorkspaceDeleteBefore),
+        event => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("unsupported repo hook event `{event}`"),
         }),
     }
 }
