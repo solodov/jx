@@ -105,6 +105,17 @@ fn api_response_error_preserves_github_auth_message() {
 }
 
 #[test]
+fn octocrab_error_backtrace_is_trimmed_from_display_message() {
+    // Verifies: octocrab's SNAFU backtrace stays out of end-user GitHub diagnostics.
+    let message = "Service Error: client error (Connect)\n\nFound at    0: backtrace frame";
+
+    assert_eq!(
+        trim_octocrab_error_backtrace(message),
+        "Service Error: client error (Connect)"
+    );
+}
+
+#[test]
 fn token_source_reads_discovered_environment_value() {
     // Verifies: Token lookup reads the discovered environment value without storing secrets.
     let environment = RuntimeEnvironment::new(

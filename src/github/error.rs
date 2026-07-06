@@ -7,7 +7,7 @@ pub enum GitHubError {
     MissingToken,
     #[error(transparent)]
     TokenRead(#[from] TokenReadError),
-    #[error("Could not initialize GitHub client: {source}")]
+    #[error("Could not initialize GitHub client: {}", octocrab_error_message(.source))]
     ClientBuild { source: Box<octocrab::Error> },
     #[error("GitHub authentication failed while trying to {operation}: {message}")]
     AuthenticationFailed {
@@ -43,7 +43,7 @@ pub enum GitHubError {
         operation: &'static str,
         timeout_ms: u128,
     },
-    #[error("Could not {operation} through GitHub: {source}")]
+    #[error("Could not {operation} through GitHub: {}", octocrab_error_message(.source))]
     Api {
         operation: &'static str,
         source: Box<octocrab::Error>,
@@ -101,6 +101,16 @@ fn octocrab_github_error(source: &octocrab::Error) -> Option<&octocrab::GitHubEr
         octocrab::Error::GitHub { source, .. } => Some(source.as_ref()),
         _ => None,
     }
+}
+
+fn octocrab_error_message(error: &octocrab::Error) -> String {
+    trim_octocrab_error_backtrace(&error.to_string()).to_owned()
+}
+
+pub(super) fn trim_octocrab_error_backtrace(message: &str) -> &str {
+    message
+        .split_once("\nFound at")
+        .map_or(message, |(summary, _)| summary.trim_end())
 }
 
 fn github_error_response_message(body: &str) -> String {
