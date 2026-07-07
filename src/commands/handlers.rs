@@ -1024,6 +1024,10 @@ fn handle_shell(
             let config = WorkflowConfig::discover_global(environment)?;
             Ok(shell_init_script(request.shell, &config.shell))
         }
+        ShellRequest::Title => {
+            let config = WorkflowConfig::discover_global(environment)?;
+            Ok(format!("{}\n", shell_title_context(&config, environment)?))
+        }
     }
 }
 

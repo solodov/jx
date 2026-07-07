@@ -1541,12 +1541,16 @@ fn parse_pull_request_event_query(
 }
 
 fn normalize_label_set(labels: Vec<String>) -> Vec<String> {
+    normalize_string_set(labels)
+}
+
+fn normalize_string_set(values: Vec<String>) -> Vec<String> {
     let mut normalized = Vec::new();
     let mut seen = BTreeSet::new();
-    for label in labels {
-        let label = label.trim();
-        if !label.is_empty() && seen.insert(label.to_owned()) {
-            normalized.push(label.to_owned());
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty() && seen.insert(value.to_owned()) {
+            normalized.push(value.to_owned());
         }
     }
     normalized
@@ -1724,7 +1728,10 @@ fn parse_shell_config(
     };
 
     for key in table.keys() {
-        if !matches!(key.as_str(), "navigation" | "navigation_tab" | "zoxide") {
+        if !matches!(
+            key.as_str(),
+            "navigation" | "navigation_tab" | "title" | "slug_repositories" | "zoxide"
+        ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
                 key: format!("shell.{key}"),
@@ -1745,6 +1752,12 @@ fn parse_shell_config(
                 .map(|value| value.trim().to_owned())
         })
         .transpose()?;
+    let title = table
+        .get("title")
+        .map(|value| parse_bool_value(file, "shell.title", value))
+        .transpose()?;
+    let slug_repositories =
+        optional_string_array(file, table, "shell.slug_repositories")?.map(normalize_string_set);
     let zoxide = table
         .get("zoxide")
         .map(|value| parse_shell_zoxide_mode(file, "shell.zoxide", value))
@@ -1753,6 +1766,8 @@ fn parse_shell_config(
     Ok(ShellConfigLayer {
         navigation,
         navigation_tab,
+        title,
+        slug_repositories,
         zoxide,
     })
 }

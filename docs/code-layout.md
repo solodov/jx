@@ -147,7 +147,18 @@ for navigation and workspace management.
   unique key fragments plus slash-separated directory fragments under the
   selected location. In zoxide-prefer mode, zoxide matches win except for the
   `default`, `trunk`, and `root` jj aliases. An optional tab companion uses the
-  same resolution and opens zellij tabs when available.
+  same resolution and opens zellij tabs when available. When `[shell] title =
+  true`, generated Bash integration exports `JX_WORK_CONTEXT` and sets terminal
+  titles from the same layout-aware context so Starship can render it without
+  duplicating path-trimming rules.
+
+Starship prompts can show the context by replacing or complementing `$directory`
+with `${env_var.JX_WORK_CONTEXT}` in `format` and styling
+`[env_var.JX_WORK_CONTEXT]`; source the generated Bash after `starship init` so
+its precmd hook can compose with Starship's hook. Repositories matching
+`[shell] slug_repositories` globs render as `owner/repo`, which keeps
+organization-scoped workspaces such as `Faire/backend@fix` distinct without
+changing personal-project titles.
 
 ## Workspace metadata
 

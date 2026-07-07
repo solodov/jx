@@ -85,9 +85,10 @@ jx sync --all                     # syncs eligible writable primary checkouts
 
 Shell integration makes those layout keys interactive. Add the output of
 `jx shell init bash` to your Bash startup file to get completion for project
-arguments and, when configured, a navigation helper. Jumping between primary
-repositories and managed workspaces becomes a completion-driven workflow rather
-than a path-memory exercise.
+arguments and, when configured, a navigation helper plus Starship-friendly work
+context for titles/prompts. Jumping between primary repositories and managed
+workspaces becomes a completion-driven workflow rather than a path-memory
+exercise.
 
 ## Task-aware work
 

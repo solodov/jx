@@ -116,6 +116,137 @@ zoxide = "auto"
 }
 
 #[test]
+fn shell_init_bash_emits_title_integration_when_configured() {
+    // Verifies: Title integration exports the same jx context for terminal titles and Starship modules.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[shell]
+title = true
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "shell", "init", "bash"], &environment, &services)
+            .expect("shell init succeeds");
+
+    assert!(result.stdout.contains("jx_title()"));
+    assert!(result.stdout.contains("command jx shell title"));
+    assert!(result
+        .stdout
+        .contains("export JX_WORK_CONTEXT=\"$context\""));
+    assert!(result
+        .stdout
+        .contains("starship_precmd_user_func=\"__jx_shell_title_precmd\""));
+    assert!(result
+        .stdout
+        .contains("__jx_shell_title_previous_starship_precmd_user_func"));
+    assert!(result
+        .stdout
+        .contains("termflow_zellij_tab_title \"$title\""));
+    assert!(result
+        .stdout
+        .contains("PROMPT_COMMAND=\"__jx_shell_title_precmd"));
+}
+
+#[test]
+fn shell_title_renders_layout_workspace_context() {
+    // Verifies: The prompt/title label is derived from jx layout roots rather than hard-coded path prefixes.
+    let workspace =
+        TestWorkspace::new_uninitialized_under("projects/.work/jx/ABC-123-fix/src/commands");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    fs::create_dir_all(workspace.home.join("projects/jx/src")).expect("create primary checkout");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let managed = run_with_args_and_services(["jx", "shell", "title"], &environment, &services)
+        .expect("managed title succeeds");
+    let primary = run_with_args_and_services(
+        ["jx", "shell", "title"],
+        &environment.with_current_dir(workspace.home.join("projects/jx/src")),
+        &services,
+    )
+    .expect("primary title succeeds");
+
+    assert_eq!(managed.stdout, "jx@ABC-123-fix/src/commands\n");
+    assert_eq!(primary.stdout, "jx/src\n");
+}
+
+#[test]
+fn shell_title_can_render_configured_repository_slugs() {
+    // Verifies: Organization-scoped repos can keep the owner visible without changing layout paths.
+    let workspace = TestWorkspace::new_uninitialized_under("projects/.work/jx/FD-123-fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[shell]
+slug_repositories = ["example-owner/*"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "shell", "title"], &environment, &services)
+        .expect("slug title succeeds");
+
+    assert_eq!(result.stdout, "example-owner/jx@FD-123-fix\n");
+}
+
+#[test]
+fn shell_title_falls_back_to_home_relative_path() {
+    // Verifies: Outside configured layout roots, title rendering remains useful without repo-specific rules.
+    let workspace = TestWorkspace::new_uninitialized_under("misc/tools");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "shell", "title"], &environment, &services)
+        .expect("fallback title succeeds");
+
+    assert_eq!(result.stdout, "~/misc/tools\n");
+}
+
+#[test]
+fn shell_title_preserves_logical_pwd_for_symlinked_paths() {
+    // Verifies: Shell titles follow Bash's logical PWD instead of the resolved process cwd.
+    let workspace = TestWorkspace::new_uninitialized_under(
+        "Library/Mobile Documents/com~apple~CloudDocs/Documents/org/faire",
+    );
+    let logical_pwd = workspace.home.join("org/mobile/faire");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [
+            ("HOME".to_owned(), workspace.home.display().to_string()),
+            ("JX_PERF_LOG".to_owned(), "off".to_owned()),
+            ("PWD".to_owned(), logical_pwd.display().to_string()),
+        ],
+    );
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "shell", "title"], &environment, &services)
+        .expect("logical PWD title succeeds");
+
+    assert_eq!(result.stdout, "~/org/mobile/faire\n");
+}
+
+#[test]
 fn shell_init_bash_can_prefer_zoxide_navigation() {
     // Verifies: Prefer mode uses zoxide before jx lookup while reserving jj aliases for jx.
     let workspace = TestWorkspace::new();
@@ -235,6 +366,7 @@ fn shell_init_bash_emits_cli_completion_without_navigation_when_unconfigured() {
     assert!(result.stdout.contains("pushd \"$cd_target\""));
     assert!(result.stdout.contains("cd \"$cd_target\""));
     assert!(!result.stdout.contains("u() {"));
+    assert!(!result.stdout.contains("jx_title()"));
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use globset::Glob;
 
 /// Supported shell targets for generated integration scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6,15 +7,38 @@ pub(super) enum ShellKind {
     Bash,
 }
 
-/// Renders shell integration that wires configured navigation and completion into the shell.
+/// Renders shell integration that wires configured navigation, titles, and completion into the shell.
 pub(super) fn shell_init_script(shell: ShellKind, config: &ShellConfig) -> String {
     match shell {
         ShellKind::Bash => bash_init_script(config),
     }
 }
 
+/// Renders the current directory as a layout-aware shell prompt/title context.
+pub(super) fn shell_title_context(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+) -> Result<String, RepositoryError> {
+    let current_dir = shell_title_current_dir(environment);
+    for root in current_dir.ancestors() {
+        if let Some(context) = layout_title_context(config, root, &current_dir, environment)? {
+            return Ok(context);
+        }
+    }
+
+    Ok(fallback_title_context(&current_dir, environment))
+}
+
 fn bash_init_script(config: &ShellConfig) -> String {
     let mut script = bash_cli_completion_script();
+
+    if config.title_enabled() {
+        if !script.ends_with('\n') {
+            script.push('\n');
+        }
+        script.push('\n');
+        script.push_str(bash_title_script());
+    }
 
     if let Some(command) = config.navigation_command() {
         if !script.ends_with('\n') {
@@ -29,6 +53,105 @@ fn bash_init_script(config: &ShellConfig) -> String {
     }
 
     script
+}
+
+fn shell_title_current_dir(environment: &RuntimeEnvironment) -> PathBuf {
+    environment
+        .variable("PWD")
+        .filter(|pwd| !pwd.is_empty())
+        .map(PathBuf::from)
+        .filter(|pwd| pwd.is_absolute())
+        .unwrap_or_else(|| environment.current_dir().to_path_buf())
+}
+
+fn layout_title_context(
+    config: &WorkflowConfig,
+    root: &Path,
+    current_dir: &Path,
+    environment: &RuntimeEnvironment,
+) -> Result<Option<String>, RepositoryError> {
+    let identity = match config.layout.identity_for_workspace_root(root, environment) {
+        Ok(identity) => identity,
+        Err(RepositoryError::LayoutPathNotMatched { .. })
+        | Err(RepositoryError::AmbiguousLayoutPath { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    let mut context = shell_title_repository_label(&config.shell, &identity);
+    if let Some(workspace) =
+        workspace_name_for_layout_root(&config.layout, &identity, root, environment)?
+    {
+        context.push('@');
+        context.push_str(&workspace);
+    }
+
+    if let Ok(relative) = current_dir.strip_prefix(root) {
+        if !relative.as_os_str().is_empty() {
+            context.push('/');
+            context.push_str(&relative.to_string_lossy());
+        }
+    }
+
+    Ok(Some(context))
+}
+
+fn shell_title_repository_label(shell: &ShellConfig, identity: &RepositoryIdentity) -> String {
+    if shell_title_uses_slug(shell, identity) {
+        identity.github_repository().slug()
+    } else {
+        identity.repo.clone()
+    }
+}
+
+fn shell_title_uses_slug(shell: &ShellConfig, identity: &RepositoryIdentity) -> bool {
+    let slug = identity.github_repository().slug();
+    shell.slug_repository_patterns().iter().any(|pattern| {
+        Glob::new(pattern)
+            .map(|glob| glob.compile_matcher().is_match(&slug))
+            .unwrap_or(false)
+    })
+}
+
+fn workspace_name_for_layout_root(
+    layout: &LayoutConfig,
+    identity: &RepositoryIdentity,
+    root: &Path,
+    environment: &RuntimeEnvironment,
+) -> Result<Option<String>, RepositoryError> {
+    if layout.project_destination(identity, environment)? == root {
+        return Ok(None);
+    }
+
+    let collection_root = layout.workspace_collection_root(identity, environment)?;
+    let Ok(relative) = root.strip_prefix(collection_root) else {
+        return Ok(None);
+    };
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(workspace)) = components.next() else {
+        return Ok(None);
+    };
+    if components.next().is_some() {
+        return Ok(None);
+    }
+
+    Ok(workspace.to_str().map(str::to_owned))
+}
+
+fn fallback_title_context(current_dir: &Path, environment: &RuntimeEnvironment) -> String {
+    if let Some(home) = environment
+        .variable("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+    {
+        if current_dir == home {
+            return "~".to_owned();
+        }
+        if let Ok(relative) = current_dir.strip_prefix(&home) {
+            return format!("~/{}", relative.display());
+        }
+    }
+
+    current_dir.display().to_string()
 }
 
 fn bash_cli_completion_script() -> String {
@@ -236,6 +359,78 @@ jx() {{
 "#,
         prefix = SHELL_CD_TARGET_PREFIX,
     )
+}
+
+fn bash_title_script() -> &'static str {
+    r#"# Generated by jx shell init bash: terminal titles and prompt context.
+if [[ "${starship_precmd_user_func:-}" != "__jx_shell_title_precmd" ]]; then
+  __jx_shell_title_previous_starship_precmd_user_func="${starship_precmd_user_func:-}"
+elif [[ -z "${__jx_shell_title_previous_starship_precmd_user_func+x}" ]]; then
+  __jx_shell_title_previous_starship_precmd_user_func=""
+fi
+
+__jx_shell_title_context_fallback() {
+  if [[ -n "${HOME:-}" && "$PWD" == "$HOME" ]]; then
+    printf '~'
+  elif [[ -n "${HOME:-}" && "$PWD" == "$HOME"/* ]]; then
+    printf '~/%s' "${PWD#"$HOME"/}"
+  else
+    printf '%s' "$PWD"
+  fi
+}
+
+__jx_shell_title_context() {
+  local context
+  context="$(command jx shell title 2>/dev/null)" || context="$(__jx_shell_title_context_fallback)"
+  printf '%s' "$context"
+}
+
+jx_title() {
+  local prefix="${1:-}"
+  local context="${JX_WORK_CONTEXT:-}"
+  if [[ -z "$context" ]]; then
+    context="$(__jx_shell_title_context)"
+  fi
+
+  local title="$context"
+  [[ -n "$prefix" ]] && title="$prefix: $title"
+  printf '\033]0;%s\007' "$title"
+  if declare -F termflow_zellij_tab_title >/dev/null 2>&1; then
+    termflow_zellij_tab_title "$title"
+  fi
+}
+
+__jx_shell_title_update() {
+  local context
+  if [[ "${__jx_shell_title_pwd:-}" != "$PWD" || -z "${JX_WORK_CONTEXT+x}" ]]; then
+    context="$(__jx_shell_title_context)"
+    export JX_WORK_CONTEXT="$context"
+    __jx_shell_title_pwd="$PWD"
+  fi
+  jx_title
+}
+
+__jx_shell_title_precmd() {
+  local ret=$?
+  if [[ -n "$__jx_shell_title_previous_starship_precmd_user_func" ]] && declare -F "$__jx_shell_title_previous_starship_precmd_user_func" >/dev/null 2>&1; then
+    "$__jx_shell_title_previous_starship_precmd_user_func"
+  fi
+  __jx_shell_title_update
+  return $ret
+}
+
+__jx_shell_title_install_prompt_command() {
+  case ";${PROMPT_COMMAND:-};" in
+    *";__jx_shell_title_precmd;"*) ;;
+    *) PROMPT_COMMAND="__jx_shell_title_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+  esac
+}
+
+starship_precmd_user_func="__jx_shell_title_precmd"
+if ! declare -F starship_precmd >/dev/null 2>&1; then
+  __jx_shell_title_install_prompt_command
+fi
+"#
 }
 
 fn bash_navigation_script(

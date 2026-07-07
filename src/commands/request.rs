@@ -158,6 +158,7 @@ pub(super) struct WorkDeleteRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ShellRequest {
     Init(ShellInitRequest),
+    Title,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +309,7 @@ impl CommandRequest {
             Self::Shell(ShellRequest::Init(request)) => {
                 attrs.extend([perf_attr("shell", shell_kind_name(request.shell))])
             }
+            Self::Shell(ShellRequest::Title) => {}
             Self::Open(request) => add_open_perf_attrs(&mut attrs, request),
             Self::Review(request) => attrs.extend([
                 perf_attr("repo_filter_count", request.repo_filters.len()),
@@ -369,6 +371,7 @@ impl CommandRequest {
             Self::Stack(StackRequest::CompleteReviewers(_)) => "stack.complete-reviewers",
             Self::Stack(StackRequest::Status(_)) => "stack.status",
             Self::Shell(ShellRequest::Init(_)) => "shell.init",
+            Self::Shell(ShellRequest::Title) => "shell.title",
             Self::Open(OpenRequest {
                 target: OpenTarget::Repository,
                 ..
@@ -692,6 +695,7 @@ fn shell_request(matches: &ArgMatches) -> Result<ShellRequest, clap::Error> {
         Some(("init", matches)) => Ok(ShellRequest::Init(ShellInitRequest {
             shell: shell_kind(matches)?,
         })),
+        Some(("title", _)) => Ok(ShellRequest::Title),
         _ => Err(clap::Error::raw(
             ErrorKind::MissingSubcommand,
             "`jx shell` requires `init`",
@@ -1128,7 +1132,8 @@ pub(super) fn cli() -> ClapCommand {
                     ClapCommand::new("init")
                         .about("Print shell integration for eval")
                         .arg(shell_arg()),
-                ),
+                )
+                .subcommand(ClapCommand::new("title").hide(true)),
         )
         .subcommand(
             ClapCommand::new("open")
