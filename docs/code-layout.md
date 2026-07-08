@@ -156,9 +156,9 @@ Starship prompts can show the context by replacing or complementing `$directory`
 with `${env_var.JX_WORK_CONTEXT}` in `format` and styling
 `[env_var.JX_WORK_CONTEXT]`; source the generated Bash after `starship init` so
 its precmd hook can compose with Starship's hook. Repositories matching
-`[shell] slug_repositories` globs render as `owner/repo`, which keeps
-organization-scoped workspaces such as `Faire/backend@fix` distinct without
-changing personal-project titles.
+`[shell] slug_repositories` globs render as `owner/repo` in titles and shell
+navigation, which keeps organization-scoped workspaces such as
+`Faire/backend@fix` distinct without changing personal-project titles.
 
 ## Workspace metadata
 

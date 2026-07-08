@@ -124,9 +124,23 @@ impl ShellConfig {
         self.title
     }
 
-    /// Returns repository globs that should render as `owner/repo` in shell titles.
-    pub fn slug_repository_patterns(&self) -> &[String] {
-        &self.slug_repositories
+    /// Returns the shell-facing repository label for prompts, titles, and navigation.
+    pub fn repository_label(&self, identity: &RepositoryIdentity) -> String {
+        if self.uses_repository_slug(identity) {
+            identity.github_repository().slug()
+        } else {
+            identity.repo.clone()
+        }
+    }
+
+    /// Returns whether this repository should render as `owner/repo` in shell surfaces.
+    pub fn uses_repository_slug(&self, identity: &RepositoryIdentity) -> bool {
+        let slug = identity.github_repository().slug();
+        self.slug_repositories.iter().any(|pattern| {
+            Glob::new(pattern)
+                .map(|glob| glob.compile_matcher().is_match(&slug))
+                .unwrap_or(false)
+        })
     }
 }
 

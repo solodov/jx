@@ -79,7 +79,7 @@ zoxide = "auto"
         .contains("if [[ -z \"$cur\" || \"$key\" == \"$cur\"* ]]; then"));
     assert!(result
         .stdout
-        .contains("elif [[ \"$key\" == *\"$cur\"* ]]; then"));
+        .contains("elif [[ \"$key\" != */* && \"$key\" == *\"$cur\"* ]]; then"));
     assert!(result
         .stdout
         .contains("picker_candidates=(\"${prefix_candidates[@]}\" \"${fragment_candidates[@]}\")"));

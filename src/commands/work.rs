@@ -444,6 +444,7 @@ pub(super) fn navigation_work_locations_from_global(
     current_workspaces: &[WorkspaceEntry],
     global: Vec<WorkLocation>,
 ) -> Result<Vec<WorkLocation>, RepositoryError> {
+    let global = navigation_global_work_locations(config, environment, global)?;
     let mut locations = current_workspace_name_locations(current_workspaces);
 
     let Some(current_repository) =
@@ -475,6 +476,41 @@ pub(super) fn navigation_work_locations_from_global(
     locations.extend(other_global);
 
     Ok(deduplicate_work_locations_by_key(locations))
+}
+
+fn navigation_global_work_locations(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+    global: Vec<WorkLocation>,
+) -> Result<Vec<WorkLocation>, RepositoryError> {
+    global
+        .into_iter()
+        .map(|location| navigation_global_work_location(config, environment, location))
+        .collect()
+}
+
+fn navigation_global_work_location(
+    config: &WorkflowConfig,
+    environment: &RuntimeEnvironment,
+    location: WorkLocation,
+) -> Result<WorkLocation, RepositoryError> {
+    let identity = config
+        .layout
+        .identity_for_workspace_root(&location.root, environment)?;
+    if !config.shell.uses_repository_slug(&identity) {
+        return Ok(location);
+    }
+
+    let mut key = config.shell.repository_label(&identity);
+    if let Some((_, workspace)) = location.key.split_once('@') {
+        key.push('@');
+        key.push_str(workspace);
+    }
+
+    Ok(WorkLocation {
+        key,
+        root: location.root,
+    })
 }
 
 fn current_repository_workspace_aliases(
@@ -886,7 +922,7 @@ fn navigation_match_rank(candidate: &str, query: &str) -> Option<NavigationMatch
         Some(NavigationMatchRank::Exact)
     } else if candidate.starts_with(query) {
         Some(NavigationMatchRank::Prefix)
-    } else if candidate.contains(query) {
+    } else if !candidate.contains('/') && candidate.contains(query) {
         Some(NavigationMatchRank::Contains)
     } else {
         None

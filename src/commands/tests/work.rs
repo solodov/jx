@@ -1001,6 +1001,73 @@ path = "{repo}"
 }
 
 #[test]
+fn work_navigation_uses_configured_repository_slugs() {
+    // Verifies: Shell navigation can require organization slugs for configured repository groups.
+    let workspace = TestWorkspace::new_uninitialized_under("outside");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "Faire"
+root = "~/faire"
+path = "{repo}"
+
+[shell]
+slug_repositories = ["Faire/*"]
+"#,
+    );
+    let primary = workspace.home.join("faire/backend");
+    let fix = workspace.home.join("faire/.work/backend/FD-123-fix");
+    create_jj_workspace_marker(&primary);
+    create_jj_workspace_marker(&fix);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let completion = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--prefix",
+            "Faire",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("navigation completion succeeds");
+    let root = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "root",
+            "--navigation",
+            "Faire/backend@FD-123-fix",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("slugged navigation root succeeds");
+    let raw = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "backend"],
+        &environment,
+        &services,
+    )
+    .expect_err("raw repo name is not a slugged navigation key");
+
+    assert_eq!(
+        completion.stdout,
+        "Faire/backend\nFaire/backend@FD-123-fix\n"
+    );
+    assert_eq!(root.stdout, format!("{}\n", fix.display()));
+    assert!(matches!(
+        raw,
+        CommandError::Repository(RepositoryError::WorkLocationNotFound { .. })
+    ));
+}
+
+#[test]
 fn work_complete_navigation_records_perf_steps() {
     // Verifies: Navigation completion reports where candidate gathering spends time.
     let workspace = TestWorkspace::new_under("projects/.work/sample/current");

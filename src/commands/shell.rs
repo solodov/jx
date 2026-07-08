@@ -1,5 +1,4 @@
 use super::*;
-use globset::Glob;
 
 /// Supported shell targets for generated integration scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +76,7 @@ fn layout_title_context(
         Err(error) => return Err(error),
     };
 
-    let mut context = shell_title_repository_label(&config.shell, &identity);
+    let mut context = config.shell.repository_label(&identity);
     if let Some(workspace) =
         workspace_name_for_layout_root(&config.layout, &identity, root, environment)?
     {
@@ -93,23 +92,6 @@ fn layout_title_context(
     }
 
     Ok(Some(context))
-}
-
-fn shell_title_repository_label(shell: &ShellConfig, identity: &RepositoryIdentity) -> String {
-    if shell_title_uses_slug(shell, identity) {
-        identity.github_repository().slug()
-    } else {
-        identity.repo.clone()
-    }
-}
-
-fn shell_title_uses_slug(shell: &ShellConfig, identity: &RepositoryIdentity) -> bool {
-    let slug = identity.github_repository().slug();
-    shell.slug_repository_patterns().iter().any(|pattern| {
-        Glob::new(pattern)
-            .map(|glob| glob.compile_matcher().is_match(&slug))
-            .unwrap_or(false)
-    })
 }
 
 fn workspace_name_for_layout_root(
@@ -592,7 +574,7 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
     key="${{row%%$'\t'*}}"
     if [[ -z "$cur" || "$key" == "$cur"* ]]; then
       prefix_candidates+=("$row")
-    elif [[ "$key" == *"$cur"* ]]; then
+    elif [[ "$key" != */* && "$key" == *"$cur"* ]]; then
       fragment_candidates+=("$row")
     fi
   done
