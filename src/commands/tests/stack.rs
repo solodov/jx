@@ -2422,6 +2422,92 @@ fn stack_publish_without_revision_publishes_inferred_stack() {
 }
 
 #[test]
+fn stack_publish_apply_to_stack_revision_publishes_anchor_stack() {
+    // Verifies: -A with one revision treats that revision as a stack anchor instead of a one-commit subset.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.commit_id = "11111111aaaaaaaa".to_owned();
+    root.target_change.description = "Root change".to_owned();
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
+    child.target_change.description = "Child change".to_owned();
+    child.nearest_ancestor_bookmark = None;
+    child.stack_index = 1;
+    let root_pr =
+        pull_request_choice_record(42, "Root change", "example-user/00-aaaaaaaa", "main", false);
+    let child_pr = pull_request_choice_record(
+        43,
+        "Child change",
+        "example-user/01-bbbbbbbb",
+        "example-user/00-aaaaaaaa",
+        false,
+    );
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+            ],
+            publish_indexes: vec![0, 1],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        }),
+        sync_pull_requests: vec![root_pr, child_pr],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-A", "-r", "bbbbbbbb"],
+        &environment,
+        &services,
+    )
+    .expect("anchored stack publishes");
+
+    assert_eq!(
+        services.stack_publish_selections.borrow().first(),
+        Some(&StackPublishSelection::InferredStack {
+            anchor: Some("bbbbbbbb".to_owned())
+        })
+    );
+    assert_eq!(
+        services.sync_pull_request_pushes.borrow()[0]
+            .bookmarks
+            .len(),
+        2
+    );
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created {}\nCreated {}\nStack: refreshed stack context on {}, {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(43),
+            example_pull_request_link(42),
+            example_pull_request_link(43),
+        )
+    );
+}
+
+#[test]
 fn stack_publish_intent_flags_apply_to_current_commit_only() {
     // Verifies: publish intent such as task, labels, reviewers, draft, and fixes stays on the current stack commit.
     let workspace = TestWorkspace::new();

@@ -697,7 +697,7 @@ impl StackPublishExecution<'_> {
         let publish_options = PullRequestPublishOptions {
             event_handlers: !request.no_event_handlers,
         };
-        let selection = stack_publish_selection(&request.revisions);
+        let selection = stack_publish_selection(&request.revisions, request.apply_to_stack);
 
         self.progress.status("Loading publish stack…");
         let (facts, prepare_effects) = span.measure(
@@ -1336,13 +1336,15 @@ fn non_empty_stack_publish_facts(
     Ok(facts)
 }
 
-fn stack_publish_selection(revisions: &[String]) -> StackPublishSelection {
-    if revisions.is_empty() {
-        StackPublishSelection::InferredStack { anchor: None }
-    } else {
-        StackPublishSelection::ExplicitRevisions {
+fn stack_publish_selection(revisions: &[String], apply_to_stack: bool) -> StackPublishSelection {
+    match (revisions, apply_to_stack) {
+        ([], _) => StackPublishSelection::InferredStack { anchor: None },
+        ([anchor], true) => StackPublishSelection::InferredStack {
+            anchor: Some(anchor.clone()),
+        },
+        _ => StackPublishSelection::ExplicitRevisions {
             revisions: revisions.to_vec(),
-        }
+        },
     }
 }
 
