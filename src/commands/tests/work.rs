@@ -570,8 +570,8 @@ path = "{repo}"
 }
 
 #[test]
-fn work_list_marks_current_workspace_and_aligns_paths() {
-    // Verifies: List renders jj workspaces as concise name/path rows with `@` on current.
+fn work_list_marks_current_workspace_in_plain_output_and_aligns_paths() {
+    // Verifies: Plain output still has a current-workspace fallback when color is unavailable.
     let environment = RuntimeEnvironment::new("/workspace", []);
     let services = FakeServices {
         workspaces: vec![
@@ -595,6 +595,45 @@ fn work_list_marks_current_workspace_and_aligns_paths() {
     assert_eq!(
         result.stdout,
         "default@  /Users/example/projects/jx\nfix       /Users/example/projects/.work/jx/fix\n"
+    );
+}
+
+#[test]
+fn work_list_styles_current_workspace_in_color_output() {
+    // Verifies: Terminal output keeps workspace names unchanged and uses style for currentness.
+    let environment = RuntimeEnvironment::new("/workspace", []);
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: PathBuf::from("/Users/example/projects/jx"),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "fix".to_owned(),
+                root: PathBuf::from("/Users/example/projects/.work/jx/fix"),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_progress(
+        ["jx", "work", "list"],
+        &environment,
+        &services,
+        &NoProgress,
+        test_prompt_handlers(),
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("workspace list succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "\x1b[1m\x1b[32mdefault\x1b[0m  /Users/example/projects/jx\nfix      /Users/example/projects/.work/jx/fix\n"
     );
 }
 

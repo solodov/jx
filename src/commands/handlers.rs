@@ -611,7 +611,7 @@ fn handle_work(
                 Ok(render_global_work_list(&locations))
             } else {
                 let workspaces = services.workspace_entries(environment.current_dir())?;
-                Ok(render_work_list(&workspaces))
+                Ok(render_work_list(&workspaces, output_mode.color))
             }
         }
         WorkRequest::Complete(request) => handle_work_complete(request, environment, services),
