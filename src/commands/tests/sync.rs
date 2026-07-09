@@ -222,6 +222,46 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_all_retries_transient_fetch_failures_before_reporting_error() {
+    // Verifies: Global sync rides out brief origin fetch transport failures before surfacing an error.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let retrying = workspace.create_jj_workspace("projects/retrying");
+    TestWorkspace::write_git_config_at(
+        &retrying,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/retrying.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        origin_push_access_roots: Some(BTreeSet::from([retrying.clone()])),
+        fetch_origin_failures_before_success: std::cell::Cell::new(2),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync succeeds after fetch retries");
+
+    assert_eq!(
+        services.fetch_origin_roots.borrow().as_slice(),
+        [retrying.clone(), retrying.clone(), retrying.clone()]
+    );
+    assert_eq!(services.push_tracked_roots.borrow().as_slice(), [retrying]);
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/retrying\n");
+}
+
+#[test]
 fn sync_all_filter_matches_owner_repo_suffix_in_provider_path() {
     // Verifies: `sync --all` filters match inside provider/owner/repo identities, not just compact keys.
     let workspace = TestWorkspace::new();

@@ -416,6 +416,7 @@ struct FakeServices {
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
     up_to_date_sync_roots: BTreeSet<PathBuf>,
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
+    fetch_origin_failures_before_success: std::cell::Cell<usize>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
     sync_push_options: std::cell::RefCell<Vec<SyncPushOptions>>,
@@ -566,6 +567,7 @@ impl Default for FakeServices {
             origin_push_access_roots: None,
             up_to_date_sync_roots: BTreeSet::new(),
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
+            fetch_origin_failures_before_success: std::cell::Cell::new(0),
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
             sync_push_options: std::cell::RefCell::new(Vec::new()),
@@ -1265,6 +1267,15 @@ impl CommandServices for FakeServices {
         self.fetch_origin_roots
             .borrow_mut()
             .push(context.workspace_root.clone());
+        let remaining_failures = self.fetch_origin_failures_before_success.get();
+        if remaining_failures > 0 {
+            self.fetch_origin_failures_before_success
+                .set(remaining_failures - 1);
+            return Err(JjError::Fetch {
+                message: "transient fetch failure".to_owned(),
+            });
+        }
+
         Ok(self.fetch.clone())
     }
 

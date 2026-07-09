@@ -200,7 +200,7 @@ fn fetch_current_repository(
 ) -> Result<String, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     progress.status("Fetching origin…");
-    let outcome = services.fetch_origin(&context)?;
+    let outcome = fetch_origin_with_retries(&context, services)?;
     progress.finish();
     let report = domain::fetch_report(&context, outcome);
     render_fetch(&report, environment.current_dir(), output.color).map_err(Into::into)
@@ -253,7 +253,7 @@ fn global_fetch_for_repository(
         return Ok(false);
     }
 
-    services.fetch_origin(&context)?;
+    fetch_origin_with_retries(&context, services)?;
     Ok(true)
 }
 
@@ -1296,7 +1296,7 @@ fn global_sync_existing_origin(
     services: &dyn CommandServices,
     local_ahead_by: i64,
 ) -> Result<GlobalSyncOutcome, CommandError> {
-    let fetch = services.fetch_origin(&context)?;
+    let fetch = fetch_origin_with_retries(&context, services)?;
     let mut changed = fetch_outcome_changed(&fetch);
     if context
         .config
@@ -1325,6 +1325,41 @@ fn global_sync_existing_origin(
     } else {
         Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::UpToDate))
     }
+}
+
+/// Fetches origin with brief retries for transient git transport failures.
+fn fetch_origin_with_retries(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+) -> Result<FetchOutcome, JjError> {
+    let retry_delays = fetch_origin_retry_delays();
+    let mut attempt = 0;
+
+    loop {
+        match services.fetch_origin(context) {
+            Ok(outcome) => return Ok(outcome),
+            Err(error) if should_retry_origin_fetch(&error) && attempt < retry_delays.len() => {
+                let delay = retry_delays[attempt];
+                attempt += 1;
+                std::thread::sleep(delay);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn fetch_origin_retry_delays() -> [Duration; 2] {
+    [Duration::from_millis(250), Duration::from_secs(1)]
+}
+
+#[cfg(test)]
+fn fetch_origin_retry_delays() -> [Duration; 2] {
+    [Duration::ZERO, Duration::ZERO]
+}
+
+fn should_retry_origin_fetch(error: &JjError) -> bool {
+    matches!(error, JjError::Fetch { .. })
 }
 
 fn fetch_outcome_changed(fetch: &FetchOutcome) -> bool {
@@ -1667,7 +1702,7 @@ fn sync_current_stack_traced(
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
         Vec::new(),
-        || services.fetch_origin(&context),
+        || fetch_origin_with_retries(&context, services),
         fetch_result_attrs,
     )?;
     progress.status("Pushing stack bookmarks…");
@@ -1818,7 +1853,7 @@ fn sync_selected_revision_traced(
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
         Vec::new(),
-        || services.fetch_origin(&context),
+        || fetch_origin_with_retries(&context, services),
         fetch_result_attrs,
     )?;
     progress.status("Pushing selected bookmark…");
@@ -2062,7 +2097,7 @@ fn sync_existing_origin_traced(
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
         Vec::new(),
-        || services.fetch_origin(&context),
+        || fetch_origin_with_retries(&context, services),
         fetch_result_attrs,
     )?;
     let advance_trunk = context
