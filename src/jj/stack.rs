@@ -385,17 +385,23 @@ impl JjWorkspace {
             stack_plan_commit_sort_key(left).cmp(&stack_plan_commit_sort_key(right))
         });
         for child in children {
-            let parents = child.parent_ids();
-            if parents.len() != 1 || parents[0] != *commit.id() {
-                return Err(JjError::NonLinearStack {
-                    message: format!(
-                        "commit {} has {} parents; expected a single-parent stack neighbourhood",
-                        short_commit_id(child.id()),
-                        parents.len()
-                    ),
-                });
+            match stack_child_relationship(&child, commit.id()) {
+                StackChildRelationship::Linear => {
+                    self.append_stack_plan_node(child, Some(index), nodes, indexes_by_commit)?;
+                }
+                StackChildRelationship::Boundary => {
+                    // Merge children depend on this commit but are not part of its single-parent stack.
+                }
+                StackChildRelationship::Unrelated => {
+                    return Err(JjError::NonLinearStack {
+                        message: format!(
+                            "commit {} is not a child of {}",
+                            short_commit_id(child.id()),
+                            short_commit_id(commit.id())
+                        ),
+                    });
+                }
             }
-            self.append_stack_plan_node(child, Some(index), nodes, indexes_by_commit)?;
         }
         Ok(())
     }
@@ -423,32 +429,44 @@ impl JjWorkspace {
             let children = collect_child_ids(self.repo.as_ref(), cursor.id())?;
             metrics.collect_child_ids_us += duration_us(started.elapsed());
             metrics.collected_child_count += children.len();
-            match children.as_slice() {
-                [] => break,
-                [child_id] => {
-                    let started = Instant::now();
-                    let child = self.load_commit(child_id)?;
-                    metrics.load_child_commit_us += duration_us(started.elapsed());
-                    metrics.loaded_child_count += 1;
-                    let parents = child.parent_ids();
-                    if parents.len() != 1 || parents[0] != *cursor.id() {
+
+            let mut stack_children = Vec::new();
+            for child_id in children {
+                let started = Instant::now();
+                let child = self.load_commit(&child_id)?;
+                metrics.load_child_commit_us += duration_us(started.elapsed());
+                metrics.loaded_child_count += 1;
+
+                match stack_child_relationship(&child, cursor.id()) {
+                    StackChildRelationship::Linear => stack_children.push(child),
+                    StackChildRelationship::Boundary => {
+                        // Merge children are stack boundaries, not continuations to publish.
+                    }
+                    StackChildRelationship::Unrelated => {
                         return Err(JjError::NonLinearStack {
                             message: format!(
-                                "commit {} is not a single-parent child of {}",
+                                "commit {} is not a child of {}",
                                 short_commit_id(child.id()),
                                 short_commit_id(cursor.id())
                             ),
                         });
                     }
+                }
+            }
+
+            match stack_children.as_slice() {
+                [] => break,
+                [child] => {
+                    let child = child.clone();
                     path.push(child.clone());
                     cursor = child;
                 }
                 _ => {
                     return Err(JjError::NonLinearStack {
                         message: format!(
-                            "commit {} has {} children; expected a single linear stack",
+                            "commit {} has {} single-parent children; expected a single linear stack",
                             short_commit_id(cursor.id()),
-                            children.len()
+                            stack_children.len()
                         ),
                     });
                 }
@@ -691,6 +709,24 @@ impl JjWorkspace {
                 matches: best_matches,
             }),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StackChildRelationship {
+    Linear,
+    Boundary,
+    Unrelated,
+}
+
+fn stack_child_relationship(child: &Commit, parent_id: &CommitId) -> StackChildRelationship {
+    let parents = child.parent_ids();
+    if parents.len() == 1 && parents[0] == *parent_id {
+        StackChildRelationship::Linear
+    } else if parents.iter().any(|id| id == parent_id) {
+        StackChildRelationship::Boundary
+    } else {
+        StackChildRelationship::Unrelated
     }
 }
 

@@ -225,6 +225,57 @@ fn stack_plan_facts_include_branching_neighbourhood() {
 }
 
 #[test]
+fn stack_plan_facts_stop_before_merge_child() {
+    // Verifies: stack planning treats aggregate merge commits as boundaries, not stack children.
+    let fixture = TestWorkspace::new("stack-plan-merge-child-boundary");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let current = write_child(tx.repo_mut(), &trunk, "current change").await;
+        let sibling = write_child(tx.repo_mut(), &trunk, "sibling change").await;
+        let _merge = tx
+            .repo_mut()
+            .new_commit(
+                vec![current.id().clone(), sibling.id().clone()],
+                current.tree(),
+            )
+            .set_description("merge child")
+            .write()
+            .await
+            .expect("write merge child");
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange stack plan with merge child")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_plan_facts(&StackPlanSelection::InferredStack { anchor: None })
+        .expect("merge child is excluded from stack plan");
+
+    assert_eq!(facts.selected_indexes, vec![0]);
+    assert_eq!(facts.anchor_index, Some(0));
+    assert_eq!(facts.nodes.len(), 1);
+    assert_eq!(
+        facts.nodes[0].workspace.target_change.description,
+        "current change"
+    );
+}
+
+#[test]
 fn stack_plan_facts_reject_multiple_selected_roots() {
     // Verifies: explicit stack plans must still target one common root.
     let fixture = TestWorkspace::new("stack-plan-multiple-roots");
@@ -319,6 +370,60 @@ fn stack_publish_facts_infer_full_linear_stack_around_current() {
     assert_eq!(facts.metrics.collected_child_count, 1);
     assert_eq!(facts.metrics.loaded_child_count, 1);
     assert_eq!(facts.metrics.workspace_fact_count, 3);
+}
+
+#[test]
+fn stack_publish_facts_stop_before_merge_child() {
+    // Verifies: aggregate merge commits above the selected change do not make a linear stack unpublishable.
+    let fixture = TestWorkspace::new("stack-publish-merge-child-boundary");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let current = write_child(tx.repo_mut(), &trunk, "current change").await;
+        let sibling = write_child(tx.repo_mut(), &trunk, "sibling change").await;
+        let _merge = tx
+            .repo_mut()
+            .new_commit(
+                vec![current.id().clone(), sibling.id().clone()],
+                current.tree(),
+            )
+            .set_description("merge child")
+            .write()
+            .await
+            .expect("write merge child");
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange inferred stack publish with merge child")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_publish_facts(&StackPublishSelection::InferredStack { anchor: None })
+        .expect("merge child is excluded from inferred stack");
+
+    assert_eq!(facts.publish_indexes, vec![0]);
+    assert_eq!(facts.anchor_index, Some(0));
+    assert_eq!(facts.nodes.len(), 1);
+    assert_eq!(
+        facts.nodes[0].workspace.target_change.description,
+        "current change"
+    );
+    assert_eq!(facts.metrics.collected_child_count, 1);
+    assert_eq!(facts.metrics.loaded_child_count, 1);
+    assert_eq!(facts.metrics.workspace_fact_count, 1);
 }
 
 #[test]
