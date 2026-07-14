@@ -55,31 +55,32 @@ fn clone_infers_owner_from_current_layout_prefix() {
         r#"
 [[layout.rules]]
 source = "github"
-owner = "solodov"
+owner = "example-owner"
 root = "~/projects"
 path = "{repo}"
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
-    let expected_destination = workspace.home.join("projects/termflow");
+    let expected_destination = workspace.home.join("projects/example-tool");
     let services = FakeServices {
         expected_clone: Some((
-            "git@github.com:solodov/termflow.git".to_owned(),
+            "git@github.com:example-owner/example-tool.git".to_owned(),
             expected_destination.clone(),
         )),
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "clone", "termflow"], &environment, &services)
-        .expect("clone succeeds");
+    let result =
+        run_with_args_and_services(["jx", "clone", "example-tool"], &environment, &services)
+            .expect("clone succeeds");
 
     assert_eq!(
         result.stdout,
         format!(
-            "Cloned {} to ~/projects/termflow\n",
+            "Cloned {} to ~/projects/example-tool\n",
             osc8_link(
-                "https://github.com/solodov/termflow",
-                "git@github.com:solodov/termflow.git"
+                "https://github.com/example-owner/example-tool",
+                "git@github.com:example-owner/example-tool.git"
             )
         )
     );

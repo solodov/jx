@@ -43,9 +43,9 @@ use crate::{
     github::{
         GitHubClient, GitHubUserProfile, OctocrabGitHubClient, PullRequestCheckStatus,
         PullRequestHead, PullRequestLabel, PullRequestRecord, PullRequestReviewActivity,
-        PullRequestReviewRequests, PullRequestReviewStatus, PullRequestStatusRecord,
-        PullRequestTimelineEvent, PullRequestTimelineEventKind, RepositoryCreation,
-        ReviewerCandidate, ReviewerSelection, ReviewerTarget,
+        PullRequestReviewRequests, PullRequestReviewStatus, PullRequestReviewerResponse,
+        PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
+        RepositoryCreation, ReviewerCandidate, ReviewerSelection, ReviewerTarget,
     },
     jj::{
         current_workspace_entry, jj_workspace_entries, remove_jj_workspace, run_current_diff,
@@ -65,10 +65,10 @@ use crate::{
         read_github_user_name_cache, read_stack_metadata, read_workspace_metadata,
         validate_workspace_name, write_github_user_name_cache, write_stack_metadata,
         write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote, GitHubRepository,
-        LayoutConfig, LocalRepositoryContext, RepoCheckConfig, RepoCheckTrigger, RepoHook,
-        RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext, RepositoryError,
-        RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
-        TokenSource, WorkflowConfig, WorkspaceMetadata,
+        LayoutConfig, LocalRepositoryContext, PullRequestStore, RepoCheckConfig, RepoCheckTrigger,
+        RepoHook, RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext,
+        RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode,
+        StackMetadata, TokenSource, WorkflowConfig, WorkspaceMetadata,
     },
 };
 

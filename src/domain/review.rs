@@ -6,13 +6,23 @@ pub fn review_request_state(status: &PullRequestStatusRecord, viewer: &str) -> R
         .approved_reviewers
         .iter()
         .any(|reviewer| reviewer == viewer);
+    let changes_requested = status
+        .changes_requested_reviewers
+        .iter()
+        .any(|reviewer| reviewer == viewer);
     let directly_requested = status
         .requested_reviewers
         .users
         .iter()
         .any(|reviewer| reviewer == viewer);
 
-    if approved && !directly_requested {
+    if directly_requested {
+        if approved {
+            ReviewRequestState::Again
+        } else {
+            ReviewRequestState::New
+        }
+    } else if approved {
         ReviewRequestState::Approved
     } else if status
         .addressed_reviewers
@@ -20,14 +30,14 @@ pub fn review_request_state(status: &PullRequestStatusRecord, viewer: &str) -> R
         .any(|reviewer| reviewer == viewer)
     {
         ReviewRequestState::Answered
+    } else if changes_requested {
+        ReviewRequestState::ChangesRequested
     } else if status
         .commented_reviewers
         .iter()
         .any(|reviewer| reviewer == viewer)
     {
         ReviewRequestState::Commented
-    } else if approved {
-        ReviewRequestState::Again
     } else {
         ReviewRequestState::New
     }

@@ -8,8 +8,8 @@ use crate::{
         AuthenticatedUser, LabelApplyResult, PullRequestCheck, PullRequestCheckStatus,
         PullRequestHead, PullRequestLabel, PullRequestRecord, PullRequestReviewActivity,
         PullRequestReviewRequest, PullRequestReviewRequests, PullRequestReviewStatus,
-        PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
-        ReviewerSelection, ReviewerSyncResult,
+        PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
+        PullRequestTimelineEventKind, ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebasedCommitSummary,

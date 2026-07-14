@@ -1,5 +1,8 @@
 use super::*;
 use crate::domain::ReviewRequestState;
+use crate::github::PullRequestReviewerMention;
+
+const JX_DISMISSAL_LABEL_COLOR: &str = "5319e7";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands) struct ReviewRequestsView {
@@ -22,6 +25,30 @@ pub(in crate::commands) struct ReviewRequestRepositoryView {
 pub(in crate::commands) struct ReviewRequestRowView {
     pub(in crate::commands) status: PullRequestStatusRecord,
     pub(in crate::commands) state: ReviewRequestState,
+    pub(in crate::commands) viewer_signal: ReviewRequestViewerSignal,
+    pub(in crate::commands) dismissal: Option<ReviewRequestDismissalView>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::commands) enum ReviewRequestViewerSignal {
+    #[default]
+    None,
+    DismissedApproval,
+}
+
+impl ReviewRequestViewerSignal {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::DismissedApproval => Some("dismissed_approval"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::commands) struct ReviewRequestDismissalView {
+    pub(in crate::commands) source: String,
+    pub(in crate::commands) reason: String,
 }
 
 pub(in crate::commands) fn render_review_requests(
@@ -31,22 +58,9 @@ pub(in crate::commands) fn render_review_requests(
     display_names: &BTreeMap<String, String>,
 ) -> String {
     let mut output = String::new();
-    let pull_request_count = view
-        .repositories
-        .iter()
-        .map(|repository| repository.rows.len())
-        .sum::<usize>();
-    output.push_str(&format!(
-        "Review requests for {viewer}: {pull_request_count} pull request{} across {repository_count} repositor{}\n",
-        if pull_request_count == 1 { "" } else { "s" },
-        if view.repositories.len() == 1 { "y" } else { "ies" },
-        viewer = pull_request_user_display_name(&view.viewer, display_names),
-        repository_count = view.repositories.len(),
-    ));
     if view.repositories.is_empty() {
         return output;
     }
-    output.push('\n');
 
     for (index, repository) in view.repositories.iter().enumerate() {
         if index > 0 {
@@ -55,7 +69,7 @@ pub(in crate::commands) fn render_review_requests(
         output.push_str(&review_repository_header(repository, color));
         output.push('\n');
         output.push_str(&format!(
-            "  {pr:<pr_width$}  Chk  Req  {:<lag_width$}  Title\n",
+            "  {pr:<pr_width$}  Chk  Rev  {:<lag_width$}  Title\n",
             "Lag",
             pr = "PR",
             pr_width = PULL_REQUEST_STATUS_PR_WIDTH,
@@ -74,8 +88,6 @@ pub(in crate::commands) fn render_review_requests(
         }
     }
 
-    output.push('\n');
-    output.push_str(&review_requests_legend(color));
     output
 }
 
@@ -167,8 +179,13 @@ struct ReviewPullRequestJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     closed_at: Option<String>,
     check_status: &'static str,
+    merge_status: &'static str,
     review_status: &'static str,
     request_state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewer_review_signal: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dismissal: Option<ReviewDismissalJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     labels: Vec<ReviewLabelJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -180,9 +197,15 @@ struct ReviewPullRequestJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     approved_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    changes_requested_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     commented_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     addressed_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reviewer_responses: Vec<ReviewResponseJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reviewer_mentions: Vec<ReviewMentionJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dismissed_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -222,15 +245,29 @@ impl ReviewPullRequestJson {
             merged_at: status.merged_at.clone(),
             closed_at: status.closed_at.clone(),
             check_status: status.check_status.label(),
+            merge_status: status.merge_status.label(),
             review_status: status.review_status.label(),
             request_state: row.state.label(),
+            viewer_review_signal: row.viewer_signal.label(),
+            dismissal: row.dismissal.as_ref().map(ReviewDismissalJson::from),
             labels: status.labels.iter().map(ReviewLabelJson::from).collect(),
             requested_users: status.requested_reviewers.users.clone(),
             requested_teams: status.requested_reviewers.teams.clone(),
             suggested_users: status.suggested_reviewers.clone(),
             approved_users: status.approved_reviewers.clone(),
+            changes_requested_users: status.changes_requested_reviewers.clone(),
             commented_users: status.commented_reviewers.clone(),
             addressed_users: status.addressed_reviewers.clone(),
+            reviewer_responses: status
+                .reviewer_responses
+                .iter()
+                .map(ReviewResponseJson::from)
+                .collect(),
+            reviewer_mentions: status
+                .reviewer_mentions
+                .iter()
+                .map(ReviewMentionJson::from)
+                .collect(),
             dismissed_users: status.dismissed_reviewers.clone(),
             review_activity: status
                 .review_activity
@@ -243,6 +280,22 @@ impl ReviewPullRequestJson {
                 .map(ReviewTimelineEventJson::from)
                 .collect(),
             latest_commit_oid: status.latest_commit_oid.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewDismissalJson {
+    source: String,
+    reason: String,
+}
+
+impl From<&ReviewRequestDismissalView> for ReviewDismissalJson {
+    fn from(dismissal: &ReviewRequestDismissalView) -> Self {
+        Self {
+            source: dismissal.source.clone(),
+            reason: dismissal.reason.clone(),
         }
     }
 }
@@ -281,6 +334,38 @@ impl From<&PullRequestReviewActivity> for ReviewActivityJson {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReviewResponseJson {
+    reviewer: String,
+    responded_at: String,
+}
+
+impl From<&PullRequestReviewerResponse> for ReviewResponseJson {
+    fn from(response: &PullRequestReviewerResponse) -> Self {
+        Self {
+            reviewer: response.reviewer.clone(),
+            responded_at: response.responded_at.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewMentionJson {
+    reviewer: String,
+    mentioned_at: String,
+}
+
+impl From<&PullRequestReviewerMention> for ReviewMentionJson {
+    fn from(mention: &PullRequestReviewerMention) -> Self {
+        Self {
+            reviewer: mention.reviewer.clone(),
+            mentioned_at: mention.mentioned_at.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ReviewTimelineEventJson {
     kind: &'static str,
     created_at: String,
@@ -306,7 +391,10 @@ fn review_timeline_event_kind_label(kind: PullRequestTimelineEventKind) -> &'sta
     }
 }
 
-fn review_request_url(repository: &GitHubRepository, status: &PullRequestStatusRecord) -> String {
+pub(in crate::commands) fn review_request_url(
+    repository: &GitHubRepository,
+    status: &PullRequestStatusRecord,
+) -> String {
     status
         .url
         .as_deref()
@@ -341,25 +429,33 @@ fn review_request_row(
     display_names: &BTreeMap<String, String>,
 ) -> String {
     let row_color = color && !repository.external;
-    let active_cell_color = row_color && !row.status.draft;
+    let on_ice = review_request_is_on_ice(&row.status);
+    let active_cell_color = row_color && !row.status.draft && !on_ice;
+    let row_style = review_request_row_style(repository, row, color);
     let pr = review_request_pr_cell(&repository.repository, &row.status, row_color);
-    let check = pull_request_check_symbol(Some(&row.status), row.status.merged, active_cell_color);
+    let check = pull_request_check_symbol_with_restore(
+        Some(&row.status),
+        row.status.merged,
+        active_cell_color,
+        row_style,
+    );
     let lag = pull_request_viewer_review_lag(
         &row.status,
         viewer,
         repository.review_wait_threshold_seconds,
         review_request_state_waits_on_viewer(row.state),
     );
-    let state = review_request_state_cell(row.state, active_cell_color, lag.over_threshold);
-    let restore_style = if repository.external && color {
-        DIM_STYLE
-    } else if row.status.draft && color {
-        DRAFT_ROW_STYLE
-    } else {
-        ""
-    };
-    let lag = render_review_lag_cell(&lag, color, restore_style, false, row.status.draft);
-    let title = review_request_title(&row.status, viewer, row_color, display_names);
+    let state = review_request_state_cell(
+        &row.status,
+        row.state,
+        row.viewer_signal,
+        viewer,
+        active_cell_color,
+        lag.over_threshold,
+        row_style,
+    );
+    let lag = render_review_lag_cell(&lag, color && !on_ice, row_style, false, row.status.draft);
+    let title = review_request_title(row, row_color, display_names);
     let pr_padding = " ".repeat(
         PULL_REQUEST_STATUS_PR_WIDTH.saturating_sub(format!("#{}", row.status.number).len()),
     );
@@ -373,13 +469,35 @@ fn review_request_row(
         title = title,
     );
     let line = ellipsize_rendered_line(&line, terminal_width);
-    if repository.external && color {
-        format!("{DIM_STYLE}{line}{RESET_STYLE}")
-    } else if row.status.draft && color {
-        format!("{DRAFT_ROW_STYLE}{line}{RESET_STYLE}")
-    } else {
+    if row_style.is_empty() {
         line
+    } else {
+        format!("{row_style}{line}{RESET_STYLE}")
     }
+}
+
+fn review_request_row_style(
+    repository: &ReviewRequestRepositoryView,
+    row: &ReviewRequestRowView,
+    color: bool,
+) -> &'static str {
+    if !color {
+        ""
+    } else if pull_request_has_merge_conflict(&row.status) {
+        CONFLICT_STYLE
+    } else if review_request_is_on_ice(&row.status) {
+        PASTEL_BLUE_STYLE
+    } else if repository.external {
+        DIM_STYLE
+    } else if row.status.draft {
+        DRAFT_ROW_STYLE
+    } else {
+        ""
+    }
+}
+
+fn review_request_is_on_ice(status: &PullRequestStatusRecord) -> bool {
+    status.closed && !status.merged
 }
 
 fn review_request_pr_cell(
@@ -404,62 +522,95 @@ fn review_request_state_waits_on_viewer(state: ReviewRequestState) -> bool {
 }
 
 fn review_request_state_cell(
+    status: &PullRequestStatusRecord,
     state: ReviewRequestState,
+    viewer_signal: ReviewRequestViewerSignal,
+    viewer: &str,
     color: bool,
     review_lag_over_threshold: bool,
+    restore_style: &str,
 ) -> String {
+    if viewer_signal == ReviewRequestViewerSignal::DismissedApproval {
+        return styled_pull_request_symbol_with_restore(
+            "✓",
+            PullRequestSymbolStyle::Comment,
+            color,
+            restore_style,
+        );
+    }
     let (symbol, style) = match state {
         ReviewRequestState::New | ReviewRequestState::Answered | ReviewRequestState::Again => (
-            "◷",
-            if review_lag_over_threshold {
-                PullRequestSymbolStyle::Bad
+            "?",
+            pull_request_review_wait_style(review_lag_over_threshold),
+        ),
+        ReviewRequestState::ChangesRequested => ("!", PullRequestSymbolStyle::Bad),
+        ReviewRequestState::Commented => ("!", PullRequestSymbolStyle::Comment),
+        ReviewRequestState::Approved => (
+            "✓",
+            if status
+                .commented_reviewers
+                .iter()
+                .any(|reviewer| reviewer == viewer)
+            {
+                PullRequestSymbolStyle::Comment
             } else {
-                PullRequestSymbolStyle::Info
+                PullRequestSymbolStyle::Good
             },
         ),
-        ReviewRequestState::Commented => ("!", PullRequestSymbolStyle::Warn),
-        ReviewRequestState::Approved => ("✓", PullRequestSymbolStyle::Good),
     };
-    styled_pull_request_symbol(symbol, style, color)
+    styled_pull_request_symbol_with_restore(symbol, style, color, restore_style)
+}
+
+fn review_request_label_chips(row: &ReviewRequestRowView, color: bool) -> Vec<String> {
+    let mut labels = Vec::new();
+    if let Some(dismissal) = &row.dismissal {
+        labels.push(PullRequestLabel {
+            name: format!("jx:dismissed:{}", dismissal.reason),
+            color: JX_DISMISSAL_LABEL_COLOR.to_owned(),
+        });
+    }
+    labels.extend(row.status.labels.iter().cloned());
+    pull_request_label_chips(&labels, color, row.status.draft)
 }
 
 fn review_request_title(
-    status: &PullRequestStatusRecord,
-    viewer: &str,
+    row: &ReviewRequestRowView,
     color: bool,
     display_names: &BTreeMap<String, String>,
 ) -> String {
-    let marker = if status.draft { "◌" } else { "◯" };
+    let status = &row.status;
+    let marker = pull_request_node_symbol(Some(status), status.draft);
     let title = ellipsize_pull_request_title(&status.title);
     let mut parts = vec![format!("{marker} {title}")];
-    let labels = pull_request_label_chips(&status.labels, color, status.draft);
-    if !labels.is_empty() {
-        parts.push(labels.join(pull_request_label_separator(color)));
+    if review_request_is_on_ice(status) {
+        return parts.join(" ");
     }
-    let mut reviewer_tokens = Vec::new();
-    reviewer_tokens.extend(pull_request_reviewer_activity_tokens(
-        status,
-        viewer,
-        color && !status.draft,
-        display_names,
-    ));
-    if !reviewer_tokens.is_empty() {
-        parts.push(reviewer_tokens.join(", "));
+    let label_chips = review_request_label_chips(row, color);
+    if !label_chips.is_empty() {
+        parts.push(label_chips.join(pull_request_label_separator(color)));
+    }
+    if let Some(author) = review_request_author_token(status, color, display_names) {
+        parts.push(author);
     }
     parts.join(" ")
 }
 
-fn review_requests_legend(color: bool) -> String {
-    let lines = [
-        "Legend:",
-        "  Title: ◯ ready, ◌ draft; labels/reviewer activity follow title",
-        "  Chk: ✓ passing, ✗ failing, ◷ pending, — none/unknown",
-        "  Req: ◷ requested, ! commented, ✓ approved; Lag: waiting on you or since your review",
-    ];
-    let legend = lines.join("\n") + "\n";
+fn review_request_author_token(
+    status: &PullRequestStatusRecord,
+    color: bool,
+    display_names: &BTreeMap<String, String>,
+) -> Option<String> {
+    let author = status.author.as_deref()?.trim();
+    if author.is_empty() {
+        return None;
+    }
+    let author = display_names
+        .get(author)
+        .map(String::as_str)
+        .unwrap_or(author);
     if color {
-        format!("{DRAFT_ROW_STYLE}{legend}{RESET_STYLE}")
+        Some(format!("{BOLD_STYLE}{author}{RESET_STYLE}"))
     } else {
-        legend
+        Some(author.to_owned())
     }
 }

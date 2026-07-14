@@ -1,5 +1,5 @@
 use super::*;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, TimeZone as _};
 use std::{
     env,
     ffi::OsString,
@@ -144,8 +144,13 @@ fn next_dashboard_refresh_time(
     refreshed_at: DateTime<Local>,
     refresh_seconds: u64,
 ) -> Option<DateTime<Local>> {
-    let seconds = i64::try_from(refresh_seconds).ok()?;
-    refreshed_at.checked_add_signed(chrono::Duration::seconds(seconds))
+    let interval = i64::try_from(refresh_seconds).ok()?;
+    if interval <= 0 {
+        return None;
+    }
+    let current = refreshed_at.timestamp();
+    let next = current.checked_add(interval - current.rem_euclid(interval))?;
+    Local.timestamp_opt(next, 0).single()
 }
 
 fn dashboard_refresh_timed_out(elapsed: Duration) -> bool {
@@ -183,20 +188,18 @@ fn render_dashboard_frame(
 ) -> io::Result<()> {
     let spinner = SPINNER_FRAMES[spinner_index % SPINNER_FRAMES.len()];
     let refreshed = last_refreshed
-        .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+        .map(format_dashboard_refresh_time)
         .unwrap_or_else(|| "never".to_owned());
     let state = if refreshing {
         format!("{spinner} refreshing")
     } else {
         next_refresh_at
-            .map(|time| format!("next refresh: {}", time.format("%Y-%m-%d %H:%M:%S")))
+            .map(|time| format!("next refresh: {}", format_dashboard_refresh_time(time)))
             .unwrap_or_else(|| "next refresh: unknown".to_owned())
     };
     let mut output = String::new();
     output.push_str(CLEAR_SCREEN);
-    output.push_str(&format!(
-        "{title}  Last refreshed: {refreshed}  {state}  Ctrl-C to exit\n",
-    ));
+    output.push_str(&format!("{title}  Last refreshed: {refreshed}  {state}\n",));
     if let Some(error) = error {
         output.push_str(&format!("Last refresh failed: {error}\n"));
     } else {
@@ -208,6 +211,10 @@ fn render_dashboard_frame(
     let mut stdout = io::stdout();
     stdout.write_all(output.as_bytes())?;
     stdout.flush()
+}
+
+fn format_dashboard_refresh_time(time: DateTime<Local>) -> String {
+    time.format("%Y-%m-%d %H:%M").to_string()
 }
 
 struct ExecutableWatcher {
@@ -313,7 +320,6 @@ impl ProgressSink for SilentProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone as _;
 
     #[test]
     fn dashboard_wait_duration_treats_due_or_overdue_refreshes_as_ready() {
@@ -323,6 +329,28 @@ mod tests {
         assert_eq!(
             dashboard_wait_duration(now, Some(now - chrono::Duration::seconds(30))),
             None
+        );
+    }
+
+    #[test]
+    fn next_dashboard_refresh_time_aligns_to_wall_clock_interval_marks() {
+        let refreshed_at = local_test_time_at(12, 2, 15);
+
+        assert_eq!(
+            next_dashboard_refresh_time(refreshed_at, 300),
+            Some(local_test_time_at(12, 5, 0))
+        );
+        assert_eq!(
+            next_dashboard_refresh_time(local_test_time_at(12, 5, 0), 300),
+            Some(local_test_time_at(12, 10, 0))
+        );
+    }
+
+    #[test]
+    fn dashboard_refresh_time_format_omits_seconds() {
+        assert_eq!(
+            format_dashboard_refresh_time(local_test_time_at(12, 2, 15)),
+            "2026-01-15 12:02"
         );
     }
 
@@ -350,8 +378,12 @@ mod tests {
     }
 
     fn local_test_time() -> DateTime<Local> {
+        local_test_time_at(12, 0, 0)
+    }
+
+    fn local_test_time_at(hour: u32, minute: u32, second: u32) -> DateTime<Local> {
         Local
-            .with_ymd_and_hms(2026, 1, 15, 12, 0, 0)
+            .with_ymd_and_hms(2026, 1, 15, hour, minute, second)
             .single()
             .expect("test time is unambiguous in the local timezone")
     }

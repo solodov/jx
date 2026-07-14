@@ -158,7 +158,7 @@ with `${env_var.JX_WORK_CONTEXT}` in `format` and styling
 its precmd hook can compose with Starship's hook. Repositories matching
 `[shell] slug_repositories` globs render as `owner/repo` in titles and shell
 navigation, which keeps organization-scoped workspaces such as
-`Faire/backend@fix` distinct without changing personal-project titles.
+`example-org/backend@fix` distinct without changing personal-project titles.
 
 ## Workspace metadata
 

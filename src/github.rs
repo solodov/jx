@@ -26,8 +26,9 @@ pub use client::*;
 use client::{
     map_comparison_status, map_graphql_pull_request_status, pull_request_status_query,
     suggested_reviewers_from_graphql, user_profiles_from_graphql_response, user_profiles_query,
-    CompareCommitsResponse, CompareCommitsStatus, GraphQlError, GraphQlLabelNode, GraphQlLabels,
-    GraphQlPullRequestStatus, GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
+    CompareCommitsResponse, CompareCommitsStatus, GraphQlError, GraphQlIssueCommentNode,
+    GraphQlIssueComments, GraphQlLabelNode, GraphQlLabels, GraphQlPullRequestStatus,
+    GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
     GraphQlPullRequestStatusCommits, GraphQlRequestedReviewer, GraphQlResponse,
     GraphQlReviewAuthor, GraphQlReviewNode, GraphQlReviewRequestNode, GraphQlReviewRequests,
     GraphQlReviewThreadCommentNode, GraphQlReviewThreadComments, GraphQlReviewThreadNode,

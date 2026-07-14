@@ -1,4 +1,5 @@
 use super::*;
+use crate::github::PullRequestMergeStatus;
 
 #[test]
 fn stack_help_describes_cached_display_and_live_refresh() {
@@ -204,19 +205,214 @@ fn stack_status_renders_check_and_review_summary() {
         stack_status_pull_request_cell(101)
     )));
     assert!(result.stdout.contains(&format!(
-        "{}  ◷    ◷    <1h   └ ◌ Child change [ui] reviewer-one, team/platform, suggested-reviewer",
+        "{}  ◷    ?    <1h   └ ◌ Child change [ui] reviewer-one, team/platform, suggested-reviewer",
         stack_status_pull_request_cell(102)
     )));
+    assert!(!result.stdout.contains("Legend:"));
+}
+
+#[test]
+fn stack_status_renders_review_decision_symbols() {
+    // Verifies: review state summarizes approval, unresolved comments, changes, and active reviewer waits without a legend.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                stack_status_node(105, "topic/approved", "main", "Approved clean", false),
+                stack_status_node(
+                    106,
+                    "topic/approved-comments",
+                    "main",
+                    "Approved with comments",
+                    false,
+                ),
+                stack_status_node(107, "topic/comments", "main", "Comments pending", false),
+                stack_status_node(108, "topic/changes", "main", "Changes requested", false),
+                stack_status_node(109, "topic/waiting", "main", "Waiting reviewer", false),
+                stack_status_node(
+                    110,
+                    "topic/gate-pending",
+                    "main",
+                    "Approval pending gate",
+                    false,
+                ),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut approved_clean = stack_status_record(
+        105,
+        "Approved clean",
+        "topic/approved",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    approved_clean.approved_reviewers = vec!["reviewer-approved".to_owned()];
+    let mut approved_with_comments = stack_status_record(
+        106,
+        "Approved with comments",
+        "topic/approved-comments",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    approved_with_comments.approved_reviewers = vec!["reviewer-approved".to_owned()];
+    approved_with_comments.commented_reviewers = vec!["reviewer-commented".to_owned()];
+    let mut comments_pending = stack_status_record(
+        107,
+        "Comments pending",
+        "topic/comments",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequired,
+        ReviewerSelection::default(),
+    );
+    comments_pending.commented_reviewers = vec!["reviewer-commented".to_owned()];
+    let mut changes_requested = stack_status_record(
+        108,
+        "Changes requested",
+        "topic/changes",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ChangesRequested,
+        ReviewerSelection::default(),
+    );
+    changes_requested.changes_requested_reviewers = vec!["reviewer-change".to_owned()];
+    let waiting_reviewer = stack_status_record(
+        109,
+        "Waiting reviewer",
+        "topic/waiting",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequired,
+        ReviewerSelection::new(["reviewer-one"], Vec::<String>::new()),
+    );
+    let mut approval_pending_gate = stack_status_record(
+        110,
+        "Approval pending gate",
+        "topic/gate-pending",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["reviewer-two"], Vec::<String>::new()),
+    );
+    approval_pending_gate.approved_reviewers = vec!["reviewer-approved".to_owned()];
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "topic/approved".to_owned(),
+            "topic/approved-comments".to_owned(),
+            "topic/comments".to_owned(),
+            "topic/changes".to_owned(),
+            "topic/waiting".to_owned(),
+            "topic/gate-pending".to_owned(),
+        ],
+        pull_request_statuses: BTreeMap::from([
+            (105, approved_clean),
+            (106, approved_with_comments),
+            (107, comments_pending),
+            (108, changes_requested),
+            (109, waiting_reviewer),
+            (110, approval_pending_gate),
+        ]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        test_prompt_handlers(),
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("colored stack status succeeds");
+
     assert!(result
         .stdout
-        .contains("Legend:\n  Title: ● merged, ◯ ready/closed, ◌ draft"));
-    assert!(result.stdout.contains("labels/reviewers follow"));
+        .contains("\x1b[32m✓\x1b[0m    —     ◯ Approved clean"));
     assert!(result
         .stdout
-        .contains("Chk: ✓ passing, ✗ failing, ◷ pending"));
+        .contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ Approved with comments"));
     assert!(result
         .stdout
-        .contains("Rev: ✓ approved, ! changes requested, ◷ waiting"));
+        .contains("\x1b[38;2;194;95;0m!\x1b[0m    —     ◯ Comments pending"));
+    assert!(result
+        .stdout
+        .contains("\x1b[1m\x1b[31m!\x1b[0m    —     ◯ Changes requested"));
+    assert!(result
+        .stdout
+        .contains("\x1b[36m?\x1b[0m    —     ◯ Waiting reviewer"));
+    assert!(result
+        .stdout
+        .contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ Approval pending gate"));
+}
+
+#[test]
+fn stack_status_marks_unreviewed_review_cell() {
+    // Verifies: absent review state uses a compact placeholder instead of leaving the column empty.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                104,
+                "topic/no-review",
+                "main",
+                "No review yet",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/no-review".to_owned()],
+        pull_request_statuses: BTreeMap::from([(
+            104,
+            stack_status_record(
+                104,
+                "No review yet",
+                "topic/no-review",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::NotReviewed,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains(&format!(
+        "{}  ✓    -    —     ◯ No review yet",
+        stack_status_pull_request_cell(104)
+    )));
 }
 
 #[test]
@@ -269,7 +465,7 @@ fn stack_status_renders_dismissed_reviewers_without_active_requests() {
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ?    —     ◯ Dismissed reviewers reviewer-one, reviewer-two, reviewer-three",
+        "{}  ✓    -    —     ◯ Dismissed reviewers reviewer-one, reviewer-two, reviewer-three",
         stack_status_pull_request_cell(103)
     )));
 }
@@ -395,13 +591,13 @@ review_wait_threshold = "4h"
 
     assert!(result
         .stdout
-        .contains("\x1b[1m\x1b[31m◷\x1b[0m    \x1b[1m\x1b[31m5h  \x1b[0m  ◯ Old waiting"));
+        .contains("\x1b[1m\x1b[31m?\x1b[0m    \x1b[1m\x1b[31m5h  \x1b[0m  ◯ Old waiting"));
     assert!(result
         .stdout
-        .contains("\x1b[36m◷\x1b[0m    \x1b[2m1h  \x1b[0m  ◯ Fresh waiting"));
+        .contains("\x1b[36m?\x1b[0m    \x1b[2m1h  \x1b[0m  ◯ Fresh waiting"));
     assert!(result
         .stdout
-        .contains("◷    \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  ◌ Draft waiting"));
+        .contains("?    \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  ◌ Draft waiting"));
     assert!(result
         .stdout
         .contains("\x1b[32m✓\x1b[0m    \x1b[32m7h  \x1b[0m  \x1b[32m● Merged change\x1b[0m"));
@@ -850,7 +1046,7 @@ name = "^ci/noisy-advisory$"
 name = "generated-noise"
 
 [[repo.rules.stack_status.ignored_reviewers]]
-name = "ignored-bot"
+name = "^ignored-.*$"
 "#,
     );
     write_stack_metadata(
@@ -918,7 +1114,7 @@ name = "ignored-bot"
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ◷    —     ◯ Review gate change [useful-label] human-reviewer",
+        "{}  ✓    ?    —     ◯ Review gate change [useful-label] human-reviewer",
         stack_status_pull_request_cell(120)
     )));
     assert!(!result.stdout.contains("generated-noise"));
@@ -1207,7 +1403,7 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
         &[vec![451]]
     );
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ◷    —     ◌ Example branch-only status example-reviewer",
+        "{}  ✓    ?    —     ◌ Example branch-only status example-reviewer",
         stack_status_pull_request_cell(451)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -1510,9 +1706,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .contains("\x1b[38;2;118;108;96mmerged-commented-approved\x1b[0m"));
     assert!(!result.stdout.contains("obsolete-reviewer"));
     assert!(!result.stdout.contains("merged-addressed"));
-    assert!(result
-        .stdout
-        .contains("\x1b[2m\x1b[38;2;190;184;176mLegend:"));
+    assert!(!result.stdout.contains("Legend:"));
     assert!(!result.stdout.contains("[ui]"));
     assert!(!result.stdout.contains("\x1b[1m\x1b[30mdraft-pending"));
     assert!(!result.stdout.contains("\x1b[32mdraft-approved"));
@@ -1640,7 +1834,12 @@ fn stack_status_keeps_recently_closed_rows_as_reminders() {
         ReviewerSelection::default(),
     );
     closed.closed = true;
-    closed.closed_at = Some((chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339());
+    closed.closed_at = Some((chrono::Utc::now() - chrono::Duration::hours(12)).to_rfc3339());
+    closed.labels = vec![PullRequestLabel {
+        name: "closed-label".to_owned(),
+        color: "5319e7".to_owned(),
+    }];
+    closed.commented_reviewers = vec!["closed-reviewer".to_owned()];
     let services = FakeServices {
         pull_request_statuses: BTreeMap::from([
             (301, closed),
@@ -1664,8 +1863,26 @@ fn stack_status_keeps_recently_closed_rows_as_reminders() {
     let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
         .expect("stack status succeeds");
 
-    assert!(result.stdout.contains("◯ Closed root"));
+    assert!(result.stdout.contains("⊖ Closed root"));
     assert!(result.stdout.contains("Open child"));
+    assert!(!result.stdout.contains("closed-label"));
+    assert!(!result.stdout.contains("closed-reviewer"));
+    let colored = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        test_prompt_handlers(),
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("colored stack status succeeds");
+    assert!(colored.stdout.contains(
+        "\x1b[38;2;130;165;218m\x1b]8;;https://github.com/example-owner/example-repo/pull/301"
+    ));
+    assert!(colored.stdout.contains("⊖ Closed root\x1b[0m"));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     assert_eq!(metadata.nodes.len(), 2);
     assert_eq!(metadata.nodes[0].branch, "closed/root");
@@ -1675,6 +1892,54 @@ fn stack_status_keeps_recently_closed_rows_as_reminders() {
         Some("closed/root")
     );
     assert_eq!(metadata.nodes[1].parent_pull_request, None);
+}
+
+#[test]
+fn stack_status_marks_merge_conflicts_with_prohibited_node_symbol() {
+    // Verifies: merge conflicts are visible without adding another title token or status column.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                303,
+                "topic/conflict",
+                "main",
+                "Conflict root",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        303,
+        "Conflict root",
+        "topic/conflict",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    status.merge_status = PullRequestMergeStatus::Conflicting;
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([(303, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(result.stdout.contains("⊘ Conflict root"));
+    assert!(!result.stdout.contains("[merge-conflict]"));
 }
 
 #[test]
@@ -1749,6 +2014,10 @@ fn stack_status_json_renders_machine_readable_pull_request_health() {
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["checkStatus"],
         "failing"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["mergeStatus"],
+        "mergeable"
     );
     assert_eq!(
         value["repositories"][0]["pullRequests"][0]["reviewStatus"],
@@ -1860,7 +2129,7 @@ path = "{repo}"
     )
     .expect("filtered global stack status succeeds");
 
-    assert!(result.stdout.contains("Stack status: 1 repository checked"));
+    assert!(!result.stdout.contains("Stack status:"));
     assert!(result.stdout.contains("api-alpha"));
     assert!(result.stdout.contains("Alpha change"));
     assert!(!result.stdout.contains("web-beta"));
@@ -2061,9 +2330,7 @@ path = "{repo}"
     )
     .expect("global stack status succeeds");
 
-    assert!(result.stdout.contains(
-        "Stack status: 2 repositories checked, 2 repositories with stacks, 2 pull requests"
-    ));
+    assert!(!result.stdout.contains("Stack status:"));
     assert!(result.stdout.contains("api-merged"));
     assert!(result.stdout.contains("● Merged change"));
     assert!(result.stdout.contains("api-open"));
@@ -2211,12 +2478,16 @@ fn stack_status_record(
         closed_at: None,
         check_status,
         checks: Vec::new(),
+        merge_status: PullRequestMergeStatus::Mergeable,
         review_status,
         requested_reviewers,
         suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),
+        changes_requested_reviewers: Vec::new(),
         commented_reviewers: Vec::new(),
         addressed_reviewers: Vec::new(),
+        reviewer_responses: Vec::new(),
+        reviewer_mentions: Vec::new(),
         dismissed_reviewers: Vec::new(),
         review_activity: Vec::new(),
         timeline_events: Vec::new(),

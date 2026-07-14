@@ -144,9 +144,7 @@ title = true
     assert!(result
         .stdout
         .contains("__jx_shell_title_previous_starship_precmd_user_func"));
-    assert!(result
-        .stdout
-        .contains("termflow_zellij_tab_title \"$title\""));
+    assert!(result.stdout.contains("jx_zellij_tab_title \"$title\""));
     assert!(result
         .stdout
         .contains("PROMPT_COMMAND=\"__jx_shell_title_precmd"));
@@ -227,9 +225,9 @@ fn shell_title_falls_back_to_home_relative_path() {
 fn shell_title_preserves_logical_pwd_for_symlinked_paths() {
     // Verifies: Shell titles follow Bash's logical PWD instead of the resolved process cwd.
     let workspace = TestWorkspace::new_uninitialized_under(
-        "Library/Mobile Documents/com~apple~CloudDocs/Documents/org/faire",
+        "cloud-storage/physical/Documents/org/example-project",
     );
-    let logical_pwd = workspace.home.join("org/mobile/faire");
+    let logical_pwd = workspace.home.join("org/mobile/example-project");
     let environment = RuntimeEnvironment::new(
         workspace.path(),
         [
@@ -243,7 +241,7 @@ fn shell_title_preserves_logical_pwd_for_symlinked_paths() {
     let result = run_with_args_and_services(["jx", "shell", "title"], &environment, &services)
         .expect("logical PWD title succeeds");
 
-    assert_eq!(result.stdout, "~/org/mobile/faire\n");
+    assert_eq!(result.stdout, "~/org/mobile/example-project\n");
 }
 
 #[test]

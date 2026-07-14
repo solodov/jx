@@ -1,5 +1,5 @@
 use super::*;
-use crate::github::PullRequestTimelineEventKind;
+use crate::github::{PullRequestMergeStatus, PullRequestTimelineEventKind};
 
 pub(in crate::commands) const BOLD_STYLE: &str = "\x1b[1m";
 const BLACK_BOLD_STYLE: &str = "\x1b[1m\x1b[30m";
@@ -11,7 +11,8 @@ pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
 const GREEN_ITALIC_STYLE: &str = "\x1b[3m\x1b[32m";
 const MERGED_APPROVED_REVIEWER_STYLE: &str = "\x1b[38;2;118;108;96m";
 const ORANGE_STYLE: &str = "\x1b[38;2;194;95;0m";
-pub(in crate::commands) const RED_STYLE: &str = "\x1b[31m";
+pub(in crate::commands) const CONFLICT_STYLE: &str = "\x1b[31m";
+pub(in crate::commands) const PASTEL_BLUE_STYLE: &str = "\x1b[38;2;130;165;218m";
 const RED_BOLD_STYLE: &str = "\x1b[1m\x1b[31m";
 const YELLOW_STYLE: &str = "\x1b[33m";
 const CYAN_STYLE: &str = "\x1b[36m";
@@ -175,11 +176,12 @@ fn pull_request_status_user_login_iter(
     status: &PullRequestStatusRecord,
 ) -> impl Iterator<Item = &str> {
     status
-        .requested_reviewers
-        .users
+        .author
         .iter()
+        .chain(status.requested_reviewers.users.iter())
         .chain(status.suggested_reviewers.iter())
         .chain(status.approved_reviewers.iter())
+        .chain(status.changes_requested_reviewers.iter())
         .chain(status.commented_reviewers.iter())
         .chain(status.addressed_reviewers.iter())
         .chain(status.dismissed_reviewers.iter())
@@ -193,6 +195,11 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
 ) -> Vec<String> {
     let approved = status
         .approved_reviewers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let changes_requested = status
+        .changes_requested_reviewers
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -224,7 +231,9 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
         if approved.contains(name.as_str()) {
             continue;
         }
-        let state = if commented.contains(name.as_str()) {
+        let state = if changes_requested.contains(name.as_str()) {
+            ReviewerTokenState::ChangesRequested
+        } else if commented.contains(name.as_str()) {
             ReviewerTokenState::Commented
         } else if addressed.contains(name.as_str()) {
             ReviewerTokenState::Addressed
@@ -241,9 +250,28 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
     }
     tokens.extend(
         status
-            .commented_reviewers
+            .changes_requested_reviewers
             .iter()
             .filter(|name| !approved.contains(name.as_str()) && !requested.contains(name.as_str()))
+            .map(|name| {
+                pull_request_reviewer_token(
+                    name,
+                    ReviewerTokenState::ChangesRequested,
+                    None,
+                    color,
+                    display_names,
+                )
+            }),
+    );
+    tokens.extend(
+        status
+            .commented_reviewers
+            .iter()
+            .filter(|name| {
+                !approved.contains(name.as_str())
+                    && !changes_requested.contains(name.as_str())
+                    && !requested.contains(name.as_str())
+            })
             .map(|name| {
                 pull_request_reviewer_token(
                     name,
@@ -260,6 +288,7 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
             .iter()
             .filter(|name| {
                 !approved.contains(name.as_str())
+                    && !changes_requested.contains(name.as_str())
                     && !commented.contains(name.as_str())
                     && !requested.contains(name.as_str())
             })
@@ -280,6 +309,7 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
             .iter()
             .filter(|name| {
                 !approved.contains(name.as_str())
+                    && !changes_requested.contains(name.as_str())
                     && !commented.contains(name.as_str())
                     && !addressed.contains(name.as_str())
                     && !requested.contains(name.as_str())
@@ -297,6 +327,7 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
     tokens.extend(suggested_names.iter().filter_map(|name| {
         let name = name.as_str();
         (!approved.contains(name)
+            && !changes_requested.contains(name)
             && !commented.contains(name)
             && !addressed.contains(name)
             && !dismissed.contains(name)
@@ -389,12 +420,35 @@ pub(in crate::commands) fn pull_request_completed_reviewer_tokens(
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
 
+    let changes_requested = status
+        .changes_requested_reviewers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+
     let mut tokens = Vec::new();
+    tokens.extend(
+        status
+            .changes_requested_reviewers
+            .iter()
+            .filter(|name| !approved.contains(name.as_str()))
+            .map(|name| {
+                pull_request_reviewer_token(
+                    name,
+                    ReviewerTokenState::ChangesRequested,
+                    None,
+                    color,
+                    display_names,
+                )
+            }),
+    );
     tokens.extend(
         status
             .commented_reviewers
             .iter()
-            .filter(|name| !approved.contains(name.as_str()))
+            .filter(|name| {
+                !approved.contains(name.as_str()) && !changes_requested.contains(name.as_str())
+            })
             .map(|name| {
                 pull_request_reviewer_token(
                     name,
@@ -417,83 +471,10 @@ pub(in crate::commands) fn pull_request_completed_reviewer_tokens(
     tokens
 }
 
-pub(in crate::commands) fn pull_request_reviewer_activity_tokens(
-    status: &PullRequestStatusRecord,
-    viewer: &str,
-    color: bool,
-    display_names: &BTreeMap<String, String>,
-) -> Vec<String> {
-    let excluded = [viewer, status.author.as_deref().unwrap_or_default()]
-        .into_iter()
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>();
-    let approved = status
-        .approved_reviewers
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let commented = status
-        .commented_reviewers
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-
-    let mut tokens = Vec::new();
-    tokens.extend(
-        status
-            .commented_reviewers
-            .iter()
-            .filter(|name| !excluded.contains(name.as_str()) && !approved.contains(name.as_str()))
-            .map(|name| {
-                pull_request_reviewer_token(
-                    name,
-                    ReviewerTokenState::Commented,
-                    None,
-                    color,
-                    display_names,
-                )
-            }),
-    );
-    tokens.extend(
-        status
-            .addressed_reviewers
-            .iter()
-            .filter(|name| {
-                !excluded.contains(name.as_str())
-                    && !commented.contains(name.as_str())
-                    && !approved.contains(name.as_str())
-            })
-            .map(|name| {
-                pull_request_reviewer_token(
-                    name,
-                    ReviewerTokenState::Addressed,
-                    None,
-                    color,
-                    display_names,
-                )
-            }),
-    );
-    tokens.extend(
-        status
-            .approved_reviewers
-            .iter()
-            .filter(|name| !excluded.contains(name.as_str()))
-            .map(|name| {
-                pull_request_reviewer_token(
-                    name,
-                    ReviewerTokenState::Approved,
-                    None,
-                    color,
-                    display_names,
-                )
-            }),
-    );
-    tokens
-}
-
 #[derive(Clone, Copy)]
 enum ReviewerTokenState {
     Requested,
+    ChangesRequested,
     Commented,
     Addressed,
     Approved,
@@ -518,6 +499,7 @@ fn pull_request_reviewer_token(
     }
     let style = match state {
         ReviewerTokenState::Requested => BLACK_BOLD_STYLE,
+        ReviewerTokenState::ChangesRequested => RED_BOLD_STYLE,
         ReviewerTokenState::Commented => ORANGE_STYLE,
         ReviewerTokenState::Addressed => BLACK_ITALIC_STYLE,
         ReviewerTokenState::Approved => GREEN_STYLE,
@@ -686,64 +668,152 @@ fn requested_reviewer_names(reviewers: &ReviewerSelection) -> Vec<String> {
     names
 }
 
-pub(in crate::commands) fn pull_request_check_symbol(
+pub(in crate::commands) fn pull_request_has_merge_conflict(
+    status: &PullRequestStatusRecord,
+) -> bool {
+    !status.merged
+        && !status.closed
+        && matches!(status.merge_status, PullRequestMergeStatus::Conflicting)
+}
+
+pub(in crate::commands) fn pull_request_node_symbol(
+    status: Option<&PullRequestStatusRecord>,
+    draft: bool,
+) -> String {
+    let symbol = if status.is_some_and(pull_request_has_merge_conflict) {
+        "⊘"
+    } else if status.is_some_and(|status| status.closed && !status.merged) {
+        "⊖"
+    } else if draft {
+        "◌"
+    } else {
+        "◯"
+    };
+    symbol.to_owned()
+}
+
+pub(in crate::commands) fn pull_request_check_symbol_with_restore(
     status: Option<&PullRequestStatusRecord>,
     merged: bool,
     color: bool,
+    restore_style: &str,
 ) -> String {
     if merged {
-        return styled_pull_request_symbol("✓", PullRequestSymbolStyle::Good, color);
+        return styled_pull_request_symbol_with_restore(
+            "✓",
+            PullRequestSymbolStyle::Good,
+            color,
+            restore_style,
+        );
     }
     match status.map(|status| status.check_status) {
-        Some(PullRequestCheckStatus::Passing) => {
-            styled_pull_request_symbol("✓", PullRequestSymbolStyle::Good, color)
-        }
-        Some(PullRequestCheckStatus::Failing) => {
-            styled_pull_request_symbol("✗", PullRequestSymbolStyle::Bad, color)
-        }
-        Some(PullRequestCheckStatus::Pending) => {
-            styled_pull_request_symbol("◷", PullRequestSymbolStyle::Warn, color)
-        }
+        Some(PullRequestCheckStatus::Passing) => styled_pull_request_symbol_with_restore(
+            "✓",
+            PullRequestSymbolStyle::Good,
+            color,
+            restore_style,
+        ),
+        Some(PullRequestCheckStatus::Failing) => styled_pull_request_symbol_with_restore(
+            "✗",
+            PullRequestSymbolStyle::Bad,
+            color,
+            restore_style,
+        ),
+        Some(PullRequestCheckStatus::Pending) => styled_pull_request_symbol_with_restore(
+            "◷",
+            PullRequestSymbolStyle::Warn,
+            color,
+            restore_style,
+        ),
         Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => {
-            styled_pull_request_symbol("—", PullRequestSymbolStyle::Muted, color)
+            styled_pull_request_symbol_with_restore(
+                "—",
+                PullRequestSymbolStyle::Muted,
+                color,
+                restore_style,
+            )
         }
     }
 }
 
-pub(in crate::commands) fn pull_request_review_symbol(
+pub(in crate::commands) fn pull_request_review_symbol_with_restore(
     status: Option<&PullRequestStatusRecord>,
     merged: bool,
     color: bool,
     review_lag_over_threshold: bool,
+    restore_style: &str,
 ) -> String {
     if merged {
-        return styled_pull_request_symbol("✓", PullRequestSymbolStyle::Good, color);
+        return styled_pull_request_symbol_with_restore(
+            "✓",
+            PullRequestSymbolStyle::Good,
+            color,
+            restore_style,
+        );
     }
     let Some(status) = status else {
-        return styled_pull_request_symbol("?", PullRequestSymbolStyle::Warn, color);
+        return styled_pull_request_symbol_with_restore(
+            "-",
+            PullRequestSymbolStyle::Muted,
+            color,
+            restore_style,
+        );
     };
-    match status.review_status {
-        PullRequestReviewStatus::Approved => {
-            styled_pull_request_symbol("✓", PullRequestSymbolStyle::Good, color)
-        }
-        PullRequestReviewStatus::ChangesRequested => {
-            styled_pull_request_symbol("!", PullRequestSymbolStyle::Bad, color)
-        }
-        PullRequestReviewStatus::ReviewRequested => styled_pull_request_symbol(
-            "◷",
-            if review_lag_over_threshold {
-                PullRequestSymbolStyle::Bad
+    if status.review_status == PullRequestReviewStatus::ChangesRequested {
+        return styled_pull_request_symbol_with_restore(
+            "!",
+            PullRequestSymbolStyle::Bad,
+            color,
+            restore_style,
+        );
+    }
+    if status.review_status == PullRequestReviewStatus::Approved
+        || !status.approved_reviewers.is_empty()
+    {
+        return styled_pull_request_symbol_with_restore(
+            "✓",
+            if status.review_status == PullRequestReviewStatus::Approved
+                && status.commented_reviewers.is_empty()
+            {
+                PullRequestSymbolStyle::Good
             } else {
-                PullRequestSymbolStyle::Info
+                PullRequestSymbolStyle::Comment
             },
             color,
-        ),
-        PullRequestReviewStatus::ReviewRequired | PullRequestReviewStatus::Unknown => {
-            styled_pull_request_symbol("?", PullRequestSymbolStyle::Warn, color)
-        }
-        PullRequestReviewStatus::NotReviewed => {
-            styled_pull_request_symbol("—", PullRequestSymbolStyle::Muted, color)
-        }
+            restore_style,
+        );
+    }
+    if !status.commented_reviewers.is_empty() {
+        return styled_pull_request_symbol_with_restore(
+            "!",
+            PullRequestSymbolStyle::Comment,
+            color,
+            restore_style,
+        );
+    }
+    if !status.requested_reviewers.is_empty() {
+        return styled_pull_request_symbol_with_restore(
+            "?",
+            pull_request_review_wait_style(review_lag_over_threshold),
+            color,
+            restore_style,
+        );
+    }
+    styled_pull_request_symbol_with_restore(
+        "-",
+        PullRequestSymbolStyle::Muted,
+        color,
+        restore_style,
+    )
+}
+
+pub(in crate::commands) fn pull_request_review_wait_style(
+    review_lag_over_threshold: bool,
+) -> PullRequestSymbolStyle {
+    if review_lag_over_threshold {
+        PullRequestSymbolStyle::Bad
+    } else {
+        PullRequestSymbolStyle::Info
     }
 }
 
@@ -751,15 +821,17 @@ pub(in crate::commands) fn pull_request_review_symbol(
 pub(in crate::commands) enum PullRequestSymbolStyle {
     Good,
     Bad,
+    Comment,
     Warn,
     Info,
     Muted,
 }
 
-pub(in crate::commands) fn styled_pull_request_symbol(
+pub(in crate::commands) fn styled_pull_request_symbol_with_restore(
     symbol: &str,
     style: PullRequestSymbolStyle,
     color: bool,
+    restore_style: &str,
 ) -> String {
     if !color {
         return symbol.to_owned();
@@ -767,9 +839,10 @@ pub(in crate::commands) fn styled_pull_request_symbol(
     let style = match style {
         PullRequestSymbolStyle::Good => GREEN_STYLE,
         PullRequestSymbolStyle::Bad => RED_BOLD_STYLE,
+        PullRequestSymbolStyle::Comment => ORANGE_STYLE,
         PullRequestSymbolStyle::Warn => YELLOW_STYLE,
         PullRequestSymbolStyle::Info => CYAN_STYLE,
         PullRequestSymbolStyle::Muted => DIM_STYLE,
     };
-    format!("{style}{symbol}{RESET_STYLE}")
+    format!("{style}{symbol}{RESET_STYLE}{restore_style}")
 }

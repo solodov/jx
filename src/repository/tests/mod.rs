@@ -1,4 +1,10 @@
 use super::*;
+use crate::github::{
+    PullRequestCheckStatus, PullRequestMergeStatus, PullRequestReviewActivity,
+    PullRequestReviewStatus, PullRequestReviewerMention, PullRequestReviewerResponse,
+    PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
+    ReviewerSelection,
+};
 use jj_lib::{
     config::StackedConfig,
     git,
@@ -10,6 +16,165 @@ use jj_lib::{
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn pull_request_store_path_uses_operator_state_home() {
+    // Verifies: the shared PR store lives under the operator's XDG state directory.
+    let workspace = TestWorkspace::new();
+    let state_home = workspace.path().join("state");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [(
+            "XDG_STATE_HOME".to_owned(),
+            state_home.display().to_string(),
+        )],
+    );
+
+    let file = pull_request_store_file(&environment).expect("store file resolves");
+
+    assert_eq!(file, state_home.join("jx").join(PULL_REQUEST_STORE_FILE));
+}
+
+#[test]
+fn pull_request_store_migrates_documented_history_schema() {
+    // Verifies: opening the store creates the shared PR snapshot/history/action schema.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let store = PullRequestStore::open(&environment).expect("store opens");
+
+    assert!(store
+        .path()
+        .ends_with(Path::new(".local/state/jx/pull-request-store.sqlite")));
+    let history_schema = scalar_string(
+        store.connection(),
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pull_request_history'",
+    );
+    assert!(history_schema.contains("-- Local history row id."));
+    assert!(history_schema.contains(
+        "snapshot_id INTEGER NOT NULL REFERENCES pull_request_snapshots(id) ON DELETE CASCADE"
+    ));
+    assert!(history_schema.contains("changed_at_unix INTEGER NOT NULL"));
+    assert_eq!(store.schema_version().expect("schema version loads"), 1);
+    assert_eq!(
+        scalar_i64(
+            store.connection(),
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 1",
+        ),
+        1
+    );
+    assert!(pull_request_store_schema_sql()
+        .contains("-- Local operator actions that affect decision policy."));
+    assert!(pull_request_store_schema_sql()
+        .contains("-- Refresh/dedup guard from GitHub's updatedAt timestamp."));
+}
+
+#[test]
+fn pull_request_store_records_and_loads_latest_snapshots() {
+    // Verifies: fetched PR records round-trip through the shared snapshot store.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let store = PullRequestStore::open(&environment).expect("store opens");
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    let mut first = pull_request_status_record(12, "Initial title");
+    let second = pull_request_status_record(12, "Updated title");
+
+    store
+        .record_pull_request_snapshots(&repository, &[first.clone()])
+        .expect("first snapshot records");
+    first.title = "Mutating caller data does not affect stored snapshot".to_owned();
+    store
+        .record_pull_request_snapshots(&repository, std::slice::from_ref(&second))
+        .expect("second snapshot records");
+    let loaded = store
+        .latest_pull_request_snapshots(&repository, &[12])
+        .expect("latest snapshot loads");
+
+    assert_eq!(loaded, [second]);
+    assert_eq!(
+        scalar_i64(store.connection(), "SELECT COUNT(*) FROM repositories"),
+        1
+    );
+    assert_eq!(
+        scalar_i64(store.connection(), "SELECT COUNT(*) FROM pull_requests"),
+        1
+    );
+    assert_eq!(
+        scalar_i64(
+            store.connection(),
+            "SELECT COUNT(*) FROM pull_request_snapshots",
+        ),
+        2
+    );
+}
+
+#[test]
+fn pull_request_store_derives_history_from_snapshots() {
+    // Verifies: snapshot changes become compact PR history rows for later decisions.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let store = PullRequestStore::open(&environment).expect("store opens");
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    let mut first = pull_request_status_record(12, "Review history");
+    first.requested_reviewers = ReviewerSelection::new(["reviewer-a"], Vec::<String>::new());
+    first.timeline_events = vec![PullRequestTimelineEvent {
+        kind: PullRequestTimelineEventKind::ReviewRequested,
+        created_at: "2026-01-01T12:15:00Z".to_owned(),
+        reviewer: Some("reviewer-a".to_owned()),
+    }];
+    first.approved_reviewers = vec!["reviewer-a".to_owned()];
+    first.review_activity = vec![PullRequestReviewActivity {
+        reviewer: "reviewer-a".to_owned(),
+        reviewed_at: "2026-01-01T12:30:00Z".to_owned(),
+    }];
+    let mut second = first.clone();
+    second.latest_commit_oid = Some("commit-new".to_owned());
+    second.approved_reviewers = Vec::new();
+    second.dismissed_reviewers = vec!["reviewer-a".to_owned()];
+    second.review_activity = vec![PullRequestReviewActivity {
+        reviewer: "reviewer-a".to_owned(),
+        reviewed_at: "2026-01-01T13:00:00Z".to_owned(),
+    }];
+    second.reviewer_responses = vec![PullRequestReviewerResponse {
+        reviewer: "reviewer-a".to_owned(),
+        responded_at: "2026-01-01T13:05:00Z".to_owned(),
+        body_text: "Updated this".to_owned(),
+    }];
+    second.reviewer_mentions = vec![PullRequestReviewerMention {
+        reviewer: "reviewer-a".to_owned(),
+        mentioned_at: "2026-01-01T13:06:00Z".to_owned(),
+    }];
+
+    store
+        .record_pull_request_snapshots(&repository, &[first.clone()])
+        .expect("first snapshot records");
+    store
+        .record_pull_request_snapshots(&repository, &[first])
+        .expect("duplicate snapshot is ignored");
+    store
+        .record_pull_request_snapshots(&repository, &[second])
+        .expect("second snapshot records");
+
+    assert_eq!(history_count(&store, "first_seen"), 1);
+    assert_eq!(history_count(&store, "reviewer_requested"), 1);
+    assert_eq!(history_count(&store, "head_changed"), 1);
+    assert_eq!(history_count(&store, "review_state_changed"), 2);
+    assert_eq!(history_count(&store, "author_response"), 1);
+    assert_eq!(history_count(&store, "reviewer_mentioned"), 1);
+    assert_eq!(
+        history_changed_at(&store, "reviewer_requested"),
+        1_767_269_700
+    );
+    assert!(
+        history_latest_new_json(&store, "review_state_changed").contains(r#""state":"dismissed""#)
+    );
+}
 
 #[test]
 fn discovers_fixed_origin_github_context() {
@@ -680,7 +845,7 @@ fn stack_status_review_gate_checks_compose_for_matching_repo() {
 ignored_checks = ["^global-noise-check$"]
 ignored_labels = ["global-noise"]
 ignored_labels_when_merged = ["global-merge-noise"]
-ignored_reviewers = ["global-bot"]
+ignored_reviewers = ["^global-bot$"]
 review_gate_checks = ["global approval"]
 review_wait_threshold = "8h"
 
@@ -695,7 +860,7 @@ repo = "example-owner/*"
 ignored_checks = ["^repo-noise-check.*"]
 ignored_labels = ["repo-noise*"]
 ignored_labels_when_merged = ["repo-merge-noise*"]
-ignored_reviewers = ["repo-bot*"]
+ignored_reviewers = ["^repo-bot-.*$"]
 review_gate_checks = ["repo approval*"]
 review_wait_threshold = "4h"
 
@@ -729,6 +894,7 @@ replace = "$1"
     assert!(stack_status.ignores_label_when_merged("repo-merge-noise-label"));
     assert!(stack_status.ignores_reviewer("global-bot"));
     assert!(stack_status.ignores_reviewer("repo-bot-helper"));
+    assert!(!stack_status.ignores_reviewer("repo-bot"));
     assert_eq!(
         stack_status.review_wait_threshold_seconds,
         Some(4 * 60 * 60)
@@ -741,6 +907,65 @@ replace = "$1"
         stack_status.rewrite_title("Draft: Update endpoint"),
         "Update endpoint"
     );
+}
+
+#[test]
+fn stack_status_ignored_reviewers_reject_invalid_regexes() {
+    // Verifies: reviewer filters fail fast when their regex cannot be compiled.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[repo.stack_status]
+ignored_reviewers = ["["]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let error = RepositoryContext::discover(&environment).expect_err("config is rejected");
+
+    assert!(matches!(error, RepositoryError::InvalidConfig { .. }));
+    assert!(error.to_string().contains("reviewer-name regex"));
+}
+
+#[test]
+fn review_ignored_labels_compose_without_changing_stack_status_policy() {
+    // Verifies: Review-only label filters layer separately from stack status presentation.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[repo.stack_status]
+ignored_labels = ["stack-noise"]
+
+[repo.review]
+ignored_labels = ["global-review-noise"]
+ignored_author_response_comments = ["^/global command$"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.review]
+ignored_labels = ["repo-review-noise*"]
+ignored_author_response_comments = ["^/repo command$"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let stack_status = context.config.repo.stack_status_for(&context.origin.github);
+    let review = context.config.repo.review_for(&context.origin.github);
+
+    assert!(stack_status.ignores_label("stack-noise"));
+    assert!(!stack_status.ignores_label("global-review-noise"));
+    assert!(!stack_status.ignores_label("repo-review-noise-extra"));
+    assert!(review.ignores_label("global-review-noise"));
+    assert!(review.ignores_label("repo-review-noise-extra"));
+    assert!(review.ignores_author_response_comment("/global command"));
+    assert!(review.ignores_author_response_comment("body\n/repo command\nfooter"));
+    assert!(!review.ignores_author_response_comment("/other command"));
 }
 
 #[test]
@@ -1883,6 +2108,87 @@ fn test_config_remotes(contents: &str) -> Vec<ConfiguredRemote> {
     }
 
     remotes
+}
+
+fn pull_request_status_record(number: u64, title: &str) -> PullRequestStatusRecord {
+    PullRequestStatusRecord {
+        number,
+        title: title.to_owned(),
+        url: Some(format!(
+            "https://github.com/example-owner/api-alpha/pull/{number}"
+        )),
+        created_at: Some("2026-01-01T00:00:00Z".to_owned()),
+        head_branch: format!("topic/pr-{number}"),
+        base_branch: "main".to_owned(),
+        author: Some("example-author".to_owned()),
+        draft: false,
+        merged: false,
+        closed: false,
+        merged_at: None,
+        closed_at: None,
+        check_status: PullRequestCheckStatus::Passing,
+        checks: Vec::new(),
+        merge_status: PullRequestMergeStatus::Mergeable,
+        review_status: PullRequestReviewStatus::ReviewRequired,
+        requested_reviewers: ReviewerSelection::default(),
+        suggested_reviewers: Vec::new(),
+        approved_reviewers: Vec::new(),
+        changes_requested_reviewers: Vec::new(),
+        commented_reviewers: Vec::new(),
+        addressed_reviewers: Vec::new(),
+        reviewer_responses: Vec::new(),
+        reviewer_mentions: Vec::new(),
+        dismissed_reviewers: Vec::new(),
+        review_activity: Vec::new(),
+        timeline_events: Vec::new(),
+        labels: Vec::new(),
+        latest_commit_oid: Some(format!("commit-{number}")),
+    }
+}
+
+fn history_count(store: &PullRequestStore, kind: &str) -> i64 {
+    store
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM pull_request_history WHERE kind = ?1",
+            [kind],
+            |row| row.get(0),
+        )
+        .expect("query history count")
+}
+
+fn history_changed_at(store: &PullRequestStore, kind: &str) -> i64 {
+    store
+        .connection()
+        .query_row(
+            "SELECT changed_at_unix FROM pull_request_history WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+            [kind],
+            |row| row.get(0),
+        )
+        .expect("query history timestamp")
+}
+
+fn history_latest_new_json(store: &PullRequestStore, kind: &str) -> String {
+    store
+        .connection()
+        .query_row(
+            "SELECT new_json FROM pull_request_history WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+            [kind],
+            |row| row.get(0),
+        )
+        .expect("query history JSON")
+}
+
+fn scalar_string(connection: &rusqlite::Connection, query: &str) -> String {
+    connection
+        .query_row(query, [], |row| row.get(0))
+        .expect("query string scalar")
+}
+
+fn scalar_i64(connection: &rusqlite::Connection, query: &str) -> i64 {
+    connection
+        .query_row(query, [], |row| row.get(0))
+        .expect("query integer scalar")
 }
 
 struct TestWorkspace {

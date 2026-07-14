@@ -864,7 +864,7 @@ root = "~/projects"
 path = "{repo}"
 "#,
     );
-    let expected_root = workspace.home.join("projects/termflow");
+    let expected_root = workspace.home.join("projects/flow-repo");
     create_jj_workspace_marker(&expected_root);
     create_jj_workspace_marker(&workspace.home.join("projects/other"));
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
@@ -894,10 +894,10 @@ root = "~/projects"
 path = "{repo}"
 "#,
     );
-    let termflow = workspace.home.join("projects/termflow");
-    create_jj_workspace_marker(&termflow);
-    fs::create_dir_all(termflow.join("bin")).expect("create bin directory");
-    fs::create_dir_all(termflow.join("hammerspoon")).expect("create hammerspoon directory");
+    let flow_repo = workspace.home.join("projects/flow-repo");
+    create_jj_workspace_marker(&flow_repo);
+    fs::create_dir_all(flow_repo.join("bin")).expect("create bin directory");
+    fs::create_dir_all(flow_repo.join("hooks")).expect("create hooks directory");
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices::default();
 
@@ -907,17 +907,17 @@ path = "{repo}"
         &services,
     )
     .expect("bin navigation root succeeds");
-    let hammerspoon = run_with_args_and_services(
-        ["jx", "work", "root", "--navigation", "term/spoon"],
+    let hooks = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "flow/hooks"],
         &environment,
         &services,
     )
-    .expect("hammerspoon navigation root succeeds");
+    .expect("hooks navigation root succeeds");
 
-    assert_eq!(bin.stdout, format!("{}\n", termflow.join("bin").display()));
+    assert_eq!(bin.stdout, format!("{}\n", flow_repo.join("bin").display()));
     assert_eq!(
-        hammerspoon.stdout,
-        format!("{}\n", termflow.join("hammerspoon").display())
+        hooks.stdout,
+        format!("{}\n", flow_repo.join("hooks").display())
     );
 }
 
@@ -970,13 +970,13 @@ root = "~/projects"
 path = "{repo}"
 "#,
     );
-    create_jj_workspace_marker(&workspace.home.join("projects/termflow"));
-    create_jj_workspace_marker(&workspace.home.join("projects/terminal"));
+    create_jj_workspace_marker(&workspace.home.join("projects/service-api"));
+    create_jj_workspace_marker(&workspace.home.join("projects/service-worker"));
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices::default();
 
     let error = run_with_args_and_services(
-        ["jx", "work", "root", "--navigation", "term"],
+        ["jx", "work", "root", "--navigation", "service"],
         &environment,
         &services,
     )
@@ -1048,16 +1048,16 @@ fn work_navigation_uses_configured_repository_slugs() {
         r#"
 [[layout.rules]]
 source = "github"
-owner = "Faire"
-root = "~/faire"
+owner = "example-org"
+root = "~/example-org"
 path = "{repo}"
 
 [shell]
-slug_repositories = ["Faire/*"]
+slug_repositories = ["example-org/*"]
 "#,
     );
-    let primary = workspace.home.join("faire/backend");
-    let fix = workspace.home.join("faire/.work/backend/FD-123-fix");
+    let primary = workspace.home.join("example-org/backend");
+    let fix = workspace.home.join("example-org/.work/backend/FD-123-fix");
     create_jj_workspace_marker(&primary);
     create_jj_workspace_marker(&fix);
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
@@ -1070,7 +1070,7 @@ slug_repositories = ["Faire/*"]
             "complete",
             "--navigation",
             "--prefix",
-            "Faire",
+            "example-org",
         ],
         &environment,
         &services,
@@ -1082,7 +1082,7 @@ slug_repositories = ["Faire/*"]
             "work",
             "root",
             "--navigation",
-            "Faire/backend@FD-123-fix",
+            "example-org/backend@FD-123-fix",
         ],
         &environment,
         &services,
@@ -1097,7 +1097,7 @@ slug_repositories = ["Faire/*"]
 
     assert_eq!(
         completion.stdout,
-        "Faire/backend\nFaire/backend@FD-123-fix\n"
+        "example-org/backend\nexample-org/backend@FD-123-fix\n"
     );
     assert_eq!(root.stdout, format!("{}\n", fix.display()));
     assert!(matches!(

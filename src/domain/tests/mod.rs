@@ -387,7 +387,7 @@ fn pull_request_stack_status_maintenance_retains_recently_closed_nodes() {
     let now = utc_datetime("2026-06-05T12:00:00Z");
     let mut closed = pull_request_status(10, "Closed root", false);
     closed.closed = true;
-    closed.closed_at = Some("2026-06-04T12:00:00Z".to_owned());
+    closed.closed_at = Some("2026-06-04T18:00:00Z".to_owned());
 
     let maintained = maintain_stack_metadata_pull_request_statuses_at(
         &[closed, pull_request_status(11, "Open child", false)],
@@ -483,6 +483,18 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
     status.approved_reviewers = vec!["human-reviewer".to_owned(), "ignored-bot".to_owned()];
     status.commented_reviewers = vec!["commenter".to_owned(), "ignored-bot".to_owned()];
     status.addressed_reviewers = vec!["addressed".to_owned(), "ignored-bot".to_owned()];
+    status.reviewer_responses = vec![
+        crate::github::PullRequestReviewerResponse {
+            reviewer: "addressed".to_owned(),
+            responded_at: "2026-01-01T00:00:00Z".to_owned(),
+            body_text: "fixed".to_owned(),
+        },
+        crate::github::PullRequestReviewerResponse {
+            reviewer: "ignored-bot".to_owned(),
+            responded_at: "2026-01-01T00:00:00Z".to_owned(),
+            body_text: "fixed".to_owned(),
+        },
+    ];
     status.dismissed_reviewers = vec!["dismissed".to_owned(), "ignored-bot".to_owned()];
     status.check_status = crate::github::PullRequestCheckStatus::Failing;
     status.checks = vec![
@@ -519,10 +531,10 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
             ignored_labels_when_merged: Vec::new(),
             ignored_reviewers: vec![
                 crate::repository::IgnoredReviewerConfig {
-                    name: "ignored-bot".to_owned(),
+                    name: "^ignored-.*$".to_owned(),
                 },
                 crate::repository::IgnoredReviewerConfig {
-                    name: "team/ignored-team".to_owned(),
+                    name: "^team/ignored-team$".to_owned(),
                 },
             ],
             title_rewrites: Vec::new(),
@@ -556,9 +568,77 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
     assert_eq!(filtered.approved_reviewers, ["human-reviewer"]);
     assert_eq!(filtered.commented_reviewers, ["commenter"]);
     assert_eq!(filtered.addressed_reviewers, ["addressed"]);
+    assert_eq!(filtered.reviewer_responses.len(), 1);
+    assert_eq!(filtered.reviewer_responses[0].reviewer, "addressed");
     assert_eq!(filtered.dismissed_reviewers, ["dismissed"]);
     assert_eq!(filtered.review_activity.len(), 1);
     assert_eq!(filtered.review_activity[0].reviewer, "commenter");
+}
+
+#[test]
+fn review_request_status_policy_filters_review_only_labels() {
+    // Verifies: jx review can hide extra labels without mutating stack status policy.
+    let mut status = pull_request_status(31, "Review facts", false);
+    status.labels = vec![
+        crate::github::PullRequestLabel {
+            name: "useful-signal".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "stack-noise".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "review-noise".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    status.reviewer_responses = vec![
+        crate::github::PullRequestReviewerResponse {
+            reviewer: "example-reviewer".to_owned(),
+            responded_at: "2026-01-01T00:00:00Z".to_owned(),
+            body_text: "/automation merge".to_owned(),
+        },
+        crate::github::PullRequestReviewerResponse {
+            reviewer: "example-reviewer".to_owned(),
+            responded_at: "2026-01-01T01:00:00Z".to_owned(),
+            body_text: "Ready for another look".to_owned(),
+        },
+    ];
+
+    let filtered = apply_review_request_status_policy(
+        status,
+        &crate::repository::RepoStackStatusConfig {
+            ignored_labels: vec![crate::repository::IgnoredLabelConfig {
+                name: "stack-*".to_owned(),
+            }],
+            ..Default::default()
+        },
+        &crate::repository::RepoReviewConfig {
+            ignored_labels: vec![crate::repository::IgnoredLabelConfig {
+                name: "review-*".to_owned(),
+            }],
+            ignored_author_response_comments: vec![
+                crate::repository::IgnoredAuthorResponseCommentConfig {
+                    pattern: "^/automation merge$".to_owned(),
+                },
+            ],
+        },
+    );
+
+    assert_eq!(
+        filtered
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["useful-signal"]
+    );
+    assert_eq!(filtered.reviewer_responses.len(), 1);
+    assert_eq!(
+        filtered.reviewer_responses[0].body_text,
+        "Ready for another look"
+    );
 }
 
 #[test]
@@ -734,8 +814,8 @@ fn pull_request_stack_status_maintenance_retains_recently_merged_components() {
 
     let maintained = maintain_stack_metadata_pull_request_statuses_at(
         &[
-            merged_pull_request_status(10, "Merged root", "2026-06-04T12:00:00Z"),
-            merged_pull_request_status(11, "Merged child", "2026-06-04T12:00:00Z"),
+            merged_pull_request_status(10, "Merged root", "2026-06-04T18:00:00Z"),
+            merged_pull_request_status(11, "Merged child", "2026-06-04T18:00:00Z"),
             merged_pull_request_status(20, "Live mixed root", "2026-06-01T12:00:00Z"),
             pull_request_status(21, "Live mixed child", false),
         ],
@@ -884,12 +964,16 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         closed_at: None,
         check_status: crate::github::PullRequestCheckStatus::Passing,
         checks: Vec::new(),
+        merge_status: crate::github::PullRequestMergeStatus::Mergeable,
         review_status: crate::github::PullRequestReviewStatus::Approved,
         requested_reviewers: ReviewerSelection::default(),
         suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),
+        changes_requested_reviewers: Vec::new(),
         commented_reviewers: Vec::new(),
         addressed_reviewers: Vec::new(),
+        reviewer_responses: Vec::new(),
+        reviewer_mentions: Vec::new(),
         dismissed_reviewers: Vec::new(),
         review_activity: Vec::new(),
         timeline_events: Vec::new(),

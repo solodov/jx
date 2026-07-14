@@ -1,7 +1,7 @@
 use super::*;
 
 /// A GitHub account or team that can be requested for PR review.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 pub enum ReviewerTarget {
     User { login: String },
     Team { name: String, slug: String },
@@ -65,7 +65,7 @@ fn is_valid_reviewer_component(name: &str) -> bool {
 }
 
 /// One reviewer offered to the operator with concise ownership reasons.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ReviewerCandidate {
     pub target: ReviewerTarget,
     pub reasons: Vec<String>,
@@ -79,7 +79,7 @@ impl ReviewerCandidate {
 }
 
 /// Desired requested-reviewer state for a pull request.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ReviewerSelection {
     pub users: Vec<String>,
     pub teams: Vec<String>,
@@ -107,13 +107,13 @@ impl ReviewerSelection {
 }
 
 /// Summary of labels applied to a pull request.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct LabelApplyResult {
     pub labels: Vec<String>,
 }
 
 /// Summary of reviewer changes applied by `sync_reviewers`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ReviewerSyncResult {
     pub requested_users: Vec<String>,
     pub requested_teams: Vec<String>,

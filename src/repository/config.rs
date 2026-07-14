@@ -275,6 +275,34 @@ pub enum RepositoryError {
     },
     #[error("Could not write cache `{file}`: {source}")]
     CacheWrite { file: PathBuf, source: io::Error },
+    #[error("Could not open pull-request store `{file}`: {source}")]
+    PullRequestStoreOpen {
+        file: PathBuf,
+        source: rusqlite::Error,
+    },
+    #[error("Could not write pull-request store `{file}`: {source}")]
+    PullRequestStoreWrite { file: PathBuf, source: io::Error },
+    #[error("Could not migrate pull-request store `{file}`: {source}")]
+    PullRequestStoreMigration {
+        file: PathBuf,
+        source: rusqlite::Error,
+    },
+    #[error("Could not query pull-request store `{file}`: {source}")]
+    PullRequestStoreQuery {
+        file: PathBuf,
+        source: rusqlite::Error,
+    },
+    #[error("Could not encode pull-request snapshot for `{repository}#{number}`: {source}")]
+    PullRequestSnapshotEncode {
+        repository: String,
+        number: u64,
+        source: serde_json::Error,
+    },
+    #[error("Could not decode pull-request snapshot from store `{file}`: {source}")]
+    PullRequestSnapshotDecode {
+        file: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 fn project_config_file(workspace_root: &Path) -> PathBuf {

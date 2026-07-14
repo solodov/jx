@@ -1,7 +1,7 @@
 use super::ReviewerSelection;
 
 /// GitHub repository identity parsed from the fixed origin URL.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 pub struct GitHubRepository {
     pub owner: String,
     pub name: String,
@@ -151,7 +151,7 @@ pub struct PullRequestReviewRequests {
 }
 
 /// Pull request requesting review from or already reviewed by the authenticated viewer.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestReviewRequest {
     pub repository: GitHubRepository,
     pub number: u64,
@@ -172,15 +172,34 @@ pub struct PullRequestRecord {
 }
 
 /// GitHub label attached to a pull request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestLabel {
     pub name: String,
     /// Six-digit RGB hex color as returned by GitHub, without a leading `#`.
     pub color: String,
 }
 
+/// GitHub mergeability status for a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum PullRequestMergeStatus {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
+impl PullRequestMergeStatus {
+    /// Stable lowercase label for CLI and JSON output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mergeable => "mergeable",
+            Self::Conflicting => "conflicting",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Read-only status facts for a pull request in a stack triage view.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestStatusRecord {
     pub number: u64,
     pub title: String,
@@ -199,12 +218,18 @@ pub struct PullRequestStatusRecord {
     pub closed_at: Option<String>,
     pub check_status: PullRequestCheckStatus,
     pub checks: Vec<PullRequestCheck>,
+    pub merge_status: PullRequestMergeStatus,
     pub review_status: PullRequestReviewStatus,
     pub requested_reviewers: ReviewerSelection,
     pub suggested_reviewers: Vec<String>,
     pub approved_reviewers: Vec<String>,
+    pub changes_requested_reviewers: Vec<String>,
     pub commented_reviewers: Vec<String>,
     pub addressed_reviewers: Vec<String>,
+    /// PR-author responses to reviewer activity that may resurface dismissed reviews.
+    pub reviewer_responses: Vec<PullRequestReviewerResponse>,
+    /// Latest comments that explicitly mention a reviewer.
+    pub reviewer_mentions: Vec<PullRequestReviewerMention>,
     /// Reviewers whose latest submitted review was dismissed by GitHub.
     pub dismissed_reviewers: Vec<String>,
     pub review_activity: Vec<PullRequestReviewActivity>,
@@ -214,15 +239,33 @@ pub struct PullRequestStatusRecord {
 }
 
 /// Latest known review activity for one reviewer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestReviewActivity {
     pub reviewer: String,
     /// GitHub review or review-comment timestamp in RFC3339 form.
     pub reviewed_at: String,
 }
 
+/// PR-author response to a reviewer's prior activity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct PullRequestReviewerResponse {
+    pub reviewer: String,
+    /// GitHub author-response comment timestamp in RFC3339 form.
+    pub responded_at: String,
+    /// Plain-text author response body used by review dismissal policy.
+    pub body_text: String,
+}
+
+/// Latest explicit mention of a reviewer in PR discussion.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct PullRequestReviewerMention {
+    pub reviewer: String,
+    /// GitHub comment timestamp in RFC3339 form.
+    pub mentioned_at: String,
+}
+
 /// Pull-request lifecycle event needed to explain review wait time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestTimelineEvent {
     pub kind: PullRequestTimelineEventKind,
     /// GitHub event timestamp in RFC3339 form.
@@ -232,7 +275,7 @@ pub struct PullRequestTimelineEvent {
 }
 
 /// Supported pull-request lifecycle event kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum PullRequestTimelineEventKind {
     ReadyForReview,
     ConvertToDraft,
@@ -240,7 +283,7 @@ pub enum PullRequestTimelineEventKind {
 }
 
 /// Summary of the latest commit's GitHub check rollup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum PullRequestCheckStatus {
     Passing,
     Failing,
@@ -263,14 +306,14 @@ impl PullRequestCheckStatus {
 }
 
 /// One latest-commit check run or commit status context in GitHub's rollup.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestCheck {
     pub name: String,
     pub status: PullRequestCheckStatus,
 }
 
 /// Summary of GitHub's review decision and outstanding review requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum PullRequestReviewStatus {
     Approved,
     ChangesRequested,

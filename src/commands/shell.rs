@@ -377,8 +377,8 @@ jx_title() {
   local title="$context"
   [[ -n "$prefix" ]] && title="$prefix: $title"
   printf '\033]0;%s\007' "$title"
-  if declare -F termflow_zellij_tab_title >/dev/null 2>&1; then
-    termflow_zellij_tab_title "$title"
+  if declare -F jx_zellij_tab_title >/dev/null 2>&1; then
+    jx_zellij_tab_title "$title"
   fi
 }
 

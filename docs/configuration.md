@@ -174,9 +174,12 @@ the created jj workspace, and shell integration does not enter it.
 
 Stack status and review views can classify repository-specific approval gate
 checks separately from test health, highlight stale review wait time, omit noisy
-checks, labels, or reviewer identities, hide pre-merge-only labels after merge,
-and rewrite title prefixes before display ellipsizing. Matching review-gate
-checks are removed from the `Chk` aggregate and drive the review state instead:
+checks, stack-status labels, or reviewer identities, hide pre-merge-only labels
+after merge, and rewrite title prefixes before display ellipsizing. Review views
+can also omit review-only labels without affecting stack status, and ignore
+command-style author comments that should not resurface dismissed reviews.
+Matching review-gate checks are removed from the `Chk` aggregate and drive the
+review state instead:
 all configured gate globs must have passing matching checks for the PR to render
 approved unless GitHub still reports a protected review requirement, while
 missing, pending, unknown, or failing gate checks render as waiting review.
@@ -184,10 +187,13 @@ Ignored checks are removed without affecting check or review state. Remaining
 checks still decide whether `Chk` is passing, pending, or failing. Review-wait
 thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
-stay green. Check ignore entries are Rust regexes; review-gate, label, and reviewer
-entries are globs. `ignored_labels_when_merged` uses the same glob syntax as
-`ignored_labels`, but only applies after a PR has merged. Title rewrites use Rust
-regex capture replacements:
+stay green. Check ignore and reviewer ignore entries are Rust regexes; review-gate
+and label entries are globs. `ignored_labels_when_merged` uses the same glob syntax as
+`ignored_labels`, but only applies after a PR has merged. `repo.review.ignored_labels`
+and `repo.rules.review.ignored_labels` add review-only label omissions.
+`ignored_author_response_comments` entries are multiline Rust regexes matched
+against PR-author comment bodies before dismissal resurfacing. Title rewrites use
+Rust regex capture replacements:
 
 ```toml
 [[repo.rules]]
@@ -197,9 +203,13 @@ repo = "example-owner/example-repo"
 ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
 ignored_labels = ["generated-*"]
 ignored_labels_when_merged = ["auto-merge", "run-ci"]
-ignored_reviewers = ["automation-bot"]
+ignored_reviewers = ["^automation-bot$", "-bot$"]
 review_gate_checks = ["approval gate"]
 review_wait_threshold = "4h"
+
+[repo.rules.review]
+ignored_author_response_comments = ["^/automation merge\\s*$"]
+ignored_labels = ["run-ci", "team-review"]
 
 [[repo.rules.stack_status.title_rewrites]]
 pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"

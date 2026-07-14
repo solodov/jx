@@ -183,10 +183,19 @@ pub(super) enum OpenTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ReviewRequest {
+    pub(super) action: ReviewAction,
     pub(super) repo_filters: Vec<String>,
     pub(super) interactive: bool,
     pub(super) refresh_seconds: u64,
     pub(super) format: ReviewFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReviewAction {
+    Show,
+    Dismiss { selector: String },
+    Dismissed,
+    Undismiss { selector: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -662,6 +671,16 @@ fn stack_status_request(matches: &ArgMatches) -> Result<StackStatusRequest, clap
 }
 
 fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
+    let action = match matches.subcommand() {
+        Some(("dismiss", matches)) => ReviewAction::Dismiss {
+            selector: required_arg(matches, "pull-request"),
+        },
+        Some(("dismissed", _)) => ReviewAction::Dismissed,
+        Some(("undismiss", matches)) => ReviewAction::Undismiss {
+            selector: required_arg(matches, "pull-request"),
+        },
+        _ => ReviewAction::Show,
+    };
     let format = review_format(matches);
     let interactive = matches.get_flag("interactive");
     if interactive && format == ReviewFormat::Json {
@@ -670,7 +689,14 @@ fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
             "jx review --interactive cannot be used with --format json",
         ));
     }
+    if interactive && action != ReviewAction::Show {
+        return Err(clap::Error::raw(
+            ErrorKind::ArgumentConflict,
+            "jx review --interactive cannot be used with review subcommands",
+        ));
+    }
     Ok(ReviewRequest {
+        action,
         repo_filters: review_repo_filters(matches),
         interactive,
         refresh_seconds: dashboard_refresh_seconds(matches)?,
@@ -1210,7 +1236,21 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())
                 .arg(review_format_arg())
-                .arg(review_repo_filter_arg()),
+                .arg(review_repo_filter_arg())
+                .subcommand(
+                    ClapCommand::new("dismiss")
+                        .about("Hide a reviewed pull request until it needs your attention again")
+                        .arg(review_dismiss_pull_request_arg()),
+                )
+                .subcommand(
+                    ClapCommand::new("dismissed")
+                        .about("Show dismissed pull requests that are still hidden from review"),
+                )
+                .subcommand(
+                    ClapCommand::new("undismiss")
+                        .about("Return a dismissed pull request to review")
+                        .arg(review_dismiss_pull_request_arg()),
+                ),
         )
         .subcommand(
             ClapCommand::new("prev-commit")
@@ -1250,7 +1290,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("sync")
                 .about("Fetch origin and push repository, stack, or selected bookmark state")
                 .long_about(
-                    "Fetch origin and push repository, stack, or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Use -s/--stack to sync every bookmark in the current pull-request stack. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync eligible primary repositories from configured layout roots without prompting; optional repository globs filter provider/owner/repo identities, so `solodov/*` matches `github.com/solodov/foo`.",
+                    "Fetch origin and push repository, stack, or selected bookmark state.\n\nBy default, sync tracked bookmarks in the current repository, including setup/bootstrap behavior and configured trunk advancement. Use -s/--stack to sync every bookmark in the current pull-request stack. Pass a jj revision or bookmark to sync one bookmarked target instead. Use -r/--repo to force repository mode explicitly. Use -a/--all to sync eligible primary repositories from configured layout roots without prompting; optional repository globs filter provider/owner/repo identities, so `example-owner/*` matches `github.com/example-owner/foo`.",
                 )
                 .arg(sync_all_arg())
                 .arg(sync_repo_arg())
@@ -1600,6 +1640,15 @@ fn review_repo_filter_arg() -> Arg {
         .value_name("REPO_GLOB")
         .num_args(0..)
         .help("Filter review requests by configured key or provider/owner/repo glob")
+}
+
+fn review_dismiss_pull_request_arg() -> Arg {
+    Arg::new("pull-request")
+        .value_name("PR")
+        .required(true)
+        .help(
+        "Pull request number, repo#number suffix, owner/repo#number, or URL to dismiss from review",
+    )
 }
 
 fn remote_status_all_arg() -> Arg {

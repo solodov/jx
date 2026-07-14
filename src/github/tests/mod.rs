@@ -171,6 +171,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         closed: false,
         merged_at: None,
         closed_at: None,
+        mergeable: Some("CONFLICTING".to_owned()),
         review_decision: Some("CHANGES_REQUESTED".to_owned()),
         review_requests: GraphQlReviewRequests {
             total_count: 2,
@@ -216,6 +217,13 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
                         login: "reviewer-commented-approved".to_owned(),
+                    }),
+                },
+                GraphQlReviewNode {
+                    state: "CHANGES_REQUESTED".to_owned(),
+                    submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        login: "reviewer-change-requested".to_owned(),
                     }),
                 },
                 GraphQlReviewNode {
@@ -266,6 +274,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                 },
             ],
         },
+        comments: GraphQlIssueComments { nodes: Vec::new() },
         review_threads: GraphQlReviewThreads {
             nodes: vec![
                 GraphQlReviewThreadNode {
@@ -277,6 +286,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                                 login: "reviewer-commented".to_owned(),
                             }),
                             created_at: "2026-01-01T12:00:00Z".to_owned(),
+                            body_text: String::new(),
                         }],
                     },
                 },
@@ -290,12 +300,14 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                                     login: "reviewer-addressed".to_owned(),
                                 }),
                                 created_at: "2026-01-01T12:00:00Z".to_owned(),
+                                body_text: String::new(),
                             },
                             GraphQlReviewThreadCommentNode {
                                 author: Some(GraphQlReviewAuthor {
                                     login: "change-author".to_owned(),
                                 }),
                                 created_at: "2026-01-01T12:30:00Z".to_owned(),
+                                body_text: "Thanks @reviewer-mentioned".to_owned(),
                             },
                         ],
                     },
@@ -309,6 +321,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                                 login: "reviewer-obsolete".to_owned(),
                             }),
                             created_at: "2026-01-01T12:00:00Z".to_owned(),
+                            body_text: String::new(),
                         }],
                     },
                 },
@@ -374,6 +387,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
 
     assert_eq!(status.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
     assert_eq!(status.check_status, PullRequestCheckStatus::Failing);
+    assert_eq!(status.merge_status, PullRequestMergeStatus::Conflicting);
     assert_eq!(
         status.checks,
         [
@@ -402,6 +416,10 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     );
     assert_eq!(status.approved_reviewers, ["reviewer-approved".to_owned()]);
     assert_eq!(
+        status.changes_requested_reviewers,
+        ["reviewer-change-requested".to_owned()]
+    );
+    assert_eq!(
         status.commented_reviewers,
         ["reviewer-commented".to_owned()]
     );
@@ -409,9 +427,25 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         status.addressed_reviewers,
         ["reviewer-addressed".to_owned()]
     );
+    assert_eq!(status.reviewer_responses.len(), 1);
+    assert_eq!(status.reviewer_responses[0].reviewer, "reviewer-addressed");
+    assert_eq!(
+        status.reviewer_responses[0].responded_at,
+        "2026-01-01T12:30:00Z"
+    );
+    assert_eq!(
+        status.reviewer_responses[0].body_text,
+        "Thanks @reviewer-mentioned"
+    );
     assert_eq!(
         status.dismissed_reviewers,
         ["reviewer-dismissed".to_owned()]
+    );
+    assert_eq!(status.reviewer_mentions.len(), 1);
+    assert_eq!(status.reviewer_mentions[0].reviewer, "reviewer-mentioned");
+    assert_eq!(
+        status.reviewer_mentions[0].mentioned_at,
+        "2026-01-01T12:30:00Z"
     );
     assert!(status.review_activity.iter().any(|activity| {
         activity.reviewer == "reviewer-approved" && activity.reviewed_at == "2026-01-02T03:04:05Z"
@@ -450,6 +484,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         closed: false,
         merged_at: None,
         closed_at: None,
+        mergeable: Some("MERGEABLE".to_owned()),
         review_decision: Some("REVIEW_REQUIRED".to_owned()),
         review_requests: GraphQlReviewRequests {
             total_count: 2,
@@ -465,6 +500,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         labels: GraphQlLabels { nodes: Vec::new() },
         latest_reviews: GraphQlReviews { nodes: Vec::new() },
         reviews: GraphQlReviews { nodes: Vec::new() },
+        comments: GraphQlIssueComments { nodes: Vec::new() },
         review_threads: GraphQlReviewThreads { nodes: Vec::new() },
         timeline_items: GraphQlTimelineItems { nodes: Vec::new() },
         commits: GraphQlPullRequestStatusCommits { nodes: Vec::new() },
@@ -481,8 +517,81 @@ fn maps_pull_request_status_rollup_and_review_decision() {
 }
 
 #[test]
+fn maps_top_level_author_comments_as_reviewer_responses() {
+    // Verifies: author replies in the PR conversation make prior reviewer comments actionable again.
+    let status = map_graphql_pull_request_status(GraphQlPullRequestStatus {
+        number: 44,
+        title: "Conversation response".to_owned(),
+        url: "https://github.com/example-owner/example-repo/pull/44".to_owned(),
+        created_at: "2026-01-01T00:00:00Z".to_owned(),
+        head_ref_name: "topic/conversation".to_owned(),
+        base_ref_name: "main".to_owned(),
+        author: Some(GraphQlReviewAuthor {
+            login: "change-author".to_owned(),
+        }),
+        is_draft: false,
+        merged: false,
+        closed: false,
+        merged_at: None,
+        closed_at: None,
+        mergeable: Some("MERGEABLE".to_owned()),
+        review_decision: None,
+        review_requests: GraphQlReviewRequests {
+            total_count: 0,
+            nodes: Vec::new(),
+        },
+        suggested_reviewers: Vec::new(),
+        labels: GraphQlLabels { nodes: Vec::new() },
+        latest_reviews: GraphQlReviews { nodes: Vec::new() },
+        reviews: GraphQlReviews {
+            nodes: vec![GraphQlReviewNode {
+                state: "COMMENTED".to_owned(),
+                submitted_at: Some("2026-01-01T01:00:00Z".to_owned()),
+                author: Some(GraphQlReviewAuthor {
+                    login: "reviewer-one".to_owned(),
+                }),
+            }],
+        },
+        comments: GraphQlIssueComments {
+            nodes: vec![
+                GraphQlIssueCommentNode {
+                    author: Some(GraphQlReviewAuthor {
+                        login: "change-author".to_owned(),
+                    }),
+                    created_at: "2026-01-01T00:30:00Z".to_owned(),
+                    body_text: String::new(),
+                },
+                GraphQlIssueCommentNode {
+                    author: Some(GraphQlReviewAuthor {
+                        login: "change-author".to_owned(),
+                    }),
+                    created_at: "2026-01-01T02:00:00Z".to_owned(),
+                    body_text: "Ready for another look".to_owned(),
+                },
+            ],
+        },
+        review_threads: GraphQlReviewThreads { nodes: Vec::new() },
+        timeline_items: GraphQlTimelineItems { nodes: Vec::new() },
+        commits: GraphQlPullRequestStatusCommits { nodes: Vec::new() },
+    });
+
+    assert!(status.commented_reviewers.is_empty());
+    assert_eq!(status.addressed_reviewers, ["reviewer-one"]);
+    assert_eq!(status.reviewer_responses.len(), 1);
+    assert_eq!(status.reviewer_responses[0].reviewer, "reviewer-one");
+    assert_eq!(
+        status.reviewer_responses[0].responded_at,
+        "2026-01-01T02:00:00Z"
+    );
+    assert_eq!(
+        status.reviewer_responses[0].body_text,
+        "Ready for another look"
+    );
+}
+
+#[test]
 fn review_request_search_queries_include_existing_review_activity() {
-    // Verifies: the review inbox keeps open PRs visible after the viewer submits a review.
+    // Verifies: the review inbox starts from active review requests and prior viewer reviews.
     assert_eq!(
         REVIEW_REQUEST_SEARCH_QUERIES,
         &[
@@ -506,6 +615,7 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("reviewDecision"));
     assert!(query.contains("mergedAt"));
     assert!(query.contains("closedAt"));
+    assert!(query.contains("mergeable"));
     assert!(query.contains("createdAt"));
     assert!(query.contains("  author {"));
     assert!(query.contains("reviewRequests"));
@@ -517,6 +627,7 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("      color"));
     assert!(query.contains("latestReviews(first: 100)"));
     assert!(query.contains("reviews(first: 100)"));
+    assert!(query.contains("comments(last: 100)"));
     assert!(query.contains("submittedAt"));
     assert!(query.contains("reviewThreads(first: 100)"));
     assert!(query.contains("timelineItems(last: 100"));
@@ -528,6 +639,7 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("... on ReviewRequestedEvent"));
     assert!(query.contains("requestedReviewer"));
     assert!(!query.contains("slug"));
+    assert!(query.contains("bodyText"));
     assert!(query.contains("isResolved"));
     assert!(query.contains("isOutdated"));
     assert!(query.contains("comments(first: 100)"));
@@ -552,7 +664,7 @@ fn user_profiles_query_batches_logins_with_aliases() {
 #[test]
 fn user_profiles_mapper_treats_missing_logins_as_cacheable_misses() {
     // Verifies: one deleted/non-user login does not make display-name enrichment fail repeatedly.
-    let logins = vec!["faire-review".to_owned(), "human-reviewer".to_owned()];
+    let logins = vec!["deleted-reviewer".to_owned(), "human-reviewer".to_owned()];
     let response = GraphQlResponse {
         data: Some(BTreeMap::from([
             ("user0".to_owned(), None),
@@ -565,7 +677,7 @@ fn user_profiles_mapper_treats_missing_logins_as_cacheable_misses() {
             ),
         ])),
         errors: vec![GraphQlError {
-            message: "Could not resolve to a User with the login of 'faire-review'.".to_owned(),
+            message: "Could not resolve to a User with the login of 'deleted-reviewer'.".to_owned(),
         }],
     };
 
@@ -576,7 +688,7 @@ fn user_profiles_mapper_treats_missing_logins_as_cacheable_misses() {
         profiles,
         vec![
             GitHubUserProfile {
-                login: "faire-review".to_owned(),
+                login: "deleted-reviewer".to_owned(),
                 name: None,
             },
             GitHubUserProfile {

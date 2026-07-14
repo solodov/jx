@@ -1,7 +1,7 @@
 use super::*;
 use chrono::{DateTime, Duration, Utc};
 
-const COMPLETED_STACK_STATUS_RETENTION_DAYS: i64 = 3;
+const COMPLETED_STACK_STATUS_RETENTION_DAYS: i64 = 1;
 
 /// Builds a read-only health report for a pull-request stack snapshot.
 pub fn pull_request_stack_status_report(
@@ -60,6 +60,26 @@ pub fn apply_pull_request_status_policy(
     status
 }
 
+/// Applies shared PR status policy plus review-only presentation filters.
+pub fn apply_review_request_status_policy(
+    status: PullRequestStatusRecord,
+    stack_status_config: &RepoStackStatusConfig,
+    review_config: &RepoReviewConfig,
+) -> PullRequestStatusRecord {
+    let mut status = apply_pull_request_status_policy(status, stack_status_config);
+    if !review_config.ignored_labels.is_empty() {
+        status
+            .labels
+            .retain(|label| !review_config.ignores_label(&label.name));
+    }
+    if !review_config.ignored_author_response_comments.is_empty() {
+        status
+            .reviewer_responses
+            .retain(|response| !review_config.ignores_author_response_comment(&response.body_text));
+    }
+    status
+}
+
 fn apply_ignored_pull_request_status_facts(
     status: &mut PullRequestStatusRecord,
     config: &RepoStackStatusConfig,
@@ -97,11 +117,20 @@ fn apply_ignored_pull_request_status_facts(
         .approved_reviewers
         .retain(|reviewer| !config.ignores_reviewer(reviewer));
     status
+        .changes_requested_reviewers
+        .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
         .commented_reviewers
         .retain(|reviewer| !config.ignores_reviewer(reviewer));
     status
         .addressed_reviewers
         .retain(|reviewer| !config.ignores_reviewer(reviewer));
+    status
+        .reviewer_responses
+        .retain(|response| !config.ignores_reviewer(&response.reviewer));
+    status
+        .reviewer_mentions
+        .retain(|mention| !config.ignores_reviewer(&mention.reviewer));
     status
         .dismissed_reviewers
         .retain(|reviewer| !config.ignores_reviewer(reviewer));

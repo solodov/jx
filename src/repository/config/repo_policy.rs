@@ -136,6 +136,15 @@ impl RepoConfig {
         config
     }
 
+    /// Returns effective review-request presentation policy for this repository.
+    pub fn review_for(&self, repository: &GitHubRepository) -> RepoReviewConfig {
+        let mut config = self.base.review.clone();
+        for rule in self.matching_rules(repository) {
+            config.apply_layer(rule.policy.review.clone());
+        }
+        config
+    }
+
     pub(super) fn validate(&self) -> Result<(), RepositoryError> {
         validate_workspace_shared_path_set(
             "jx config",
@@ -206,6 +215,7 @@ pub struct RepoPolicyConfig {
     pub reviewer_rules: Vec<ReviewerPathRule>,
     pub workspace_shared_paths: Vec<String>,
     pub stack_status: RepoStackStatusConfig,
+    pub review: RepoReviewConfig,
 }
 
 impl RepoPolicyConfig {
@@ -225,6 +235,7 @@ impl RepoPolicyConfig {
             &layer.workspace_shared_paths,
         );
         self.stack_status.apply_layer(layer.stack_status);
+        self.review.apply_layer(layer.review);
     }
 }
 
@@ -314,6 +325,52 @@ impl RepoStackStatusConfig {
     }
 }
 
+/// Review-request presentation behavior layered on top of shared PR status policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoReviewConfig {
+    pub ignored_labels: Vec<IgnoredLabelConfig>,
+    pub ignored_author_response_comments: Vec<IgnoredAuthorResponseCommentConfig>,
+}
+
+impl RepoReviewConfig {
+    fn apply_layer(&mut self, layer: RepoReviewConfig) {
+        merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
+        merge_ignored_author_response_comments(
+            &mut self.ignored_author_response_comments,
+            layer.ignored_author_response_comments,
+        );
+    }
+
+    /// Returns whether a pull-request label should be omitted from review views only.
+    pub fn ignores_label(&self, label: &str) -> bool {
+        self.ignored_labels.iter().any(|rule| rule.matches(label))
+    }
+
+    /// Returns whether an author comment should not resurface a dismissed review.
+    pub fn ignores_author_response_comment(&self, comment_body: &str) -> bool {
+        self.ignored_author_response_comments
+            .iter()
+            .any(|rule| rule.matches(comment_body))
+    }
+}
+
+/// Author-response comment regex ignored by review dismissal resurfacing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredAuthorResponseCommentConfig {
+    pub pattern: String,
+}
+
+impl IgnoredAuthorResponseCommentConfig {
+    /// Returns whether this multiline regex matches a PR-author comment body.
+    pub fn matches(&self, comment_body: &str) -> bool {
+        regex::RegexBuilder::new(&self.pattern)
+            .multi_line(true)
+            .build()
+            .ok()
+            .is_some_and(|regex| regex.is_match(comment_body))
+    }
+}
+
 /// Regex-based pull-request title rewrite applied before display ellipsizing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TitleRewriteConfig {
@@ -362,19 +419,18 @@ impl IgnoredLabelConfig {
     }
 }
 
-/// Reviewer-name glob hidden from stack/review status presentation.
+/// Reviewer-name regex hidden from stack/review status presentation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgnoredReviewerConfig {
     pub name: String,
 }
 
 impl IgnoredReviewerConfig {
-    /// Returns whether this rule matches a user, team slug, or `team/<slug>` reviewer token.
+    /// Returns whether this regex matches a user, team slug, or `team/<slug>` reviewer token.
     pub fn matches(&self, reviewer: &str) -> bool {
-        Glob::new(&self.name)
+        regex::Regex::new(&self.name)
             .ok()
-            .map(|glob| glob.compile_matcher().is_match(reviewer))
-            .unwrap_or(false)
+            .is_some_and(|regex| regex.is_match(reviewer))
     }
 }
 
@@ -816,6 +872,21 @@ fn merge_ignored_labels(target: &mut Vec<IgnoredLabelConfig>, labels: Vec<Ignore
     for label in labels {
         if seen.insert(label.name.clone()) {
             target.push(label);
+        }
+    }
+}
+
+fn merge_ignored_author_response_comments(
+    target: &mut Vec<IgnoredAuthorResponseCommentConfig>,
+    comments: Vec<IgnoredAuthorResponseCommentConfig>,
+) {
+    let mut seen = target
+        .iter()
+        .map(|comment| comment.pattern.clone())
+        .collect::<BTreeSet<_>>();
+    for comment in comments {
+        if seen.insert(comment.pattern.clone()) {
+            target.push(comment);
         }
     }
 }

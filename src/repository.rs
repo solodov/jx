@@ -27,6 +27,7 @@ mod config;
 mod context;
 mod environment;
 mod github_user_cache;
+mod pull_request_store;
 mod workspace_metadata;
 
 pub use auth::*;
@@ -35,6 +36,7 @@ use context::find_workspace_root;
 pub use context::*;
 pub use environment::*;
 pub use github_user_cache::*;
+pub use pull_request_store::*;
 pub use workspace_metadata::*;
 
 /// The only remote name used by the opinionated GitHub publishing workflow.

@@ -501,6 +501,7 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
                 | "reviewer_rules"
                 | "workspace_shared_paths"
                 | "stack_status"
+                | "review"
                 | "rules"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
@@ -565,6 +566,7 @@ fn parse_repo_rule(
                 | "reviewer_rules"
                 | "workspace_shared_paths"
                 | "stack_status"
+                | "review"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -638,6 +640,11 @@ fn parse_repo_policy(
         .map(|value| parse_stack_status_config(file, &format!("{key_prefix}.stack_status"), value))
         .transpose()?
         .unwrap_or_default();
+    let review = table
+        .get("review")
+        .map(|value| parse_review_config(file, &format!("{key_prefix}.review"), value))
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(RepoPolicyConfig {
         advance_trunk,
@@ -650,6 +657,7 @@ fn parse_repo_policy(
         reviewer_rules,
         workspace_shared_paths,
         stack_status,
+        review,
     })
 }
 
@@ -730,6 +738,53 @@ fn parse_stack_status_config(
         ignored_reviewers,
         title_rewrites,
         review_wait_threshold_seconds,
+    })
+}
+
+fn parse_review_config(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<RepoReviewConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(
+            name.as_str(),
+            "ignored_labels" | "ignored_author_response_comments"
+        ) {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}.{name}"),
+            });
+        }
+    }
+
+    let ignored_labels = table
+        .get("ignored_labels")
+        .map(|value| parse_ignored_labels(file, &format!("{key}.ignored_labels"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let ignored_author_response_comments = table
+        .get("ignored_author_response_comments")
+        .map(|value| {
+            parse_ignored_author_response_comments(
+                file,
+                &format!("{key}.ignored_author_response_comments"),
+                value,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(RepoReviewConfig {
+        ignored_labels,
+        ignored_author_response_comments,
     })
 }
 
@@ -861,12 +916,25 @@ fn parse_ignored_labels(
     })
 }
 
+fn parse_ignored_author_response_comments(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<IgnoredAuthorResponseCommentConfig>, RepositoryError> {
+    parse_named_regex_rules(file, key, value, "author-response comment regex").map(|rules| {
+        rules
+            .into_iter()
+            .map(|pattern| IgnoredAuthorResponseCommentConfig { pattern })
+            .collect()
+    })
+}
+
 fn parse_ignored_reviewers(
     file: &str,
     key: &str,
     value: &toml::Value,
 ) -> Result<Vec<IgnoredReviewerConfig>, RepositoryError> {
-    parse_named_glob_rules(file, key, value, "reviewer-name glob").map(|rules| {
+    parse_named_regex_rules(file, key, value, "reviewer-name regex").map(|rules| {
         rules
             .into_iter()
             .map(|name| IgnoredReviewerConfig { name })

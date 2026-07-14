@@ -24,8 +24,8 @@ use crate::{
     },
     repository::{
         GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,
-        RepoEventHandler, RepoEventHandlerRun, RepoStackStatusConfig, RepositoryContext,
-        RepositoryError, StackMetadata, StackMetadataNode,
+        RepoEventHandler, RepoEventHandlerRun, RepoReviewConfig, RepoStackStatusConfig,
+        RepositoryContext, RepositoryError, StackMetadata, StackMetadataNode,
     },
 };
 

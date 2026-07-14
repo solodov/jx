@@ -49,12 +49,8 @@ pub(in crate::commands) fn render_stack_status(
             )
         )?;
         writeln!(formatter)?;
-        let wrote_stack =
+        let _ =
             write_stack_status_report(formatter, report, color, 0, terminal_width, display_names)?;
-        if wrote_stack {
-            writeln!(formatter)?;
-            write_stack_status_legend(formatter, color, 0)?;
-        }
         Ok(())
     }))
 }
@@ -69,37 +65,12 @@ pub(in crate::commands) fn render_global_stack_status(
 ) -> Result<String, JjError> {
     let _ = current_dir;
     Ok(render_plain_output(|formatter| {
-        let stack_repositories = entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .result
-                    .as_ref()
-                    .is_ok_and(|report| visible_stack_status_node_count(report) > 0)
-            })
-            .count();
-        let pull_requests = entries
-            .iter()
-            .filter_map(|entry| entry.result.as_ref().ok())
-            .map(visible_stack_status_pull_request_count)
-            .sum::<usize>();
-        let attention = entries
-            .iter()
-            .filter_map(|entry| entry.result.as_ref().ok())
-            .filter(|report| stack_status_report_needs_attention(report))
-            .count();
+        let _ = total_repositories;
 
-        writeln!(
-            formatter,
-            "Stack status: {} checked, {} with stacks, {}, {}",
-            repository_count(total_repositories),
-            repository_count(stack_repositories),
-            pull_request_count(pull_requests),
-            attention_repository_count(attention),
-        )?;
-
-        for entry in entries {
-            writeln!(formatter)?;
+        for (index, entry) in entries.iter().enumerate() {
+            if index > 0 {
+                writeln!(formatter)?;
+            }
             let (label, url) = entry
                 .repository
                 .as_ref()
@@ -136,15 +107,6 @@ pub(in crate::commands) fn render_global_stack_status(
                 }
                 Err(error) => writeln!(formatter, "  error: {error}")?,
             }
-        }
-
-        if entries
-            .iter()
-            .filter_map(|entry| entry.result.as_ref().ok())
-            .any(|report| visible_stack_status_node_count(report) > 0)
-        {
-            writeln!(formatter)?;
-            write_stack_status_legend(formatter, color, 0)?;
         }
 
         Ok(())
@@ -200,8 +162,8 @@ fn write_stack_status_report(
         let pr_padding = " ".repeat(pr_width.saturating_sub(row.pr_visible_width));
         let review_lag = render_review_lag_cell(
             &row.review_lag,
-            color,
-            if row.draft { DRAFT_ROW_STYLE } else { "" },
+            color && !row.closed,
+            row.style,
             row.merged,
             row.draft,
         );
@@ -210,11 +172,7 @@ fn write_stack_status_report(
             row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, review_lag, row.title,
         );
         let line = ellipsize_rendered_line(&line, terminal_width);
-        writeln!(
-            formatter,
-            "{}",
-            style_stack_status_row(line, row.draft, color)
-        )?;
+        writeln!(formatter, "{}", style_stack_status_row(line, row.style))?;
     }
     Ok(true)
 }
@@ -228,6 +186,8 @@ struct StackStatusTableRow {
     title: String,
     draft: bool,
     merged: bool,
+    closed: bool,
+    style: &'static str,
 }
 
 fn stack_status_table_rows(
@@ -245,18 +205,27 @@ fn stack_status_table_rows(
             let merged = stack_status_row_is_merged(row.node, status);
             let closed = stack_status_row_is_closed(status, merged);
             let draft = stack_status_row_is_draft(row.node, status, merged, closed);
-            let pr_cell = stack_status_pr_cell(report, &row, status, merged, closed, color);
+            let conflict = status.is_some_and(pull_request_has_merge_conflict);
+            let style = stack_status_row_style(conflict, closed, draft, color);
+            let active_cell_color = color && !draft && !closed;
+            let pr_cell = stack_status_pr_cell(report, &row, status, merged, color);
             let review_lag =
                 pull_request_stack_review_lag(status, report.review_wait_threshold_seconds);
             StackStatusTableRow {
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
-                check_symbol: pull_request_check_symbol(status, merged, color && !draft),
-                review_symbol: pull_request_review_symbol(
+                check_symbol: pull_request_check_symbol_with_restore(
                     status,
                     merged,
-                    color && !draft,
+                    active_cell_color,
+                    style,
+                ),
+                review_symbol: pull_request_review_symbol_with_restore(
+                    status,
+                    merged,
+                    active_cell_color,
                     review_lag.over_threshold,
+                    style,
                 ),
                 review_lag,
                 title: stack_status_title(
@@ -270,6 +239,8 @@ fn stack_status_table_rows(
                 ),
                 draft,
                 merged,
+                closed,
+                style,
             }
         })
         .collect()
@@ -285,7 +256,6 @@ fn stack_status_pr_cell(
     row: &PullRequestStackRow<'_>,
     status: Option<&PullRequestStatusRecord>,
     merged: bool,
-    closed: bool,
     color: bool,
 ) -> StackStatusPrCell {
     let target = row
@@ -295,8 +265,6 @@ fn stack_status_pr_cell(
         .unwrap_or_else(|| row.node.branch.clone());
     let styled_target = if merged && color {
         format!("{GREEN_STYLE}{target}{RESET_STYLE}")
-    } else if closed && color {
-        format!("{RED_STYLE}{target}{RESET_STYLE}")
     } else {
         target.clone()
     };
@@ -368,25 +336,28 @@ fn stack_status_title(
     color: bool,
     display_names: &BTreeMap<String, String>,
 ) -> String {
-    let mut title = ellipsize_pull_request_title(
+    let title = ellipsize_pull_request_title(
         status
             .map(|status| status.title.trim())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| row.node.display_title()),
     );
     if merged || closed {
-        let label_chips = status
-            .map(|status| muted_pull_request_label_chips(&status.labels, color))
-            .unwrap_or_default();
-        let (marker, style) = if merged {
-            ("●", GREEN_STYLE)
+        let label_chips = if merged {
+            status
+                .map(|status| muted_pull_request_label_chips(&status.labels, color))
+                .unwrap_or_default()
         } else {
-            ("◯", RED_STYLE)
+            Vec::new()
         };
-        let mut title = if color {
-            format!("{style}{marker} {title}{RESET_STYLE}")
+        let mut title = if merged {
+            if color {
+                format!("{GREEN_STYLE}● {title}{RESET_STYLE}")
+            } else {
+                format!("● {title}")
+            }
         } else {
-            format!("{marker} {title}")
+            format!("⊖ {title}")
         };
         if !label_chips.is_empty() {
             title.push(' ');
@@ -408,20 +379,19 @@ fn stack_status_title(
     let label_chips = status
         .map(|status| pull_request_label_chips(&status.labels, color, draft))
         .unwrap_or_default();
-    if !label_chips.is_empty() {
-        title.push(' ');
-        title.push_str(&label_chips.join(pull_request_label_separator(color)));
-    }
     let reviewer_tokens = status
         .map(|status| pull_request_reviewer_tokens(status, color && !draft, display_names))
         .unwrap_or_default();
-    if !reviewer_tokens.is_empty() {
-        title.push(' ');
-        title.push_str(&reviewer_tokens.join(", "));
-    }
     let prefix = compact_stack_prefix(&row.prefix);
-    let symbol = if draft { "◌" } else { "◯" };
-    format!("{prefix}{symbol} {title}")
+    let symbol = pull_request_node_symbol(status, draft);
+    let mut parts = vec![format!("{prefix}{symbol} {title}")];
+    if !label_chips.is_empty() {
+        parts.push(label_chips.join(pull_request_label_separator(color)));
+    }
+    if !reviewer_tokens.is_empty() {
+        parts.push(reviewer_tokens.join(", "));
+    }
+    parts.join(" ")
 }
 
 fn stack_status_repository_header(
@@ -480,25 +450,6 @@ fn stack_status_trunk_delta(trunk: &RemoteStatusReport) -> String {
     }
 }
 
-fn stack_status_report_needs_attention(report: &PullRequestStackStatusReport) -> bool {
-    visible_stack_status_snapshot(report)
-        .nodes
-        .iter()
-        .any(|node| stack_status_node_needs_attention(node, report))
-}
-
-fn visible_stack_status_node_count(report: &PullRequestStackStatusReport) -> usize {
-    visible_stack_status_snapshot(report).nodes.len()
-}
-
-fn visible_stack_status_pull_request_count(report: &PullRequestStackStatusReport) -> usize {
-    visible_stack_status_snapshot(report)
-        .nodes
-        .iter()
-        .filter(|node| node.pull_request_number().is_some())
-        .count()
-}
-
 fn visible_stack_status_snapshot(
     report: &PullRequestStackStatusReport,
 ) -> PullRequestStackSnapshot {
@@ -545,30 +496,6 @@ fn visible_stack_status_snapshot(
     }
 }
 
-fn stack_status_node_needs_attention(
-    node: &PullRequestStackNode,
-    report: &PullRequestStackStatusReport,
-) -> bool {
-    let status = node
-        .pull_request_number()
-        .and_then(|number| report.statuses.get(&number));
-    let merged = stack_status_row_is_merged(node, status);
-    if merged || stack_status_row_is_closed(status, merged) {
-        return false;
-    }
-    status.is_none_or(pull_request_status_needs_attention)
-}
-
-fn pull_request_status_needs_attention(status: &PullRequestStatusRecord) -> bool {
-    matches!(
-        status.check_status,
-        PullRequestCheckStatus::Failing | PullRequestCheckStatus::Unknown
-    ) || matches!(
-        status.review_status,
-        PullRequestReviewStatus::ChangesRequested | PullRequestReviewStatus::Unknown
-    )
-}
-
 fn lifecycle_label(
     node: &PullRequestStackNode,
     status: Option<&PullRequestStatusRecord>,
@@ -585,62 +512,25 @@ fn lifecycle_label(
     }
 }
 
-fn style_stack_status_row(line: String, draft: bool, color: bool) -> String {
-    if color && draft {
-        format!("{DRAFT_ROW_STYLE}{line}{RESET_STYLE}")
+fn stack_status_row_style(conflict: bool, closed: bool, draft: bool, color: bool) -> &'static str {
+    if !color {
+        ""
+    } else if conflict {
+        CONFLICT_STYLE
+    } else if closed {
+        PASTEL_BLUE_STYLE
+    } else if draft {
+        DRAFT_ROW_STYLE
     } else {
+        ""
+    }
+}
+
+fn style_stack_status_row(line: String, style: &str) -> String {
+    if style.is_empty() {
         line
-    }
-}
-
-fn write_stack_status_legend(
-    formatter: &mut dyn Formatter,
-    color: bool,
-    indent: usize,
-) -> io::Result<()> {
-    let indent = " ".repeat(indent);
-    let lines = [
-        "Legend:",
-        "  Title: ● merged, ◯ ready/closed, ◌ draft; labels/reviewers follow",
-        "  Chk: ✓ passing, ✗ failing, ◷ pending, — none/unknown",
-        "  Rev: ✓ approved, ! changes requested, ◷ waiting, ? required/unknown, — none; Lag: latest review, ready wait, or draft age",
-    ];
-    for line in lines {
-        writeln!(
-            formatter,
-            "{indent}{}",
-            style_stack_status_legend(line, color)
-        )?;
-    }
-    Ok(())
-}
-
-fn style_stack_status_legend(line: &str, color: bool) -> String {
-    if color {
-        format!("{DRAFT_ROW_STYLE}{line}{RESET_STYLE}")
     } else {
-        line.to_owned()
-    }
-}
-
-fn repository_count(count: usize) -> String {
-    match count {
-        1 => "1 repository".to_owned(),
-        count => format!("{count} repositories"),
-    }
-}
-
-fn pull_request_count(count: usize) -> String {
-    match count {
-        1 => "1 pull request".to_owned(),
-        count => format!("{count} pull requests"),
-    }
-}
-
-fn attention_repository_count(count: usize) -> String {
-    match count {
-        1 => "1 repository needs attention".to_owned(),
-        count => format!("{count} repositories need attention"),
+        format!("{style}{line}{RESET_STYLE}")
     }
 }
 
@@ -737,6 +627,7 @@ struct StackStatusPullRequestJson {
     url: Option<String>,
     lifecycle: &'static str,
     check_status: &'static str,
+    merge_status: &'static str,
     review_status: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     labels: Vec<StackStatusLabelJson>,
@@ -747,9 +638,13 @@ struct StackStatusPullRequestJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     approved_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    changes_requested_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     commented_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     addressed_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reviewer_responses: Vec<StackStatusResponseJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dismissed_users: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -772,6 +667,22 @@ impl From<&PullRequestLabel> for StackStatusLabelJson {
         Self {
             name: label.name.clone(),
             color: label.color.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackStatusResponseJson {
+    reviewer: String,
+    responded_at: String,
+}
+
+impl From<&PullRequestReviewerResponse> for StackStatusResponseJson {
+    fn from(response: &PullRequestReviewerResponse) -> Self {
+        Self {
+            reviewer: response.reviewer.clone(),
+            responded_at: response.responded_at.clone(),
         }
     }
 }
@@ -805,6 +716,9 @@ fn stack_status_pull_requests_json(
                 check_status: status
                     .map(|status| status.check_status.label())
                     .unwrap_or("unknown"),
+                merge_status: status
+                    .map(|status| status.merge_status.label())
+                    .unwrap_or("unknown"),
                 review_status: status
                     .map(|status| status.review_status.label())
                     .unwrap_or("unknown"),
@@ -826,11 +740,23 @@ fn stack_status_pull_requests_json(
                 approved_users: status
                     .map(|status| status.approved_reviewers.clone())
                     .unwrap_or_default(),
+                changes_requested_users: status
+                    .map(|status| status.changes_requested_reviewers.clone())
+                    .unwrap_or_default(),
                 commented_users: status
                     .map(|status| status.commented_reviewers.clone())
                     .unwrap_or_default(),
                 addressed_users: status
                     .map(|status| status.addressed_reviewers.clone())
+                    .unwrap_or_default(),
+                reviewer_responses: status
+                    .map(|status| {
+                        status
+                            .reviewer_responses
+                            .iter()
+                            .map(StackStatusResponseJson::from)
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 dismissed_users: status
                     .map(|status| status.dismissed_reviewers.clone())

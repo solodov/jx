@@ -1168,6 +1168,7 @@ fragment PullRequestStatusFields on PullRequest {{
   closed
   mergedAt
   closedAt
+  mergeable
   reviewDecision
   reviewRequests(first: 100) {{
     totalCount
@@ -1209,6 +1210,15 @@ fragment PullRequestStatusFields on PullRequest {{
       }}
     }}
   }}
+  comments(last: 100) {{
+    nodes {{
+      author {{
+        login
+      }}
+      createdAt
+      bodyText
+    }}
+  }}
   reviewThreads(first: 100) {{
     nodes {{
       isResolved
@@ -1219,6 +1229,7 @@ fragment PullRequestStatusFields on PullRequest {{
             login
           }}
           createdAt
+          bodyText
         }}
       }}
     }}
@@ -1603,6 +1614,7 @@ pub(super) struct GraphQlPullRequestStatus {
     pub(super) merged_at: Option<String>,
     #[serde(rename = "closedAt")]
     pub(super) closed_at: Option<String>,
+    pub(super) mergeable: Option<String>,
     #[serde(rename = "reviewDecision")]
     pub(super) review_decision: Option<String>,
     #[serde(rename = "reviewRequests")]
@@ -1613,6 +1625,7 @@ pub(super) struct GraphQlPullRequestStatus {
     #[serde(rename = "latestReviews")]
     pub(super) latest_reviews: GraphQlReviews,
     pub(super) reviews: GraphQlReviews,
+    pub(super) comments: GraphQlIssueComments,
     #[serde(rename = "reviewThreads")]
     pub(super) review_threads: GraphQlReviewThreads,
     #[serde(rename = "timelineItems")]
@@ -1759,6 +1772,20 @@ pub(super) struct GraphQlReviewThreads {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlIssueComments {
+    pub(super) nodes: Vec<GraphQlIssueCommentNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlIssueCommentNode {
+    pub(super) author: Option<GraphQlReviewAuthor>,
+    #[serde(rename = "createdAt")]
+    pub(super) created_at: String,
+    #[serde(rename = "bodyText")]
+    pub(super) body_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlReviewThreadNode {
     #[serde(rename = "isResolved")]
     pub(super) is_resolved: bool,
@@ -1777,6 +1804,8 @@ pub(super) struct GraphQlReviewThreadCommentNode {
     pub(super) author: Option<GraphQlReviewAuthor>,
     #[serde(rename = "createdAt")]
     pub(super) created_at: String,
+    #[serde(rename = "bodyText")]
+    pub(super) body_text: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1925,25 +1954,50 @@ pub(super) fn map_graphql_pull_request_status(
     let suggested_reviewers = suggested_reviewers_from_graphql(pull.suggested_reviewers);
     let latest_review_nodes = pull.latest_reviews.nodes;
     let review_nodes = pull.reviews.nodes;
+    let comment_nodes = pull.comments.nodes;
     let review_thread_nodes = pull.review_threads.nodes;
     let review_activity = review_activity_from_graphql(
         &latest_review_nodes,
         &review_nodes,
+        &comment_nodes,
         &review_thread_nodes,
         pull_request_author,
     );
     let approved_reviewers =
         approved_reviewers_from_graphql(&latest_review_nodes, pull_request_author);
+    let changes_requested_reviewers =
+        changes_requested_reviewers_from_graphql(&latest_review_nodes, pull_request_author);
     let dismissed_reviewers =
         dismissed_reviewers_from_graphql(&latest_review_nodes, pull_request_author);
+    let reviewer_mentions = reviewer_mentions_from_graphql(&comment_nodes, &review_thread_nodes);
     let thread_reviewers =
         review_thread_reviewers_from_graphql(review_thread_nodes, pull_request_author);
+    let mut reviewer_responses = thread_reviewers.reviewer_responses;
+    add_issue_comment_responses(
+        &mut reviewer_responses,
+        &comment_nodes,
+        &review_activity,
+        pull_request_author,
+    );
+    let answered_reviewers = reviewer_responses
+        .iter()
+        .map(|response| response.reviewer.as_str())
+        .collect::<BTreeSet<_>>();
     let commented_reviewers = active_commented_reviewers(
         thread_reviewers.commented.clone(),
         commented_reviewers_from_graphql(review_nodes, &approved_reviewers, pull_request_author),
         &thread_reviewers.seen,
+        &answered_reviewers,
     );
-    let addressed_reviewers = thread_reviewers.addressed;
+    let commented = commented_reviewers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut addressed_reviewers = thread_reviewers.addressed;
+    for response in &reviewer_responses {
+        push_unique(&mut addressed_reviewers, response.reviewer.clone());
+    }
+    addressed_reviewers.retain(|reviewer| !commented.contains(reviewer.as_str()));
     let timeline_events = timeline_events_from_graphql(pull.timeline_items.nodes);
     let labels = labels_from_graphql(pull.labels.nodes);
     let latest_commit = pull
@@ -1983,12 +2037,16 @@ pub(super) fn map_graphql_pull_request_status(
         closed_at: pull.closed_at,
         check_status,
         checks,
+        merge_status: map_merge_status(pull.mergeable.as_deref()),
         review_status,
         requested_reviewers,
         suggested_reviewers,
         approved_reviewers,
+        changes_requested_reviewers,
         commented_reviewers,
         addressed_reviewers,
+        reviewer_responses,
+        reviewer_mentions,
         dismissed_reviewers,
         review_activity,
         timeline_events,
@@ -2050,6 +2108,14 @@ fn map_check_run_status(status: Option<&str>, conclusion: Option<&str>) -> PullR
             PullRequestCheckStatus::Pending
         }
         Some(_) | None => PullRequestCheckStatus::Unknown,
+    }
+}
+
+fn map_merge_status(mergeable: Option<&str>) -> PullRequestMergeStatus {
+    match mergeable {
+        Some("MERGEABLE") => PullRequestMergeStatus::Mergeable,
+        Some("CONFLICTING") => PullRequestMergeStatus::Conflicting,
+        Some("UNKNOWN") | Some(_) | None => PullRequestMergeStatus::Unknown,
     }
 }
 
@@ -2139,6 +2205,7 @@ fn timeline_requested_reviewer_name(reviewer: GraphQlRequestedReviewer) -> Optio
 fn review_activity_from_graphql(
     latest_reviews: &[GraphQlReviewNode],
     reviews: &[GraphQlReviewNode],
+    comments: &[GraphQlIssueCommentNode],
     review_threads: &[GraphQlReviewThreadNode],
     pull_request_author: Option<&str>,
 ) -> Vec<PullRequestReviewActivity> {
@@ -2154,6 +2221,17 @@ fn review_activity_from_graphql(
             &mut reviewed_at_by_reviewer,
             author.login.as_str(),
             reviewed_at,
+            pull_request_author,
+        );
+    }
+    for comment in comments {
+        let Some(author) = &comment.author else {
+            continue;
+        };
+        record_review_activity(
+            &mut reviewed_at_by_reviewer,
+            author.login.as_str(),
+            comment.created_at.as_str(),
             pull_request_author,
         );
     }
@@ -2202,6 +2280,13 @@ fn approved_reviewers_from_graphql(
     pull_request_author: Option<&str>,
 ) -> Vec<String> {
     review_state_authors_from_graphql(nodes, "APPROVED", pull_request_author)
+}
+
+fn changes_requested_reviewers_from_graphql(
+    nodes: &[GraphQlReviewNode],
+    pull_request_author: Option<&str>,
+) -> Vec<String> {
+    review_state_authors_from_graphql(nodes, "CHANGES_REQUESTED", pull_request_author)
 }
 
 fn dismissed_reviewers_from_graphql(
@@ -2268,6 +2353,7 @@ fn commented_reviewers_from_graphql(
 struct ReviewThreadReviewers {
     commented: Vec<String>,
     addressed: Vec<String>,
+    reviewer_responses: Vec<PullRequestReviewerResponse>,
     seen: BTreeSet<String>,
 }
 
@@ -2277,7 +2363,7 @@ fn review_thread_reviewers_from_graphql(
 ) -> ReviewThreadReviewers {
     let mut result = ReviewThreadReviewers::default();
     for thread in nodes {
-        let mut latest_author_comment_at: Option<String> = None;
+        let mut latest_author_comment: Option<(String, String)> = None;
         let mut reviewer_comments: Vec<(String, String)> = Vec::new();
         for comment in thread.comments.nodes {
             let Some(author) = comment.author else {
@@ -2288,7 +2374,11 @@ fn review_thread_reviewers_from_graphql(
                 continue;
             }
             if pull_request_author == Some(login) {
-                replace_if_newer(&mut latest_author_comment_at, &comment.created_at);
+                replace_comment_if_newer(
+                    &mut latest_author_comment,
+                    &comment.created_at,
+                    &comment.body_text,
+                );
                 continue;
             }
 
@@ -2310,10 +2400,16 @@ fn review_thread_reviewers_from_graphql(
         }
 
         for (reviewer, reviewer_comment_at) in reviewer_comments {
-            if latest_author_comment_at
+            if let Some((author_comment_at, author_comment_body)) = latest_author_comment
                 .as_ref()
-                .is_some_and(|author_comment_at| author_comment_at > &reviewer_comment_at)
+                .filter(|(author_comment_at, _)| author_comment_at > &reviewer_comment_at)
             {
+                record_reviewer_response(
+                    &mut result.reviewer_responses,
+                    &reviewer,
+                    author_comment_at,
+                    author_comment_body,
+                );
                 push_unique(&mut result.addressed, reviewer);
             } else {
                 push_unique(&mut result.commented, reviewer);
@@ -2332,29 +2428,154 @@ fn review_thread_reviewers_from_graphql(
     result
 }
 
+fn add_issue_comment_responses(
+    responses: &mut Vec<PullRequestReviewerResponse>,
+    comments: &[GraphQlIssueCommentNode],
+    review_activity: &[PullRequestReviewActivity],
+    pull_request_author: Option<&str>,
+) {
+    let Some(pull_request_author) = pull_request_author else {
+        return;
+    };
+    let author_comments = comments.iter().filter(|comment| {
+        comment
+            .author
+            .as_ref()
+            .is_some_and(|author| author.login == pull_request_author)
+    });
+    for comment in author_comments {
+        for activity in review_activity {
+            if comment.created_at.as_str() > activity.reviewed_at.as_str() {
+                record_reviewer_response(
+                    responses,
+                    &activity.reviewer,
+                    &comment.created_at,
+                    &comment.body_text,
+                );
+            }
+        }
+    }
+}
+
+fn reviewer_mentions_from_graphql(
+    comments: &[GraphQlIssueCommentNode],
+    review_threads: &[GraphQlReviewThreadNode],
+) -> Vec<PullRequestReviewerMention> {
+    let mut mentioned_at_by_reviewer = BTreeMap::<String, String>::new();
+    for comment in comments {
+        record_comment_mentions(
+            &mut mentioned_at_by_reviewer,
+            &comment.body_text,
+            &comment.created_at,
+        );
+    }
+    for thread in review_threads {
+        for comment in &thread.comments.nodes {
+            record_comment_mentions(
+                &mut mentioned_at_by_reviewer,
+                &comment.body_text,
+                &comment.created_at,
+            );
+        }
+    }
+    mentioned_at_by_reviewer
+        .into_iter()
+        .map(|(reviewer, mentioned_at)| PullRequestReviewerMention {
+            reviewer,
+            mentioned_at,
+        })
+        .collect()
+}
+
+fn record_comment_mentions(
+    mentioned_at_by_reviewer: &mut BTreeMap<String, String>,
+    body: &str,
+    created_at: &str,
+) {
+    for reviewer in github_user_mentions(body) {
+        let entry = mentioned_at_by_reviewer
+            .entry(reviewer)
+            .or_insert_with(|| created_at.to_owned());
+        if entry.as_str() < created_at {
+            *entry = created_at.to_owned();
+        }
+    }
+}
+
+fn github_user_mentions(body: &str) -> Vec<String> {
+    let mut mentions = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, _) in body.match_indices('@') {
+        if body[..index]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+        {
+            continue;
+        }
+        let mention = body[index + 1..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+            .collect::<String>();
+        if !mention.is_empty() && seen.insert(mention.clone()) {
+            mentions.push(mention);
+        }
+    }
+    mentions
+}
+
+fn record_reviewer_response(
+    responses: &mut Vec<PullRequestReviewerResponse>,
+    reviewer: &str,
+    responded_at: &str,
+    body_text: &str,
+) {
+    if let Some(existing) = responses
+        .iter_mut()
+        .find(|response| response.reviewer == reviewer && response.responded_at == responded_at)
+    {
+        existing.body_text = body_text.to_owned();
+        return;
+    }
+    responses.push(PullRequestReviewerResponse {
+        reviewer: reviewer.to_owned(),
+        responded_at: responded_at.to_owned(),
+        body_text: body_text.to_owned(),
+    });
+}
+
 fn active_commented_reviewers(
     thread_commented_reviewers: Vec<String>,
     historical_commented_reviewers: Vec<String>,
     thread_reviewers: &BTreeSet<String>,
+    answered_reviewers: &BTreeSet<&str>,
 ) -> Vec<String> {
     let mut reviewers = Vec::new();
     for reviewer in thread_commented_reviewers {
-        push_unique(&mut reviewers, reviewer);
+        if !answered_reviewers.contains(reviewer.as_str()) {
+            push_unique(&mut reviewers, reviewer);
+        }
     }
     for reviewer in historical_commented_reviewers {
-        if !thread_reviewers.contains(reviewer.as_str()) {
+        if !thread_reviewers.contains(reviewer.as_str())
+            && !answered_reviewers.contains(reviewer.as_str())
+        {
             push_unique(&mut reviewers, reviewer);
         }
     }
     reviewers
 }
 
-fn replace_if_newer(current: &mut Option<String>, candidate: &str) {
+fn replace_comment_if_newer(
+    current: &mut Option<(String, String)>,
+    created_at: &str,
+    body_text: &str,
+) {
     if current
-        .as_deref()
-        .is_none_or(|existing| existing < candidate)
+        .as_ref()
+        .is_none_or(|(existing, _)| existing.as_str() < created_at)
     {
-        *current = Some(candidate.to_owned());
+        *current = Some((created_at.to_owned(), body_text.to_owned()));
     }
 }
 

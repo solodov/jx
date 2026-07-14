@@ -206,6 +206,7 @@ pub struct SyncReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewRequestState {
     New,
+    ChangesRequested,
     Commented,
     Answered,
     Again,
@@ -217,6 +218,7 @@ impl ReviewRequestState {
     pub fn label(self) -> &'static str {
         match self {
             Self::New => "new",
+            Self::ChangesRequested => "changes_requested",
             Self::Commented => "comment",
             Self::Answered => "answered",
             Self::Again => "again",

@@ -559,6 +559,40 @@ pub(super) struct ProductionServices<'environment> {
     github_cache: Arc<Mutex<GitHubFactCache>>,
 }
 
+struct StoreBackedPullRequestLoader<'a, G: ?Sized> {
+    environment: &'a RuntimeEnvironment,
+    github: &'a G,
+}
+
+impl<G> StoreBackedPullRequestLoader<'_, G>
+where
+    G: GitHubClient + ?Sized,
+{
+    /// Loads PR status records through the shared local snapshot store.
+    async fn pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
+        let fetched = self
+            .github
+            .pull_request_statuses(repository, numbers)
+            .await?;
+        let fetched_numbers = fetched
+            .iter()
+            .map(|status| status.number)
+            .collect::<Vec<_>>();
+        let store = PullRequestStore::open(self.environment)?;
+        store.record_pull_request_snapshots(repository, &fetched)?;
+        let stored = store.latest_pull_request_snapshots(repository, &fetched_numbers)?;
+        if stored.len() == fetched.len() {
+            Ok(stored)
+        } else {
+            Ok(fetched)
+        }
+    }
+}
+
 impl<'environment> ProductionServices<'environment> {
     /// Builds production services with a Tokio runtime for octocrab's background HTTP tasks.
     pub(super) fn new(environment: &'environment RuntimeEnvironment) -> io::Result<Self> {
@@ -2114,9 +2148,12 @@ impl CommandServices for ProductionServices<'_> {
         self.github_runtime.block_on(async {
             let github = self.traced_github_client(context)?;
 
-            Ok(github
-                .pull_request_statuses(&context.origin.github, numbers)
-                .await?)
+            StoreBackedPullRequestLoader {
+                environment: self.environment,
+                github: &github,
+            }
+            .pull_requests(&context.origin.github, numbers)
+            .await
         })
     }
 
@@ -2135,10 +2172,12 @@ impl CommandServices for ProductionServices<'_> {
                 let statuses = if numbers.is_empty() {
                     Vec::new()
                 } else {
-                    github
-                        .pull_request_statuses(&context.origin.github, numbers)
-                        .await
-                        .map_err(WorkflowError::from)?
+                    StoreBackedPullRequestLoader {
+                        environment: self.environment,
+                        github: &github,
+                    }
+                    .pull_requests(&context.origin.github, numbers)
+                    .await?
                 };
                 Ok::<_, CommandError>((statuses, duration_us(started.elapsed())))
             };
@@ -2264,7 +2303,12 @@ impl CommandServices for ProductionServices<'_> {
                 repo: repository.slug(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
             };
-            Ok(github.pull_request_statuses(repository, numbers).await?)
+            StoreBackedPullRequestLoader {
+                environment: self.environment,
+                github: &github,
+            }
+            .pull_requests(repository, numbers)
+            .await
         })
     }
 
@@ -2824,12 +2868,14 @@ async fn production_global_stack_status_entry_traced(
         let result = if numbers.is_empty() {
             Ok(Vec::new())
         } else {
-            github
-                .pull_request_statuses(&context.origin.github, &numbers)
-                .await
-                .map_err(WorkflowError::from)
-                .map_err(CommandError::from)
-                .map_err(|error| error.to_string())
+            StoreBackedPullRequestLoader {
+                environment: token_environment,
+                github: &github,
+            }
+            .pull_requests(&context.origin.github, &numbers)
+            .await
+            .map_err(CommandError::from)
+            .map_err(|error| error.to_string())
         };
         (result, duration_us(started.elapsed()))
     };

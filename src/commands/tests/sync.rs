@@ -275,9 +275,12 @@ default_root = "~/projects"
 path = "{owner}/{repo}"
 "#,
     );
-    let selected = workspace.create_jj_workspace("projects/solodov/foo");
-    let skipped = workspace.create_jj_workspace("projects/other/bar");
-    for (root, owner, name) in [(&selected, "solodov", "foo"), (&skipped, "other", "bar")] {
+    let selected = workspace.create_jj_workspace("projects/example-owner/foo");
+    let skipped = workspace.create_jj_workspace("projects/other-owner/bar");
+    for (root, owner, name) in [
+        (&selected, "example-owner", "foo"),
+        (&skipped, "other-owner", "bar"),
+    ] {
         TestWorkspace::write_git_config_at(
             root,
             &format!(
@@ -296,7 +299,7 @@ path = "{owner}/{repo}"
     };
 
     let result = run_with_args_and_services(
-        ["jx", "sync", "--all", "solodov/*"],
+        ["jx", "sync", "--all", "example-owner/*"],
         &environment,
         &services,
     )
@@ -307,7 +310,7 @@ path = "{owner}/{repo}"
         std::slice::from_ref(&selected)
     );
     assert_eq!(services.push_tracked_roots.borrow().as_slice(), [selected]);
-    assert_eq!(result.stdout, "Synced:\n  ~/projects/solodov/foo\n");
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/example-owner/foo\n");
 }
 
 #[test]
