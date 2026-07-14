@@ -186,6 +186,13 @@ pub(super) struct ReviewRequest {
     pub(super) repo_filters: Vec<String>,
     pub(super) interactive: bool,
     pub(super) refresh_seconds: u64,
+    pub(super) format: ReviewFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReviewFormat {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,11 +251,7 @@ impl CommandRequest {
             Some(("stack" | "sk", matches)) => Ok(Self::Stack(stack_request(matches)?)),
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
-            Some(("review", matches)) => Ok(Self::Review(ReviewRequest {
-                repo_filters: review_repo_filters(matches),
-                interactive: matches.get_flag("interactive"),
-                refresh_seconds: dashboard_refresh_seconds(matches)?,
-            })),
+            Some(("review", matches)) => Ok(Self::Review(review_request(matches)?)),
             Some(("status" | "st", _)) => Ok(Self::Status),
             Some(("prev-commit" | "prev", _)) => Ok(Self::PreviousCommit),
             Some(("next-commit" | "next", _)) => Ok(Self::NextCommit),
@@ -313,6 +316,7 @@ impl CommandRequest {
             Self::Open(request) => add_open_perf_attrs(&mut attrs, request),
             Self::Review(request) => attrs.extend([
                 perf_attr("repo_filter_count", request.repo_filters.len()),
+                perf_attr("format", review_format_name(request.format)),
                 perf_attr("interactive", request.interactive),
                 perf_attr("refresh_seconds", request.refresh_seconds),
             ]),
@@ -507,6 +511,13 @@ fn shell_kind_name(shell: ShellKind) -> &'static str {
     }
 }
 
+pub(super) fn review_format_name(format: ReviewFormat) -> &'static str {
+    match format {
+        ReviewFormat::Human => "human",
+        ReviewFormat::Json => "json",
+    }
+}
+
 fn remote_status_format_name(format: RemoteStatusFormat) -> &'static str {
     match format {
         RemoteStatusFormat::Human => "human",
@@ -647,6 +658,23 @@ fn stack_status_request(matches: &ArgMatches) -> Result<StackStatusRequest, clap
         format,
         interactive,
         refresh_seconds: dashboard_refresh_seconds(matches)?,
+    })
+}
+
+fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
+    let format = review_format(matches);
+    let interactive = matches.get_flag("interactive");
+    if interactive && format == ReviewFormat::Json {
+        return Err(clap::Error::raw(
+            ErrorKind::ArgumentConflict,
+            "jx review --interactive cannot be used with --format json",
+        ));
+    }
+    Ok(ReviewRequest {
+        repo_filters: review_repo_filters(matches),
+        interactive,
+        refresh_seconds: dashboard_refresh_seconds(matches)?,
+        format,
     })
 }
 
@@ -877,6 +905,18 @@ fn stack_status_format(matches: &ArgMatches) -> StackStatusFormat {
         "human" => StackStatusFormat::Human,
         "json" => StackStatusFormat::Json,
         _ => unreachable!("clap rejects unsupported stack-status formats"),
+    }
+}
+
+fn review_format(matches: &ArgMatches) -> ReviewFormat {
+    match matches
+        .get_one::<String>("format")
+        .map(String::as_str)
+        .expect("clap applies the review format default")
+    {
+        "human" => ReviewFormat::Human,
+        "json" => ReviewFormat::Json,
+        _ => unreachable!("clap rejects unsupported review formats"),
     }
 }
 
@@ -1169,6 +1209,7 @@ pub(super) fn cli() -> ClapCommand {
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())
+                .arg(review_format_arg())
                 .arg(review_repo_filter_arg()),
         )
         .subcommand(
@@ -1511,6 +1552,15 @@ fn stack_status_format_arg() -> Arg {
         .default_value("human")
         .value_parser(["human", "json"])
         .help("Select stack status output format")
+}
+
+fn review_format_arg() -> Arg {
+    Arg::new("format")
+        .long("format")
+        .value_name("FORMAT")
+        .default_value("human")
+        .value_parser(["human", "json"])
+        .help("Select review output format")
 }
 
 fn stack_status_repo_filter_arg() -> Arg {

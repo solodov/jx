@@ -14,6 +14,18 @@ fn review_interactive_flags_parse_without_loading_dashboard() {
     assert_eq!(request.repo_filters, vec!["api-*".to_owned()]);
     assert!(request.interactive);
     assert_eq!(request.refresh_seconds, 15);
+    assert_eq!(request.format, ReviewFormat::Human);
+}
+
+#[test]
+fn review_interactive_rejects_json_format() {
+    // Verifies: machine-readable provider output stays non-interactive for external wrappers.
+    let matches = cli()
+        .try_get_matches_from(["jx", "review", "-i", "--format", "json"])
+        .expect("CLI shape parses before request validation");
+    let result = CommandRequest::from_matches(&matches);
+
+    assert!(result.is_err());
 }
 
 #[test]
@@ -246,6 +258,100 @@ fn review_renders_reviewer_display_names() {
         .contains("Review requests for Example Reviewer"));
     assert!(result.stdout.contains("Commenting Reviewer"));
     assert!(!result.stdout.contains("commenting-reviewer"));
+}
+
+#[test]
+fn review_renders_json_provider_output() {
+    // Verifies: external wrappers can consume review inbox data without parsing human tables.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = review_status_record(12, "Update alpha endpoint", "example-author", false);
+    status.url = None;
+    status.created_at = Some("2099-01-01T00:00:00Z".to_owned());
+    status.commented_reviewers = vec!["commenting-reviewer".to_owned()];
+    status.review_activity = vec![PullRequestReviewActivity {
+        reviewer: "example-reviewer".to_owned(),
+        reviewed_at: "2099-01-02T00:00:00Z".to_owned(),
+    }];
+    status.timeline_events = vec![PullRequestTimelineEvent {
+        kind: PullRequestTimelineEventKind::ReviewRequested,
+        created_at: "2099-01-03T00:00:00Z".to_owned(),
+        reviewer: Some("example-reviewer".to_owned()),
+    }];
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_request_statuses: BTreeMap::from([(12, status)]),
+        github_user_display_names: BTreeMap::from([
+            ("example-reviewer".to_owned(), "Example Reviewer".to_owned()),
+            (
+                "commenting-reviewer".to_owned(),
+                "Commenting Reviewer".to_owned(),
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "review", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("review json renders");
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("valid json");
+    let pull_requests = value["pullRequests"].as_array().expect("pull requests");
+    let pull_request = &pull_requests[0];
+
+    assert_eq!(value["command"], "review");
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["viewer"]["login"], "example-reviewer");
+    assert_eq!(value["viewer"]["displayName"], "Example Reviewer");
+    assert_eq!(
+        value["displayNames"]["commenting-reviewer"],
+        "Commenting Reviewer"
+    );
+    assert_eq!(pull_requests.len(), 1);
+    assert_eq!(pull_request["repository"], "example-owner/api-alpha");
+    assert_eq!(
+        pull_request["repositoryUrl"],
+        "https://github.com/example-owner/api-alpha"
+    );
+    assert_eq!(pull_request["key"], "api-alpha");
+    assert_eq!(
+        pull_request["root"],
+        workspace
+            .path()
+            .join("projects/api-alpha")
+            .display()
+            .to_string()
+    );
+    assert_eq!(pull_request["displayRoot"], "~/projects/api-alpha");
+    assert_eq!(pull_request["external"], false);
+    assert_eq!(pull_request["number"], 12);
+    assert_eq!(
+        pull_request["url"],
+        "https://github.com/example-owner/api-alpha/pull/12"
+    );
+    assert_eq!(pull_request["title"], "Update alpha endpoint");
+    assert_eq!(pull_request["branch"], "topic/review-12");
+    assert_eq!(pull_request["baseBranch"], "main");
+    assert_eq!(pull_request["createdAt"], "2099-01-01T00:00:00Z");
+    assert_eq!(pull_request["author"], "example-author");
+    assert_eq!(pull_request["checkStatus"], "passing");
+    assert_eq!(pull_request["reviewStatus"], "review_requested");
+    assert_eq!(pull_request["requestState"], "new");
+    assert_eq!(pull_request["labels"][0]["name"], "backend");
+    assert_eq!(pull_request["requestedUsers"][0], "example-reviewer");
+    assert_eq!(pull_request["commentedUsers"][0], "commenting-reviewer");
+    assert_eq!(
+        pull_request["reviewActivity"][0]["reviewer"],
+        "example-reviewer"
+    );
+    assert_eq!(
+        pull_request["timelineEvents"][0]["kind"],
+        "review_requested"
+    );
+    assert_eq!(pull_request["latestCommitOid"], "commit-12");
 }
 
 #[test]

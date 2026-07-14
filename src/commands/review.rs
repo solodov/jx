@@ -68,7 +68,10 @@ pub(super) fn handle_review(
     let perf = PerfLog::from_environment(environment);
     let mut span = perf.start(
         "review.run",
-        [perf_attr("filter_count", request.repo_filters.len())],
+        [
+            perf_attr("filter_count", request.repo_filters.len()),
+            perf_attr("format", review_format_name(request.format)),
+        ],
     );
     let result = handle_review_traced(request, environment, services, progress, output, &mut span);
     if let Err(error) = &result {
@@ -86,16 +89,20 @@ fn handle_review_traced(
     output: OutputMode,
     span: &mut PerfSpan,
 ) -> Result<String, CommandError> {
+    let format = request.format;
     let loaded = load_review_requests_view(request, environment, services, progress, span)?;
     progress.finish();
 
     span.measure("review.render", Vec::new(), || {
-        Ok::<_, CommandError>(render_review_requests(
-            &loaded.view,
-            output.color,
-            output.terminal_width,
-            &loaded.display_names,
-        ))
+        Ok::<_, CommandError>(match format {
+            ReviewFormat::Human => render_review_requests(
+                &loaded.view,
+                output.color,
+                output.terminal_width,
+                &loaded.display_names,
+            ),
+            ReviewFormat::Json => render_review_requests_json(&loaded.view, &loaded.display_names),
+        })
     })
 }
 
@@ -210,6 +217,7 @@ fn load_review_requests_view(
         repositories.push(ReviewRequestRepositoryView {
             repository: repository.clone(),
             layout_key: layout.map(|layout| layout.key.clone()),
+            root: layout.map(|layout| layout.root.clone()),
             display_root: layout.map(|layout| display_path(&layout.root, environment)),
             external: layout.is_none(),
             review_wait_threshold_seconds: policy.review_wait_threshold_seconds,

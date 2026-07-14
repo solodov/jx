@@ -11,6 +11,7 @@ pub(in crate::commands) struct ReviewRequestsView {
 pub(in crate::commands) struct ReviewRequestRepositoryView {
     pub(in crate::commands) repository: GitHubRepository,
     pub(in crate::commands) layout_key: Option<String>,
+    pub(in crate::commands) root: Option<PathBuf>,
     pub(in crate::commands) display_root: Option<String>,
     pub(in crate::commands) rows: Vec<ReviewRequestRowView>,
     pub(in crate::commands) external: bool,
@@ -76,6 +77,241 @@ pub(in crate::commands) fn render_review_requests(
     output.push('\n');
     output.push_str(&review_requests_legend(color));
     output
+}
+
+/// Renders review requests as a stable JSON data-provider surface for external selectors.
+pub(in crate::commands) fn render_review_requests_json(
+    view: &ReviewRequestsView,
+    display_names: &BTreeMap<String, String>,
+) -> String {
+    let output = ReviewRequestsJson {
+        command: "review",
+        version: 1,
+        viewer: ReviewViewerJson::new(&view.viewer, display_names),
+        display_names: display_names.clone(),
+        pull_requests: view
+            .repositories
+            .iter()
+            .flat_map(|repository| {
+                repository
+                    .rows
+                    .iter()
+                    .map(move |row| ReviewPullRequestJson::from_row(repository, row))
+            })
+            .collect(),
+    };
+    let mut rendered = serde_json::to_string_pretty(&output)
+        .expect("review JSON contains only serializable values");
+    rendered.push('\n');
+    rendered
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewRequestsJson {
+    command: &'static str,
+    version: u8,
+    viewer: ReviewViewerJson,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    display_names: BTreeMap<String, String>,
+    pull_requests: Vec<ReviewPullRequestJson>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewViewerJson {
+    login: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+}
+
+impl ReviewViewerJson {
+    fn new(login: &str, display_names: &BTreeMap<String, String>) -> Self {
+        Self {
+            login: login.to_owned(),
+            display_name: display_names.get(login).cloned(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewPullRequestJson {
+    repository: String,
+    repository_owner: String,
+    repository_name: String,
+    repository_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_root: Option<String>,
+    external: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_wait_threshold_seconds: Option<u64>,
+    number: u64,
+    url: String,
+    title: String,
+    branch: String,
+    base_branch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    draft: bool,
+    merged: bool,
+    closed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merged_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_at: Option<String>,
+    check_status: &'static str,
+    review_status: &'static str,
+    request_state: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<ReviewLabelJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    requested_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    requested_teams: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    suggested_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    approved_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    commented_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    addressed_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dismissed_users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    review_activity: Vec<ReviewActivityJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    timeline_events: Vec<ReviewTimelineEventJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_commit_oid: Option<String>,
+}
+
+impl ReviewPullRequestJson {
+    fn from_row(repository: &ReviewRequestRepositoryView, row: &ReviewRequestRowView) -> Self {
+        let status = &row.status;
+        Self {
+            repository: repository.repository.slug(),
+            repository_owner: repository.repository.owner.clone(),
+            repository_name: repository.repository.name.clone(),
+            repository_url: repository.repository.https_url(),
+            key: repository.layout_key.clone(),
+            root: repository
+                .root
+                .as_ref()
+                .map(|root| root.display().to_string()),
+            display_root: repository.display_root.clone(),
+            external: repository.external,
+            review_wait_threshold_seconds: repository.review_wait_threshold_seconds,
+            number: status.number,
+            url: review_request_url(&repository.repository, status),
+            title: status.title.clone(),
+            branch: status.head_branch.clone(),
+            base_branch: status.base_branch.clone(),
+            created_at: status.created_at.clone(),
+            author: status.author.clone(),
+            draft: status.draft,
+            merged: status.merged,
+            closed: status.closed,
+            merged_at: status.merged_at.clone(),
+            closed_at: status.closed_at.clone(),
+            check_status: status.check_status.label(),
+            review_status: status.review_status.label(),
+            request_state: row.state.label(),
+            labels: status.labels.iter().map(ReviewLabelJson::from).collect(),
+            requested_users: status.requested_reviewers.users.clone(),
+            requested_teams: status.requested_reviewers.teams.clone(),
+            suggested_users: status.suggested_reviewers.clone(),
+            approved_users: status.approved_reviewers.clone(),
+            commented_users: status.commented_reviewers.clone(),
+            addressed_users: status.addressed_reviewers.clone(),
+            dismissed_users: status.dismissed_reviewers.clone(),
+            review_activity: status
+                .review_activity
+                .iter()
+                .map(ReviewActivityJson::from)
+                .collect(),
+            timeline_events: status
+                .timeline_events
+                .iter()
+                .map(ReviewTimelineEventJson::from)
+                .collect(),
+            latest_commit_oid: status.latest_commit_oid.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewLabelJson {
+    name: String,
+    color: String,
+}
+
+impl From<&PullRequestLabel> for ReviewLabelJson {
+    fn from(label: &PullRequestLabel) -> Self {
+        Self {
+            name: label.name.clone(),
+            color: label.color.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewActivityJson {
+    reviewer: String,
+    reviewed_at: String,
+}
+
+impl From<&PullRequestReviewActivity> for ReviewActivityJson {
+    fn from(activity: &PullRequestReviewActivity) -> Self {
+        Self {
+            reviewer: activity.reviewer.clone(),
+            reviewed_at: activity.reviewed_at.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewTimelineEventJson {
+    kind: &'static str,
+    created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reviewer: Option<String>,
+}
+
+impl From<&PullRequestTimelineEvent> for ReviewTimelineEventJson {
+    fn from(event: &PullRequestTimelineEvent) -> Self {
+        Self {
+            kind: review_timeline_event_kind_label(event.kind),
+            created_at: event.created_at.clone(),
+            reviewer: event.reviewer.clone(),
+        }
+    }
+}
+
+fn review_timeline_event_kind_label(kind: PullRequestTimelineEventKind) -> &'static str {
+    match kind {
+        PullRequestTimelineEventKind::ReadyForReview => "ready_for_review",
+        PullRequestTimelineEventKind::ConvertToDraft => "convert_to_draft",
+        PullRequestTimelineEventKind::ReviewRequested => "review_requested",
+    }
+}
+
+fn review_request_url(repository: &GitHubRepository, status: &PullRequestStatusRecord) -> String {
+    status
+        .url
+        .as_deref()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}/pull/{}", repository.https_url(), status.number))
 }
 
 fn review_repository_header(repository: &ReviewRequestRepositoryView, color: bool) -> String {
@@ -152,11 +388,7 @@ fn review_request_pr_cell(
     color: bool,
 ) -> String {
     let label = format!("#{}", status.number);
-    let url = status
-        .url
-        .as_deref()
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("{}/pull/{}", repository.https_url(), status.number));
+    let url = review_request_url(repository, status);
     if color {
         osc8_link(&url, &label)
     } else {
