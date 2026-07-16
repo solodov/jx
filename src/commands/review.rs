@@ -7,10 +7,8 @@ use std::{
     fs,
 };
 
-const REVIEW_DISMISSALS_FILE: &str = "review-dismissals.toml";
 const REVIEW_DISMISSALS_LOG_FILE: &str = "review-dismissals.log";
 const REVIEW_DISMISSALS_LEGACY_LOG_FILE: &str = "review-dismissals.log.jsonl";
-const REVIEW_DISMISSALS_VERSION: u32 = 1;
 const REVIEW_DISMISSAL_LOG_VERSION: u32 = 1;
 
 struct ReviewRepositoryLayout {
@@ -25,55 +23,22 @@ struct ReviewPullRequestKey {
     number: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-struct ReviewDismissals {
-    #[serde(default)]
-    version: u32,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pull_requests: Vec<ReviewDismissal>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewDismissal {
     repository: String,
     number: u64,
-    #[serde(default, skip_serializing_if = "ReviewDismissalSource::is_manual")]
     source: ReviewDismissalSource,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     reason: String,
     latest_commit_oid: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     viewer_response_at: Option<String>,
     dismissed_at: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ReviewDismissalSource {
     #[default]
     Manual,
     Automatic,
-}
-
-impl ReviewDismissalSource {
-    fn is_manual(source: &Self) -> bool {
-        matches!(source, Self::Manual)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ReviewDismissalHistory {
-    latest_reasons: BTreeMap<ReviewPullRequestKey, String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct ReviewDismissalLogRecord {
-    repository: String,
-    number: u64,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    dismissed_reason: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -241,7 +206,7 @@ enum ReviewDismissalMode {
 struct ReviewDecision {
     state: ReviewRequestState,
     visible: bool,
-    legacy_resurface_reason: Option<&'static str>,
+    action_resurface_reason: Option<&'static str>,
     automatic_hide_reason: Option<&'static str>,
     viewer_signal: ReviewRequestViewerSignal,
     visible_since_unix: Option<i64>,
@@ -249,14 +214,11 @@ struct ReviewDecision {
 }
 
 struct ReviewDecisionInput<'a> {
-    key: &'a ReviewPullRequestKey,
     status: &'a PullRequestStatusRecord,
     history: &'a [PullRequestHistoryRecord],
     actions: &'a [PullRequestActionRecord],
     viewer: &'a str,
     dismissal_mode: ReviewDismissalMode,
-    legacy_dismissal: Option<&'a ReviewDismissal>,
-    dismissal_history: &'a ReviewDismissalHistory,
 }
 
 fn load_review_requests_view(
@@ -323,17 +285,6 @@ fn load_review_requests_view(
         },
     )?;
     let viewer = inbox.viewer.login;
-    let mut dismissals = if dismissal_mode == ReviewDismissalMode::Ignore {
-        ReviewDismissals::default()
-    } else {
-        read_review_dismissals(environment)?
-    };
-    let dismissal_history = if dismissal_mode == ReviewDismissalMode::Ignore {
-        ReviewDismissalHistory::default()
-    } else {
-        read_review_dismissal_history(environment)?
-    };
-    let mut dismissal_state_changed = false;
     let mut candidate_keys = BTreeSet::new();
     let mut grouped = BTreeMap::<GitHubRepository, Vec<u64>>::new();
     for candidate in inbox.requests {
@@ -347,23 +298,14 @@ fn load_review_requests_view(
         }
     }
 
-    let dismissed_keys_in_scope = if dismissal_mode == ReviewDismissalMode::Ignore {
-        BTreeSet::new()
-    } else {
-        let mut keys = add_dismissed_pull_requests_to_review_fetch(
-            &mut grouped,
-            &dismissals,
-            &layout_by_repository,
-            &filter_matchers,
-        );
-        keys.extend(add_action_dismissed_pull_requests_to_review_fetch(
+    if dismissal_mode != ReviewDismissalMode::Ignore {
+        add_action_dismissed_pull_requests_to_review_fetch(
             environment,
             &mut grouped,
             &layout_by_repository,
             &filter_matchers,
-        )?);
-        keys
-    };
+        )?;
+    }
     span.set([perf_attr("filtered_repo_count", grouped.len())]);
 
     let grouped_repo_count = grouped.len();
@@ -372,7 +314,6 @@ fn load_review_requests_view(
     }
     let mut repositories = Vec::new();
     let mut detail_pr_count = 0usize;
-    let mut fetched_keys = BTreeSet::new();
     let fetch_details = span.start_step(
         "review.fetch_pull_request_details",
         [perf_attr("repo_count", grouped_repo_count)],
@@ -399,43 +340,37 @@ fn load_review_requests_view(
         }) {
             let status = pull_request.status;
             let key = review_key(&repository, status.number);
-            fetched_keys.insert(key.clone());
             if status.author.as_deref() == Some(viewer.as_str()) || !candidate_keys.contains(&key) {
                 let reason = if status.author.as_deref() == Some(viewer.as_str()) {
                     "authored_by_viewer"
                 } else {
                     "left_review_inbox"
                 };
-                dismissal_state_changed |= remove_review_dismissal_with_log(
+                record_review_action_cleanup(
                     environment,
-                    &mut dismissals,
-                    &key,
-                    reason,
-                    Some(&status),
+                    &repository,
+                    &status,
+                    &pull_request.actions,
                     &viewer,
-                    None,
+                    reason,
                 )?;
                 continue;
             }
             let decision = decide_review_request(ReviewDecisionInput {
-                key: &key,
                 status: &status,
                 history: &pull_request.history,
                 actions: &pull_request.actions,
                 viewer: &viewer,
                 dismissal_mode,
-                legacy_dismissal: dismissals.get(&key),
-                dismissal_history: &dismissal_history,
             });
-            if let Some(reason) = decision.legacy_resurface_reason {
-                dismissal_state_changed |= remove_review_dismissal_with_log(
+            if let Some(reason) = decision.action_resurface_reason {
+                record_review_action_cleanup(
                     environment,
-                    &mut dismissals,
-                    &key,
-                    reason,
-                    Some(&status),
+                    &repository,
+                    &status,
+                    &pull_request.actions,
                     &viewer,
-                    None,
+                    reason,
                 )?;
             }
             if !decision.visible {
@@ -468,25 +403,6 @@ fn load_review_requests_view(
             index + 1,
             grouped_repo_count,
         );
-    }
-    if dismissal_mode != ReviewDismissalMode::Ignore {
-        for dismissal in dismissals.remove_missing(&dismissed_keys_in_scope, &fetched_keys) {
-            append_review_dismissal_log(
-                environment,
-                review_dismissal_log_event(
-                    "undismiss",
-                    "missing_from_github",
-                    &dismissal,
-                    None,
-                    &viewer,
-                    None,
-                ),
-            )?;
-            dismissal_state_changed = true;
-        }
-        if dismissal_state_changed {
-            write_review_dismissals(environment, &dismissals)?;
-        }
     }
     span.finish_step(
         fetch_details,
@@ -714,48 +630,38 @@ fn handle_review_dismiss_traced(
     };
 
     let reason = review_manual_dismissal_reason(status);
-    let mut dismissals = read_review_dismissals(environment)?;
-    let key = review_key(repository, status.number);
     let dismissal = ReviewDismissal {
-        repository: key.repository.clone(),
-        number: key.number,
+        repository: repository.slug(),
+        number: status.number,
         source: ReviewDismissalSource::Manual,
         reason: reason.to_owned(),
-        latest_commit_oid: latest_commit_oid.clone(),
+        latest_commit_oid,
         viewer_response_at: review_viewer_response_at(status, &loaded.view.viewer)
             .map(str::to_owned),
         dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     };
-    let changed = dismissals.upsert(dismissal.clone());
-    if changed {
-        write_review_dismissals(environment, &dismissals)?;
-        append_review_dismissal_log(
-            environment,
-            review_dismissal_log_event(
-                "dismiss",
-                reason,
-                &dismissal,
-                Some(status),
-                &loaded.view.viewer,
-                Some(selector),
-            ),
-        )?;
-        record_review_dismissal_action(
-            environment,
+    append_review_dismissal_log(
+        environment,
+        review_dismissal_log_event(
             "dismiss",
             reason,
             &dismissal,
             Some(status),
             &loaded.view.viewer,
             Some(selector),
-        )?;
-    }
+        ),
+    )?;
+    record_review_dismissal_action(
+        environment,
+        "dismiss",
+        reason,
+        &dismissal,
+        Some(status),
+        &loaded.view.viewer,
+        Some(selector),
+    )?;
 
-    let prefix = if changed {
-        "Dismissed"
-    } else {
-        "Already dismissed"
-    };
+    let prefix = "Dismissed";
     Ok(format!(
         "{prefix} {} {}\n",
         review_dismiss_pull_request_link(repository, status),
@@ -826,42 +732,27 @@ fn handle_review_undismiss_traced(
     };
     let status = &row.status;
 
-    let key = review_key(repository, status.number);
-    let mut dismissals = read_review_dismissals(environment)?;
-    let removed = remove_review_dismissal_with_log(
+    let dismissal = review_dismissal_from_row(repository, row, &loaded.view.viewer);
+    append_review_dismissal_log(
         environment,
-        &mut dismissals,
-        &key,
-        "manual",
-        Some(status),
-        &loaded.view.viewer,
-        Some(selector),
-    )?;
-    if removed {
-        write_review_dismissals(environment, &dismissals)?;
-    } else {
-        let dismissal = review_dismissal_from_action_row(repository, row, &loaded.view.viewer);
-        append_review_dismissal_log(
-            environment,
-            review_dismissal_log_event(
-                "undismiss",
-                "manual",
-                &dismissal,
-                Some(status),
-                &loaded.view.viewer,
-                Some(selector),
-            ),
-        )?;
-        record_review_dismissal_action(
-            environment,
+        review_dismissal_log_event(
             "undismiss",
             "manual",
             &dismissal,
             Some(status),
             &loaded.view.viewer,
             Some(selector),
-        )?;
-    }
+        ),
+    )?;
+    record_review_dismissal_action(
+        environment,
+        "undismiss",
+        "manual",
+        &dismissal,
+        Some(status),
+        &loaded.view.viewer,
+        Some(selector),
+    )?;
 
     Ok(format!(
         "Undismissed {}\n",
@@ -869,7 +760,7 @@ fn handle_review_undismiss_traced(
     ))
 }
 
-fn review_dismissal_from_action_row(
+fn review_dismissal_from_row(
     repository: &GitHubRepository,
     row: &ReviewRequestRowView,
     viewer: &str,
@@ -1048,31 +939,6 @@ fn review_dismiss_usage_error(message: impl Into<String>) -> CommandError {
     CommandError::Usage(clap::Error::raw(ErrorKind::InvalidValue, message.into()))
 }
 
-fn add_dismissed_pull_requests_to_review_fetch(
-    grouped: &mut BTreeMap<GitHubRepository, Vec<u64>>,
-    dismissals: &ReviewDismissals,
-    layout_by_repository: &BTreeMap<GitHubRepository, ReviewRepositoryLayout>,
-    filter_matchers: &[ReviewFilterMatcher],
-) -> BTreeSet<ReviewPullRequestKey> {
-    let mut keys = BTreeSet::new();
-    for dismissal in &dismissals.pull_requests {
-        let Some(repository) = repository_from_slug(&dismissal.repository) else {
-            continue;
-        };
-        let layout = layout_by_repository.get(&repository);
-        if !review_repository_matches(&repository, layout, filter_matchers) {
-            continue;
-        }
-        let key = review_key(&repository, dismissal.number);
-        keys.insert(key);
-        grouped
-            .entry(repository)
-            .or_default()
-            .push(dismissal.number);
-    }
-    keys
-}
-
 fn add_action_dismissed_pull_requests_to_review_fetch(
     environment: &RuntimeEnvironment,
     grouped: &mut BTreeMap<GitHubRepository, Vec<u64>>,
@@ -1093,17 +959,6 @@ fn add_action_dismissed_pull_requests_to_review_fetch(
             .push(dismissal.number);
     }
     Ok(keys)
-}
-
-fn repository_from_slug(slug: &str) -> Option<GitHubRepository> {
-    let (owner, name) = slug.split_once('/')?;
-    if owner.is_empty() || name.is_empty() || name.contains('/') {
-        return None;
-    }
-    Some(GitHubRepository {
-        owner: owner.to_owned(),
-        name: name.to_owned(),
-    })
 }
 
 fn review_key(repository: &GitHubRepository, number: u64) -> ReviewPullRequestKey {
@@ -1171,26 +1026,9 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
             )
         })
         .flatten();
-    let legacy_resurface_reason = (input.dismissal_mode != ReviewDismissalMode::Ignore)
-        .then(|| {
-            input.legacy_dismissal.map(|dismissal| {
-                review_dismissal_resurface_reason_for(
-                    dismissal,
-                    input.status,
-                    input.history,
-                    input.viewer,
-                    state,
-                )
-            })
-        })
-        .flatten();
-    let hidden_by_dismissal = if let Some(reason) = action_resurface_reason {
-        reason == "no_longer_hidden"
-    } else {
-        legacy_resurface_reason == Some("no_longer_hidden")
-    };
+    let hidden_by_dismissal = action_resurface_reason == Some("no_longer_hidden");
     let resurface_reason = (!hidden_by_dismissal)
-        .then_some(action_resurface_reason.or(legacy_resurface_reason))
+        .then_some(action_resurface_reason)
         .flatten();
     let auto_redismiss_allowed = resurface_reason
         .map(review_dismissal_allows_auto_redismiss)
@@ -1208,12 +1046,7 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
     let dismissal = (input.dismissal_mode == ReviewDismissalMode::Only && visible)
         .then(|| {
             if hidden_by_dismissal {
-                input
-                    .legacy_dismissal
-                    .map(|dismissal| {
-                        review_request_dismissal_view(dismissal, input.status, input.viewer, state)
-                    })
-                    .or_else(|| review_request_action_dismissal_view(input.actions))
+                review_request_action_dismissal_view(input.actions)
             } else {
                 automatic_hide_reason.map(review_request_automatic_dismissal_view)
             }
@@ -1223,15 +1056,13 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
     ReviewDecision {
         state,
         visible,
-        legacy_resurface_reason: resurface_reason.filter(|_| input.legacy_dismissal.is_some()),
+        action_resurface_reason: resurface_reason.filter(|reason| *reason != "not_dismissed"),
         automatic_hide_reason,
         viewer_signal: review_request_viewer_signal(
-            input.dismissal_history,
-            input.legacy_dismissal,
-            input.key,
+            input.actions,
+            input.history,
             input.status,
             input.viewer,
-            state,
         ),
         visible_since_unix: review_visible_since_unix(
             input.history,
@@ -1244,12 +1075,10 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
 }
 
 fn review_request_viewer_signal(
-    dismissal_history: &ReviewDismissalHistory,
-    prior_dismissal: Option<&ReviewDismissal>,
-    key: &ReviewPullRequestKey,
+    actions: &[PullRequestActionRecord],
+    history: &[PullRequestHistoryRecord],
     status: &PullRequestStatusRecord,
     viewer: &str,
-    state: ReviewRequestState,
 ) -> ReviewRequestViewerSignal {
     if status
         .approved_reviewers
@@ -1263,16 +1092,30 @@ fn review_request_viewer_signal(
         return ReviewRequestViewerSignal::None;
     }
 
-    let prior_reason = prior_dismissal.map(|dismissal| {
-        review_dismissal_reason_for_state(dismissal, Some(status), viewer, Some(state))
-    });
-    if prior_reason.as_deref() == Some("approved")
-        || dismissal_history.latest_reason(key) == Some("approved")
+    if review_actions_have_dismissed_reason(actions, "approved")
+        || review_history_viewer_lost_approval(history, viewer)
     {
         ReviewRequestViewerSignal::DismissedApproval
     } else {
         ReviewRequestViewerSignal::None
     }
+}
+
+fn review_actions_have_dismissed_reason(actions: &[PullRequestActionRecord], reason: &str) -> bool {
+    actions.iter().any(|action| {
+        action.action == "dismiss"
+            && (action.reason.as_deref() == Some(reason)
+                || review_action_json_str(action, "dismissedReason") == Some(reason))
+    })
+}
+
+fn review_history_viewer_lost_approval(history: &[PullRequestHistoryRecord], viewer: &str) -> bool {
+    history.iter().any(|event| {
+        event.kind == "review_state_changed"
+            && review_history_event_reviewer(event) == Some(viewer)
+            && review_history_json_str(event.old_json.as_ref(), "state") == Some("approved")
+            && review_history_json_str(event.new_json.as_ref(), "state") == Some("dismissed")
+    })
 }
 
 fn review_request_auto_dismiss_reason(
@@ -1529,16 +1372,6 @@ fn review_action_json_str<'a>(action: &'a PullRequestActionRecord, key: &str) ->
     action.details_json.get(key)?.as_str()
 }
 
-fn review_history_has_event_after(
-    history: &[PullRequestHistoryRecord],
-    kind: &str,
-    after: Option<&str>,
-) -> bool {
-    history
-        .iter()
-        .any(|event| event.kind == kind && review_history_event_after(event, after))
-}
-
 fn review_history_has_event_after_unix(
     history: &[PullRequestHistoryRecord],
     kind: &str,
@@ -1547,34 +1380,6 @@ fn review_history_has_event_after_unix(
     history
         .iter()
         .any(|event| event.kind == kind && event.changed_at_unix > after_unix)
-}
-
-fn review_history_has_ready_for_review_after(
-    history: &[PullRequestHistoryRecord],
-    after: Option<&str>,
-) -> bool {
-    history.iter().any(|event| {
-        event.kind == "draft_changed"
-            && review_history_event_after(event, after)
-            && event
-                .new_json
-                .as_ref()
-                .and_then(|value| value.get("draft"))
-                .and_then(serde_json::Value::as_bool)
-                == Some(false)
-    })
-}
-
-fn review_history_has_reviewer_requested_after(
-    history: &[PullRequestHistoryRecord],
-    viewer: &str,
-    after: Option<&str>,
-) -> bool {
-    history.iter().any(|event| {
-        event.kind == "reviewer_requested"
-            && review_history_event_after(event, after)
-            && review_history_event_reviewer(event) == Some(viewer)
-    })
 }
 
 fn review_history_has_ready_for_review_after_unix(
@@ -1654,125 +1459,47 @@ fn review_timestamp_unix(value: &str) -> Option<i64> {
         .map(|timestamp| timestamp.timestamp())
 }
 
-fn review_dismissal_resurface_reason_for(
-    dismissal: &ReviewDismissal,
-    status: &PullRequestStatusRecord,
-    history: &[PullRequestHistoryRecord],
-    viewer: &str,
-    state: ReviewRequestState,
-) -> &'static str {
-    if review_dismissal_uses_draft_policy(dismissal, status) {
-        return draft_dismissal_resurface_reason(dismissal, status, history, viewer);
-    }
-    if status
-        .requested_reviewers
-        .users
-        .iter()
-        .any(|reviewer| reviewer == viewer)
-    {
-        return "fresh_review_request";
-    }
-    if review_history_has_event_after(history, "head_changed", Some(&dismissal.dismissed_at))
-        || status.latest_commit_oid.as_deref() != Some(dismissal.latest_commit_oid.as_str())
-    {
-        return "head_changed";
-    }
-    if review_history_has_author_response_after(
-        history,
-        viewer,
-        dismissal.viewer_response_at.as_deref(),
-    ) || review_timestamp_after(
-        review_viewer_active_response_at(status, viewer),
-        dismissal.viewer_response_at.as_deref(),
-    ) {
-        return "author_response";
-    }
-    if matches!(dismissal.source, ReviewDismissalSource::Automatic)
-        && review_request_auto_dismiss_reason_after(
-            status,
-            viewer,
-            state,
-            dismissal.viewer_response_at.as_deref(),
-        )
-        .is_none()
-    {
-        return "viewer_review_state_changed";
-    }
-    "no_longer_hidden"
-}
-
-fn review_dismissal_uses_draft_policy(
-    dismissal: &ReviewDismissal,
-    status: &PullRequestStatusRecord,
-) -> bool {
-    dismissal.reason == "draft"
-        || (dismissal.reason.is_empty()
-            && matches!(dismissal.source, ReviewDismissalSource::Automatic)
-            && status.draft)
-}
-
-fn draft_dismissal_resurface_reason(
-    dismissal: &ReviewDismissal,
-    status: &PullRequestStatusRecord,
-    history: &[PullRequestHistoryRecord],
-    viewer: &str,
-) -> &'static str {
-    if review_history_has_ready_for_review_after(history, Some(&dismissal.dismissed_at))
-        || !status.draft
-    {
-        return "ready_for_review";
-    }
-    if review_history_has_reviewer_requested_after(history, viewer, Some(&dismissal.dismissed_at))
-        || draft_fresh_review_request_at(status, viewer, Some(&dismissal.dismissed_at)).is_some()
-    {
-        return "fresh_review_request";
-    }
-    if review_timestamp_after(
-        review_viewer_mention_at(status, viewer),
-        Some(&dismissal.dismissed_at),
-    ) {
-        return "mentioned";
-    }
-    if review_history_has_author_response_after(
-        history,
-        viewer,
-        dismissal.viewer_response_at.as_deref(),
-    ) || review_timestamp_after(
-        review_viewer_active_response_at(status, viewer),
-        dismissal.viewer_response_at.as_deref(),
-    ) {
-        return "author_response";
-    }
-    "no_longer_hidden"
-}
-
-fn remove_review_dismissal_with_log(
+fn record_review_action_cleanup(
     environment: &RuntimeEnvironment,
-    dismissals: &mut ReviewDismissals,
-    key: &ReviewPullRequestKey,
-    reason: &'static str,
-    status: Option<&PullRequestStatusRecord>,
+    repository: &GitHubRepository,
+    status: &PullRequestStatusRecord,
+    actions: &[PullRequestActionRecord],
     viewer: &str,
-    selector: Option<&str>,
-) -> Result<bool, CommandError> {
-    let Some(dismissal) = dismissals.get(key).cloned() else {
-        return Ok(false);
+    reason: &'static str,
+) -> Result<(), CommandError> {
+    let Some(action) = latest_review_visibility_action(actions) else {
+        return Ok(());
     };
-    dismissals.remove(key);
+    if action.action != "dismiss" {
+        return Ok(());
+    }
+    let dismissal = ReviewDismissal {
+        repository: repository.slug(),
+        number: status.number,
+        source: ReviewDismissalSource::Automatic,
+        reason: action.reason.clone().unwrap_or_else(|| "manual".to_owned()),
+        latest_commit_oid: review_action_json_str(action, "dismissedHeadOid")
+            .map(str::to_owned)
+            .or_else(|| status.latest_commit_oid.clone())
+            .unwrap_or_default(),
+        viewer_response_at: review_action_json_str(action, "dismissedViewerResponseAt")
+            .map(str::to_owned)
+            .or_else(|| review_viewer_response_at(status, viewer).map(str::to_owned)),
+        dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    };
     append_review_dismissal_log(
         environment,
-        review_dismissal_log_event("undismiss", reason, &dismissal, status, viewer, selector),
+        review_dismissal_log_event("undismiss", reason, &dismissal, Some(status), viewer, None),
     )?;
     record_review_dismissal_action(
         environment,
         "undismiss",
         reason,
         &dismissal,
-        status,
+        Some(status),
         viewer,
-        selector,
-    )?;
-    Ok(true)
+        None,
+    )
 }
 
 fn record_review_dismissal_action(
@@ -1796,7 +1523,7 @@ fn record_review_dismissal_action(
         serde_json::json!({
             "selector": selector,
             "dismissedAt": dismissal.dismissed_at,
-            "dismissedReason": review_dismissal_reason(dismissal, status, viewer),
+            "dismissedReason": review_dismissal_reason(dismissal),
             "dismissedHeadOid": dismissal.latest_commit_oid,
             "currentHeadOid": status.and_then(|status| status.latest_commit_oid.as_deref()),
             "dismissedViewerResponseAt": dismissal.viewer_response_at,
@@ -1832,7 +1559,7 @@ fn review_dismissal_log_event(
         number: dismissal.number,
         selector: selector.map(str::to_owned),
         dismissed_at: Some(dismissal.dismissed_at.clone()),
-        dismissed_reason: Some(review_dismissal_reason(dismissal, status, viewer)),
+        dismissed_reason: Some(review_dismissal_reason(dismissal)),
         dismissed_head_oid: Some(dismissal.latest_commit_oid.clone()),
         current_head_oid: status.and_then(|status| status.latest_commit_oid.clone()),
         dismissed_viewer_response_at: dismissal.viewer_response_at.clone(),
@@ -1856,18 +1583,6 @@ fn review_dismissal_action_source(
     }
 }
 
-fn review_request_dismissal_view(
-    dismissal: &ReviewDismissal,
-    status: &PullRequestStatusRecord,
-    viewer: &str,
-    state: ReviewRequestState,
-) -> ReviewRequestDismissalView {
-    ReviewRequestDismissalView {
-        source: review_dismissal_source_label(dismissal.source).to_owned(),
-        reason: review_dismissal_reason_for_state(dismissal, Some(status), viewer, Some(state)),
-    }
-}
-
 fn review_request_action_dismissal_view(
     actions: &[PullRequestActionRecord],
 ) -> Option<ReviewRequestDismissalView> {
@@ -1885,220 +1600,12 @@ fn review_request_automatic_dismissal_view(reason: &'static str) -> ReviewReques
     }
 }
 
-fn review_dismissal_source_label(source: ReviewDismissalSource) -> &'static str {
-    match source {
-        ReviewDismissalSource::Manual => "manual",
-        ReviewDismissalSource::Automatic => "automatic",
+fn review_dismissal_reason(dismissal: &ReviewDismissal) -> String {
+    if dismissal.reason.is_empty() {
+        "manual".to_owned()
+    } else {
+        dismissal.reason.clone()
     }
-}
-
-fn review_dismissal_reason(
-    dismissal: &ReviewDismissal,
-    status: Option<&PullRequestStatusRecord>,
-    viewer: &str,
-) -> String {
-    let state = status.map(|status| review_request_state(status, viewer));
-    review_dismissal_reason_for_state(dismissal, status, viewer, state)
-}
-
-fn review_dismissal_reason_for_state(
-    dismissal: &ReviewDismissal,
-    status: Option<&PullRequestStatusRecord>,
-    viewer: &str,
-    state: Option<ReviewRequestState>,
-) -> String {
-    if !dismissal.reason.is_empty() {
-        return dismissal.reason.clone();
-    }
-    match dismissal.source {
-        ReviewDismissalSource::Manual => "manual".to_owned(),
-        ReviewDismissalSource::Automatic => status
-            .zip(state)
-            .and_then(|(status, state)| review_request_auto_dismiss_reason(status, viewer, state))
-            .unwrap_or("unknown")
-            .to_owned(),
-    }
-}
-
-impl ReviewDismissals {
-    fn upsert(&mut self, dismissal: ReviewDismissal) -> bool {
-        self.version = REVIEW_DISMISSALS_VERSION;
-        let key = ReviewPullRequestKey {
-            repository: dismissal.repository.clone(),
-            number: dismissal.number,
-        };
-        if let Some(existing) = self
-            .pull_requests
-            .iter_mut()
-            .find(|existing| existing.key() == key)
-        {
-            if existing.source == dismissal.source
-                && existing.reason == dismissal.reason
-                && existing.latest_commit_oid == dismissal.latest_commit_oid
-                && existing.viewer_response_at == dismissal.viewer_response_at
-            {
-                return false;
-            }
-            *existing = dismissal;
-        } else {
-            self.pull_requests.push(dismissal);
-        }
-        self.normalize();
-        true
-    }
-
-    fn get(&self, key: &ReviewPullRequestKey) -> Option<&ReviewDismissal> {
-        self.pull_requests
-            .iter()
-            .find(|dismissal| dismissal.key() == *key)
-    }
-
-    fn remove(&mut self, key: &ReviewPullRequestKey) -> bool {
-        let before = self.pull_requests.len();
-        self.pull_requests
-            .retain(|dismissal| dismissal.key() != *key);
-        before != self.pull_requests.len()
-    }
-
-    fn remove_missing(
-        &mut self,
-        scoped_keys: &BTreeSet<ReviewPullRequestKey>,
-        fetched_keys: &BTreeSet<ReviewPullRequestKey>,
-    ) -> Vec<ReviewDismissal> {
-        let mut removed = Vec::new();
-        self.pull_requests.retain(|dismissal| {
-            let key = dismissal.key();
-            let keep = !scoped_keys.contains(&key) || fetched_keys.contains(&key);
-            if !keep {
-                removed.push(dismissal.clone());
-            }
-            keep
-        });
-        removed
-    }
-
-    fn normalize(&mut self) {
-        self.pull_requests.sort_by_key(ReviewDismissal::key);
-        self.pull_requests.dedup_by(|left, right| {
-            left.repository == right.repository && left.number == right.number
-        });
-    }
-}
-
-impl ReviewDismissal {
-    fn key(&self) -> ReviewPullRequestKey {
-        ReviewPullRequestKey {
-            repository: self.repository.clone(),
-            number: self.number,
-        }
-    }
-}
-
-impl ReviewDismissalHistory {
-    fn latest_reason(&self, key: &ReviewPullRequestKey) -> Option<&str> {
-        self.latest_reasons.get(key).map(String::as_str)
-    }
-
-    fn record(&mut self, record: ReviewDismissalLogRecord) {
-        let Some(reason) = record.dismissed_reason.or(record.reason) else {
-            return;
-        };
-        self.latest_reasons.insert(
-            ReviewPullRequestKey {
-                repository: record.repository,
-                number: record.number,
-            },
-            reason,
-        );
-    }
-}
-
-fn read_review_dismissal_history(
-    environment: &RuntimeEnvironment,
-) -> Result<ReviewDismissalHistory, CommandError> {
-    let file = review_dismissals_log_file(environment)?;
-    let contents = match fs::read_to_string(&file) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let legacy = file.with_file_name(REVIEW_DISMISSALS_LEGACY_LOG_FILE);
-            match fs::read_to_string(&legacy) {
-                Ok(contents) => contents,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Ok(ReviewDismissalHistory::default());
-                }
-                Err(source) => {
-                    return Err(RepositoryError::CacheRead {
-                        file: legacy,
-                        source,
-                    }
-                    .into())
-                }
-            }
-        }
-        Err(source) => return Err(RepositoryError::CacheRead { file, source }.into()),
-    };
-
-    let mut history = ReviewDismissalHistory::default();
-    for line in contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        if let Ok(record) = serde_json::from_str::<ReviewDismissalLogRecord>(line) {
-            history.record(record);
-        }
-    }
-    Ok(history)
-}
-
-fn read_review_dismissals(
-    environment: &RuntimeEnvironment,
-) -> Result<ReviewDismissals, CommandError> {
-    let file = review_dismissals_file(environment)?;
-    let contents = match fs::read_to_string(&file) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(ReviewDismissals {
-                version: REVIEW_DISMISSALS_VERSION,
-                pull_requests: Vec::new(),
-            });
-        }
-        Err(source) => return Err(RepositoryError::CacheRead { file, source }.into()),
-    };
-    let mut dismissals = toml::from_str::<ReviewDismissals>(&contents)
-        .map_err(|source| RepositoryError::CacheParse { file, source })?;
-    dismissals.version = REVIEW_DISMISSALS_VERSION;
-    dismissals.normalize();
-    Ok(dismissals)
-}
-
-fn write_review_dismissals(
-    environment: &RuntimeEnvironment,
-    dismissals: &ReviewDismissals,
-) -> Result<(), CommandError> {
-    let file = review_dismissals_file(environment)?;
-    if dismissals.pull_requests.is_empty() {
-        match fs::remove_file(&file) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(source) => return Err(RepositoryError::CacheWrite { file, source }.into()),
-        }
-    }
-
-    if let Some(parent) = file.parent() {
-        fs::create_dir_all(parent).map_err(|source| RepositoryError::CacheWrite {
-            file: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    let contents = toml::to_string(dismissals).expect("review dismissals serialize");
-    let temporary = file.with_extension("toml.tmp");
-    fs::write(&temporary, contents).map_err(|source| RepositoryError::CacheWrite {
-        file: temporary.clone(),
-        source,
-    })?;
-    fs::rename(&temporary, &file).map_err(|source| RepositoryError::CacheWrite { file, source })?;
-    Ok(())
 }
 
 fn append_review_dismissal_log(
@@ -2142,10 +1649,6 @@ fn migrate_legacy_review_dismissals_log(file: &Path) -> Result<(), CommandError>
 }
 
 fn review_dismissals_log_file(environment: &RuntimeEnvironment) -> Result<PathBuf, CommandError> {
-    Ok(review_dismissals_file(environment)?.with_file_name(REVIEW_DISMISSALS_LOG_FILE))
-}
-
-fn review_dismissals_file(environment: &RuntimeEnvironment) -> Result<PathBuf, CommandError> {
     let root = environment
         .variable("XDG_STATE_HOME")
         .filter(|path| !path.is_empty())
@@ -2157,7 +1660,8 @@ fn review_dismissals_file(environment: &RuntimeEnvironment) -> Result<PathBuf, C
         })
         .ok_or_else(|| RepositoryError::InvalidConfig {
             file: "environment".to_owned(),
-            message: "HOME or XDG_STATE_HOME must be set to store review dismissals".to_owned(),
+            message: "HOME or XDG_STATE_HOME must be set to store review dismissal audit logs"
+                .to_owned(),
         })?;
-    Ok(root.join("jx").join(REVIEW_DISMISSALS_FILE))
+    Ok(root.join("jx").join(REVIEW_DISMISSALS_LOG_FILE))
 }

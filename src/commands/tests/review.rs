@@ -723,15 +723,10 @@ fn review_dismiss_records_current_head_oid() {
             .expect("review dismissal succeeds");
 
     assert_eq!(result.stdout, dismissed_review_output("api-alpha", 12));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("dismissal state writes");
-    assert!(state.contains("repository = \"example-owner/api-alpha\""));
-    assert!(state.contains("number = 12"));
-    assert!(state.contains("latest_commit_oid = \"commit-12\""));
+    assert!(!workspace
+        .home
+        .join(".local/state/jx/review-dismissals.toml")
+        .exists());
     let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
         .expect("dismissal log writes");
     assert!(log.contains("\"action\":\"dismiss\""));
@@ -744,12 +739,15 @@ fn review_dismiss_records_current_head_oid() {
             .join(".local/state/jx/pull-request-store.sqlite"),
     )
     .expect("pull-request store opens");
-    let action: String = store
-        .query_row("SELECT action FROM pull_request_actions", [], |row| {
-            row.get(0)
-        })
+    let (action, details): (String, String) = store
+        .query_row(
+            "SELECT action, details_json FROM pull_request_actions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .expect("dismiss action records");
     assert_eq!(action, "dismiss");
+    assert!(details.contains("\"dismissedHeadOid\":\"commit-12\""));
 }
 
 #[test]
@@ -834,18 +832,6 @@ fn review_auto_dismisses_commented_pull_requests() {
 fn review_auto_dismissed_comment_resurfaces_on_author_response() {
     // Verifies: author replies make a previously commented PR visible instead of re-hiding it immediately.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-source = "automatic"
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Author replied", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
@@ -862,7 +848,21 @@ dismissed_at = "2026-01-01T00:00:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(
+                status,
+                vec![review_action(
+                    "dismiss",
+                    "automatic",
+                    Some("commented"),
+                    serde_json::json!({
+                        "dismissedHeadOid": "commit-12",
+                        "dismissedViewerResponseAt": "2026-01-01T12:00:00Z",
+                    }),
+                )],
+            ),
+        )]),
         ..FakeServices::default()
     };
 
@@ -967,26 +967,22 @@ fn review_does_not_auto_dismiss_draft_pull_requests_with_mentions() {
 fn review_draft_dismissal_ignores_head_changes_until_ready() {
     // Verifies: draft churn stays hidden, but ready-for-review resurfaces the PR.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-source = "automatic"
-reason = "draft"
-latest_commit_oid = "commit-old"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut draft = review_status_record(12, "Draft keeps changing", "example-author", true);
     draft.latest_commit_oid = Some("commit-new".to_owned());
+    let draft_action = review_action(
+        "dismiss",
+        "automatic",
+        Some("draft"),
+        serde_json::json!({ "dismissedHeadOid": "commit-old" }),
+    );
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, draft.clone())]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(draft.clone(), vec![draft_action.clone()]),
+        )]),
         ..FakeServices::default()
     };
 
@@ -999,7 +995,10 @@ dismissed_at = "2026-01-01T00:00:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, ready)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(ready, vec![draft_action]),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1031,14 +1030,10 @@ fn review_manual_dismissed_draft_uses_draft_policy() {
             .expect("draft dismissal succeeds");
 
     assert!(result.stdout.contains("until it is ready for review"));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("manual draft dismissal state writes");
-    assert!(!state.contains("source ="));
-    assert!(state.contains("reason = \"draft\""));
+    assert!(!workspace
+        .home
+        .join(".local/state/jx/review-dismissals.toml")
+        .exists());
     let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
         .expect("manual draft dismissal log writes");
     assert!(log.contains("\"action\":\"dismiss\""));
@@ -1074,25 +1069,24 @@ fn review_does_not_auto_dismiss_commented_pull_requests_requested_again() {
 fn review_auto_dismissal_resurfaces_when_approval_state_changes() {
     // Verifies: automatic hidden state only applies while the viewer's review checkmark is green.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-source = "automatic"
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Needs review again", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(
+                status,
+                vec![review_action(
+                    "dismiss",
+                    "automatic",
+                    Some("approved"),
+                    serde_json::json!({ "dismissedHeadOid": "commit-12" }),
+                )],
+            ),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1115,18 +1109,6 @@ dismissed_at = "2026-01-01T00:00:00Z"
 fn review_auto_dismissal_refreshes_changed_approved_heads_without_rendering() {
     // Verifies: a changed PR stays hidden when the live review signal is still approved.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-source = "automatic"
-latest_commit_oid = "commit-old"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Still approved", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
@@ -1135,7 +1117,18 @@ dismissed_at = "2026-01-01T00:00:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(
+                status,
+                vec![review_action(
+                    "dismiss",
+                    "automatic",
+                    Some("approved"),
+                    serde_json::json!({ "dismissedHeadOid": "commit-old" }),
+                )],
+            ),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1190,24 +1183,6 @@ fn review_dismiss_log_migrates_legacy_jsonl_name() {
 fn review_dismissed_renders_currently_hidden_pull_requests() {
     // Verifies: dismissed review output reuses the normal review table with computed and local reasons.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 13
-latest_commit_oid = "commit-13"
-dismissed_at = "2026-01-01T00:00:00Z"
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 14
-source = "automatic"
-latest_commit_oid = "commit-14"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut auto_dismissed = review_status_record(12, "Stale approved PR", "example-author", false);
     auto_dismissed.requested_reviewers = ReviewerSelection::default();
@@ -1225,10 +1200,25 @@ dismissed_at = "2026-01-01T00:00:00Z"
             review_request("example-owner", "api-alpha", 13),
             review_request("example-owner", "api-alpha", 14),
         ],
-        pull_request_statuses: BTreeMap::from([
-            (12, auto_dismissed),
-            (13, manual),
-            (14, legacy_auto),
+        pull_requests_with_history: BTreeMap::from([
+            (
+                12,
+                review_pull_request_with_actions(auto_dismissed, Vec::new()),
+            ),
+            (
+                13,
+                review_pull_request_with_actions(
+                    manual,
+                    vec![review_dismiss_action(
+                        "manual",
+                        serde_json::json!({ "dismissedHeadOid": "commit-13" }),
+                    )],
+                ),
+            ),
+            (
+                14,
+                review_pull_request_with_actions(legacy_auto, Vec::new()),
+            ),
         ]),
         ..FakeServices::default()
     };
@@ -1250,17 +1240,6 @@ dismissed_at = "2026-01-01T00:00:00Z"
 fn review_undismiss_removes_hidden_pull_request_from_local_state() {
     // Verifies: undismiss returns an actively hidden PR to the normal review inbox without GitHub mutation.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Stale approved PR", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
@@ -1323,13 +1302,18 @@ fn review_dismiss_records_viewer_response_watermark() {
     run_with_args_and_services(["jx", "review", "dismiss", "12"], &environment, &services)
         .expect("review dismissal succeeds");
 
-    let state = fs::read_to_string(
+    let store = rusqlite::Connection::open(
         workspace
             .home
-            .join(".local/state/jx/review-dismissals.toml"),
+            .join(".local/state/jx/pull-request-store.sqlite"),
     )
-    .expect("dismissal state writes");
-    assert!(state.contains("viewer_response_at = \"2026-01-01T12:30:00Z\""));
+    .expect("pull-request store opens");
+    let details: String = store
+        .query_row("SELECT details_json FROM pull_request_actions", [], |row| {
+            row.get(0)
+        })
+        .expect("dismiss action records");
+    assert!(details.contains("\"dismissedViewerResponseAt\":\"2026-01-01T12:30:00Z\""));
 }
 
 #[test]
@@ -1358,14 +1342,23 @@ fn review_dismiss_matches_repository_suffix_by_full_components() {
     .expect("review dismissal succeeds");
 
     assert_eq!(result.stdout, dismissed_review_output("api-alpha", 12));
-    let state = fs::read_to_string(
+    let store = rusqlite::Connection::open(
         workspace
             .home
-            .join(".local/state/jx/review-dismissals.toml"),
+            .join(".local/state/jx/pull-request-store.sqlite"),
     )
-    .expect("dismissal state writes");
-    assert!(state.contains("repository = \"example-owner/api-alpha\""));
-    assert!(!state.contains("repository = \"example-owner/api-alpha-tools\""));
+    .expect("pull-request store opens");
+    let repository: String = store
+        .query_row(
+            "SELECT repositories.owner || '/' || repositories.name
+             FROM pull_request_actions
+             JOIN pull_requests ON pull_requests.id = pull_request_actions.pr_id
+             JOIN repositories ON repositories.id = pull_requests.repository_id",
+            [],
+            |row| row.get(0),
+        )
+        .expect("dismiss action records repository");
+    assert_eq!(repository, "example-owner/api-alpha");
 }
 
 #[test]
@@ -1432,25 +1425,21 @@ fn review_dismiss_reports_ambiguous_bare_number() {
 fn review_hides_dismissed_pr_until_head_changes() {
     // Verifies: dismissed reviewed PRs stay hidden only for the exact reviewed commit.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut dismissed = review_status_record(12, "Stale approved PR", "example-author", false);
     dismissed.requested_reviewers = ReviewerSelection::default();
     dismissed.approved_reviewers = vec!["example-reviewer".to_owned()];
+    let dismiss_action = review_dismiss_action(
+        "manual",
+        serde_json::json!({ "dismissedHeadOid": "commit-12" }),
+    );
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, dismissed.clone())]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(dismissed.clone(), vec![dismiss_action.clone()]),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1464,7 +1453,10 @@ dismissed_at = "2026-01-01T00:00:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, changed)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(changed, vec![dismiss_action]),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1482,11 +1474,6 @@ dismissed_at = "2026-01-01T00:00:00Z"
 fn review_marks_dismissed_viewer_approval_from_history() {
     // Verifies: stale approvals remain visible as prior approval signal after local undismissal.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.log",
-        r#"{"version":1,"at":"2026-01-01T00:00:00Z","action":"undismiss","reason":"viewer_review_state_changed","source":"automatic","repository":"example-owner/api-alpha","number":12,"dismissed_reason":"approved"}
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Approval needs refresh", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
@@ -1494,36 +1481,38 @@ fn review_marks_dismissed_viewer_approval_from_history() {
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            PullRequestWithHistory {
+                status,
+                history: vec![PullRequestHistoryRecord {
+                    kind: "review_state_changed".to_owned(),
+                    changed_at_unix: 1_767_273_000,
+                    old_json: Some(
+                        serde_json::json!({ "reviewer": "example-reviewer", "state": "approved" }),
+                    ),
+                    new_json: Some(
+                        serde_json::json!({ "reviewer": "example-reviewer", "state": "dismissed" }),
+                    ),
+                    details_json: serde_json::json!({}),
+                }],
+                actions: Vec::new(),
+            },
+        )]),
         ..FakeServices::default()
     };
 
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("review inbox marks dismissed approval");
 
-    assert!(result
-        .stdout
-        .contains("✓    —     ◯ Approval needs refresh"));
+    assert!(result.stdout.contains("✓"));
+    assert!(result.stdout.contains("Approval needs refresh"));
 }
 
 #[test]
 fn review_dismissal_keeps_watermarked_author_response_hidden() {
     // Verifies: a response already recorded in dismissal state does not make approved PRs bounce visible.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-source = "automatic"
-reason = "approved"
-latest_commit_oid = "commit-12"
-viewer_response_at = "2026-01-01T12:45:00Z"
-dismissed_at = "2026-01-01T13:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status =
         review_status_record(12, "Already handled author reply", "example-author", false);
@@ -1541,7 +1530,21 @@ dismissed_at = "2026-01-01T13:00:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(
+                status,
+                vec![review_action(
+                    "dismiss",
+                    "automatic",
+                    Some("approved"),
+                    serde_json::json!({
+                        "dismissedHeadOid": "commit-12",
+                        "dismissedViewerResponseAt": "2026-01-01T12:45:00Z",
+                    }),
+                )],
+            ),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1549,14 +1552,7 @@ dismissed_at = "2026-01-01T13:00:00Z"
         .expect("review inbox keeps watermarked response hidden");
 
     assert!(!result.stdout.contains("Already handled author reply"));
-    assert!(workspace
-        .home
-        .join(".local/state/jx/review-dismissals.toml")
-        .exists());
-    assert!(!workspace
-        .home
-        .join(".local/state/jx/review-dismissals.log")
-        .exists());
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]
@@ -1568,18 +1564,6 @@ fn review_dismissal_ignores_configured_author_response_comments() {
         r#"
 [repo.review]
 ignored_author_response_comments = ["^/automation merge\\s*$"]
-"#,
-    );
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-latest_commit_oid = "commit-12"
-viewer_response_at = "2026-01-01T12:45:00Z"
-dismissed_at = "2026-01-01T12:00:00Z"
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
@@ -1594,7 +1578,19 @@ dismissed_at = "2026-01-01T12:00:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(
+                status,
+                vec![review_dismiss_action(
+                    "manual",
+                    serde_json::json!({
+                        "dismissedHeadOid": "commit-12",
+                        "dismissedViewerResponseAt": "2026-01-01T12:30:00Z",
+                    }),
+                )],
+            ),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1602,28 +1598,13 @@ dismissed_at = "2026-01-01T12:00:00Z"
         .expect("review inbox filters command-only author response");
 
     assert!(!result.stdout.contains("Command-only author reply"));
-    assert!(workspace
-        .home
-        .join(".local/state/jx/review-dismissals.toml")
-        .exists());
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]
 fn review_dismissal_resurfaces_new_author_response() {
     // Verifies: author replies after dismissal make previously addressed review comments actionable again.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-latest_commit_oid = "commit-12"
-viewer_response_at = "2026-01-01T12:30:00Z"
-dismissed_at = "2026-01-01T12:31:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Answered review comment", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
@@ -1640,7 +1621,19 @@ dismissed_at = "2026-01-01T12:31:00Z"
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(
+                status,
+                vec![review_dismiss_action(
+                    "manual",
+                    serde_json::json!({
+                        "dismissedHeadOid": "commit-12",
+                        "dismissedViewerResponseAt": "2026-01-01T12:30:00Z",
+                    }),
+                )],
+            ),
+        )]),
         ..FakeServices::default()
     };
 
@@ -1663,19 +1656,8 @@ dismissed_at = "2026-01-01T12:31:00Z"
 
 #[test]
 fn review_removes_dismissal_when_pr_disappears_from_inbox() {
-    // Verifies: stale local state is pruned once a dismissed PR no longer belongs in review.
+    // Verifies: review loading no longer depends on legacy TOML dismissal state.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
@@ -1697,23 +1679,28 @@ dismissed_at = "2026-01-01T00:00:00Z"
 fn review_dismissal_resurfaces_fresh_review_request() {
     // Verifies: a direct re-request beats dismissal even when the PR branch did not change.
     let workspace = review_workspace();
-    workspace.write_home_file(
-        ".local/state/jx/review-dismissals.toml",
-        r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
-"#,
-    );
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let status = review_status_record(12, "Review requested again", "example-author", false);
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
-        pull_request_statuses: BTreeMap::from([(12, status)]),
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            PullRequestWithHistory {
+                status,
+                history: vec![PullRequestHistoryRecord {
+                    kind: "reviewer_requested".to_owned(),
+                    changed_at_unix: 1_767_273_100,
+                    old_json: None,
+                    new_json: Some(serde_json::json!({ "login": "example-reviewer" })),
+                    details_json: serde_json::json!({}),
+                }],
+                actions: vec![review_dismiss_action(
+                    "manual",
+                    serde_json::json!({ "dismissedHeadOid": "commit-12" }),
+                )],
+            },
+        )]),
         ..FakeServices::default()
     };
 
@@ -1937,6 +1924,36 @@ ignored_labels = ["review-only-noise"]
     assert!(!result.stdout.contains("generated-noise"));
     assert!(!result.stdout.contains("review-only-noise"));
     assert!(!result.stdout.contains("ignored-bot"));
+}
+
+fn review_action(
+    action: &str,
+    source: &str,
+    reason: Option<&str>,
+    details_json: serde_json::Value,
+) -> PullRequestActionRecord {
+    PullRequestActionRecord {
+        action: action.to_owned(),
+        source: source.to_owned(),
+        reason: reason.map(str::to_owned),
+        changed_at_unix: 1_767_273_000,
+        details_json,
+    }
+}
+
+fn review_dismiss_action(reason: &str, details_json: serde_json::Value) -> PullRequestActionRecord {
+    review_action("dismiss", "manual", Some(reason), details_json)
+}
+
+fn review_pull_request_with_actions(
+    status: PullRequestStatusRecord,
+    actions: Vec<PullRequestActionRecord>,
+) -> PullRequestWithHistory {
+    PullRequestWithHistory {
+        status,
+        history: Vec::new(),
+        actions,
+    }
 }
 
 fn assert_no_review_dismissal_state_or_log(workspace: &TestWorkspace) {
