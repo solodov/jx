@@ -559,17 +559,59 @@ pub(super) struct ProductionServices<'environment> {
     github_cache: Arc<Mutex<GitHubFactCache>>,
 }
 
-struct StoreBackedPullRequestLoader<'a, G: ?Sized> {
+struct PullRequestService<'a, G: ?Sized> {
     environment: &'a RuntimeEnvironment,
     github: &'a G,
 }
 
-impl<G> StoreBackedPullRequestLoader<'_, G>
+impl<G> PullRequestService<'_, G>
 where
     G: GitHubClient + ?Sized,
 {
-    /// Loads PR status records through the shared local snapshot store.
+    /// Loads current PR records through the shared local snapshot store.
     async fn pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
+        let fetched = self
+            .refresh_pull_request_snapshots(repository, numbers)
+            .await?;
+        let fetched_numbers = fetched
+            .iter()
+            .map(|status| status.number)
+            .collect::<Vec<_>>();
+        let store = PullRequestStore::open(self.environment)?;
+        let stored = store.latest_pull_request_snapshots(repository, &fetched_numbers)?;
+        if stored.len() == fetched.len() {
+            Ok(stored)
+        } else {
+            Ok(fetched)
+        }
+    }
+
+    /// Loads current PR records together with derived history and local actions.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "review decisions will switch to PR history next")
+    )]
+    pub(super) async fn pull_requests_with_history(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
+        let fetched = self
+            .refresh_pull_request_snapshots(repository, numbers)
+            .await?;
+        let fetched_numbers = fetched
+            .iter()
+            .map(|status| status.number)
+            .collect::<Vec<_>>();
+        let store = PullRequestStore::open(self.environment)?;
+        Ok(store.latest_pull_requests_with_history(repository, &fetched_numbers)?)
+    }
+
+    async fn refresh_pull_request_snapshots(
         &self,
         repository: &GitHubRepository,
         numbers: &[u64],
@@ -578,18 +620,9 @@ where
             .github
             .pull_request_statuses(repository, numbers)
             .await?;
-        let fetched_numbers = fetched
-            .iter()
-            .map(|status| status.number)
-            .collect::<Vec<_>>();
-        let store = PullRequestStore::open(self.environment)?;
-        store.record_pull_request_snapshots(repository, &fetched)?;
-        let stored = store.latest_pull_request_snapshots(repository, &fetched_numbers)?;
-        if stored.len() == fetched.len() {
-            Ok(stored)
-        } else {
-            Ok(fetched)
-        }
+        PullRequestStore::open(self.environment)?
+            .record_pull_request_snapshots(repository, &fetched)?;
+        Ok(fetched)
     }
 }
 
@@ -2148,7 +2181,7 @@ impl CommandServices for ProductionServices<'_> {
         self.github_runtime.block_on(async {
             let github = self.traced_github_client(context)?;
 
-            StoreBackedPullRequestLoader {
+            PullRequestService {
                 environment: self.environment,
                 github: &github,
             }
@@ -2172,7 +2205,7 @@ impl CommandServices for ProductionServices<'_> {
                 let statuses = if numbers.is_empty() {
                     Vec::new()
                 } else {
-                    StoreBackedPullRequestLoader {
+                    PullRequestService {
                         environment: self.environment,
                         github: &github,
                     }
@@ -2303,7 +2336,7 @@ impl CommandServices for ProductionServices<'_> {
                 repo: repository.slug(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
             };
-            StoreBackedPullRequestLoader {
+            PullRequestService {
                 environment: self.environment,
                 github: &github,
             }
@@ -2868,7 +2901,7 @@ async fn production_global_stack_status_entry_traced(
         let result = if numbers.is_empty() {
             Ok(Vec::new())
         } else {
-            StoreBackedPullRequestLoader {
+            PullRequestService {
                 environment: token_environment,
                 github: &github,
             }
@@ -3395,6 +3428,7 @@ async fn prepare_global_remote_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::PullRequestMergeStatus;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -3410,6 +3444,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct CountingGitHub {
         calls: Arc<CountingGitHubCalls>,
+        statuses: Arc<Mutex<Vec<PullRequestStatusRecord>>>,
     }
 
     #[async_trait::async_trait]
@@ -3521,7 +3556,7 @@ mod tests {
             self.calls
                 .pull_request_statuses
                 .fetch_add(1, Ordering::Relaxed);
-            Ok(Vec::new())
+            Ok(self.statuses.lock().expect("status fixture lock").clone())
         }
 
         async fn create_pull_request(
@@ -3639,6 +3674,41 @@ mod tests {
     }
 
     #[test]
+    fn pull_request_service_loads_records_with_history() {
+        // Verifies: the PR service returns current snapshot data with derived history context.
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let github = CountingGitHub::default();
+        let repository = GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "api-alpha".to_owned(),
+        };
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Example review")];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+
+        let loaded = runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("pull requests with history load");
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].status.title, "Example review");
+        assert_eq!(loaded[0].history[0].kind, "first_seen");
+        assert!(loaded[0].actions.is_empty());
+        assert_eq!(
+            github.calls.pull_request_statuses.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
     fn traced_github_client_caches_facts_and_pull_request_lookups() {
         let inner = CountingGitHub::default();
         let calls = Arc::clone(&inner.calls);
@@ -3709,6 +3779,42 @@ mod tests {
             .enable_all()
             .build()
             .expect("test runtime builds")
+    }
+
+    fn test_pull_request_status(number: u64, title: &str) -> PullRequestStatusRecord {
+        PullRequestStatusRecord {
+            number,
+            title: title.to_owned(),
+            url: Some(format!(
+                "https://github.com/example-owner/api-alpha/pull/{number}"
+            )),
+            created_at: Some("2026-01-01T00:00:00Z".to_owned()),
+            head_branch: format!("topic/pr-{number}"),
+            base_branch: "main".to_owned(),
+            author: Some("example-author".to_owned()),
+            draft: false,
+            merged: false,
+            closed: false,
+            merged_at: None,
+            closed_at: None,
+            check_status: PullRequestCheckStatus::Passing,
+            checks: Vec::new(),
+            merge_status: PullRequestMergeStatus::Mergeable,
+            review_status: PullRequestReviewStatus::ReviewRequired,
+            requested_reviewers: ReviewerSelection::default(),
+            suggested_reviewers: Vec::new(),
+            approved_reviewers: Vec::new(),
+            changes_requested_reviewers: Vec::new(),
+            commented_reviewers: Vec::new(),
+            addressed_reviewers: Vec::new(),
+            reviewer_responses: Vec::new(),
+            reviewer_mentions: Vec::new(),
+            dismissed_reviewers: Vec::new(),
+            review_activity: Vec::new(),
+            timeline_events: Vec::new(),
+            labels: Vec::new(),
+            latest_commit_oid: Some(format!("commit-{number}")),
+        }
     }
 
     fn test_pull_request(

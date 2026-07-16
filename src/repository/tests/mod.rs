@@ -174,6 +174,28 @@ fn pull_request_store_derives_history_from_snapshots() {
     assert!(
         history_latest_new_json(&store, "review_state_changed").contains(r#""state":"dismissed""#)
     );
+    let pr_id = scalar_i64(
+        store.connection(),
+        "SELECT id FROM pull_requests WHERE number = 12",
+    );
+    store
+        .connection()
+        .execute(
+            "INSERT INTO pull_request_actions
+             (pr_id, action, source, reason, changed_at_unix, details_json)
+             VALUES (?1, 'dismiss', 'manual', 'manual', ?2, '{\"selector\":\"12\"}')",
+            rusqlite::params![pr_id, 1_767_273_000_i64],
+        )
+        .expect("insert local action");
+
+    let loaded = store
+        .latest_pull_requests_with_history(&repository, &[12])
+        .expect("PR with history loads");
+
+    assert_eq!(loaded[0].status.title, "Review history");
+    assert_eq!(loaded[0].history.len(), 7);
+    assert_eq!(loaded[0].actions[0].action, "dismiss");
+    assert_eq!(loaded[0].actions[0].details_json["selector"], "12");
 }
 
 #[test]

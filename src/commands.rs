@@ -65,10 +65,11 @@ use crate::{
         read_github_user_name_cache, read_stack_metadata, read_workspace_metadata,
         validate_workspace_name, write_github_user_name_cache, write_stack_metadata,
         write_workspace_metadata, ClonePlan, DiffToolConfig, GitHubRemote, GitHubRepository,
-        LayoutConfig, LocalRepositoryContext, PullRequestStore, RepoCheckConfig, RepoCheckTrigger,
-        RepoHook, RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext,
-        RepositoryError, RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode,
-        StackMetadata, TokenSource, WorkflowConfig, WorkspaceMetadata,
+        LayoutConfig, LocalRepositoryContext, PullRequestStore, PullRequestWithHistory,
+        RepoCheckConfig, RepoCheckTrigger, RepoHook, RepoHookEvent, RepoWorkItemEvent,
+        RepoWorkItemHandler, RepositoryContext, RepositoryError, RepositoryIdentity,
+        RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata, TokenSource,
+        WorkflowConfig, WorkspaceMetadata,
     },
 };
 

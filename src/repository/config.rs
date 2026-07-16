@@ -303,6 +303,11 @@ pub enum RepositoryError {
         file: PathBuf,
         source: serde_json::Error,
     },
+    #[error("Could not decode pull-request store JSON from `{file}`: {source}")]
+    PullRequestStoreJsonDecode {
+        file: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 fn project_config_file(workspace_root: &Path) -> PathBuf {

@@ -165,7 +165,33 @@ pub struct PullRequestStore {
     connection: rusqlite::Connection,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PullRequestWithHistory {
+    pub status: PullRequestStatusRecord,
+    pub history: Vec<PullRequestHistoryRecord>,
+    pub actions: Vec<PullRequestActionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PullRequestHistoryRecord {
+    pub kind: String,
+    pub changed_at_unix: i64,
+    pub old_json: Option<serde_json::Value>,
+    pub new_json: Option<serde_json::Value>,
+    pub details_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PullRequestActionRecord {
+    pub action: String,
+    pub source: String,
+    pub reason: Option<String>,
+    pub changed_at_unix: i64,
+    pub details_json: serde_json::Value,
+}
+
 struct StoredPullRequestSnapshot {
+    pr_id: i64,
     status: PullRequestStatusRecord,
 }
 
@@ -242,11 +268,31 @@ impl PullRequestStore {
     ) -> Result<Vec<PullRequestStatusRecord>, RepositoryError> {
         let mut statuses = Vec::new();
         for number in unique_numbers(numbers) {
-            if let Some(status) = self.latest_pull_request_snapshot(repository, number)? {
-                statuses.push(status);
+            if let Some(snapshot) = self.latest_pull_request_snapshot(repository, number)? {
+                statuses.push(snapshot.status);
             }
         }
         Ok(statuses)
+    }
+
+    /// Loads current PR snapshots with semantic history and local actions.
+    pub fn latest_pull_requests_with_history(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestWithHistory>, RepositoryError> {
+        let mut pull_requests = Vec::new();
+        for number in unique_numbers(numbers) {
+            let Some(snapshot) = self.latest_pull_request_snapshot(repository, number)? else {
+                continue;
+            };
+            pull_requests.push(PullRequestWithHistory {
+                history: self.pull_request_history(snapshot.pr_id)?,
+                actions: self.pull_request_actions(snapshot.pr_id)?,
+                status: snapshot.status,
+            });
+        }
+        Ok(pull_requests)
     }
 
     fn upsert_repository(&self, repository: &GitHubRepository) -> Result<i64, RepositoryError> {
@@ -383,11 +429,11 @@ impl PullRequestStore {
         &self,
         repository: &GitHubRepository,
         number: u64,
-    ) -> Result<Option<PullRequestStatusRecord>, RepositoryError> {
-        let payload = self
+    ) -> Result<Option<StoredPullRequestSnapshot>, RepositoryError> {
+        let row = self
             .connection
             .query_row(
-                "SELECT snapshots.payload_json
+                "SELECT pull_requests.id, snapshots.payload_json
                  FROM pull_request_snapshots snapshots
                  JOIN pull_requests pull_requests ON pull_requests.id = snapshots.pr_id
                  JOIN repositories repositories ON repositories.id = pull_requests.repository_id
@@ -398,19 +444,11 @@ impl PullRequestStore {
                  ORDER BY snapshots.id DESC
                  LIMIT 1",
                 params![&repository.owner, &repository.name, number as i64],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|source| self.query_error(source))?;
-        payload
-            .map(|payload| {
-                serde_json::from_str(&payload).map_err(|source| {
-                    RepositoryError::PullRequestSnapshotDecode {
-                        file: self.path.clone(),
-                        source,
-                    }
-                })
-            })
+        row.map(|(pr_id, payload)| self.decode_snapshot(pr_id, &payload))
             .transpose()
     }
 
@@ -431,16 +469,114 @@ impl PullRequestStore {
             )
             .optional()
             .map_err(|source| self.query_error(source))?;
-        row.map(|payload| {
-            let status = serde_json::from_str(&payload).map_err(|source| {
-                RepositoryError::PullRequestSnapshotDecode {
-                    file: self.path.clone(),
-                    source,
-                }
-            })?;
-            Ok(StoredPullRequestSnapshot { status })
+        row.map(|payload| self.decode_snapshot(pr_id, &payload))
+            .transpose()
+    }
+
+    fn pull_request_history(
+        &self,
+        pr_id: i64,
+    ) -> Result<Vec<PullRequestHistoryRecord>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT kind, changed_at_unix, old_json, new_json, details_json
+                 FROM pull_request_history
+                 WHERE pr_id = ?1
+                 ORDER BY changed_at_unix, id",
+            )
+            .map_err(|source| self.query_error(source))?;
+        let rows = statement
+            .query_map(params![pr_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|source| self.query_error(source))?;
+        let mut history = Vec::new();
+        for row in rows {
+            let (kind, changed_at_unix, old_json, new_json, details_json) =
+                row.map_err(|source| self.query_error(source))?;
+            history.push(PullRequestHistoryRecord {
+                kind,
+                changed_at_unix,
+                old_json: self.decode_optional_json(old_json)?,
+                new_json: self.decode_optional_json(new_json)?,
+                details_json: self.decode_json(&details_json)?,
+            });
+        }
+        Ok(history)
+    }
+
+    fn pull_request_actions(
+        &self,
+        pr_id: i64,
+    ) -> Result<Vec<PullRequestActionRecord>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT action, source, reason, changed_at_unix, details_json
+                 FROM pull_request_actions
+                 WHERE pr_id = ?1
+                 ORDER BY changed_at_unix, id",
+            )
+            .map_err(|source| self.query_error(source))?;
+        let rows = statement
+            .query_map(params![pr_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|source| self.query_error(source))?;
+        let mut actions = Vec::new();
+        for row in rows {
+            let (action, source, reason, changed_at_unix, details_json) =
+                row.map_err(|source| self.query_error(source))?;
+            actions.push(PullRequestActionRecord {
+                action,
+                source,
+                reason,
+                changed_at_unix,
+                details_json: self.decode_json(&details_json)?,
+            });
+        }
+        Ok(actions)
+    }
+
+    fn decode_snapshot(
+        &self,
+        pr_id: i64,
+        payload: &str,
+    ) -> Result<StoredPullRequestSnapshot, RepositoryError> {
+        let status = serde_json::from_str(payload).map_err(|source| {
+            RepositoryError::PullRequestSnapshotDecode {
+                file: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(StoredPullRequestSnapshot { pr_id, status })
+    }
+
+    fn decode_optional_json(
+        &self,
+        value: Option<String>,
+    ) -> Result<Option<serde_json::Value>, RepositoryError> {
+        value.map(|value| self.decode_json(&value)).transpose()
+    }
+
+    fn decode_json(&self, value: &str) -> Result<serde_json::Value, RepositoryError> {
+        serde_json::from_str(value).map_err(|source| RepositoryError::PullRequestStoreJsonDecode {
+            file: self.path.clone(),
+            source,
         })
-        .transpose()
     }
 
     fn query_error(&self, source: rusqlite::Error) -> RepositoryError {
