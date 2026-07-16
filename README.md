@@ -114,9 +114,10 @@ and bookmarks, and syncs GitHub PR bases and generated stack context from that
 local state. That keeps stack edits, PR publishing, interactive opening, and
 repository sync on one model instead of separate shell steps.
 
-Use `jx stack` for stack display, movement, and PR publishing, and `jx sync` for
-pushing synchronized bookmark state. See
-[stack management](docs/stack-management.md) for examples and operational notes.
+Use `jx stack` for stack display, movement, and PR publishing, `jx review` for
+review inbox management, and `jx sync` for pushing synchronized bookmark state.
+See [stack management](docs/stack-management.md) and
+[review management](docs/review-management.md) for examples and operational notes.
 
 ## Workflow at a glance
 
@@ -135,9 +136,10 @@ jx clone example-owner/example-repo
 jx work
 ```
 
-Understand and update remote state:
+Understand, review, and update remote state:
 
 ```sh
+jx review
 jx remote-status
 jx fetch
 jx sync

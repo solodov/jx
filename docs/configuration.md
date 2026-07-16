@@ -192,8 +192,11 @@ and label entries are globs. `ignored_labels_when_merged` uses the same glob syn
 `ignored_labels`, but only applies after a PR has merged. `repo.review.ignored_labels`
 and `repo.rules.review.ignored_labels` add review-only label omissions.
 `ignored_author_response_comments` entries are multiline Rust regexes matched
-against PR-author comment bodies before dismissal resurfacing. Title rewrites use
-Rust regex capture replacements:
+against PR-author comment bodies before dismissal resurfacing. Local review
+visibility state lives in the shared pull-request store; `review-dismissals.toml`
+is no longer read. See [review management](review-management.md) for dismissal,
+audit-log, and store behavior. Title rewrites use Rust regex capture
+replacements:
 
 ```toml
 [[repo.rules]]
