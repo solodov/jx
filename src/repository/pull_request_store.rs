@@ -172,6 +172,12 @@ pub struct PullRequestWithHistory {
     pub actions: Vec<PullRequestActionRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PullRequestActionDismissal {
+    pub repository: GitHubRepository,
+    pub number: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PullRequestHistoryRecord {
     pub kind: String,
@@ -293,6 +299,47 @@ impl PullRequestStore {
             });
         }
         Ok(pull_requests)
+    }
+
+    /// Lists PRs whose latest local visibility action is a dismissal.
+    pub fn action_dismissed_pull_requests(
+        &self,
+    ) -> Result<Vec<PullRequestActionDismissal>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT repositories.owner, repositories.name, pull_requests.number
+                 FROM pull_requests
+                 JOIN repositories ON repositories.id = pull_requests.repository_id
+                 JOIN pull_request_actions actions ON actions.pr_id = pull_requests.id
+                 WHERE actions.id = (
+                     SELECT latest.id
+                     FROM pull_request_actions latest
+                     WHERE latest.pr_id = pull_requests.id
+                       AND latest.action IN ('dismiss', 'undismiss')
+                     ORDER BY latest.changed_at_unix DESC, latest.id DESC
+                     LIMIT 1
+                 )
+                   AND actions.action = 'dismiss'
+                 ORDER BY repositories.owner, repositories.name, pull_requests.number",
+            )
+            .map_err(|source| self.query_error(source))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(PullRequestActionDismissal {
+                    repository: GitHubRepository {
+                        owner: row.get(0)?,
+                        name: row.get(1)?,
+                    },
+                    number: row.get::<_, i64>(2)? as u64,
+                })
+            })
+            .map_err(|source| self.query_error(source))?;
+        let mut dismissals = Vec::new();
+        for row in rows {
+            dismissals.push(row.map_err(|source| self.query_error(source))?);
+        }
+        Ok(dismissals)
     }
 
     /// Records a local operator action that can affect future PR decisions.

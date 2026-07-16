@@ -330,12 +330,19 @@ fn load_review_requests_view(
     let dismissed_keys_in_scope = if dismissal_mode == ReviewDismissalMode::Ignore {
         BTreeSet::new()
     } else {
-        add_dismissed_pull_requests_to_review_fetch(
+        let mut keys = add_dismissed_pull_requests_to_review_fetch(
             &mut grouped,
             &dismissals,
             &layout_by_repository,
             &filter_matchers,
-        )
+        );
+        keys.extend(add_action_dismissed_pull_requests_to_review_fetch(
+            environment,
+            &mut grouped,
+            &layout_by_repository,
+            &filter_matchers,
+        )?);
+        keys
     };
     span.set([perf_attr("filtered_repo_count", grouped.len())]);
 
@@ -457,9 +464,12 @@ fn load_review_requests_view(
                 ReviewDismissalMode::Only | ReviewDismissalMode::Ignore => {}
             }
             let dismissal = if dismissal_mode == ReviewDismissalMode::Only {
-                dismissals.get(&key).map(|dismissal| {
-                    review_request_dismissal_view(dismissal, &status, &viewer, state)
-                })
+                dismissals
+                    .get(&key)
+                    .map(|dismissal| {
+                        review_request_dismissal_view(dismissal, &status, &viewer, state)
+                    })
+                    .or_else(|| review_request_action_dismissal_view(&pull_request.actions))
             } else {
                 None
             };
@@ -721,8 +731,8 @@ fn handle_review_dismiss_traced(
 
     let target = parse_review_dismiss_target(selector)?;
     let matches = review_dismiss_matches(&loaded.view, &target);
-    let (repository, status) = match matches.as_slice() {
-        [(repository, status)] => (repository, status),
+    let (repository, row) = match matches.as_slice() {
+        [(repository, row)] => (repository, row),
         [] => {
             return Err(review_dismiss_usage_error(format!(
                 "no review pull request matched `{selector}`"
@@ -731,7 +741,7 @@ fn handle_review_dismiss_traced(
         matches => {
             let choices = matches
                 .iter()
-                .map(|(repository, status)| format!("{}#{}", repository.slug(), status.number))
+                .map(|(repository, row)| format!("{}#{}", repository.slug(), row.status.number))
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(review_dismiss_usage_error(format!(
@@ -739,6 +749,7 @@ fn handle_review_dismiss_traced(
             )));
         }
     };
+    let status = &row.status;
 
     let Some(latest_commit_oid) = status.latest_commit_oid.clone() else {
         return Err(review_dismiss_usage_error(format!(
@@ -841,8 +852,8 @@ fn handle_review_undismiss_traced(
 
     let target = parse_review_dismiss_target(selector)?;
     let matches = review_dismiss_matches(&loaded.view, &target);
-    let (repository, status) = match matches.as_slice() {
-        [(repository, status)] => (repository, status),
+    let (repository, row) = match matches.as_slice() {
+        [(repository, row)] => (repository, row),
         [] => {
             return Err(review_dismiss_usage_error(format!(
                 "no dismissed review pull request matched `{selector}`"
@@ -851,7 +862,7 @@ fn handle_review_undismiss_traced(
         matches => {
             let choices = matches
                 .iter()
-                .map(|(repository, status)| format!("{}#{}", repository.slug(), status.number))
+                .map(|(repository, row)| format!("{}#{}", repository.slug(), row.status.number))
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(review_dismiss_usage_error(format!(
@@ -859,6 +870,7 @@ fn handle_review_undismiss_traced(
             )));
         }
     };
+    let status = &row.status;
 
     let key = review_key(repository, status.number);
     let mut dismissals = read_review_dismissals(environment)?;
@@ -873,12 +885,56 @@ fn handle_review_undismiss_traced(
     )?;
     if removed {
         write_review_dismissals(environment, &dismissals)?;
+    } else {
+        let dismissal = review_dismissal_from_action_row(repository, row, &loaded.view.viewer);
+        append_review_dismissal_log(
+            environment,
+            review_dismissal_log_event(
+                "undismiss",
+                "manual",
+                &dismissal,
+                Some(status),
+                &loaded.view.viewer,
+                Some(selector),
+            ),
+        )?;
+        record_review_dismissal_action(
+            environment,
+            "undismiss",
+            "manual",
+            &dismissal,
+            Some(status),
+            &loaded.view.viewer,
+            Some(selector),
+        )?;
     }
 
     Ok(format!(
         "Undismissed {}\n",
         review_dismiss_pull_request_link(repository, status),
     ))
+}
+
+fn review_dismissal_from_action_row(
+    repository: &GitHubRepository,
+    row: &ReviewRequestRowView,
+    viewer: &str,
+) -> ReviewDismissal {
+    let status = &row.status;
+    let reason = row
+        .dismissal
+        .as_ref()
+        .map(|dismissal| dismissal.reason.clone())
+        .unwrap_or_else(|| review_manual_dismissal_reason(status).to_owned());
+    ReviewDismissal {
+        repository: repository.slug(),
+        number: status.number,
+        source: ReviewDismissalSource::Manual,
+        reason,
+        latest_commit_oid: status.latest_commit_oid.clone().unwrap_or_default(),
+        viewer_response_at: review_viewer_response_at(status, viewer).map(str::to_owned),
+        dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    }
 }
 
 fn review_manual_dismissal_reason(status: &PullRequestStatusRecord) -> &'static str {
@@ -910,7 +966,7 @@ fn review_dismiss_pull_request_link(
 fn review_dismiss_matches<'a>(
     view: &'a ReviewRequestsView,
     target: &ReviewDismissTarget,
-) -> Vec<(&'a GitHubRepository, &'a PullRequestStatusRecord)> {
+) -> Vec<(&'a GitHubRepository, &'a ReviewRequestRowView)> {
     view.repositories
         .iter()
         .flat_map(|repository| {
@@ -921,7 +977,7 @@ fn review_dismiss_matches<'a>(
                     row.status.number == target.number
                         && review_dismiss_repository_matches(repository, &target.repository_suffix)
                 })
-                .map(move |row| (&repository.repository, &row.status))
+                .map(move |row| (&repository.repository, row))
         })
         .collect()
 }
@@ -1061,6 +1117,28 @@ fn add_dismissed_pull_requests_to_review_fetch(
             .push(dismissal.number);
     }
     keys
+}
+
+fn add_action_dismissed_pull_requests_to_review_fetch(
+    environment: &RuntimeEnvironment,
+    grouped: &mut BTreeMap<GitHubRepository, Vec<u64>>,
+    layout_by_repository: &BTreeMap<GitHubRepository, ReviewRepositoryLayout>,
+    filter_matchers: &[ReviewFilterMatcher],
+) -> Result<BTreeSet<ReviewPullRequestKey>, CommandError> {
+    let mut keys = BTreeSet::new();
+    for dismissal in PullRequestStore::open(environment)?.action_dismissed_pull_requests()? {
+        let layout = layout_by_repository.get(&dismissal.repository);
+        if !review_repository_matches(&dismissal.repository, layout, filter_matchers) {
+            continue;
+        }
+        let key = review_key(&dismissal.repository, dismissal.number);
+        keys.insert(key);
+        grouped
+            .entry(dismissal.repository)
+            .or_default()
+            .push(dismissal.number);
+    }
+    Ok(keys)
 }
 
 fn repository_from_slug(slug: &str) -> Option<GitHubRepository> {
@@ -1798,6 +1876,16 @@ fn review_request_dismissal_view(
         source: review_dismissal_source_label(dismissal.source).to_owned(),
         reason: review_dismissal_reason_for_state(dismissal, Some(status), viewer, Some(state)),
     }
+}
+
+fn review_request_action_dismissal_view(
+    actions: &[PullRequestActionRecord],
+) -> Option<ReviewRequestDismissalView> {
+    let action = latest_review_visibility_action(actions)?;
+    (action.action == "dismiss").then(|| ReviewRequestDismissalView {
+        source: action.source.clone(),
+        reason: action.reason.clone().unwrap_or_else(|| "manual".to_owned()),
+    })
 }
 
 fn review_dismissal_source_label(source: ReviewDismissalSource) -> &'static str {
