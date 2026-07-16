@@ -295,6 +295,32 @@ impl PullRequestStore {
         Ok(pull_requests)
     }
 
+    /// Records a local operator action that can affect future PR decisions.
+    pub fn record_pull_request_action(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+        action: &str,
+        source: &str,
+        reason: Option<&str>,
+        details_json: serde_json::Value,
+    ) -> Result<(), RepositoryError> {
+        let changed_at_unix = chrono::Utc::now().timestamp();
+        let repository_id = self.upsert_repository(repository)?;
+        let pr_id = self.upsert_pull_request(repository_id, number, changed_at_unix)?;
+        let details_json =
+            serde_json::to_string(&details_json).expect("action details JSON serializes");
+        self.connection
+            .execute(
+                "INSERT INTO pull_request_actions
+                 (pr_id, action, source, reason, changed_at_unix, details_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![pr_id, action, source, reason, changed_at_unix, details_json],
+            )
+            .map_err(|source| self.query_error(source))?;
+        Ok(())
+    }
+
     fn upsert_repository(&self, repository: &GitHubRepository) -> Result<i64, RepositoryError> {
         self.connection
             .execute(

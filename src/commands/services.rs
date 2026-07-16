@@ -287,13 +287,33 @@ pub(super) trait CommandServices {
         BTreeMap::new()
     }
 
-    /// Loads batched read-only GitHub status facts for an arbitrary repository.
+    /// Loads batched read-only pull-request facts for an arbitrary repository.
     fn pull_request_statuses_for_repository(
         &self,
         token_source: &TokenSource,
         repository: &GitHubRepository,
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError>;
+
+    /// Loads pull requests with derived history for an arbitrary repository.
+    fn pull_requests_with_history_for_repository(
+        &self,
+        token_source: &TokenSource,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
+        self.pull_request_statuses_for_repository(token_source, repository, numbers)
+            .map(|statuses| {
+                statuses
+                    .into_iter()
+                    .map(|status| PullRequestWithHistory {
+                        status,
+                        history: Vec::new(),
+                        actions: Vec::new(),
+                    })
+                    .collect()
+            })
+    }
 
     /// Opens a URL in the platform default browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
@@ -591,10 +611,6 @@ where
     }
 
     /// Loads current PR records together with derived history and local actions.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "review decisions will switch to PR history next")
-    )]
     pub(super) async fn pull_requests_with_history(
         &self,
         repository: &GitHubRepository,
@@ -2341,6 +2357,29 @@ impl CommandServices for ProductionServices<'_> {
                 github: &github,
             }
             .pull_requests(repository, numbers)
+            .await
+        })
+    }
+
+    fn pull_requests_with_history_for_repository(
+        &self,
+        token_source: &TokenSource,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let github = TracedGitHubClient {
+                inner: github,
+                perf: PerfLog::from_environment(self.environment),
+                repo: repository.slug(),
+                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            };
+            PullRequestService {
+                environment: self.environment,
+                github: &github,
+            }
+            .pull_requests_with_history(repository, numbers)
             .await
         })
     }

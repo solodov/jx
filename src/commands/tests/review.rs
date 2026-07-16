@@ -624,6 +624,18 @@ fn review_dismiss_records_current_head_oid() {
     assert!(log.contains("\"reason\":\"manual\""));
     assert!(log.contains("\"source\":\"manual\""));
     assert!(log.contains("\"selector\":\"12\""));
+    let store = rusqlite::Connection::open(
+        workspace
+            .home
+            .join(".local/state/jx/pull-request-store.sqlite"),
+    )
+    .expect("pull-request store opens");
+    let action: String = store
+        .query_row("SELECT action FROM pull_request_actions", [], |row| {
+            row.get(0)
+        })
+        .expect("dismiss action records");
+    assert_eq!(action, "dismiss");
 }
 
 #[test]
