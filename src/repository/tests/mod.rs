@@ -112,6 +112,96 @@ fn pull_request_store_records_and_loads_latest_snapshots() {
 }
 
 #[test]
+fn pull_request_store_records_snapshot_freshness_metadata() {
+    // Verifies: GitHub updatedAt guards are stored beside payload hashes for refresh planning.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let store = PullRequestStore::open(&environment).expect("store opens");
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    let status = pull_request_status_record(12, "Initial title");
+
+    store
+        .record_pull_request_snapshots_with_updates(
+            &repository,
+            &[status],
+            &BTreeMap::from([(12, 1_767_225_600)]),
+        )
+        .expect("snapshot records");
+    let metadata = store
+        .latest_pull_request_snapshot_metadata(&repository, &[12])
+        .expect("metadata loads");
+
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0].number, 12);
+    assert_eq!(
+        metadata[0].schema_version,
+        PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION
+    );
+    assert_eq!(metadata[0].github_updated_at_unix, Some(1_767_225_600));
+    assert!(!metadata[0].payload_hash.is_empty());
+
+    store
+        .record_pull_request_snapshots_with_updates(
+            &repository,
+            &[pull_request_status_record(12, "Initial title")],
+            &BTreeMap::from([(12, 1_767_312_000)]),
+        )
+        .expect("duplicate snapshot refreshes metadata");
+    let metadata = store
+        .latest_pull_request_snapshot_metadata(&repository, &[12])
+        .expect("metadata reloads");
+    assert_eq!(metadata[0].github_updated_at_unix, Some(1_767_312_000));
+    assert_eq!(
+        scalar_i64(
+            store.connection(),
+            "SELECT COUNT(*) FROM pull_request_snapshots",
+        ),
+        1
+    );
+}
+
+#[test]
+fn pull_request_store_loads_action_only_timeline() {
+    // Verifies: visibility debugging can show local actions even before a snapshot exists.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let store = PullRequestStore::open(&environment).expect("store opens");
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+
+    store
+        .record_pull_request_action(
+            &repository,
+            12,
+            "dismiss",
+            "manual",
+            Some("manual"),
+            serde_json::json!({ "selector": "api-alpha#12" }),
+        )
+        .expect("action records");
+    let identities = store
+        .stored_pull_request_identities()
+        .expect("stored identities load");
+    let timeline = store
+        .stored_pull_request_timeline(&repository, 12)
+        .expect("timeline loads")
+        .expect("stored PR exists");
+
+    assert_eq!(identities.len(), 1);
+    assert_eq!(identities[0].repository, repository);
+    assert_eq!(identities[0].number, 12);
+    assert_eq!(timeline.status, None);
+    assert_eq!(timeline.history, []);
+    assert_eq!(timeline.actions.len(), 1);
+    assert_eq!(timeline.actions[0].action, "dismiss");
+}
+
+#[test]
 fn pull_request_store_derives_history_from_snapshots() {
     // Verifies: snapshot changes become compact PR history rows for later decisions.
     let workspace = TestWorkspace::new();
@@ -867,6 +957,9 @@ fn stack_status_review_gate_checks_compose_for_matching_repo() {
 ignored_checks = ["^global-noise-check$"]
 ignored_labels = ["global-noise"]
 ignored_labels_when_merged = ["global-merge-noise"]
+hidden_labels = [
+  { label = "global-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+]
 ignored_reviewers = ["^global-bot$"]
 review_gate_checks = ["global approval"]
 review_wait_threshold = "8h"
@@ -882,6 +975,9 @@ repo = "example-owner/*"
 ignored_checks = ["^repo-noise-check.*"]
 ignored_labels = ["repo-noise*"]
 ignored_labels_when_merged = ["repo-merge-noise*"]
+hidden_labels = [
+  { label = "repo-ready*", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+]
 ignored_reviewers = ["^repo-bot-.*$"]
 review_gate_checks = ["repo approval*"]
 review_wait_threshold = "4h"
@@ -914,6 +1010,25 @@ replace = "$1"
     assert!(stack_status.ignores_label("repo-noise-label"));
     assert!(stack_status.ignores_label_when_merged("global-merge-noise"));
     assert!(stack_status.ignores_label_when_merged("repo-merge-noise-label"));
+    assert_eq!(
+        stack_status.hidden_labels,
+        vec![
+            HiddenLabelConfig {
+                label: "global-ready".to_owned(),
+                when: vec![
+                    HiddenLabelCondition::NotDraft,
+                    HiddenLabelCondition::TargetsDefaultBranch,
+                ],
+            },
+            HiddenLabelConfig {
+                label: "repo-ready*".to_owned(),
+                when: vec![
+                    HiddenLabelCondition::NotDraft,
+                    HiddenLabelCondition::TargetsDefaultBranch,
+                ],
+            },
+        ]
+    );
     assert!(stack_status.ignores_reviewer("global-bot"));
     assert!(stack_status.ignores_reviewer("repo-bot-helper"));
     assert!(!stack_status.ignores_reviewer("repo-bot"));
@@ -964,6 +1079,9 @@ ignored_labels = ["stack-noise"]
 
 [repo.review]
 ignored_labels = ["global-review-noise"]
+hidden_labels = [
+  { label = "global-review-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+]
 ignored_author_response_comments = ["^/global command$"]
 
 [[repo.rules]]
@@ -971,6 +1089,9 @@ repo = "example-owner/*"
 
 [repo.rules.review]
 ignored_labels = ["repo-review-noise*"]
+hidden_labels = [
+  { label = "repo-review-ready*", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+]
 ignored_author_response_comments = ["^/repo command$"]
 "#,
     );
@@ -985,6 +1106,25 @@ ignored_author_response_comments = ["^/repo command$"]
     assert!(!stack_status.ignores_label("repo-review-noise-extra"));
     assert!(review.ignores_label("global-review-noise"));
     assert!(review.ignores_label("repo-review-noise-extra"));
+    assert_eq!(
+        review.hidden_labels,
+        vec![
+            HiddenLabelConfig {
+                label: "global-review-ready".to_owned(),
+                when: vec![
+                    HiddenLabelCondition::NotDraft,
+                    HiddenLabelCondition::TargetsDefaultBranch,
+                ],
+            },
+            HiddenLabelConfig {
+                label: "repo-review-ready*".to_owned(),
+                when: vec![
+                    HiddenLabelCondition::NotDraft,
+                    HiddenLabelCondition::TargetsDefaultBranch,
+                ],
+            },
+        ]
+    );
     assert!(review.ignores_author_response_comment("/global command"));
     assert!(review.ignores_author_response_comment("body\n/repo command\nfooter"));
     assert!(!review.ignores_author_response_comment("/other command"));
@@ -2142,6 +2282,7 @@ fn pull_request_status_record(number: u64, title: &str) -> PullRequestStatusReco
         created_at: Some("2026-01-01T00:00:00Z".to_owned()),
         head_branch: format!("topic/pr-{number}"),
         base_branch: "main".to_owned(),
+        default_branch: Some("main".to_owned()),
         author: Some("example-author".to_owned()),
         draft: false,
         merged: false,

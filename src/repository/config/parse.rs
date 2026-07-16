@@ -680,6 +680,7 @@ fn parse_stack_status_config(
                 | "ignored_checks"
                 | "ignored_labels"
                 | "ignored_labels_when_merged"
+                | "hidden_labels"
                 | "ignored_reviewers"
                 | "title_rewrites"
                 | "review_wait_threshold"
@@ -713,6 +714,11 @@ fn parse_stack_status_config(
         })
         .transpose()?
         .unwrap_or_default();
+    let hidden_labels = table
+        .get("hidden_labels")
+        .map(|value| parse_hidden_labels(file, &format!("{key}.hidden_labels"), value))
+        .transpose()?
+        .unwrap_or_default();
     let ignored_reviewers = table
         .get("ignored_reviewers")
         .map(|value| parse_ignored_reviewers(file, &format!("{key}.ignored_reviewers"), value))
@@ -735,6 +741,7 @@ fn parse_stack_status_config(
         ignored_checks,
         ignored_labels,
         ignored_labels_when_merged,
+        hidden_labels,
         ignored_reviewers,
         title_rewrites,
         review_wait_threshold_seconds,
@@ -756,7 +763,7 @@ fn parse_review_config(
     for name in table.keys() {
         if !matches!(
             name.as_str(),
-            "ignored_labels" | "ignored_author_response_comments"
+            "ignored_labels" | "hidden_labels" | "ignored_author_response_comments"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -768,6 +775,11 @@ fn parse_review_config(
     let ignored_labels = table
         .get("ignored_labels")
         .map(|value| parse_ignored_labels(file, &format!("{key}.ignored_labels"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let hidden_labels = table
+        .get("hidden_labels")
+        .map(|value| parse_hidden_labels(file, &format!("{key}.hidden_labels"), value))
         .transpose()?
         .unwrap_or_default();
     let ignored_author_response_comments = table
@@ -784,6 +796,7 @@ fn parse_review_config(
 
     Ok(RepoReviewConfig {
         ignored_labels,
+        hidden_labels,
         ignored_author_response_comments,
     })
 }
@@ -914,6 +927,106 @@ fn parse_ignored_labels(
             .map(|name| IgnoredLabelConfig { name })
             .collect()
     })
+}
+
+fn parse_hidden_labels(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<HiddenLabelConfig>, RepositoryError> {
+    let Some(rules) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of label visibility rules"),
+        });
+    };
+
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_hidden_label(file, key, index, value))
+        .collect()
+}
+
+fn parse_hidden_label(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<HiddenLabelConfig, RepositoryError> {
+    if value.is_str() {
+        let item_key = format!("{key}[{index}]");
+        let label = parse_non_empty_string_value(file, &item_key, value)?;
+        validate_named_glob_rule(file, &item_key, label.clone(), "label-name glob")?;
+        return Ok(HiddenLabelConfig::always(label));
+    }
+
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a hidden-label string or table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "label" | "when") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let label_key = format!("{key}[{index}].label");
+    let label = required_non_empty_string(file, table, &label_key)?;
+    validate_named_glob_rule(file, &label_key, label.clone(), "label-name glob")?;
+    let when = table
+        .get("when")
+        .map(|value| parse_hidden_label_conditions(file, &format!("{key}[{index}].when"), value))
+        .transpose()?
+        .unwrap_or_else(|| vec![HiddenLabelCondition::Always]);
+
+    Ok(HiddenLabelConfig { label, when })
+}
+
+fn parse_hidden_label_conditions(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<HiddenLabelCondition>, RepositoryError> {
+    let conditions = parse_string_array(file, key, value)?;
+    if conditions.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must include at least one label visibility condition"),
+        });
+    }
+    conditions
+        .into_iter()
+        .map(|condition| parse_hidden_label_condition(file, key, &condition))
+        .collect()
+}
+
+fn parse_hidden_label_condition(
+    file: &str,
+    key: &str,
+    value: &str,
+) -> Result<HiddenLabelCondition, RepositoryError> {
+    match value {
+        "ALWAYS" => Ok(HiddenLabelCondition::Always),
+        "DRAFT" => Ok(HiddenLabelCondition::Draft),
+        "NOT_DRAFT" => Ok(HiddenLabelCondition::NotDraft),
+        "OPEN" => Ok(HiddenLabelCondition::Open),
+        "CLOSED" => Ok(HiddenLabelCondition::Closed),
+        "MERGED" => Ok(HiddenLabelCondition::Merged),
+        "NOT_MERGED" => Ok(HiddenLabelCondition::NotMerged),
+        "TARGETS_DEFAULT_BRANCH" => Ok(HiddenLabelCondition::TargetsDefaultBranch),
+        "TARGETS_NON_DEFAULT_BRANCH" => Ok(HiddenLabelCondition::TargetsNonDefaultBranch),
+        _ => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` contains unsupported label visibility condition `{value}`"),
+        }),
+    }
 }
 
 fn parse_ignored_author_response_comments(

@@ -69,7 +69,8 @@ use crate::{
         PullRequestStore, PullRequestWithHistory, RepoCheckConfig, RepoCheckTrigger, RepoHook,
         RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext, RepositoryError,
         RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
-        TokenSource, WorkflowConfig, WorkspaceMetadata,
+        StoredPullRequestIdentity, StoredPullRequestTimeline, TokenSource, WorkflowConfig,
+        WorkspaceMetadata, PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION,
     },
 };
 

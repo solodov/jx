@@ -39,7 +39,7 @@ fn review_dismiss_flag_parses_target_selector() {
 }
 
 #[test]
-fn review_dismissed_and_undismiss_parse_as_typed_actions() {
+fn review_dismissed_history_and_undismiss_parse_as_typed_actions() {
     // Verifies: local dismissal management stays separate from review repository filters.
     let matches = cli()
         .try_get_matches_from(["jx", "review", "dismissed"])
@@ -49,6 +49,20 @@ fn review_dismissed_and_undismiss_parse_as_typed_actions() {
         panic!("expected review request");
     };
     assert_eq!(request.action, ReviewAction::Dismissed);
+
+    let matches = cli()
+        .try_get_matches_from(["jx", "review", "history", "api-alpha#12"])
+        .expect("review history args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+    let CommandRequest::Review(request) = request else {
+        panic!("expected review request");
+    };
+    assert_eq!(
+        request.action,
+        ReviewAction::History {
+            selector: "api-alpha#12".to_owned(),
+        }
+    );
 
     let matches = cli()
         .try_get_matches_from(["jx", "review", "undismiss", "api-alpha#12"])
@@ -751,6 +765,109 @@ fn review_dismiss_records_current_head_oid() {
 }
 
 #[test]
+fn review_history_renders_snapshot_history_and_visibility_actions() {
+    // Verifies: local review history exposes the events that drive dismissal decisions.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    let store = PullRequestStore::open(&environment).expect("pull-request store opens");
+    store
+        .record_pull_request_snapshots(
+            &repository,
+            &[review_status_record(
+                12,
+                "Debug review",
+                "example-author",
+                false,
+            )],
+        )
+        .expect("snapshot records");
+    store
+        .record_pull_request_action(
+            &repository,
+            12,
+            "dismiss",
+            "manual",
+            Some("manual"),
+            serde_json::json!({ "selector": "12" }),
+        )
+        .expect("dismiss action records");
+    store
+        .record_pull_request_action(
+            &repository,
+            12,
+            "undismiss",
+            "manual",
+            Some("manual"),
+            serde_json::json!({ "selector": "api-alpha#12" }),
+        )
+        .expect("undismiss action records");
+
+    let result = run_with_args_and_services(
+        ["jx", "review", "history", "api-alpha#12"],
+        &environment,
+        &FakeServices::default(),
+    )
+    .expect("review history renders");
+
+    assert!(result
+        .stdout
+        .contains("example-owner/api-alpha#12 Debug review"));
+    assert!(result.stdout.contains("history  first_seen"));
+    assert!(result
+        .stdout
+        .contains("action   dismiss source=manual reason=manual"));
+    assert!(result
+        .stdout
+        .contains("action   undismiss source=manual reason=manual"));
+}
+
+#[test]
+fn review_history_json_renders_actions_for_wrappers() {
+    // Verifies: debug tooling can consume local visibility actions without parsing the table.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    PullRequestStore::open(&environment)
+        .expect("pull-request store opens")
+        .record_pull_request_action(
+            &repository,
+            12,
+            "dismiss",
+            "manual",
+            Some("manual"),
+            serde_json::json!({ "selector": "api-alpha#12" }),
+        )
+        .expect("dismiss action records");
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "review",
+            "--format",
+            "json",
+            "history",
+            "api-alpha#12",
+        ],
+        &environment,
+        &FakeServices::default(),
+    )
+    .expect("review history JSON renders");
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("JSON parses");
+
+    assert_eq!(value["repository"], "example-owner/api-alpha");
+    assert_eq!(value["number"], 12);
+    assert_eq!(value["entries"][0]["type"], "action");
+    assert_eq!(value["entries"][0]["action"], "dismiss");
+}
+
+#[test]
 fn review_manual_undismiss_overrides_computed_auto_hide() {
     // Verifies: explicit local undismiss keeps a handled PR visible without GitHub mutation.
     let workspace = review_workspace();
@@ -782,6 +899,46 @@ fn review_manual_undismiss_overrides_computed_auto_hide() {
         .expect("review inbox renders manual undismiss override");
 
     assert!(result.stdout.contains("Approved review"));
+}
+
+#[test]
+fn review_automatic_undismiss_does_not_override_computed_auto_hide() {
+    // Verifies: automatic resurface cleanup does not act like an explicit manual undismiss.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status =
+        review_status_record(12, "Approved after head change", "example-author", false);
+    status.requested_reviewers = ReviewerSelection::default();
+    status.approved_reviewers = vec!["example-reviewer".to_owned()];
+    let pull_request = PullRequestWithHistory {
+        status,
+        history: Vec::new(),
+        actions: vec![review_action(
+            "undismiss",
+            "automatic",
+            Some("head_changed"),
+            serde_json::json!({
+                "dismissedHeadOid": "old-commit",
+                "currentHeadOid": "commit-12",
+            }),
+        )],
+    };
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(12, pull_request)]),
+        ..FakeServices::default()
+    };
+
+    let inbox = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox hides handled PR");
+    let dismissed =
+        run_with_args_and_services(["jx", "review", "dismissed"], &environment, &services)
+            .expect("dismissed review inbox renders handled PR");
+
+    assert!(!inbox.stdout.contains("Approved after head change"));
+    assert!(dismissed.stdout.contains("Approved after head change"));
+    assert!(dismissed.stdout.contains("[jx:dismissed:approved]"));
 }
 
 #[test]
@@ -2025,6 +2182,7 @@ fn review_status_record(
         created_at: None,
         head_branch: format!("topic/review-{number}"),
         base_branch: "main".to_owned(),
+        default_branch: Some("main".to_owned()),
         author: Some(author.to_owned()),
         draft,
         merged: false,

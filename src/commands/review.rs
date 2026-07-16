@@ -130,6 +130,9 @@ pub(super) fn handle_review(
         ReviewAction::Undismiss { selector } => {
             return handle_review_undismiss(selector, environment, services, progress);
         }
+        ReviewAction::History { selector } => {
+            return handle_review_history(selector, environment, request.format);
+        }
         ReviewAction::Show | ReviewAction::Dismissed => {}
     }
     if request.interactive {
@@ -163,9 +166,10 @@ fn handle_review_traced(
     let format = request.format;
     let dismissal_mode = match request.action {
         ReviewAction::Dismissed => ReviewDismissalMode::Only,
-        ReviewAction::Show | ReviewAction::Dismiss { .. } | ReviewAction::Undismiss { .. } => {
-            ReviewDismissalMode::Apply
-        }
+        ReviewAction::Show
+        | ReviewAction::Dismiss { .. }
+        | ReviewAction::History { .. }
+        | ReviewAction::Undismiss { .. } => ReviewDismissalMode::Apply,
     };
     let loaded = load_review_requests_view(
         &request,
@@ -760,6 +764,212 @@ fn handle_review_undismiss_traced(
     ))
 }
 
+fn handle_review_history(
+    selector: &str,
+    environment: &RuntimeEnvironment,
+    format: ReviewFormat,
+) -> Result<String, CommandError> {
+    let mut span = PerfLog::from_environment(environment)
+        .start("review.history", [perf_attr("selector", selector)]);
+    let result = handle_review_history_traced(selector, environment, format);
+    if let Err(error) = &result {
+        span.record_error(error);
+    }
+    span.end();
+    result
+}
+
+fn handle_review_history_traced(
+    selector: &str,
+    environment: &RuntimeEnvironment,
+    format: ReviewFormat,
+) -> Result<String, CommandError> {
+    let store = PullRequestStore::open(environment)?;
+    let target = parse_review_dismiss_target(selector)?;
+    let config = WorkflowConfig::discover_for_clone(environment)?;
+    let layout_repositories = global_work_repositories(&config, environment)?;
+    let layout_by_repository = layout_repositories
+        .iter()
+        .map(|repository| (repository.github_repository(), repository.key.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let matches = store
+        .stored_pull_request_identities()?
+        .into_iter()
+        .filter(|identity| {
+            review_history_identity_matches(identity, &target, &layout_by_repository)
+        })
+        .collect::<Vec<_>>();
+    let identity = match matches.as_slice() {
+        [identity] => identity,
+        [] => {
+            return Err(review_dismiss_usage_error(format!(
+                "no stored pull request matched `{selector}`"
+            )));
+        }
+        matches => {
+            let choices = matches
+                .iter()
+                .map(|identity| format!("{}#{}", identity.repository.slug(), identity.number))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(review_dismiss_usage_error(format!(
+                "stored pull request `{selector}` is ambiguous; matches: {choices}; use a longer repo suffix such as owner/repo#number"
+            )));
+        }
+    };
+    let timeline = store
+        .stored_pull_request_timeline(&identity.repository, identity.number)?
+        .ok_or_else(|| {
+            review_dismiss_usage_error(format!("no stored pull request matched `{selector}`"))
+        })?;
+
+    Ok(match format {
+        ReviewFormat::Human => render_review_history(&timeline),
+        ReviewFormat::Json => render_review_history_json(&timeline),
+    })
+}
+
+fn review_history_identity_matches(
+    identity: &StoredPullRequestIdentity,
+    target: &ReviewDismissTarget,
+    layout_by_repository: &BTreeMap<GitHubRepository, String>,
+) -> bool {
+    identity.number == target.number
+        && review_repository_suffix_matches(
+            &identity.repository,
+            layout_by_repository
+                .get(&identity.repository)
+                .map(String::as_str),
+            &target.repository_suffix,
+        )
+}
+
+fn render_review_history(timeline: &StoredPullRequestTimeline) -> String {
+    let mut output = String::new();
+    let title = timeline
+        .status
+        .as_ref()
+        .map(|status| status.title.as_str())
+        .unwrap_or("no snapshot");
+    output.push_str(&format!(
+        "{}#{} {title}\n",
+        timeline.repository.slug(),
+        timeline.number
+    ));
+    for entry in review_history_entries(timeline) {
+        output.push_str(&entry.render_human());
+    }
+    output
+}
+
+fn render_review_history_json(timeline: &StoredPullRequestTimeline) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "repository": timeline.repository.slug(),
+        "number": timeline.number,
+        "title": timeline.status.as_ref().map(|status| status.title.as_str()),
+        "entries": review_history_entries(timeline)
+            .into_iter()
+            .map(|entry| entry.render_json())
+            .collect::<Vec<_>>(),
+    }))
+    .expect("review history JSON serializes")
+        + "\n"
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReviewHistoryEntry<'a> {
+    History(&'a PullRequestHistoryRecord),
+    Action(&'a PullRequestActionRecord),
+}
+
+impl ReviewHistoryEntry<'_> {
+    fn changed_at_unix(self) -> i64 {
+        match self {
+            Self::History(event) => event.changed_at_unix,
+            Self::Action(action) => action.changed_at_unix,
+        }
+    }
+
+    fn render_human(self) -> String {
+        match self {
+            Self::History(event) => format!(
+                "  {}  history  {}  old={} new={} details={}\n",
+                format_review_history_timestamp(event.changed_at_unix),
+                event.kind,
+                review_history_json_cell(event.old_json.as_ref()),
+                review_history_json_cell(event.new_json.as_ref()),
+                review_history_json_cell(Some(&event.details_json)),
+            ),
+            Self::Action(action) => format!(
+                "  {}  action   {} source={} reason={} details={}\n",
+                format_review_history_timestamp(action.changed_at_unix),
+                action.action,
+                action.source,
+                action.reason.as_deref().unwrap_or("-"),
+                review_history_json_cell(Some(&action.details_json)),
+            ),
+        }
+    }
+
+    fn render_json(self) -> serde_json::Value {
+        match self {
+            Self::History(event) => serde_json::json!({
+                "type": "history",
+                "kind": event.kind,
+                "changedAtUnix": event.changed_at_unix,
+                "changedAt": format_review_history_timestamp(event.changed_at_unix),
+                "old": event.old_json,
+                "new": event.new_json,
+                "details": event.details_json,
+            }),
+            Self::Action(action) => serde_json::json!({
+                "type": "action",
+                "action": action.action,
+                "source": action.source,
+                "reason": action.reason,
+                "changedAtUnix": action.changed_at_unix,
+                "changedAt": format_review_history_timestamp(action.changed_at_unix),
+                "details": action.details_json,
+            }),
+        }
+    }
+}
+
+fn review_history_entries(timeline: &StoredPullRequestTimeline) -> Vec<ReviewHistoryEntry<'_>> {
+    let mut entries = timeline
+        .history
+        .iter()
+        .map(ReviewHistoryEntry::History)
+        .chain(timeline.actions.iter().map(ReviewHistoryEntry::Action))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (entry.changed_at_unix(), review_history_entry_order(*entry)));
+    entries
+}
+
+fn review_history_entry_order(entry: ReviewHistoryEntry<'_>) -> u8 {
+    match entry {
+        ReviewHistoryEntry::History(_) => 0,
+        ReviewHistoryEntry::Action(_) => 1,
+    }
+}
+
+fn format_review_history_timestamp(value: i64) -> String {
+    chrono::DateTime::from_timestamp(value, 0)
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn review_history_json_cell(value: Option<&serde_json::Value>) -> String {
+    value
+        .map(|value| serde_json::to_string(value).expect("review history JSON value serializes"))
+        .unwrap_or_else(|| "null".to_owned())
+}
+
 fn review_dismissal_from_row(
     repository: &GitHubRepository,
     row: &ReviewRequestRowView,
@@ -831,30 +1041,40 @@ fn review_dismiss_repository_matches(
     repository: &ReviewRequestRepositoryView,
     repository_suffix: &[String],
 ) -> bool {
+    review_repository_suffix_matches(
+        &repository.repository,
+        repository.layout_key.as_deref(),
+        repository_suffix,
+    )
+}
+
+fn review_repository_suffix_matches(
+    repository: &GitHubRepository,
+    layout_key: Option<&str>,
+    repository_suffix: &[String],
+) -> bool {
     if repository_suffix.is_empty() {
         return true;
     }
-    review_dismiss_repository_identities(repository)
+    review_repository_identities(repository, layout_key)
         .iter()
         .any(|identity| review_dismiss_identity_matches(identity, repository_suffix))
 }
 
-fn review_dismiss_repository_identities(
-    repository: &ReviewRequestRepositoryView,
+fn review_repository_identities(
+    repository: &GitHubRepository,
+    layout_key: Option<&str>,
 ) -> Vec<Vec<String>> {
     let mut identities = Vec::new();
-    if let Some(key) = &repository.layout_key {
+    if let Some(key) = layout_key {
         identities.push(review_dismiss_repository_components(key));
     }
-    identities.push(vec![repository.repository.name.clone()]);
-    identities.push(vec![
-        repository.repository.owner.clone(),
-        repository.repository.name.clone(),
-    ]);
+    identities.push(vec![repository.name.clone()]);
+    identities.push(vec![repository.owner.clone(), repository.name.clone()]);
     identities.push(vec![
         "github.com".to_owned(),
-        repository.repository.owner.clone(),
-        repository.repository.name.clone(),
+        repository.owner.clone(),
+        repository.name.clone(),
     ]);
     identities
 }
@@ -1273,7 +1493,8 @@ fn review_action_resurface_reason(
 ) -> Option<&'static str> {
     let action = latest_review_visibility_action(actions)?;
     match action.action.as_str() {
-        "undismiss" => Some("not_dismissed"),
+        "undismiss" if action.source == "manual" => Some("not_dismissed"),
+        "undismiss" => None,
         "dismiss" => Some(review_action_dismissal_resurface_reason(
             action, history, status, viewer, state,
         )),

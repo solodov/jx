@@ -157,6 +157,16 @@ pub struct PullRequestReviewRequest {
     pub number: u64,
 }
 
+/// Cheap freshness facts for deciding whether a full PR refresh is needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestUpdateSummary {
+    pub number: u64,
+    /// GitHub updated timestamp in RFC3339 form.
+    pub updated_at: String,
+    pub latest_commit_oid: Option<String>,
+    pub checks: Vec<PullRequestCheck>,
+}
+
 /// Pull-request data returned by the GitHub boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestRecord {
@@ -208,6 +218,9 @@ pub struct PullRequestStatusRecord {
     pub created_at: Option<String>,
     pub head_branch: String,
     pub base_branch: String,
+    /// Base repository default branch name, when available in the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
     pub author: Option<String>,
     pub draft: bool,
     pub merged: bool,

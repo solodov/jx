@@ -144,6 +144,9 @@ title = true
     assert!(result
         .stdout
         .contains("__jx_shell_title_previous_starship_precmd_user_func"));
+    assert!(result
+        .stdout
+        .contains("termflow_zellij_tab_title \"$title\""));
     assert!(result.stdout.contains("jx_zellij_tab_title \"$title\""));
     assert!(result
         .stdout

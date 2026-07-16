@@ -188,9 +188,14 @@ checks still decide whether `Chk` is passing, pending, or failing. Review-wait
 thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
 stay green. Check ignore and reviewer ignore entries are Rust regexes; review-gate
-and label entries are globs. `ignored_labels_when_merged` uses the same glob syntax as
-`ignored_labels`, but only applies after a PR has merged. `repo.review.ignored_labels`
-and `repo.rules.review.ignored_labels` add review-only label omissions.
+and label entries are globs. `hidden_labels` uses the same glob syntax plus
+snapshot-backed `when` conditions such as `ALWAYS`, `NOT_DRAFT`, `MERGED`, and
+`TARGETS_DEFAULT_BRANCH`. Existing `ignored_labels` entries are unconditional
+hides, and `ignored_labels_when_merged` entries are merged-only hides. Review
+rules support the same `hidden_labels` shape for review-only omissions. Conditions
+in one rule are ANDed; repeated rules for the same label are ORed. Supported
+conditions are `ALWAYS`, `DRAFT`, `NOT_DRAFT`, `OPEN`, `CLOSED`, `MERGED`,
+`NOT_MERGED`, `TARGETS_DEFAULT_BRANCH`, and `TARGETS_NON_DEFAULT_BRANCH`.
 `ignored_author_response_comments` entries are multiline Rust regexes matched
 against PR-author comment bodies before dismissal resurfacing. Local review
 visibility state lives in the shared pull-request store; `review-dismissals.toml`
@@ -206,13 +211,19 @@ repo = "example-owner/example-repo"
 ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
 ignored_labels = ["generated-*"]
 ignored_labels_when_merged = ["auto-merge", "run-ci"]
+hidden_labels = [
+  { label = "run-ci", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+]
 ignored_reviewers = ["^automation-bot$", "-bot$"]
 review_gate_checks = ["approval gate"]
 review_wait_threshold = "4h"
 
 [repo.rules.review]
 ignored_author_response_comments = ["^/automation merge\\s*$"]
-ignored_labels = ["run-ci", "team-review"]
+ignored_labels = ["team-review"]
+hidden_labels = [
+  { label = "review-only-noise", when = ["ALWAYS"] },
+]
 
 [[repo.rules.stack_status.title_rewrites]]
 pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"

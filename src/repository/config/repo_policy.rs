@@ -1,4 +1,5 @@
 use super::*;
+use crate::github::PullRequestStatusRecord;
 
 /// Repository-matched workflow policy loaded from optional config.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -265,6 +266,7 @@ pub struct RepoStackStatusConfig {
     pub ignored_checks: Vec<IgnoredCheckConfig>,
     pub ignored_labels: Vec<IgnoredLabelConfig>,
     pub ignored_labels_when_merged: Vec<IgnoredLabelConfig>,
+    pub hidden_labels: Vec<HiddenLabelConfig>,
     pub ignored_reviewers: Vec<IgnoredReviewerConfig>,
     pub title_rewrites: Vec<TitleRewriteConfig>,
     pub review_wait_threshold_seconds: Option<u64>,
@@ -279,6 +281,7 @@ impl RepoStackStatusConfig {
             &mut self.ignored_labels_when_merged,
             layer.ignored_labels_when_merged,
         );
+        merge_hidden_labels(&mut self.hidden_labels, layer.hidden_labels);
         merge_ignored_reviewers(&mut self.ignored_reviewers, layer.ignored_reviewers);
         self.title_rewrites.extend(layer.title_rewrites);
         if layer.review_wait_threshold_seconds.is_some() {
@@ -301,6 +304,20 @@ impl RepoStackStatusConfig {
     /// Returns whether a pull-request label should be omitted from stack/review status views.
     pub fn ignores_label(&self, label: &str) -> bool {
         self.ignored_labels.iter().any(|rule| rule.matches(label))
+    }
+
+    /// Returns whether a pull-request label should be omitted for the current PR snapshot.
+    pub fn hides_label(&self, status: &PullRequestStatusRecord, label: &str) -> bool {
+        self.ignored_labels.iter().any(|rule| rule.matches(label))
+            || (status.merged
+                && self
+                    .ignored_labels_when_merged
+                    .iter()
+                    .any(|rule| rule.matches(label)))
+            || self
+                .hidden_labels
+                .iter()
+                .any(|rule| rule.matches(status, label))
     }
 
     /// Returns whether a pull-request label should be omitted after the PR has merged.
@@ -329,12 +346,14 @@ impl RepoStackStatusConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoReviewConfig {
     pub ignored_labels: Vec<IgnoredLabelConfig>,
+    pub hidden_labels: Vec<HiddenLabelConfig>,
     pub ignored_author_response_comments: Vec<IgnoredAuthorResponseCommentConfig>,
 }
 
 impl RepoReviewConfig {
     fn apply_layer(&mut self, layer: RepoReviewConfig) {
         merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
+        merge_hidden_labels(&mut self.hidden_labels, layer.hidden_labels);
         merge_ignored_author_response_comments(
             &mut self.ignored_author_response_comments,
             layer.ignored_author_response_comments,
@@ -344,6 +363,15 @@ impl RepoReviewConfig {
     /// Returns whether a pull-request label should be omitted from review views only.
     pub fn ignores_label(&self, label: &str) -> bool {
         self.ignored_labels.iter().any(|rule| rule.matches(label))
+    }
+
+    /// Returns whether a pull-request label should be omitted for the current PR snapshot.
+    pub fn hides_label(&self, status: &PullRequestStatusRecord, label: &str) -> bool {
+        self.ignored_labels.iter().any(|rule| rule.matches(label))
+            || self
+                .hidden_labels
+                .iter()
+                .any(|rule| rule.matches(status, label))
     }
 
     /// Returns whether an author comment should not resurface a dismissed review.
@@ -412,11 +440,75 @@ pub struct IgnoredLabelConfig {
 impl IgnoredLabelConfig {
     /// Returns whether this rule matches a GitHub label name.
     pub fn matches(&self, label_name: &str) -> bool {
-        Glob::new(&self.name)
-            .ok()
-            .map(|glob| glob.compile_matcher().is_match(label_name))
-            .unwrap_or(false)
+        label_glob_matches(&self.name, label_name)
     }
+}
+
+/// Label-name glob hidden when all snapshot-backed conditions match.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HiddenLabelConfig {
+    pub label: String,
+    pub when: Vec<HiddenLabelCondition>,
+}
+
+impl HiddenLabelConfig {
+    /// Returns an unconditional hidden-label rule for compatibility config.
+    pub fn always(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            when: vec![HiddenLabelCondition::Always],
+        }
+    }
+
+    /// Returns whether this rule hides a label for the current PR snapshot.
+    pub fn matches(&self, status: &PullRequestStatusRecord, label_name: &str) -> bool {
+        label_glob_matches(&self.label, label_name)
+            && self.when.iter().all(|condition| condition.matches(status))
+    }
+}
+
+/// Snapshot-backed label visibility conditions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HiddenLabelCondition {
+    Always,
+    Draft,
+    NotDraft,
+    Open,
+    Closed,
+    Merged,
+    NotMerged,
+    TargetsDefaultBranch,
+    TargetsNonDefaultBranch,
+}
+
+impl HiddenLabelCondition {
+    /// Returns whether this condition is true for the current PR snapshot.
+    pub fn matches(self, status: &PullRequestStatusRecord) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Draft => status.draft,
+            Self::NotDraft => !status.draft,
+            Self::Open => !status.closed,
+            Self::Closed => status.closed,
+            Self::Merged => status.merged,
+            Self::NotMerged => !status.merged,
+            Self::TargetsDefaultBranch => status
+                .default_branch
+                .as_ref()
+                .is_some_and(|default_branch| status.base_branch == *default_branch),
+            Self::TargetsNonDefaultBranch => status
+                .default_branch
+                .as_ref()
+                .is_some_and(|default_branch| status.base_branch != *default_branch),
+        }
+    }
+}
+
+fn label_glob_matches(pattern: &str, label_name: &str) -> bool {
+    Glob::new(pattern)
+        .ok()
+        .map(|glob| glob.compile_matcher().is_match(label_name))
+        .unwrap_or(false)
 }
 
 /// Reviewer-name regex hidden from stack/review status presentation.
@@ -871,6 +963,15 @@ fn merge_ignored_labels(target: &mut Vec<IgnoredLabelConfig>, labels: Vec<Ignore
         .collect::<BTreeSet<_>>();
     for label in labels {
         if seen.insert(label.name.clone()) {
+            target.push(label);
+        }
+    }
+}
+
+fn merge_hidden_labels(target: &mut Vec<HiddenLabelConfig>, labels: Vec<HiddenLabelConfig>) {
+    let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
+    for label in labels {
+        if seen.insert(label.clone()) {
             target.push(label);
         }
     }

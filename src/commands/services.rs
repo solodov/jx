@@ -1,15 +1,16 @@
 use super::*;
 use crate::github::{
     AuthenticatedUser, CommitComparison, ComparisonStatus, GitHubError, LabelApplyResult,
-    PullRequestCreate, PullRequestStatusRecord, PullRequestUpdate, RepositoryAccess,
-    RepositoryFork, ReviewerSyncResult,
+    PullRequestCheck, PullRequestCheckStatus, PullRequestCreate, PullRequestStatusRecord,
+    PullRequestUpdate, PullRequestUpdateSummary, RepositoryAccess, RepositoryFork,
+    ReviewerSyncResult,
 };
 use chrono::Utc;
 use futures::{stream, StreamExt};
 use std::future::Future;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -594,20 +595,8 @@ where
         repository: &GitHubRepository,
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
-        let fetched = self
-            .refresh_pull_request_snapshots(repository, numbers)
-            .await?;
-        let fetched_numbers = fetched
-            .iter()
-            .map(|status| status.number)
-            .collect::<Vec<_>>();
-        let store = PullRequestStore::open(self.environment)?;
-        let stored = store.latest_pull_request_snapshots(repository, &fetched_numbers)?;
-        if stored.len() == fetched.len() {
-            Ok(stored)
-        } else {
-            Ok(fetched)
-        }
+        self.refresh_pull_request_snapshots(repository, numbers)
+            .await
     }
 
     /// Loads current PR records together with derived history and local actions.
@@ -632,14 +621,134 @@ where
         repository: &GitHubRepository,
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
-        let fetched = self
+        let requested_numbers = unique_pull_request_numbers(numbers);
+        if requested_numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let store = PullRequestStore::open(self.environment)?;
+        let summaries = self
             .github
-            .pull_request_statuses(repository, numbers)
+            .pull_request_update_summaries(repository, &requested_numbers)
             .await?;
-        PullRequestStore::open(self.environment)?
-            .record_pull_request_snapshots(repository, &fetched)?;
-        Ok(fetched)
+        let refresh_plan =
+            pull_request_refresh_plan(&store, repository, &requested_numbers, &summaries)?;
+        if !refresh_plan.numbers_to_fetch.is_empty() {
+            let fetched = self
+                .github
+                .pull_request_statuses(repository, &refresh_plan.numbers_to_fetch)
+                .await?;
+            store.record_pull_request_snapshots_with_updates(
+                repository,
+                &fetched,
+                &refresh_plan.github_updated_at_by_number,
+            )?;
+        }
+        store
+            .latest_pull_request_snapshots(repository, &refresh_plan.available_numbers)
+            .map_err(WorkflowError::from)
     }
+}
+
+struct PullRequestRefreshPlan {
+    available_numbers: Vec<u64>,
+    github_updated_at_by_number: BTreeMap<u64, i64>,
+    numbers_to_fetch: Vec<u64>,
+}
+
+struct PullRequestRefreshMetadata {
+    schema_version: i64,
+    github_updated_at_unix: Option<i64>,
+}
+
+fn pull_request_refresh_plan(
+    store: &PullRequestStore,
+    repository: &GitHubRepository,
+    requested_numbers: &[u64],
+    summaries: &[PullRequestUpdateSummary],
+) -> Result<PullRequestRefreshPlan, WorkflowError> {
+    let summary_numbers = summaries
+        .iter()
+        .map(|summary| summary.number)
+        .collect::<Vec<_>>();
+    let available_numbers = if summaries.is_empty() {
+        requested_numbers.to_vec()
+    } else {
+        summary_numbers
+    };
+    let stored_metadata = store
+        .latest_pull_request_snapshot_metadata(repository, &available_numbers)?
+        .into_iter()
+        .map(|metadata| {
+            (
+                metadata.number,
+                PullRequestRefreshMetadata {
+                    schema_version: metadata.schema_version,
+                    github_updated_at_unix: metadata.github_updated_at_unix,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let stored_statuses = store
+        .latest_pull_request_snapshots(repository, &available_numbers)?
+        .into_iter()
+        .map(|status| (status.number, status))
+        .collect::<BTreeMap<_, _>>();
+    let github_updated_at_by_number = summaries
+        .iter()
+        .filter_map(|summary| {
+            review_timestamp_unix(&summary.updated_at).map(|timestamp| (summary.number, timestamp))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let numbers_to_fetch = if summaries.is_empty() {
+        available_numbers.clone()
+    } else {
+        summaries
+            .iter()
+            .filter_map(|summary| {
+                let updated_at_unix = github_updated_at_by_number.get(&summary.number).copied()?;
+                let metadata = stored_metadata.get(&summary.number);
+                let needs_current_schema = metadata.is_none_or(|metadata| {
+                    metadata.schema_version < PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION
+                });
+                let github_updated = metadata.and_then(|metadata| metadata.github_updated_at_unix)
+                    != Some(updated_at_unix);
+                let stored_status = stored_statuses.get(&summary.number);
+                let head_changed = stored_status
+                    .and_then(|status| status.latest_commit_oid.as_deref())
+                    != summary.latest_commit_oid.as_deref();
+                let checks_changed = stored_status.is_none_or(|status| {
+                    pull_request_check_summary(&status.checks)
+                        != pull_request_check_summary(&summary.checks)
+                });
+                (needs_current_schema || github_updated || head_changed || checks_changed)
+                    .then_some(summary.number)
+            })
+            .chain(summaries.iter().filter_map(|summary| {
+                (!github_updated_at_by_number.contains_key(&summary.number))
+                    .then_some(summary.number)
+            }))
+            .collect::<Vec<_>>()
+    };
+    Ok(PullRequestRefreshPlan {
+        available_numbers,
+        github_updated_at_by_number,
+        numbers_to_fetch,
+    })
+}
+
+fn pull_request_check_summary(
+    checks: &[PullRequestCheck],
+) -> BTreeMap<&str, PullRequestCheckStatus> {
+    checks
+        .iter()
+        .map(|check| (check.name.as_str(), check.status))
+        .collect()
+}
+
+fn review_timestamp_unix(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp())
 }
 
 impl<'environment> ProductionServices<'environment> {
@@ -1494,6 +1603,33 @@ where
                 perf_attr("found_count", pull_requests_by_number.len()),
             ],
         )
+    }
+
+    async fn pull_request_update_summaries(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestUpdateSummary>, GitHubError> {
+        let requested_numbers = unique_pull_request_numbers(numbers);
+        let span = self.start_span(
+            "github.pull_request_update_summaries",
+            Some(repository),
+            [
+                perf_attr("number_count", numbers.len()),
+                perf_attr("unique_number_count", requested_numbers.len()),
+            ],
+        );
+        let result = github_request(
+            "load pull request update summaries",
+            self.inner
+                .pull_request_update_summaries(repository, &requested_numbers),
+        )
+        .await;
+        let attrs = result
+            .as_ref()
+            .map(|summaries| vec![perf_attr("summary_count", summaries.len())])
+            .unwrap_or_default();
+        self.finish(span, result, attrs)
     }
 
     async fn pull_request_statuses(
@@ -3476,6 +3612,7 @@ mod tests {
         repository_access: AtomicUsize,
         find_open_pull_request: AtomicUsize,
         find_pull_request_by_number: AtomicUsize,
+        pull_request_update_summaries: AtomicUsize,
         pull_request_statuses: AtomicUsize,
         update_pull_request: AtomicUsize,
     }
@@ -3484,6 +3621,7 @@ mod tests {
     struct CountingGitHub {
         calls: Arc<CountingGitHubCalls>,
         statuses: Arc<Mutex<Vec<PullRequestStatusRecord>>>,
+        update_summaries: Arc<Mutex<Vec<PullRequestUpdateSummary>>>,
     }
 
     #[async_trait::async_trait]
@@ -3585,6 +3723,21 @@ mod tests {
                 "topic/root",
                 "main",
             )))
+        }
+
+        async fn pull_request_update_summaries(
+            &self,
+            _repository: &GitHubRepository,
+            _numbers: &[u64],
+        ) -> Result<Vec<PullRequestUpdateSummary>, GitHubError> {
+            self.calls
+                .pull_request_update_summaries
+                .fetch_add(1, Ordering::Relaxed);
+            Ok(self
+                .update_summaries
+                .lock()
+                .expect("update summary fixture lock")
+                .clone())
         }
 
         async fn pull_request_statuses(
@@ -3748,6 +3901,239 @@ mod tests {
     }
 
     #[test]
+    fn pull_request_service_skips_deep_fetch_for_unchanged_summaries() {
+        // Verifies: matching GitHub updatedAt summaries reuse the local snapshot payload.
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let github = CountingGitHub::default();
+        let repository = GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "api-alpha".to_owned(),
+        };
+        *github
+            .update_summaries
+            .lock()
+            .expect("summary fixture lock") = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+            latest_commit_oid: Some("commit-12".to_owned()),
+            checks: Vec::new(),
+        }];
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Cached review")];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+
+        let first = runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("first PR load fetches details");
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Should not be fetched")];
+        let second = runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("second PR load reuses store");
+
+        assert_eq!(first[0].status.title, "Cached review");
+        assert_eq!(second[0].status.title, "Cached review");
+        assert_eq!(
+            github
+                .calls
+                .pull_request_update_summaries
+                .load(Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            github.calls.pull_request_statuses.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn pull_request_service_refetches_changed_check_summaries() {
+        // Verifies: GitHub checks can change without PR updatedAt, so summaries compare check state too.
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let github = CountingGitHub::default();
+        let repository = GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "api-alpha".to_owned(),
+        };
+        let pending_check = PullRequestCheck {
+            name: "check-description".to_owned(),
+            status: PullRequestCheckStatus::Pending,
+        };
+        let passing_check = PullRequestCheck {
+            name: "check-description".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        };
+        *github
+            .update_summaries
+            .lock()
+            .expect("summary fixture lock") = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+            latest_commit_oid: Some("commit-12".to_owned()),
+            checks: vec![pending_check.clone()],
+        }];
+        let mut initial = test_pull_request_status(12, "Pending checks");
+        initial.checks = vec![pending_check];
+        *github.statuses.lock().expect("status fixture lock") = vec![initial];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+        runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("first PR load fetches details");
+
+        *github
+            .update_summaries
+            .lock()
+            .expect("summary fixture lock") = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+            latest_commit_oid: Some("commit-12".to_owned()),
+            checks: vec![passing_check.clone()],
+        }];
+        let mut updated = test_pull_request_status(12, "Passing checks");
+        updated.checks = vec![passing_check];
+        *github.statuses.lock().expect("status fixture lock") = vec![updated];
+        let loaded = runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("changed check summary fetches details");
+
+        assert_eq!(loaded[0].status.title, "Passing checks");
+        assert_eq!(
+            loaded[0].status.checks[0].status,
+            PullRequestCheckStatus::Passing
+        );
+        assert_eq!(
+            github.calls.pull_request_statuses.load(Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn pull_request_service_refetches_stale_snapshot_schema() {
+        // Verifies: snapshot-shape changes refresh once even when GitHub updatedAt is unchanged.
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let github = CountingGitHub::default();
+        let repository = GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "api-alpha".to_owned(),
+        };
+        *github
+            .update_summaries
+            .lock()
+            .expect("summary fixture lock") = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+            latest_commit_oid: Some("commit-12".to_owned()),
+            checks: Vec::new(),
+        }];
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Old schema review")];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+        runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("first PR load fetches details");
+        PullRequestStore::open(&environment)
+            .expect("store opens")
+            .connection()
+            .execute("UPDATE pull_request_snapshots SET schema_version = 1", [])
+            .expect("snapshot schema is downgraded");
+
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Current schema review")];
+        let loaded = runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("stale schema fetches details");
+
+        assert_eq!(loaded[0].status.title, "Current schema review");
+        assert_eq!(
+            github.calls.pull_request_statuses.load(Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn pull_request_service_fetches_changed_summaries_and_records_new_snapshot() {
+        // Verifies: a newer GitHub updatedAt summary triggers a deep refresh and history update.
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let github = CountingGitHub::default();
+        let repository = GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "api-alpha".to_owned(),
+        };
+        *github
+            .update_summaries
+            .lock()
+            .expect("summary fixture lock") = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+            latest_commit_oid: Some("commit-12".to_owned()),
+            checks: Vec::new(),
+        }];
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Initial review")];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+        runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("first PR load fetches details");
+
+        *github
+            .update_summaries
+            .lock()
+            .expect("summary fixture lock") = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: "2026-01-02T00:00:00Z".to_owned(),
+            latest_commit_oid: Some("commit-12".to_owned()),
+            checks: Vec::new(),
+        }];
+        *github.statuses.lock().expect("status fixture lock") =
+            vec![test_pull_request_status(12, "Updated review")];
+        let loaded = runtime
+            .block_on(service.pull_requests_with_history(&repository, &[12]))
+            .expect("changed PR load fetches details");
+
+        assert_eq!(loaded[0].status.title, "Updated review");
+        assert!(loaded[0]
+            .history
+            .iter()
+            .any(|event| event.kind == "first_seen"));
+        assert_eq!(
+            github.calls.pull_request_statuses.load(Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
     fn traced_github_client_caches_facts_and_pull_request_lookups() {
         let inner = CountingGitHub::default();
         let calls = Arc::clone(&inner.calls);
@@ -3830,6 +4216,7 @@ mod tests {
             created_at: Some("2026-01-01T00:00:00Z".to_owned()),
             head_branch: format!("topic/pr-{number}"),
             base_branch: "main".to_owned(),
+            default_branch: Some("main".to_owned()),
             author: Some("example-author".to_owned()),
             draft: false,
             merged: false,

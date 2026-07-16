@@ -2470,6 +2470,7 @@ fn stack_status_record(
         created_at: None,
         head_branch: branch.to_owned(),
         base_branch: base_branch.to_owned(),
+        default_branch: Some("main".to_owned()),
         author: None,
         draft: false,
         merged: false,

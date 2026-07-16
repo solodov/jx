@@ -195,6 +195,7 @@ pub(super) enum ReviewAction {
     Show,
     Dismiss { selector: String },
     Dismissed,
+    History { selector: String },
     Undismiss { selector: String },
 }
 
@@ -676,6 +677,9 @@ fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
             selector: required_arg(matches, "pull-request"),
         },
         Some(("dismissed", _)) => ReviewAction::Dismissed,
+        Some(("history", matches)) => ReviewAction::History {
+            selector: required_arg(matches, "pull-request"),
+        },
         Some(("undismiss", matches)) => ReviewAction::Undismiss {
             selector: required_arg(matches, "pull-request"),
         },
@@ -1247,6 +1251,11 @@ pub(super) fn cli() -> ClapCommand {
                         .about("Show dismissed pull requests that are still hidden from review"),
                 )
                 .subcommand(
+                    ClapCommand::new("history")
+                        .about("Show local review history and visibility actions for a pull request")
+                        .arg(review_history_pull_request_arg()),
+                )
+                .subcommand(
                     ClapCommand::new("undismiss")
                         .about("Return a dismissed pull request to review")
                         .arg(review_dismiss_pull_request_arg()),
@@ -1649,6 +1658,13 @@ fn review_dismiss_pull_request_arg() -> Arg {
         .help(
         "Pull request number, repo#number suffix, owner/repo#number, or URL to dismiss from review",
     )
+}
+
+fn review_history_pull_request_arg() -> Arg {
+    Arg::new("pull-request")
+        .value_name("PR")
+        .required(true)
+        .help("Pull request number, repo#number suffix, owner/repo#number, or URL to inspect")
 }
 
 fn remote_status_all_arg() -> Arg {

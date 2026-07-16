@@ -529,6 +529,7 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
                 name: "generated-*".to_owned(),
             }],
             ignored_labels_when_merged: Vec::new(),
+            hidden_labels: Vec::new(),
             ignored_reviewers: vec![
                 crate::repository::IgnoredReviewerConfig {
                     name: "^ignored-.*$".to_owned(),
@@ -618,6 +619,7 @@ fn review_request_status_policy_filters_review_only_labels() {
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
                 name: "review-*".to_owned(),
             }],
+            hidden_labels: Vec::new(),
             ignored_author_response_comments: vec![
                 crate::repository::IgnoredAuthorResponseCommentConfig {
                     pattern: "^/automation merge$".to_owned(),
@@ -638,6 +640,65 @@ fn review_request_status_policy_filters_review_only_labels() {
     assert_eq!(
         filtered.reviewer_responses[0].body_text,
         "Ready for another look"
+    );
+}
+
+#[test]
+fn pull_request_status_policy_filters_snapshot_conditioned_labels() {
+    // Verifies: hidden-label rules use current PR snapshot facts rather than hard-coded labels.
+    let mut ready_default = pull_request_status(32, "Ready default", false);
+    ready_default.labels = vec![
+        crate::github::PullRequestLabel {
+            name: "run-ci".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "kept".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    let mut draft_default = ready_default.clone();
+    draft_default.draft = true;
+    let mut ready_stack = ready_default.clone();
+    ready_stack.base_branch = "topic/root".to_owned();
+    let config = crate::repository::RepoStackStatusConfig {
+        hidden_labels: vec![crate::repository::HiddenLabelConfig {
+            label: "run-*".to_owned(),
+            when: vec![
+                crate::repository::HiddenLabelCondition::NotDraft,
+                crate::repository::HiddenLabelCondition::TargetsDefaultBranch,
+            ],
+        }],
+        ..Default::default()
+    };
+
+    let ready_default = apply_pull_request_status_policy(ready_default, &config);
+    let draft_default = apply_pull_request_status_policy(draft_default, &config);
+    let ready_stack = apply_pull_request_status_policy(ready_stack, &config);
+
+    assert_eq!(
+        ready_default
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["kept"]
+    );
+    assert_eq!(
+        draft_default
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["run-ci", "kept"]
+    );
+    assert_eq!(
+        ready_stack
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["run-ci", "kept"]
     );
 }
 
@@ -749,6 +810,7 @@ fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
         ignored_labels_when_merged: vec![crate::repository::IgnoredLabelConfig {
             name: "run-*".to_owned(),
         }],
+        hidden_labels: Vec::new(),
         ignored_reviewers: Vec::new(),
         title_rewrites: Vec::new(),
         review_wait_threshold_seconds: None,
@@ -956,6 +1018,7 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         created_at: None,
         head_branch: format!("topic/{number}"),
         base_branch: "main".to_owned(),
+        default_branch: Some("main".to_owned()),
         author: None,
         draft: false,
         merged,

@@ -94,6 +94,15 @@ pub trait GitHubClient: Send + Sync {
         Ok(pull_requests)
     }
 
+    /// Loads cheap freshness facts for repository-local pull requests in batches.
+    async fn pull_request_update_summaries(
+        &self,
+        _repository: &GitHubRepository,
+        _numbers: &[u64],
+    ) -> Result<Vec<PullRequestUpdateSummary>, GitHubError> {
+        Ok(Vec::new())
+    }
+
     /// Loads read-only status facts for several repository-local pull requests in batches.
     async fn pull_request_statuses(
         &self,
@@ -361,6 +370,36 @@ impl OctocrabGitHubClient {
             .collect())
     }
 
+    async fn pull_request_update_summaries_chunk(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestUpdateSummary>, GitHubError> {
+        if numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = pull_request_update_summary_query(numbers);
+        let variables = PullRequestStatusesVariables {
+            owner: &repository.owner,
+            name: &repository.name,
+        };
+        let data: PullRequestUpdateSummariesQueryData = self
+            .graphql(&query, variables, "load pull request update summaries")
+            .await?;
+        let repository = data.repository.ok_or_else(|| GitHubError::GraphQl {
+            operation: "load pull request update summaries",
+            message: "repository was not found".to_owned(),
+        })?;
+
+        Ok(numbers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| repository.get(&pull_request_update_summary_alias(index)))
+            .filter_map(|pull_request| pull_request.clone())
+            .map(map_graphql_pull_request_update_summary)
+            .collect())
+    }
+
     async fn pull_request_statuses_chunk(
         &self,
         repository: &GitHubRepository,
@@ -419,32 +458,17 @@ impl OctocrabGitHubClient {
 #[async_trait]
 impl GitHubClient for OctocrabGitHubClient {
     async fn authenticated_user(&self) -> Result<AuthenticatedUser, GitHubError> {
-        let response = self
-            .crab
-            ._get_with_headers("/user", None)
-            .await
-            .map_err(|source| api_error("load authenticated user", source))?;
-        let status = response.status();
-        let body = self
-            .crab
-            .body_to_string(response)
-            .await
-            .map_err(|source| api_error("load authenticated user", source))?;
-        if !status.is_success() {
-            return Err(api_response_error(
+        let data: AuthenticatedUserQueryData = self
+            .graphql(
+                AUTHENTICATED_USER_QUERY,
+                BTreeMap::<String, String>::new(),
                 "load authenticated user",
-                status.as_u16(),
-                &body,
-            ));
-        }
+            )
+            .await?;
 
-        let user: AuthenticatedUserResponse =
-            serde_json::from_str(&body).map_err(|source| GitHubError::ResponseDecode {
-                operation: "load authenticated user",
-                source,
-            })?;
-
-        Ok(AuthenticatedUser { login: user.login })
+        Ok(AuthenticatedUser {
+            login: data.viewer.login,
+        })
     }
 
     async fn repository_access(
@@ -538,18 +562,25 @@ impl GitHubClient for OctocrabGitHubClient {
         repository: &GitHubRepository,
         branch: &str,
     ) -> Result<String, GitHubError> {
-        let route = format!(
-            "/repos/{owner}/{repo}/git/ref/heads/{branch}",
-            owner = repository.owner,
-            repo = repository.name,
-        );
-        let reference: GitRefResponse = self
-            .crab
-            .get(route, Option::<&()>::None)
-            .await
-            .map_err(|source| api_error("get branch head", source))?;
+        let qualified_name = format!("refs/heads/{branch}");
+        let variables = BranchHeadVariables {
+            owner: &repository.owner,
+            name: &repository.name,
+            qualified_name: &qualified_name,
+        };
+        let data: BranchHeadQueryData = self
+            .graphql(BRANCH_HEAD_QUERY, variables, "get branch head")
+            .await?;
+        let repository = data.repository.ok_or_else(|| GitHubError::GraphQl {
+            operation: "get branch head",
+            message: "repository was not found".to_owned(),
+        })?;
+        let reference = repository.ref_.ok_or_else(|| GitHubError::GraphQl {
+            operation: "get branch head",
+            message: format!("branch {branch} was not found"),
+        })?;
 
-        Ok(reference.object.sha)
+        Ok(reference.target.oid)
     }
 
     async fn compare_commits(
@@ -706,6 +737,21 @@ impl GitHubClient for OctocrabGitHubClient {
             );
         }
         Ok(pull_requests)
+    }
+
+    async fn pull_request_update_summaries(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestUpdateSummary>, GitHubError> {
+        let mut summaries = Vec::new();
+        for chunk in unique_pull_request_numbers(numbers).chunks(PULL_REQUEST_RECORD_BATCH_SIZE) {
+            summaries.extend(
+                self.pull_request_update_summaries_chunk(repository, chunk)
+                    .await?,
+            );
+        }
+        Ok(summaries)
     }
 
     async fn pull_request_statuses(
@@ -980,6 +1026,26 @@ impl GitHubClient for OctocrabGitHubClient {
     }
 }
 
+pub(super) const AUTHENTICATED_USER_QUERY: &str = r#"
+query {
+  viewer {
+    login
+  }
+}
+"#;
+
+pub(super) const BRANCH_HEAD_QUERY: &str = r#"
+query($owner: String!, $name: String!, $qualifiedName: String!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $qualifiedName) {
+      target {
+        oid
+      }
+    }
+  }
+}
+"#;
+
 const PULL_REQUEST_ID_QUERY: &str = r#"
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -1097,6 +1163,32 @@ mutation($pullRequestId: ID!) {
 const PULL_REQUEST_RECORD_BATCH_SIZE: usize = 50;
 const PULL_REQUEST_STATUS_BATCH_SIZE: usize = 10;
 
+pub(super) fn pull_request_update_summary_query(numbers: &[u64]) -> String {
+    let fields = numbers
+        .iter()
+        .enumerate()
+        .map(|(index, number)| {
+            format!(
+                "    {}: pullRequest(number: {number}) {{\n      number\n      updatedAt\n      commits(last: 1) {{\n        nodes {{\n          commit {{\n            oid\n            statusCheckRollup {{\n              state\n              contexts(first: 100) {{\n                nodes {{\n                  __typename\n                  ... on CheckRun {{\n                    name\n                    status\n                    conclusion\n                  }}\n                  ... on StatusContext {{\n                    context\n                    state\n                  }}\n                }}\n              }}\n            }}\n          }}\n        }}\n      }}\n    }}",
+                pull_request_update_summary_alias(index)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"query($owner: String!, $name: String!) {{
+  repository(owner: $owner, name: $name) {{
+{fields}
+  }}
+}}
+"#
+    )
+}
+
+fn pull_request_update_summary_alias(index: usize) -> String {
+    format!("pr{index}")
+}
+
 pub(super) fn pull_request_record_query(numbers: &[u64]) -> String {
     let fields = numbers
         .iter()
@@ -1160,6 +1252,11 @@ fragment PullRequestStatusFields on PullRequest {{
   createdAt
   headRefName
   baseRefName
+  baseRepository {{
+    defaultBranchRef {{
+      name
+    }}
+  }}
   author {{
     login
   }}
@@ -1435,6 +1532,40 @@ pub(super) struct GraphQlError {
     pub(super) message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthenticatedUserQueryData {
+    viewer: GraphQlViewer,
+}
+
+#[derive(Debug, Serialize)]
+struct BranchHeadVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+    #[serde(rename = "qualifiedName")]
+    qualified_name: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchHeadQueryData {
+    repository: Option<BranchHeadRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchHeadRepository {
+    #[serde(rename = "ref")]
+    ref_: Option<BranchHeadRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchHeadRef {
+    target: BranchHeadTarget,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchHeadTarget {
+    oid: String,
+}
+
 #[derive(Debug, Serialize)]
 struct PullRequestIdVariables<'a> {
     owner: &'a str,
@@ -1484,6 +1615,11 @@ struct PullRequestStatusesVariables<'a> {
 #[derive(Debug, Deserialize)]
 struct PullRequestStatusesQueryData {
     repository: Option<BTreeMap<String, Option<GraphQlPullRequestStatus>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestUpdateSummariesQueryData {
+    repository: Option<BTreeMap<String, Option<GraphQlPullRequestUpdateSummary>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1595,6 +1731,14 @@ struct GraphQlPullRequestSuggestedReviewers {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct GraphQlPullRequestUpdateSummary {
+    number: u64,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    commits: GraphQlPullRequestStatusCommits,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlPullRequestStatus {
     pub(super) number: u64,
     pub(super) title: String,
@@ -1605,6 +1749,8 @@ pub(super) struct GraphQlPullRequestStatus {
     pub(super) head_ref_name: String,
     #[serde(rename = "baseRefName")]
     pub(super) base_ref_name: String,
+    #[serde(rename = "baseRepository")]
+    pub(super) base_repository: Option<GraphQlPullRequestBaseRepository>,
     pub(super) author: Option<GraphQlReviewAuthor>,
     #[serde(rename = "isDraft")]
     pub(super) is_draft: bool,
@@ -1631,6 +1777,17 @@ pub(super) struct GraphQlPullRequestStatus {
     #[serde(rename = "timelineItems")]
     pub(super) timeline_items: GraphQlTimelineItems,
     pub(super) commits: GraphQlPullRequestStatusCommits,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlPullRequestBaseRepository {
+    #[serde(rename = "defaultBranchRef")]
+    pub(super) default_branch_ref: Option<GraphQlRefName>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GraphQlRefName {
+    pub(super) name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1842,11 +1999,6 @@ pub(super) enum GraphQlTimelineItemNode {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
-struct AuthenticatedUserResponse {
-    login: String,
-}
-
 #[derive(Debug, Serialize)]
 struct CreateRepositoryRequest<'a> {
     name: &'a str,
@@ -1876,16 +2028,6 @@ struct RepositoryForkSourceResponse {
 #[derive(Debug, Deserialize)]
 struct RepositoryForkOwnerResponse {
     login: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitRefResponse {
-    object: GitRefObject,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitRefObject {
-    sha: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1942,6 +2084,26 @@ fn map_graphql_pull_request(pull: GraphQlPullRequest) -> PullRequestRecord {
         draft: pull.is_draft,
         merged: pull.merged,
         reviewers: ReviewerSelection::default(),
+    }
+}
+
+fn map_graphql_pull_request_update_summary(
+    pull: GraphQlPullRequestUpdateSummary,
+) -> PullRequestUpdateSummary {
+    let latest_commit = pull
+        .commits
+        .nodes
+        .into_iter()
+        .last()
+        .map(|node| node.commit);
+    PullRequestUpdateSummary {
+        number: pull.number,
+        updated_at: pull.updated_at,
+        latest_commit_oid: latest_commit.as_ref().map(|commit| commit.oid.clone()),
+        checks: latest_commit
+            .and_then(|commit| commit.status_check_rollup)
+            .map(|rollup| checks_from_graphql(rollup.contexts.nodes))
+            .unwrap_or_default(),
     }
 }
 
@@ -2029,6 +2191,10 @@ pub(super) fn map_graphql_pull_request_status(
         created_at: Some(pull.created_at),
         head_branch: pull.head_ref_name,
         base_branch: pull.base_ref_name,
+        default_branch: pull
+            .base_repository
+            .and_then(|repository| repository.default_branch_ref)
+            .map(|branch| branch.name),
         author: pull.author.map(|author| author.login),
         draft: pull.is_draft,
         merged: pull.merged,

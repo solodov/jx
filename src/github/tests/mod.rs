@@ -68,40 +68,25 @@ fn token_source_build_rejects_missing_token() {
 }
 
 #[test]
-fn api_response_error_maps_empty_auth_body_without_octocrab_backtrace() {
-    // Verifies: Empty GitHub auth failures stay actionable instead of exposing octocrab internals.
-    let error = api_response_error("load authenticated user", 401, "");
-
-    assert!(matches!(
-        error,
-        GitHubError::AuthenticationFailed {
-            operation: "load authenticated user",
-            ref message,
-        } if message == "HTTP 401: empty response body"
-    ));
-    assert_eq!(
-        error.to_string(),
-        "GitHub authentication failed while trying to load authenticated user: HTTP 401: empty response body"
+fn github_error_message_summarizes_html_body() {
+    // Verifies: transient GitHub HTML error pages do not flood stderr or perf logs.
+    let message = summarize_github_error_message(
+        "HTTP 503: <!DOCTYPE html><html><body><p><strong>No server is currently available</strong></p><img src=\"data:image/png;base64,AAAA\" /></body></html>",
     );
-    assert!(!error.to_string().contains("Found at"));
+
+    assert_eq!(
+        message,
+        "HTML response body; GitHub may be temporarily unavailable"
+    );
 }
 
 #[test]
-fn api_response_error_preserves_github_auth_message() {
-    // Verifies: GitHub JSON error bodies keep their concise server-provided message.
-    let error = api_response_error(
-        "load authenticated user",
-        403,
-        r#"{"message":"Resource not accessible by integration"}"#,
+fn github_error_message_preserves_concise_errors() {
+    // Verifies: normal octocrab diagnostics are preserved after backtrace trimming.
+    assert_eq!(
+        summarize_github_error_message("Service Error: client error (Connect)"),
+        "Service Error: client error (Connect)"
     );
-
-    assert!(matches!(
-        error,
-        GitHubError::AuthenticationFailed {
-            operation: "load authenticated user",
-            ref message,
-        } if message == "HTTP 403: Resource not accessible by integration"
-    ));
 }
 
 #[test]
@@ -163,6 +148,11 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/example".to_owned(),
         base_ref_name: "main".to_owned(),
+        base_repository: Some(GraphQlPullRequestBaseRepository {
+            default_branch_ref: Some(GraphQlRefName {
+                name: "main".to_owned(),
+            }),
+        }),
         author: Some(GraphQlReviewAuthor {
             login: "change-author".to_owned(),
         }),
@@ -386,6 +376,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     });
 
     assert_eq!(status.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert_eq!(status.default_branch.as_deref(), Some("main"));
     assert_eq!(status.check_status, PullRequestCheckStatus::Failing);
     assert_eq!(status.merge_status, PullRequestMergeStatus::Conflicting);
     assert_eq!(
@@ -478,6 +469,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/waiting".to_owned(),
         base_ref_name: "main".to_owned(),
+        base_repository: None,
         author: None,
         is_draft: false,
         merged: false,
@@ -526,6 +518,11 @@ fn maps_top_level_author_comments_as_reviewer_responses() {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/conversation".to_owned(),
         base_ref_name: "main".to_owned(),
+        base_repository: Some(GraphQlPullRequestBaseRepository {
+            default_branch_ref: Some(GraphQlRefName {
+                name: "main".to_owned(),
+            }),
+        }),
         author: Some(GraphQlReviewAuthor {
             login: "change-author".to_owned(),
         }),
@@ -602,6 +599,35 @@ fn review_request_search_queries_include_existing_review_activity() {
 }
 
 #[test]
+fn authenticated_user_query_uses_graphql_viewer_lookup() {
+    // Verifies: publish identity lookup avoids the REST /user endpoint when it returns HTML 503s.
+    assert!(AUTHENTICATED_USER_QUERY.contains("viewer"));
+    assert!(AUTHENTICATED_USER_QUERY.contains("login"));
+}
+
+#[test]
+fn branch_head_query_uses_graphql_ref_lookup() {
+    // Verifies: stack status avoids the REST git-ref endpoint that can return HTML 503 pages.
+    assert!(BRANCH_HEAD_QUERY.contains("ref(qualifiedName: $qualifiedName)"));
+    assert!(BRANCH_HEAD_QUERY.contains("target"));
+    assert!(BRANCH_HEAD_QUERY.contains("oid"));
+}
+
+#[test]
+fn pull_request_update_summary_query_uses_only_refresh_guard_fields() {
+    // Verifies: cheap PR freshness checks include check state but avoid review discussion payloads.
+    let query = pull_request_update_summary_query(&[7, 12]);
+
+    assert!(query.contains("pr0: pullRequest(number: 7)"));
+    assert!(query.contains("pr1: pullRequest(number: 12)"));
+    assert!(query.contains("updatedAt"));
+    assert!(query.contains("statusCheckRollup"));
+    assert!(query.contains("              state"));
+    assert!(query.contains("contexts(first: 100)"));
+    assert!(!query.contains("reviewThreads"));
+}
+
+#[test]
 fn pull_request_status_query_batches_numbers_with_aliases() {
     // Verifies: stack status can fetch several PRs in one GraphQL request.
     let query = pull_request_status_query(&[41, 42]);
@@ -617,6 +643,7 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("closedAt"));
     assert!(query.contains("mergeable"));
     assert!(query.contains("createdAt"));
+    assert!(query.contains("defaultBranchRef"));
     assert!(query.contains("  author {"));
     assert!(query.contains("reviewRequests"));
     assert!(query.contains("totalCount"));

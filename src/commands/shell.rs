@@ -367,6 +367,15 @@ __jx_shell_title_context() {
   printf '%s' "$context"
 }
 
+__jx_shell_title_set_zellij_tab_title() {
+  local title="$1"
+  if declare -F termflow_zellij_tab_title >/dev/null 2>&1; then
+    termflow_zellij_tab_title "$title"
+  elif declare -F jx_zellij_tab_title >/dev/null 2>&1; then
+    jx_zellij_tab_title "$title"
+  fi
+}
+
 jx_title() {
   local prefix="${1:-}"
   local context="${JX_WORK_CONTEXT:-}"
@@ -377,9 +386,7 @@ jx_title() {
   local title="$context"
   [[ -n "$prefix" ]] && title="$prefix: $title"
   printf '\033]0;%s\007' "$title"
-  if declare -F jx_zellij_tab_title >/dev/null 2>&1; then
-    jx_zellij_tab_title "$title"
-  fi
+  __jx_shell_title_set_zellij_tab_title "$title"
 }
 
 __jx_shell_title_update() {

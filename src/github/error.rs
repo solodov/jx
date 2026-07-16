@@ -50,19 +50,6 @@ pub enum GitHubError {
     },
 }
 
-pub(super) fn api_response_error(operation: &'static str, status: u16, body: &str) -> GitHubError {
-    let message = format!("HTTP {status}: {}", github_error_response_message(body));
-    if matches!(status, 401 | 403) {
-        return GitHubError::AuthenticationFailed { operation, message };
-    }
-
-    GitHubError::ApiResponse {
-        operation,
-        status,
-        message: github_error_response_message(body),
-    }
-}
-
 pub(super) fn api_error(operation: &'static str, source: octocrab::Error) -> GitHubError {
     if let Some(message) = octocrab_github_error(&source)
         .filter(|error| matches!(error.status_code.as_u16(), 401 | 403))
@@ -104,7 +91,7 @@ fn octocrab_github_error(source: &octocrab::Error) -> Option<&octocrab::GitHubEr
 }
 
 fn octocrab_error_message(error: &octocrab::Error) -> String {
-    trim_octocrab_error_backtrace(&error.to_string()).to_owned()
+    summarize_github_error_message(trim_octocrab_error_backtrace(&error.to_string()))
 }
 
 pub(super) fn trim_octocrab_error_backtrace(message: &str) -> &str {
@@ -113,21 +100,30 @@ pub(super) fn trim_octocrab_error_backtrace(message: &str) -> &str {
         .map_or(message, |(summary, _)| summary.trim_end())
 }
 
-fn github_error_response_message(body: &str) -> String {
-    let body = body.trim();
-    if body.is_empty() {
+pub(super) fn summarize_github_error_message(message: &str) -> String {
+    let message = message.trim();
+    if message.is_empty() {
         return "empty response body".to_owned();
     }
+    if looks_like_html_response(message) {
+        return "HTML response body; GitHub may be temporarily unavailable".to_owned();
+    }
 
-    serde_json::from_str::<GitHubErrorResponse>(body)
-        .ok()
-        .and_then(|response| response.message)
-        .map(|message| message.trim().to_owned())
-        .filter(|message| !message.is_empty())
-        .unwrap_or_else(|| body.to_owned())
+    let mut summary = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_GITHUB_ERROR_SUMMARY_CHARS: usize = 500;
+    if summary.chars().count() > MAX_GITHUB_ERROR_SUMMARY_CHARS {
+        summary = summary
+            .chars()
+            .take(MAX_GITHUB_ERROR_SUMMARY_CHARS)
+            .collect::<String>();
+        summary.push('…');
+    }
+    summary
 }
 
-#[derive(Debug, Deserialize)]
-struct GitHubErrorResponse {
-    message: Option<String>,
+fn looks_like_html_response(message: &str) -> bool {
+    let normalized = message.trim_start().to_ascii_lowercase();
+    normalized.starts_with('<')
+        || normalized.contains("<!doctype html")
+        || normalized.contains("<html")
 }

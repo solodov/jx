@@ -67,10 +67,13 @@ pub fn apply_review_request_status_policy(
     review_config: &RepoReviewConfig,
 ) -> PullRequestStatusRecord {
     let mut status = apply_pull_request_status_policy(status, stack_status_config);
-    if !review_config.ignored_labels.is_empty() {
-        status
+    if !review_config.ignored_labels.is_empty() || !review_config.hidden_labels.is_empty() {
+        status.labels = status
             .labels
-            .retain(|label| !review_config.ignores_label(&label.name));
+            .clone()
+            .into_iter()
+            .filter(|label| !review_config.hides_label(&status, &label.name))
+            .collect();
     }
     if !review_config.ignored_author_response_comments.is_empty() {
         status
@@ -89,15 +92,16 @@ fn apply_ignored_pull_request_status_facts(
             .checks
             .retain(|check| !config.ignores_check(&check.name));
     }
-    if !config.ignored_labels.is_empty() {
-        status
+    if !config.ignored_labels.is_empty()
+        || !config.ignored_labels_when_merged.is_empty()
+        || !config.hidden_labels.is_empty()
+    {
+        status.labels = status
             .labels
-            .retain(|label| !config.ignores_label(&label.name));
-    }
-    if status.merged && !config.ignored_labels_when_merged.is_empty() {
-        status
-            .labels
-            .retain(|label| !config.ignores_label_when_merged(&label.name));
+            .clone()
+            .into_iter()
+            .filter(|label| !config.hides_label(status, &label.name))
+            .collect();
     }
     if config.ignored_reviewers.is_empty() {
         return;

@@ -24,8 +24,11 @@ jx review dismiss example-owner/api-alpha#123
 jx review dismiss https://github.com/example-owner/api-alpha/pull/123
 
 jx review dismissed
+jx review history api-alpha#123
 jx review undismiss api-alpha#123
 ```
+
+`jx review history` reads the local store without mutating GitHub and shows the derived PR history next to local `dismiss`/`undismiss` actions for debugging visibility decisions. Event times render in the operator's local time zone; JSON also includes `changedAtUnix` for exact comparisons.
 
 Dismissal selectors are suffix-style and component-aware:
 

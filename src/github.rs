@@ -25,17 +25,18 @@ pub use client::*;
 #[cfg(test)]
 use client::{
     map_comparison_status, map_graphql_pull_request_status, pull_request_status_query,
-    suggested_reviewers_from_graphql, user_profiles_from_graphql_response, user_profiles_query,
-    CompareCommitsResponse, CompareCommitsStatus, GraphQlError, GraphQlIssueCommentNode,
-    GraphQlIssueComments, GraphQlLabelNode, GraphQlLabels, GraphQlPullRequestStatus,
+    pull_request_update_summary_query, suggested_reviewers_from_graphql,
+    user_profiles_from_graphql_response, user_profiles_query, CompareCommitsResponse,
+    CompareCommitsStatus, GraphQlError, GraphQlIssueCommentNode, GraphQlIssueComments,
+    GraphQlLabelNode, GraphQlLabels, GraphQlPullRequestBaseRepository, GraphQlPullRequestStatus,
     GraphQlPullRequestStatusCommit, GraphQlPullRequestStatusCommitNode,
-    GraphQlPullRequestStatusCommits, GraphQlRequestedReviewer, GraphQlResponse,
+    GraphQlPullRequestStatusCommits, GraphQlRefName, GraphQlRequestedReviewer, GraphQlResponse,
     GraphQlReviewAuthor, GraphQlReviewNode, GraphQlReviewRequestNode, GraphQlReviewRequests,
     GraphQlReviewThreadCommentNode, GraphQlReviewThreadComments, GraphQlReviewThreadNode,
     GraphQlReviewThreads, GraphQlReviews, GraphQlStatusCheckContextNode,
     GraphQlStatusCheckContexts, GraphQlStatusCheckRollup, GraphQlSuggestedReviewer,
-    GraphQlSuggestedReviewerUser, GraphQlUserProfile, PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY,
-    REVIEW_REQUEST_SEARCH_QUERIES,
+    GraphQlSuggestedReviewerUser, GraphQlUserProfile, AUTHENTICATED_USER_QUERY, BRANCH_HEAD_QUERY,
+    PULL_REQUEST_SUGGESTED_REVIEWERS_QUERY, REVIEW_REQUEST_SEARCH_QUERIES,
 };
 pub use error::*;
 pub use reviewers::*;

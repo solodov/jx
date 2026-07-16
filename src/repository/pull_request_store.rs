@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension as _};
 
 pub const PULL_REQUEST_STORE_FILE: &str = "pull-request-store.sqlite";
 pub const PULL_REQUEST_STORE_SCHEMA_VERSION: i64 = 1;
-pub const PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION: i64 = 1;
+pub const PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION: i64 = 2;
 
 const CREATE_PULL_REQUEST_STORE_SCHEMA: &str = r#"
 -- All *_at_unix columns store UTC Unix timestamps in seconds.
@@ -178,6 +178,29 @@ pub struct PullRequestActionDismissal {
     pub number: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StoredPullRequestIdentity {
+    pub repository: GitHubRepository,
+    pub number: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredPullRequestTimeline {
+    pub repository: GitHubRepository,
+    pub number: u64,
+    pub status: Option<PullRequestStatusRecord>,
+    pub history: Vec<PullRequestHistoryRecord>,
+    pub actions: Vec<PullRequestActionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestSnapshotMetadata {
+    pub number: u64,
+    pub schema_version: i64,
+    pub github_updated_at_unix: Option<i64>,
+    pub payload_hash: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PullRequestHistoryRecord {
     pub kind: String,
@@ -257,13 +280,46 @@ impl PullRequestStore {
         repository: &GitHubRepository,
         statuses: &[PullRequestStatusRecord],
     ) -> Result<(), RepositoryError> {
+        self.record_pull_request_snapshots_with_updates(repository, statuses, &BTreeMap::new())
+    }
+
+    /// Records fresh pull-request snapshots with optional GitHub freshness guards.
+    pub fn record_pull_request_snapshots_with_updates(
+        &self,
+        repository: &GitHubRepository,
+        statuses: &[PullRequestStatusRecord],
+        github_updated_at_by_number: &BTreeMap<u64, i64>,
+    ) -> Result<(), RepositoryError> {
         let repository_id = self.upsert_repository(repository)?;
         let observed_at_unix = chrono::Utc::now().timestamp();
         for status in statuses {
             let pr_id = self.upsert_pull_request(repository_id, status.number, observed_at_unix)?;
-            self.insert_pull_request_snapshot(repository, pr_id, status, observed_at_unix)?;
+            self.insert_pull_request_snapshot(
+                repository,
+                pr_id,
+                status,
+                observed_at_unix,
+                github_updated_at_by_number.get(&status.number).copied(),
+            )?;
         }
         Ok(())
+    }
+
+    /// Loads the latest stored snapshot metadata in the requested-number order.
+    pub fn latest_pull_request_snapshot_metadata(
+        &self,
+        repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestSnapshotMetadata>, RepositoryError> {
+        let mut metadata = Vec::new();
+        for number in unique_numbers(numbers) {
+            if let Some(snapshot) =
+                self.latest_pull_request_snapshot_metadata_for_number(repository, number)?
+            {
+                metadata.push(snapshot);
+            }
+        }
+        Ok(metadata)
     }
 
     /// Loads the latest stored pull-request snapshots in the requested-number order.
@@ -299,6 +355,58 @@ impl PullRequestStore {
             });
         }
         Ok(pull_requests)
+    }
+
+    /// Lists pull requests known to the local store.
+    pub fn stored_pull_request_identities(
+        &self,
+    ) -> Result<Vec<StoredPullRequestIdentity>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT repositories.owner, repositories.name, pull_requests.number
+                 FROM pull_requests
+                 JOIN repositories ON repositories.id = pull_requests.repository_id
+                 WHERE repositories.host = 'github.com'
+                 ORDER BY repositories.owner, repositories.name, pull_requests.number",
+            )
+            .map_err(|source| self.query_error(source))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(StoredPullRequestIdentity {
+                    repository: GitHubRepository {
+                        owner: row.get(0)?,
+                        name: row.get(1)?,
+                    },
+                    number: row.get::<_, i64>(2)? as u64,
+                })
+            })
+            .map_err(|source| self.query_error(source))?;
+        let mut identities = Vec::new();
+        for row in rows {
+            identities.push(row.map_err(|source| self.query_error(source))?);
+        }
+        Ok(identities)
+    }
+
+    /// Loads semantic history and local actions for one stored PR, even without a snapshot.
+    pub fn stored_pull_request_timeline(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Option<StoredPullRequestTimeline>, RepositoryError> {
+        let Some(pr_id) = self.stored_pull_request_id(repository, number)? else {
+            return Ok(None);
+        };
+        Ok(Some(StoredPullRequestTimeline {
+            repository: repository.clone(),
+            number,
+            status: self
+                .latest_pull_request_snapshot(repository, number)?
+                .map(|snapshot| snapshot.status),
+            history: self.pull_request_history(pr_id)?,
+            actions: self.pull_request_actions(pr_id)?,
+        }))
     }
 
     /// Lists PRs whose latest local visibility action is a dismissal.
@@ -414,6 +522,7 @@ impl PullRequestStore {
         pr_id: i64,
         status: &PullRequestStatusRecord,
         observed_at_unix: i64,
+        github_updated_at_unix: Option<i64>,
     ) -> Result<i64, RepositoryError> {
         let previous = self.latest_pull_request_snapshot_for_pr(pr_id)?;
         let payload_json = serde_json::to_string(status).map_err(|source| {
@@ -429,11 +538,12 @@ impl PullRequestStore {
             .execute(
                 "INSERT OR IGNORE INTO pull_request_snapshots
                  (pr_id, observed_at_unix, schema_version, github_updated_at_unix, payload_hash, payload_json)
-                 VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     pr_id,
                     observed_at_unix,
                     PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION,
+                    github_updated_at_unix,
                     payload_hash,
                     payload_json
                 ],
@@ -455,6 +565,15 @@ impl PullRequestStore {
                 status,
                 observed_at_unix,
             )?;
+        } else if github_updated_at_unix.is_some() {
+            self.connection
+                .execute(
+                    "UPDATE pull_request_snapshots
+                     SET github_updated_at_unix = ?1
+                     WHERE id = ?2",
+                    params![github_updated_at_unix, snapshot_id],
+                )
+                .map_err(|source| self.query_error(source))?;
         }
         Ok(snapshot_id)
     }
@@ -496,6 +615,59 @@ impl PullRequestStore {
                 .map_err(|source| self.query_error(source))?;
         }
         Ok(())
+    }
+
+    fn stored_pull_request_id(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Option<i64>, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT pull_requests.id
+                 FROM pull_requests
+                 JOIN repositories repositories ON repositories.id = pull_requests.repository_id
+                 WHERE repositories.host = 'github.com'
+                   AND repositories.owner = ?1
+                   AND repositories.name = ?2
+                   AND pull_requests.number = ?3
+                 LIMIT 1",
+                params![&repository.owner, &repository.name, number as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|source| self.query_error(source))
+    }
+
+    fn latest_pull_request_snapshot_metadata_for_number(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+    ) -> Result<Option<PullRequestSnapshotMetadata>, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT pull_requests.number, snapshots.schema_version, snapshots.github_updated_at_unix, snapshots.payload_hash
+                 FROM pull_request_snapshots snapshots
+                 JOIN pull_requests pull_requests ON pull_requests.id = snapshots.pr_id
+                 JOIN repositories repositories ON repositories.id = pull_requests.repository_id
+                 WHERE repositories.host = 'github.com'
+                   AND repositories.owner = ?1
+                   AND repositories.name = ?2
+                   AND pull_requests.number = ?3
+                 ORDER BY snapshots.id DESC
+                 LIMIT 1",
+                params![&repository.owner, &repository.name, number as i64],
+                |row| {
+                    Ok(PullRequestSnapshotMetadata {
+                        number: row.get::<_, i64>(0)? as u64,
+                        schema_version: row.get(1)?,
+                        github_updated_at_unix: row.get(2)?,
+                        payload_hash: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|source| self.query_error(source))
     }
 
     fn latest_pull_request_snapshot(
