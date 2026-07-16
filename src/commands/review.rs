@@ -454,10 +454,17 @@ fn load_review_requests_view(
                 &viewer,
                 state,
             );
+            let lag_since_unix = review_visible_since_unix(
+                &pull_request.history,
+                &pull_request.actions,
+                &viewer,
+                state,
+            );
             rows.push(ReviewRequestRowView {
                 state,
                 status,
                 viewer_signal,
+                lag_since_unix,
                 dismissal,
             });
         }
@@ -1216,6 +1223,63 @@ fn review_timestamp_after(timestamp: Option<&str>, after: Option<&str>) -> bool 
         (Some(_), None) => true,
         _ => false,
     }
+}
+
+fn review_visible_since_unix(
+    history: &[PullRequestHistoryRecord],
+    actions: &[PullRequestActionRecord],
+    viewer: &str,
+    state: ReviewRequestState,
+) -> Option<i64> {
+    history
+        .iter()
+        .filter(|event| review_history_starts_visible_epoch(event, viewer, state))
+        .map(|event| event.changed_at_unix)
+        .chain(
+            actions
+                .iter()
+                .filter(|action| action.action == "undismiss")
+                .map(|action| action.changed_at_unix),
+        )
+        .max()
+}
+
+fn review_history_starts_visible_epoch(
+    event: &PullRequestHistoryRecord,
+    viewer: &str,
+    state: ReviewRequestState,
+) -> bool {
+    match event.kind.as_str() {
+        "first_seen" | "head_changed" | "reopened" => true,
+        "draft_changed" => {
+            review_history_json_bool(event.new_json.as_ref(), "draft") == Some(false)
+        }
+        "reviewer_requested" | "author_response" | "reviewer_mentioned" => {
+            review_history_event_reviewer(event) == Some(viewer)
+        }
+        "review_state_changed" => {
+            review_history_event_reviewer(event) == Some(viewer)
+                && matches!(
+                    review_history_json_str(event.new_json.as_ref(), "state"),
+                    Some("dismissed" | "changes_requested")
+                )
+                && !matches!(state, ReviewRequestState::Approved)
+        }
+        _ => false,
+    }
+}
+
+fn review_history_event_reviewer(event: &PullRequestHistoryRecord) -> Option<&str> {
+    review_history_json_str(event.new_json.as_ref(), "reviewer")
+        .or_else(|| review_history_json_str(event.new_json.as_ref(), "login"))
+}
+
+fn review_history_json_str<'a>(value: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {
+    value?.get(key)?.as_str()
+}
+
+fn review_history_json_bool(value: Option<&serde_json::Value>, key: &str) -> Option<bool> {
+    value?.get(key)?.as_bool()
 }
 
 fn review_history_has_event_after(

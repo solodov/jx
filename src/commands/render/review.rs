@@ -26,6 +26,7 @@ pub(in crate::commands) struct ReviewRequestRowView {
     pub(in crate::commands) status: PullRequestStatusRecord,
     pub(in crate::commands) state: ReviewRequestState,
     pub(in crate::commands) viewer_signal: ReviewRequestViewerSignal,
+    pub(in crate::commands) lag_since_unix: Option<i64>,
     pub(in crate::commands) dismissal: Option<ReviewRequestDismissalView>,
 }
 
@@ -185,6 +186,8 @@ struct ReviewPullRequestJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     viewer_review_signal: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    lag_since_unix: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     dismissal: Option<ReviewDismissalJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     labels: Vec<ReviewLabelJson>,
@@ -249,6 +252,7 @@ impl ReviewPullRequestJson {
             review_status: status.review_status.label(),
             request_state: row.state.label(),
             viewer_review_signal: row.viewer_signal.label(),
+            lag_since_unix: row.lag_since_unix,
             dismissal: row.dismissal.as_ref().map(ReviewDismissalJson::from),
             labels: status.labels.iter().map(ReviewLabelJson::from).collect(),
             requested_users: status.requested_reviewers.users.clone(),
@@ -439,11 +443,21 @@ fn review_request_row(
         active_cell_color,
         row_style,
     );
-    let lag = pull_request_viewer_review_lag(
-        &row.status,
-        viewer,
-        repository.review_wait_threshold_seconds,
-        review_request_state_waits_on_viewer(row.state),
+    let lag = row.lag_since_unix.map_or_else(
+        || {
+            pull_request_viewer_review_lag(
+                &row.status,
+                viewer,
+                repository.review_wait_threshold_seconds,
+                review_request_state_waits_on_viewer(row.state),
+            )
+        },
+        |since_unix| {
+            pull_request_review_lag_since_unix(
+                Some(since_unix),
+                repository.review_wait_threshold_seconds,
+            )
+        },
     );
     let state = review_request_state_cell(
         &row.status,

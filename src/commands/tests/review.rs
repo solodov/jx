@@ -111,36 +111,42 @@ fn review_render_uses_viewer_review_state_symbols() {
                     status: waiting,
                     state: crate::domain::ReviewRequestState::New,
                     viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
                     dismissal: None,
                 },
                 ReviewRequestRowView {
                     status: commented,
                     state: crate::domain::ReviewRequestState::Commented,
                     viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
                     dismissal: None,
                 },
                 ReviewRequestRowView {
                     status: changes_requested,
                     state: crate::domain::ReviewRequestState::ChangesRequested,
                     viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
                     dismissal: None,
                 },
                 ReviewRequestRowView {
                     status: approved,
                     state: crate::domain::ReviewRequestState::Approved,
                     viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
                     dismissal: None,
                 },
                 ReviewRequestRowView {
                     status: approved_with_comments,
                     state: crate::domain::ReviewRequestState::Approved,
                     viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
                     dismissal: None,
                 },
                 ReviewRequestRowView {
                     status: stale_approval,
                     state: crate::domain::ReviewRequestState::New,
                     viewer_signal: ReviewRequestViewerSignal::DismissedApproval,
+                    lag_since_unix: None,
                     dismissal: None,
                 },
             ],
@@ -233,6 +239,41 @@ fn review_uses_pull_request_creation_age_before_viewer_review() {
         .expect("review inbox renders creation age");
 
     assert!(result.stdout.contains("?    <1h   ◯ Needs first review"));
+}
+
+#[test]
+fn review_lag_uses_visible_epoch_from_history() {
+    // Verifies: review lag is based on the PR history event that made the row visible.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let status = review_status_record(12, "History driven lag", "example-author", false);
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            PullRequestWithHistory {
+                status,
+                history: vec![PullRequestHistoryRecord {
+                    kind: "reviewer_requested".to_owned(),
+                    changed_at_unix: chrono::Utc::now().timestamp(),
+                    old_json: None,
+                    new_json: Some(serde_json::json!({
+                        "type": "user",
+                        "login": "example-reviewer",
+                    })),
+                    details_json: serde_json::json!({}),
+                }],
+                actions: Vec::new(),
+            },
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders history lag");
+
+    assert!(result.stdout.contains("?    <1h   ◯ History driven lag"));
 }
 
 #[test]

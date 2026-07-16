@@ -408,6 +408,7 @@ struct FakeServices {
     pull_requests_by_number: BTreeMap<u64, PullRequestRecord>,
     pull_request_number_calls: std::cell::RefCell<Vec<u64>>,
     pull_request_statuses: BTreeMap<u64, PullRequestStatusRecord>,
+    pull_requests_with_history: BTreeMap<u64, PullRequestWithHistory>,
     pull_request_status_calls: std::cell::RefCell<Vec<Vec<u64>>>,
     review_requests: Vec<PullRequestReviewRequest>,
     github_user_display_names: BTreeMap<String, String>,
@@ -559,6 +560,7 @@ impl Default for FakeServices {
             pull_requests_by_number: BTreeMap::new(),
             pull_request_number_calls: std::cell::RefCell::new(Vec::new()),
             pull_request_statuses: BTreeMap::new(),
+            pull_requests_with_history: BTreeMap::new(),
             pull_request_status_calls: std::cell::RefCell::new(Vec::new()),
             review_requests: Vec::new(),
             github_user_display_names: BTreeMap::new(),
@@ -1248,6 +1250,35 @@ impl CommandServices for FakeServices {
         Ok(numbers
             .iter()
             .filter_map(|number| self.pull_request_statuses.get(number).cloned())
+            .collect())
+    }
+
+    fn pull_requests_with_history_for_repository(
+        &self,
+        _token_source: &TokenSource,
+        _repository: &GitHubRepository,
+        numbers: &[u64],
+    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
+        self.pull_request_status_calls
+            .borrow_mut()
+            .push(numbers.to_vec());
+        Ok(numbers
+            .iter()
+            .filter_map(|number| {
+                self.pull_requests_with_history
+                    .get(number)
+                    .cloned()
+                    .or_else(|| {
+                        self.pull_request_statuses
+                            .get(number)
+                            .cloned()
+                            .map(|status| PullRequestWithHistory {
+                                status,
+                                history: Vec::new(),
+                                actions: Vec::new(),
+                            })
+                    })
+            })
             .collect())
     }
 

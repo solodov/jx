@@ -383,6 +383,16 @@ pub(in crate::commands) fn pull_request_viewer_review_lag(
     )
 }
 
+pub(in crate::commands) fn pull_request_review_lag_since_unix(
+    since_unix: Option<i64>,
+    threshold_seconds: Option<u64>,
+) -> ReviewLagCell {
+    review_lag_cell(
+        since_unix.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
+        threshold_seconds,
+    )
+}
+
 pub(in crate::commands) fn render_review_lag_cell(
     cell: &ReviewLagCell,
     color: bool,
