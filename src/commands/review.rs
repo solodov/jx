@@ -237,6 +237,28 @@ enum ReviewDismissalMode {
     Only,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewDecision {
+    state: ReviewRequestState,
+    visible: bool,
+    legacy_resurface_reason: Option<&'static str>,
+    auto_dismiss_reason: Option<&'static str>,
+    viewer_signal: ReviewRequestViewerSignal,
+    visible_since_unix: Option<i64>,
+    dismissal: Option<ReviewRequestDismissalView>,
+}
+
+struct ReviewDecisionInput<'a> {
+    key: &'a ReviewPullRequestKey,
+    status: &'a PullRequestStatusRecord,
+    history: &'a [PullRequestHistoryRecord],
+    actions: &'a [PullRequestActionRecord],
+    viewer: &'a str,
+    dismissal_mode: ReviewDismissalMode,
+    legacy_dismissal: Option<&'a ReviewDismissal>,
+    dismissal_history: &'a ReviewDismissalHistory,
+}
+
 fn load_review_requests_view(
     request: &ReviewRequest,
     environment: &RuntimeEnvironment,
@@ -397,38 +419,18 @@ fn load_review_requests_view(
                 )?;
                 continue;
             }
-            let state = review_request_state(&status, &viewer);
-            let prior_dismissal = dismissals.get(&key).cloned();
-            let action_resurface_reason = (dismissal_mode != ReviewDismissalMode::Ignore)
-                .then(|| {
-                    review_action_resurface_reason(
-                        &pull_request.actions,
-                        &pull_request.history,
-                        &status,
-                        &viewer,
-                        state,
-                    )
-                })
-                .flatten();
-            let hidden_by_dismissal = if action_resurface_reason.is_some() {
-                action_resurface_reason == Some("no_longer_hidden")
-            } else {
-                dismissal_mode != ReviewDismissalMode::Ignore
-                    && dismissals.hides(&key, &status, &pull_request.history, &viewer, state)
-            };
-            let mut auto_redismiss_allowed = true;
-            if dismissal_mode != ReviewDismissalMode::Ignore && !hidden_by_dismissal {
-                let reason = action_resurface_reason.unwrap_or_else(|| {
-                    review_dismissal_resurface_reason(
-                        &dismissals,
-                        &key,
-                        &status,
-                        &pull_request.history,
-                        &viewer,
-                        state,
-                    )
-                });
-                let removed = remove_review_dismissal_with_log(
+            let decision = decide_review_request(ReviewDecisionInput {
+                key: &key,
+                status: &status,
+                history: &pull_request.history,
+                actions: &pull_request.actions,
+                viewer: &viewer,
+                dismissal_mode,
+                legacy_dismissal: dismissals.get(&key),
+                dismissal_history: &dismissal_history,
+            });
+            if let Some(reason) = decision.legacy_resurface_reason {
+                dismissal_state_changed |= remove_review_dismissal_with_log(
                     environment,
                     &mut dismissals,
                     &key,
@@ -437,62 +439,27 @@ fn load_review_requests_view(
                     &viewer,
                     None,
                 )?;
-                dismissal_state_changed |= removed;
-                if removed || action_resurface_reason.is_some() {
-                    auto_redismiss_allowed = review_dismissal_allows_auto_redismiss(reason);
-                }
             }
-            match dismissal_mode {
-                ReviewDismissalMode::Apply if hidden_by_dismissal => continue,
-                ReviewDismissalMode::Apply => {
-                    if let Some(reason) =
-                        review_request_auto_dismiss_reason(&status, &viewer, state)
-                            .filter(|_| auto_redismiss_allowed)
-                    {
-                        dismissal_state_changed |= auto_dismiss_review_request(
-                            environment,
-                            &mut dismissals,
-                            &repository,
-                            &status,
-                            &viewer,
-                            reason,
-                        )?;
-                        continue;
-                    }
-                }
-                ReviewDismissalMode::Only if !hidden_by_dismissal => continue,
-                ReviewDismissalMode::Only | ReviewDismissalMode::Ignore => {}
+            if let Some(reason) = decision.auto_dismiss_reason {
+                dismissal_state_changed |= auto_dismiss_review_request(
+                    environment,
+                    &mut dismissals,
+                    &repository,
+                    &status,
+                    &viewer,
+                    reason,
+                )?;
+                continue;
             }
-            let dismissal = if dismissal_mode == ReviewDismissalMode::Only {
-                dismissals
-                    .get(&key)
-                    .map(|dismissal| {
-                        review_request_dismissal_view(dismissal, &status, &viewer, state)
-                    })
-                    .or_else(|| review_request_action_dismissal_view(&pull_request.actions))
-            } else {
-                None
-            };
-            let viewer_signal = review_request_viewer_signal(
-                &dismissal_history,
-                prior_dismissal.as_ref(),
-                &key,
-                &status,
-                &viewer,
-                state,
-            );
-            let lag_since_unix = review_visible_since_unix(
-                &pull_request.history,
-                &pull_request.actions,
-                &viewer,
-                state,
-            );
+            if !decision.visible {
+                continue;
+            }
             rows.push(ReviewRequestRowView {
-                state,
+                state: decision.state,
                 status,
-                viewer_signal,
-                lag_since_unix,
-                dismissal,
+                viewer_signal: decision.viewer_signal,
+                lag_since_unix: decision.visible_since_unix,
+                dismissal: decision.dismissal,
             });
         }
         rows.sort_by_key(|row| std::cmp::Reverse(row.status.number));
@@ -1203,6 +1170,88 @@ fn review_viewer_mention_at<'a>(
         .map(|mention| mention.mentioned_at.as_str())
 }
 
+/// Decides whether a review row should be shown from current PR facts and local history.
+fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
+    let state = review_request_state(input.status, input.viewer);
+    let action_resurface_reason = (input.dismissal_mode != ReviewDismissalMode::Ignore)
+        .then(|| {
+            review_action_resurface_reason(
+                input.actions,
+                input.history,
+                input.status,
+                input.viewer,
+                state,
+            )
+        })
+        .flatten();
+    let legacy_resurface_reason = (input.dismissal_mode != ReviewDismissalMode::Ignore)
+        .then(|| {
+            input.legacy_dismissal.map(|dismissal| {
+                review_dismissal_resurface_reason_for(
+                    dismissal,
+                    input.status,
+                    input.history,
+                    input.viewer,
+                    state,
+                )
+            })
+        })
+        .flatten();
+    let hidden_by_dismissal = if let Some(reason) = action_resurface_reason {
+        reason == "no_longer_hidden"
+    } else {
+        legacy_resurface_reason == Some("no_longer_hidden")
+    };
+    let resurface_reason = (!hidden_by_dismissal)
+        .then_some(action_resurface_reason.or(legacy_resurface_reason))
+        .flatten();
+    let auto_redismiss_allowed = resurface_reason
+        .map(review_dismissal_allows_auto_redismiss)
+        .unwrap_or(true);
+    let auto_dismiss_reason = (input.dismissal_mode == ReviewDismissalMode::Apply
+        && !hidden_by_dismissal
+        && auto_redismiss_allowed)
+        .then(|| review_request_auto_dismiss_reason(input.status, input.viewer, state))
+        .flatten();
+    let visible = match input.dismissal_mode {
+        ReviewDismissalMode::Apply => !hidden_by_dismissal && auto_dismiss_reason.is_none(),
+        ReviewDismissalMode::Only => hidden_by_dismissal,
+        ReviewDismissalMode::Ignore => true,
+    };
+    let dismissal = (input.dismissal_mode == ReviewDismissalMode::Only && hidden_by_dismissal)
+        .then(|| {
+            input
+                .legacy_dismissal
+                .map(|dismissal| {
+                    review_request_dismissal_view(dismissal, input.status, input.viewer, state)
+                })
+                .or_else(|| review_request_action_dismissal_view(input.actions))
+        })
+        .flatten();
+
+    ReviewDecision {
+        state,
+        visible,
+        legacy_resurface_reason: resurface_reason.filter(|_| input.legacy_dismissal.is_some()),
+        auto_dismiss_reason,
+        viewer_signal: review_request_viewer_signal(
+            input.dismissal_history,
+            input.legacy_dismissal,
+            input.key,
+            input.status,
+            input.viewer,
+            state,
+        ),
+        visible_since_unix: review_visible_since_unix(
+            input.history,
+            input.actions,
+            input.viewer,
+            state,
+        ),
+        dismissal,
+    }
+}
+
 fn review_request_viewer_signal(
     dismissal_history: &ReviewDismissalHistory,
     prior_dismissal: Option<&ReviewDismissal>,
@@ -1650,20 +1699,6 @@ fn auto_dismiss_review_request(
     Ok(changed)
 }
 
-fn review_dismissal_resurface_reason(
-    dismissals: &ReviewDismissals,
-    key: &ReviewPullRequestKey,
-    status: &PullRequestStatusRecord,
-    history: &[PullRequestHistoryRecord],
-    viewer: &str,
-    state: ReviewRequestState,
-) -> &'static str {
-    let Some(dismissal) = dismissals.get(key) else {
-        return "not_dismissed";
-    };
-    review_dismissal_resurface_reason_for(dismissal, status, history, viewer, state)
-}
-
 fn review_dismissal_resurface_reason_for(
     dismissal: &ReviewDismissal,
     status: &PullRequestStatusRecord,
@@ -1948,21 +1983,6 @@ impl ReviewDismissals {
         }
         self.normalize();
         true
-    }
-
-    fn hides(
-        &self,
-        key: &ReviewPullRequestKey,
-        status: &PullRequestStatusRecord,
-        history: &[PullRequestHistoryRecord],
-        viewer: &str,
-        state: ReviewRequestState,
-    ) -> bool {
-        let Some(dismissal) = self.get(key) else {
-            return false;
-        };
-        review_dismissal_resurface_reason_for(dismissal, status, history, viewer, state)
-            == "no_longer_hidden"
     }
 
     fn get(&self, key: &ReviewPullRequestKey) -> Option<&ReviewDismissal> {
