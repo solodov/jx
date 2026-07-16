@@ -242,6 +242,38 @@ fn review_uses_pull_request_creation_age_before_viewer_review() {
 }
 
 #[test]
+fn review_hides_pull_requests_dismissed_by_local_action() {
+    // Verifies: the PR store action stream can hide a review row without legacy state.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let status = review_status_record(12, "Action dismissed review", "example-author", false);
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            PullRequestWithHistory {
+                status,
+                history: Vec::new(),
+                actions: vec![PullRequestActionRecord {
+                    action: "dismiss".to_owned(),
+                    source: "manual".to_owned(),
+                    reason: Some("manual".to_owned()),
+                    changed_at_unix: 1_767_273_000,
+                    details_json: serde_json::json!({}),
+                }],
+            },
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox applies action dismissal");
+
+    assert!(!result.stdout.contains("Action dismissed review"));
+}
+
+#[test]
 fn review_lag_uses_visible_epoch_from_history() {
     // Verifies: review lag is based on the PR history event that made the row visible.
     let workspace = review_workspace();

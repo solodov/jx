@@ -392,18 +392,35 @@ fn load_review_requests_view(
             }
             let state = review_request_state(&status, &viewer);
             let prior_dismissal = dismissals.get(&key).cloned();
-            let hidden_by_dismissal = dismissal_mode != ReviewDismissalMode::Ignore
-                && dismissals.hides(&key, &status, &pull_request.history, &viewer, state);
+            let action_resurface_reason = (dismissal_mode != ReviewDismissalMode::Ignore)
+                .then(|| {
+                    review_action_resurface_reason(
+                        &pull_request.actions,
+                        &pull_request.history,
+                        &status,
+                        &viewer,
+                        state,
+                    )
+                })
+                .flatten();
+            let hidden_by_dismissal = if action_resurface_reason.is_some() {
+                action_resurface_reason == Some("no_longer_hidden")
+            } else {
+                dismissal_mode != ReviewDismissalMode::Ignore
+                    && dismissals.hides(&key, &status, &pull_request.history, &viewer, state)
+            };
             let mut auto_redismiss_allowed = true;
             if dismissal_mode != ReviewDismissalMode::Ignore && !hidden_by_dismissal {
-                let reason = review_dismissal_resurface_reason(
-                    &dismissals,
-                    &key,
-                    &status,
-                    &pull_request.history,
-                    &viewer,
-                    state,
-                );
+                let reason = action_resurface_reason.unwrap_or_else(|| {
+                    review_dismissal_resurface_reason(
+                        &dismissals,
+                        &key,
+                        &status,
+                        &pull_request.history,
+                        &viewer,
+                        state,
+                    )
+                });
                 let removed = remove_review_dismissal_with_log(
                     environment,
                     &mut dismissals,
@@ -414,7 +431,7 @@ fn load_review_requests_view(
                     None,
                 )?;
                 dismissal_state_changed |= removed;
-                if removed {
+                if removed || action_resurface_reason.is_some() {
                     auto_redismiss_allowed = review_dismissal_allows_auto_redismiss(reason);
                 }
             }
@@ -1282,6 +1299,114 @@ fn review_history_json_bool(value: Option<&serde_json::Value>, key: &str) -> Opt
     value?.get(key)?.as_bool()
 }
 
+fn review_action_resurface_reason(
+    actions: &[PullRequestActionRecord],
+    history: &[PullRequestHistoryRecord],
+    status: &PullRequestStatusRecord,
+    viewer: &str,
+    state: ReviewRequestState,
+) -> Option<&'static str> {
+    let action = latest_review_visibility_action(actions)?;
+    match action.action.as_str() {
+        "undismiss" => Some("not_dismissed"),
+        "dismiss" => Some(review_action_dismissal_resurface_reason(
+            action, history, status, viewer, state,
+        )),
+        _ => None,
+    }
+}
+
+fn latest_review_visibility_action(
+    actions: &[PullRequestActionRecord],
+) -> Option<&PullRequestActionRecord> {
+    actions
+        .iter()
+        .rev()
+        .find(|action| matches!(action.action.as_str(), "dismiss" | "undismiss"))
+}
+
+fn review_action_dismissal_resurface_reason(
+    action: &PullRequestActionRecord,
+    history: &[PullRequestHistoryRecord],
+    status: &PullRequestStatusRecord,
+    viewer: &str,
+    state: ReviewRequestState,
+) -> &'static str {
+    if action.reason.as_deref() == Some("draft") {
+        return draft_action_dismissal_resurface_reason(action, history, status, viewer);
+    }
+    if review_history_has_reviewer_requested_after_unix(history, viewer, action.changed_at_unix) {
+        return "fresh_review_request";
+    }
+    if review_history_has_event_after_unix(history, "head_changed", action.changed_at_unix)
+        || review_action_json_str(action, "dismissedHeadOid").is_some_and(|dismissed_head| {
+            status.latest_commit_oid.as_deref() != Some(dismissed_head)
+        })
+    {
+        return "head_changed";
+    }
+    if review_action_has_new_author_response(action, history, status, viewer) {
+        return "author_response";
+    }
+    if action.source == "automatic"
+        && review_request_auto_dismiss_reason_after(
+            status,
+            viewer,
+            state,
+            review_action_json_str(action, "dismissedViewerResponseAt"),
+        )
+        .is_none()
+    {
+        return "viewer_review_state_changed";
+    }
+    "no_longer_hidden"
+}
+
+fn draft_action_dismissal_resurface_reason(
+    action: &PullRequestActionRecord,
+    history: &[PullRequestHistoryRecord],
+    status: &PullRequestStatusRecord,
+    viewer: &str,
+) -> &'static str {
+    if review_history_has_ready_for_review_after_unix(history, action.changed_at_unix)
+        || !status.draft
+    {
+        return "ready_for_review";
+    }
+    if review_history_has_reviewer_requested_after_unix(history, viewer, action.changed_at_unix) {
+        return "fresh_review_request";
+    }
+    if review_history_has_reviewer_mention_after_unix(history, viewer, action.changed_at_unix) {
+        return "mentioned";
+    }
+    if review_action_has_new_author_response(action, history, status, viewer) {
+        return "author_response";
+    }
+    "no_longer_hidden"
+}
+
+fn review_action_has_new_author_response(
+    action: &PullRequestActionRecord,
+    history: &[PullRequestHistoryRecord],
+    status: &PullRequestStatusRecord,
+    viewer: &str,
+) -> bool {
+    let dismissed_response_at = review_action_json_str(action, "dismissedViewerResponseAt");
+    if dismissed_response_at.is_some() {
+        review_history_has_author_response_after(history, viewer, dismissed_response_at)
+            || review_timestamp_after(
+                review_viewer_active_response_at(status, viewer),
+                dismissed_response_at,
+            )
+    } else {
+        review_history_has_author_response_after_unix(history, viewer, action.changed_at_unix)
+    }
+}
+
+fn review_action_json_str<'a>(action: &'a PullRequestActionRecord, key: &str) -> Option<&'a str> {
+    action.details_json.get(key)?.as_str()
+}
+
 fn review_history_has_event_after(
     history: &[PullRequestHistoryRecord],
     kind: &str,
@@ -1290,6 +1415,16 @@ fn review_history_has_event_after(
     history
         .iter()
         .any(|event| event.kind == kind && review_history_event_after(event, after))
+}
+
+fn review_history_has_event_after_unix(
+    history: &[PullRequestHistoryRecord],
+    kind: &str,
+    after_unix: i64,
+) -> bool {
+    history
+        .iter()
+        .any(|event| event.kind == kind && event.changed_at_unix > after_unix)
 }
 
 fn review_history_has_ready_for_review_after(
@@ -1316,12 +1451,42 @@ fn review_history_has_reviewer_requested_after(
     history.iter().any(|event| {
         event.kind == "reviewer_requested"
             && review_history_event_after(event, after)
-            && event
-                .new_json
-                .as_ref()
-                .and_then(|value| value.get("login"))
-                .and_then(serde_json::Value::as_str)
-                == Some(viewer)
+            && review_history_event_reviewer(event) == Some(viewer)
+    })
+}
+
+fn review_history_has_ready_for_review_after_unix(
+    history: &[PullRequestHistoryRecord],
+    after_unix: i64,
+) -> bool {
+    history.iter().any(|event| {
+        event.kind == "draft_changed"
+            && event.changed_at_unix > after_unix
+            && review_history_json_bool(event.new_json.as_ref(), "draft") == Some(false)
+    })
+}
+
+fn review_history_has_reviewer_requested_after_unix(
+    history: &[PullRequestHistoryRecord],
+    viewer: &str,
+    after_unix: i64,
+) -> bool {
+    history.iter().any(|event| {
+        event.kind == "reviewer_requested"
+            && event.changed_at_unix > after_unix
+            && review_history_event_reviewer(event) == Some(viewer)
+    })
+}
+
+fn review_history_has_reviewer_mention_after_unix(
+    history: &[PullRequestHistoryRecord],
+    viewer: &str,
+    after_unix: i64,
+) -> bool {
+    history.iter().any(|event| {
+        event.kind == "reviewer_mentioned"
+            && event.changed_at_unix > after_unix
+            && review_history_event_reviewer(event) == Some(viewer)
     })
 }
 
@@ -1339,6 +1504,18 @@ fn review_history_has_author_response_after(
                 .and_then(|value| value.get("reviewer"))
                 .and_then(serde_json::Value::as_str)
                 == Some(viewer)
+    })
+}
+
+fn review_history_has_author_response_after_unix(
+    history: &[PullRequestHistoryRecord],
+    viewer: &str,
+    after_unix: i64,
+) -> bool {
+    history.iter().any(|event| {
+        event.kind == "author_response"
+            && event.changed_at_unix > after_unix
+            && review_history_event_reviewer(event) == Some(viewer)
     })
 }
 
