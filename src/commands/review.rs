@@ -242,7 +242,7 @@ struct ReviewDecision {
     state: ReviewRequestState,
     visible: bool,
     legacy_resurface_reason: Option<&'static str>,
-    auto_dismiss_reason: Option<&'static str>,
+    automatic_hide_reason: Option<&'static str>,
     viewer_signal: ReviewRequestViewerSignal,
     visible_since_unix: Option<i64>,
     dismissal: Option<ReviewRequestDismissalView>,
@@ -340,12 +340,10 @@ fn load_review_requests_view(
         let layout = layout_by_repository.get(&candidate.repository);
         if review_repository_matches(&candidate.repository, layout, &filter_matchers) {
             candidate_keys.insert(review_key(&candidate.repository, candidate.number));
-            if dismissal_mode != ReviewDismissalMode::Only {
-                grouped
-                    .entry(candidate.repository)
-                    .or_default()
-                    .push(candidate.number);
-            }
+            grouped
+                .entry(candidate.repository)
+                .or_default()
+                .push(candidate.number);
         }
     }
 
@@ -439,17 +437,6 @@ fn load_review_requests_view(
                     &viewer,
                     None,
                 )?;
-            }
-            if let Some(reason) = decision.auto_dismiss_reason {
-                dismissal_state_changed |= auto_dismiss_review_request(
-                    environment,
-                    &mut dismissals,
-                    &repository,
-                    &status,
-                    &viewer,
-                    reason,
-                )?;
-                continue;
             }
             if !decision.visible {
                 continue;
@@ -1208,24 +1195,28 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
     let auto_redismiss_allowed = resurface_reason
         .map(review_dismissal_allows_auto_redismiss)
         .unwrap_or(true);
-    let auto_dismiss_reason = (input.dismissal_mode == ReviewDismissalMode::Apply
+    let automatic_hide_reason = (input.dismissal_mode != ReviewDismissalMode::Ignore
         && !hidden_by_dismissal
         && auto_redismiss_allowed)
         .then(|| review_request_auto_dismiss_reason(input.status, input.viewer, state))
         .flatten();
     let visible = match input.dismissal_mode {
-        ReviewDismissalMode::Apply => !hidden_by_dismissal && auto_dismiss_reason.is_none(),
-        ReviewDismissalMode::Only => hidden_by_dismissal,
+        ReviewDismissalMode::Apply => !hidden_by_dismissal && automatic_hide_reason.is_none(),
+        ReviewDismissalMode::Only => hidden_by_dismissal || automatic_hide_reason.is_some(),
         ReviewDismissalMode::Ignore => true,
     };
-    let dismissal = (input.dismissal_mode == ReviewDismissalMode::Only && hidden_by_dismissal)
+    let dismissal = (input.dismissal_mode == ReviewDismissalMode::Only && visible)
         .then(|| {
-            input
-                .legacy_dismissal
-                .map(|dismissal| {
-                    review_request_dismissal_view(dismissal, input.status, input.viewer, state)
-                })
-                .or_else(|| review_request_action_dismissal_view(input.actions))
+            if hidden_by_dismissal {
+                input
+                    .legacy_dismissal
+                    .map(|dismissal| {
+                        review_request_dismissal_view(dismissal, input.status, input.viewer, state)
+                    })
+                    .or_else(|| review_request_action_dismissal_view(input.actions))
+            } else {
+                automatic_hide_reason.map(review_request_automatic_dismissal_view)
+            }
         })
         .flatten();
 
@@ -1233,7 +1224,7 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
         state,
         visible,
         legacy_resurface_reason: resurface_reason.filter(|_| input.legacy_dismissal.is_some()),
-        auto_dismiss_reason,
+        automatic_hide_reason,
         viewer_signal: review_request_viewer_signal(
             input.dismissal_history,
             input.legacy_dismissal,
@@ -1326,7 +1317,11 @@ fn review_request_auto_dismiss_reason_after(
 fn review_dismissal_allows_auto_redismiss(reason: &str) -> bool {
     !matches!(
         reason,
-        "author_response" | "fresh_review_request" | "mentioned" | "ready_for_review"
+        "author_response"
+            | "fresh_review_request"
+            | "mentioned"
+            | "not_dismissed"
+            | "ready_for_review"
     )
 }
 
@@ -1659,46 +1654,6 @@ fn review_timestamp_unix(value: &str) -> Option<i64> {
         .map(|timestamp| timestamp.timestamp())
 }
 
-fn auto_dismiss_review_request(
-    environment: &RuntimeEnvironment,
-    dismissals: &mut ReviewDismissals,
-    repository: &GitHubRepository,
-    status: &PullRequestStatusRecord,
-    viewer: &str,
-    reason: &'static str,
-) -> Result<bool, CommandError> {
-    let Some(latest_commit_oid) = status.latest_commit_oid.clone() else {
-        return Ok(false);
-    };
-    let key = review_key(repository, status.number);
-    let dismissal = ReviewDismissal {
-        repository: key.repository,
-        number: key.number,
-        source: ReviewDismissalSource::Automatic,
-        reason: reason.to_owned(),
-        latest_commit_oid,
-        viewer_response_at: review_viewer_response_at(status, viewer).map(str::to_owned),
-        dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    };
-    let changed = dismissals.upsert(dismissal.clone());
-    if changed {
-        append_review_dismissal_log(
-            environment,
-            review_dismissal_log_event("dismiss", reason, &dismissal, Some(status), viewer, None),
-        )?;
-        record_review_dismissal_action(
-            environment,
-            "dismiss",
-            reason,
-            &dismissal,
-            Some(status),
-            viewer,
-            None,
-        )?;
-    }
-    Ok(changed)
-}
-
 fn review_dismissal_resurface_reason_for(
     dismissal: &ReviewDismissal,
     status: &PullRequestStatusRecord,
@@ -1921,6 +1876,13 @@ fn review_request_action_dismissal_view(
         source: action.source.clone(),
         reason: action.reason.clone().unwrap_or_else(|| "manual".to_owned()),
     })
+}
+
+fn review_request_automatic_dismissal_view(reason: &'static str) -> ReviewRequestDismissalView {
+    ReviewRequestDismissalView {
+        source: "automatic".to_owned(),
+        reason: reason.to_owned(),
+    }
 }
 
 fn review_dismissal_source_label(source: ReviewDismissalSource) -> &'static str {

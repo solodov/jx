@@ -477,14 +477,7 @@ fn review_auto_dismisses_already_approved_pull_requests_from_prior_activity() {
         .expect("review inbox renders approved activity");
 
     assert!(!result.stdout.contains("Already approved"));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("auto dismissal state writes");
-    assert!(state.contains("source = \"automatic\""));
-    assert!(state.contains("reason = \"approved\""));
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]
@@ -760,6 +753,40 @@ fn review_dismiss_records_current_head_oid() {
 }
 
 #[test]
+fn review_manual_undismiss_overrides_computed_auto_hide() {
+    // Verifies: explicit local undismiss keeps a handled PR visible without GitHub mutation.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = review_status_record(12, "Approved review", "example-author", false);
+    status.requested_reviewers = ReviewerSelection::default();
+    status.approved_reviewers = vec!["example-reviewer".to_owned()];
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            PullRequestWithHistory {
+                status,
+                history: Vec::new(),
+                actions: vec![PullRequestActionRecord {
+                    action: "undismiss".to_owned(),
+                    source: "manual".to_owned(),
+                    reason: Some("manual".to_owned()),
+                    changed_at_unix: 1_767_273_000,
+                    details_json: serde_json::json!({}),
+                }],
+            },
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders manual undismiss override");
+
+    assert!(result.stdout.contains("Approved review"));
+}
+
+#[test]
 fn review_auto_dismisses_approved_pull_requests() {
     // Verifies: viewer-approved PRs disappear from the review inbox without manual cleanup.
     let workspace = review_workspace();
@@ -778,22 +805,7 @@ fn review_auto_dismisses_approved_pull_requests() {
         .expect("review inbox renders");
 
     assert!(!result.stdout.contains("Approved review"));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("auto dismissal state writes");
-    assert!(state.contains("repository = \"example-owner/api-alpha\""));
-    assert!(state.contains("number = 12"));
-    assert!(state.contains("source = \"automatic\""));
-    assert!(state.contains("reason = \"approved\""));
-    assert!(state.contains("latest_commit_oid = \"commit-12\""));
-    let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
-        .expect("auto dismissal log writes");
-    assert!(log.contains("\"action\":\"dismiss\""));
-    assert!(log.contains("\"reason\":\"approved\""));
-    assert!(log.contains("\"source\":\"automatic\""));
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]
@@ -815,19 +827,7 @@ fn review_auto_dismisses_commented_pull_requests() {
         .expect("review inbox renders");
 
     assert!(!result.stdout.contains("Commented review"));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("auto dismissal state writes");
-    assert!(state.contains("source = \"automatic\""));
-    assert!(state.contains("reason = \"commented\""));
-    let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
-        .expect("auto dismissal log writes");
-    assert!(log.contains("\"action\":\"dismiss\""));
-    assert!(log.contains("\"reason\":\"commented\""));
-    assert!(log.contains("\"source\":\"automatic\""));
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]
@@ -933,19 +933,7 @@ fn review_auto_dismisses_draft_pull_requests_without_attention() {
         .expect("review inbox renders");
 
     assert!(!result.stdout.contains("Draft work in progress"));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("draft dismissal state writes");
-    assert!(state.contains("source = \"automatic\""));
-    assert!(state.contains("reason = \"draft\""));
-    let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
-        .expect("draft dismissal log writes");
-    assert!(log.contains("\"action\":\"dismiss\""));
-    assert!(log.contains("\"reason\":\"draft\""));
-    assert!(log.contains("\"source\":\"automatic\""));
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]
@@ -1155,19 +1143,15 @@ dismissed_at = "2026-01-01T00:00:00Z"
         .expect("review inbox refreshes auto dismissal");
 
     assert!(!result.stdout.contains("Still approved"));
-    let state = fs::read_to_string(
-        workspace
-            .home
-            .join(".local/state/jx/review-dismissals.toml"),
-    )
-    .expect("auto dismissal state refreshes");
-    assert!(state.contains("latest_commit_oid = \"commit-new\""));
+    assert!(!workspace
+        .home
+        .join(".local/state/jx/review-dismissals.toml")
+        .exists());
     let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
-        .expect("auto dismissal refresh log writes");
+        .expect("legacy auto dismissal resurface log writes");
     assert!(log.contains("\"action\":\"undismiss\""));
     assert!(log.contains("\"reason\":\"head_changed\""));
-    assert!(log.contains("\"action\":\"dismiss\""));
-    assert!(log.contains("\"reason\":\"approved\""));
+    assert!(!log.contains("\"action\":\"dismiss\""));
 }
 
 #[test]
@@ -1204,19 +1188,11 @@ fn review_dismiss_log_migrates_legacy_jsonl_name() {
 
 #[test]
 fn review_dismissed_renders_currently_hidden_pull_requests() {
-    // Verifies: dismissed review output reuses the normal review table with local dismissal reasons.
+    // Verifies: dismissed review output reuses the normal review table with computed and local reasons.
     let workspace = review_workspace();
     workspace.write_home_file(
         ".local/state/jx/review-dismissals.toml",
         r#"version = 1
-
-[[pull_requests]]
-repository = "example-owner/api-alpha"
-number = 12
-source = "automatic"
-reason = "approved"
-latest_commit_oid = "commit-12"
-dismissed_at = "2026-01-01T00:00:00Z"
 
 [[pull_requests]]
 repository = "example-owner/api-alpha"
@@ -1961,6 +1937,17 @@ ignored_labels = ["review-only-noise"]
     assert!(!result.stdout.contains("generated-noise"));
     assert!(!result.stdout.contains("review-only-noise"));
     assert!(!result.stdout.contains("ignored-bot"));
+}
+
+fn assert_no_review_dismissal_state_or_log(workspace: &TestWorkspace) {
+    assert!(!workspace
+        .home
+        .join(".local/state/jx/review-dismissals.toml")
+        .exists());
+    assert!(!workspace
+        .home
+        .join(".local/state/jx/review-dismissals.log")
+        .exists());
 }
 
 fn review_workspace() -> TestWorkspace {
