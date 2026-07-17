@@ -242,6 +242,24 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
 }
 
 #[test]
+fn workspace_remove_confirmation_prompt_uses_display_root() {
+    // Verifies: The prompt renderer uses the caller's operator-facing path label.
+    let workspace = WorkspaceEntry {
+        name: "example-fix".to_owned(),
+        root: PathBuf::from("/example/home/projects/.work/example-repo/example-fix"),
+        is_current: false,
+    };
+
+    assert_eq!(
+        workspace_remove_confirmation_prompt(
+            &workspace,
+            "~/projects/.work/example-repo/example-fix"
+        ),
+        "Delete workspace `example-fix` at ~/projects/.work/example-repo/example-fix?"
+    );
+}
+
+#[test]
 fn pull_request_preview_wraps_description_inside_content_indent() {
     // Verifies: Indented PR content still reserves indentation width before markdown wrapping.
     let mut plan = preview_plan();

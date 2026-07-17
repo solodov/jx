@@ -242,10 +242,7 @@ pub(in crate::commands) fn push_confirmation_prompt(plan: &PushPlan) -> String {
 /// Builds the confirmation prompt before forgetting and deleting a managed workspace.
 pub(in crate::commands) fn workspace_remove_confirmation_prompt(
     workspace: &WorkspaceEntry,
+    display_root: &str,
 ) -> String {
-    format!(
-        "Delete workspace `{}` at {}?",
-        workspace.name,
-        workspace.root.display()
-    )
+    format!("Delete workspace `{}` at {display_root}?", workspace.name)
 }

@@ -641,9 +641,10 @@ fn handle_work(
                 removable_workspace(&context, &identity, &[workspace], None, environment)?
             };
 
+            let display_root = display_path(&removal.workspace.root, environment);
             if !prompts
                 .workspace_remove_confirmer
-                .confirm_workspace_remove(&removal.workspace)?
+                .confirm_workspace_remove(&removal.workspace, &display_root)?
             {
                 return Ok("cancelled\n".to_owned());
             }

@@ -323,6 +323,7 @@ impl WorkspaceRemoveConfirmer for FixedWorkspaceRemoveConfirmer {
     fn confirm_workspace_remove(
         &self,
         _workspace: &WorkspaceEntry,
+        _display_root: &str,
     ) -> Result<bool, WorkspaceRemoveConfirmationError> {
         Ok(self.confirmed)
     }

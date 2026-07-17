@@ -564,6 +564,7 @@ pub(super) trait WorkspaceRemoveConfirmer {
     fn confirm_workspace_remove(
         &self,
         workspace: &WorkspaceEntry,
+        display_root: &str,
     ) -> Result<bool, WorkspaceRemoveConfirmationError>;
 }
 
@@ -581,6 +582,7 @@ impl WorkspaceRemoveConfirmer for TerminalWorkspaceRemoveConfirmer {
     fn confirm_workspace_remove(
         &self,
         workspace: &WorkspaceEntry,
+        display_root: &str,
     ) -> Result<bool, WorkspaceRemoveConfirmationError> {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             return Err(WorkspaceRemoveConfirmationError::NonInteractive);
@@ -590,7 +592,10 @@ impl WorkspaceRemoveConfirmer for TerminalWorkspaceRemoveConfirmer {
 
         let theme = PlainPromptTheme;
         let confirmed = Confirm::with_theme(&theme)
-            .with_prompt(workspace_remove_confirmation_prompt(workspace))
+            .with_prompt(workspace_remove_confirmation_prompt(
+                workspace,
+                display_root,
+            ))
             .default(false)
             .show_default(false)
             .report(false)
@@ -612,6 +617,7 @@ impl WorkspaceRemoveConfirmer for AlwaysConfirmWorkspaceRemove {
     fn confirm_workspace_remove(
         &self,
         _workspace: &WorkspaceEntry,
+        _display_root: &str,
     ) -> Result<bool, WorkspaceRemoveConfirmationError> {
         Ok(true)
     }
@@ -621,6 +627,7 @@ impl WorkspaceRemoveConfirmer for YesConfirmer {
     fn confirm_workspace_remove(
         &self,
         _workspace: &WorkspaceEntry,
+        _display_root: &str,
     ) -> Result<bool, WorkspaceRemoveConfirmationError> {
         Ok(true)
     }

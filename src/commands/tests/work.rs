@@ -1485,6 +1485,85 @@ path = "{repo}"
     );
 }
 
+struct RecordingWorkspaceRemoveConfirmer {
+    confirmed: bool,
+    display_roots: std::cell::RefCell<Vec<String>>,
+}
+
+impl WorkspaceRemoveConfirmer for RecordingWorkspaceRemoveConfirmer {
+    fn confirm_workspace_remove(
+        &self,
+        _workspace: &WorkspaceEntry,
+        display_root: &str,
+    ) -> Result<bool, WorkspaceRemoveConfirmationError> {
+        self.display_roots
+            .borrow_mut()
+            .push(display_root.to_owned());
+        Ok(self.confirmed)
+    }
+}
+
+#[test]
+fn work_delete_confirmation_uses_home_relative_workspace_path() {
+    // Verifies: The delete prompt receives a tilde-shortened path while removal keeps the absolute root.
+    let workspace = TestWorkspace::new_under("projects/example-repo");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let managed = workspace
+        .home
+        .join("projects/.work/example-repo/example-fix");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: workspace.home.join("projects/example-repo"),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "example-fix".to_owned(),
+                root: managed.clone(),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+    let confirmer = RecordingWorkspaceRemoveConfirmer {
+        confirmed: true,
+        display_roots: std::cell::RefCell::new(Vec::new()),
+    };
+
+    let result = run_with_args_and_workspace_remove_confirmer(
+        ["jx", "work", "delete", "example-fix"],
+        &environment,
+        &services,
+        &confirmer,
+    )
+    .expect("workspace deletion succeeds");
+
+    assert_eq!(result.stdout, "Deleted workspace: example-fix\n");
+    assert_eq!(
+        confirmer.display_roots.borrow().as_slice(),
+        ["~/projects/.work/example-repo/example-fix"]
+    );
+    assert_eq!(
+        services.workspace_removes.borrow().as_slice(),
+        [WorkspaceRemoveOptions {
+            name: "example-fix".to_owned(),
+            root: managed,
+            cleanup_root: workspace.home.join("projects/.work"),
+        }]
+    );
+}
+
 #[test]
 fn work_delete_can_be_cancelled() {
     // Verifies: Declining deletion stops before jj forget or filesystem deletion.
