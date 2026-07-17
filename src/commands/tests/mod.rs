@@ -5,11 +5,12 @@ use crate::{
         PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
     github::{
-        AuthenticatedUser, LabelApplyResult, PullRequestCheck, PullRequestCheckStatus,
-        PullRequestHead, PullRequestLabel, PullRequestRecord, PullRequestReviewActivity,
-        PullRequestReviewRequest, PullRequestReviewRequests, PullRequestReviewStatus,
-        PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
-        PullRequestTimelineEventKind, ReviewerSelection, ReviewerSyncResult,
+        AuthenticatedUser, LabelApplyResult, PullRequestAutoMergeStatus, PullRequestCheck,
+        PullRequestCheckStatus, PullRequestHead, PullRequestLabel, PullRequestRecord,
+        PullRequestReviewActivity, PullRequestReviewRequest, PullRequestReviewRequests,
+        PullRequestReviewStatus, PullRequestReviewerResponse, PullRequestStatusRecord,
+        PullRequestTimelineEvent, PullRequestTimelineEventKind, ReviewerSelection,
+        ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebasedCommitSummary,

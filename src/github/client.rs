@@ -2205,6 +2205,7 @@ pub(super) fn map_graphql_pull_request_status(
         checks,
         merge_status: map_merge_status(pull.mergeable.as_deref()),
         review_status,
+        auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers,
         suggested_reviewers,
         approved_reviewers,

@@ -208,6 +208,35 @@ impl PullRequestMergeStatus {
     }
 }
 
+/// Repository-policy interpretation of label-driven auto-merge state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestAutoMergeStatus {
+    /// No configured auto-merge signal is currently useful for display.
+    #[default]
+    NotConfigured,
+    /// A configured label indicates the PR should merge automatically once ready.
+    Armed,
+    /// The PR appears ready to merge, but no configured auto-merge label is present.
+    Missing,
+}
+
+impl PullRequestAutoMergeStatus {
+    /// Stable lowercase label for CLI and JSON output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not_configured",
+            Self::Armed => "armed",
+            Self::Missing => "missing",
+        }
+    }
+
+    /// Returns whether no configured auto-merge state should be reported.
+    pub fn is_not_configured(&self) -> bool {
+        matches!(self, Self::NotConfigured)
+    }
+}
+
 /// Read-only status facts for a pull request in a stack triage view.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestStatusRecord {
@@ -233,6 +262,12 @@ pub struct PullRequestStatusRecord {
     pub checks: Vec<PullRequestCheck>,
     pub merge_status: PullRequestMergeStatus,
     pub review_status: PullRequestReviewStatus,
+    /// Repo-configured label-driven auto-merge presentation state.
+    #[serde(
+        default,
+        skip_serializing_if = "PullRequestAutoMergeStatus::is_not_configured"
+    )]
+    pub auto_merge_status: PullRequestAutoMergeStatus,
     pub requested_reviewers: ReviewerSelection,
     pub suggested_reviewers: Vec<String>,
     pub approved_reviewers: Vec<String>,

@@ -1,9 +1,9 @@
 use super::*;
 use crate::github::{
-    PullRequestCheckStatus, PullRequestMergeStatus, PullRequestReviewActivity,
-    PullRequestReviewStatus, PullRequestReviewerMention, PullRequestReviewerResponse,
-    PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
-    ReviewerSelection,
+    PullRequestAutoMergeStatus, PullRequestCheckStatus, PullRequestMergeStatus,
+    PullRequestReviewActivity, PullRequestReviewStatus, PullRequestReviewerMention,
+    PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
+    PullRequestTimelineEventKind, ReviewerSelection,
 };
 use jj_lib::{
     config::StackedConfig,
@@ -960,6 +960,9 @@ ignored_labels_when_merged = ["global-merge-noise"]
 hidden_labels = [
   { label = "global-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
+auto_merge_labels = [
+  { label = "global-auto-merge", when = ["TARGETS_DEFAULT_BRANCH"] },
+]
 ignored_reviewers = ["^global-bot$"]
 review_gate_checks = ["global approval"]
 review_wait_threshold = "8h"
@@ -977,6 +980,9 @@ ignored_labels = ["repo-noise*"]
 ignored_labels_when_merged = ["repo-merge-noise*"]
 hidden_labels = [
   { label = "repo-ready*", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+]
+auto_merge_labels = [
+  { label = "repo-auto-merge*", when = ["TARGETS_DEFAULT_BRANCH"] },
 ]
 ignored_reviewers = ["^repo-bot-.*$"]
 review_gate_checks = ["repo approval*"]
@@ -1026,6 +1032,19 @@ replace = "$1"
                     HiddenLabelCondition::NotDraft,
                     HiddenLabelCondition::TargetsDefaultBranch,
                 ],
+            },
+        ]
+    );
+    assert_eq!(
+        stack_status.auto_merge_labels,
+        vec![
+            AutoMergeLabelConfig {
+                label: "global-auto-merge".to_owned(),
+                when: vec![HiddenLabelCondition::TargetsDefaultBranch],
+            },
+            AutoMergeLabelConfig {
+                label: "repo-auto-merge*".to_owned(),
+                when: vec![HiddenLabelCondition::TargetsDefaultBranch],
             },
         ]
     );
@@ -2293,6 +2312,7 @@ fn pull_request_status_record(number: u64, title: &str) -> PullRequestStatusReco
         checks: Vec::new(),
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status: PullRequestReviewStatus::ReviewRequired,
+        auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers: ReviewerSelection::default(),
         suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),

@@ -681,6 +681,7 @@ fn parse_stack_status_config(
                 | "ignored_labels"
                 | "ignored_labels_when_merged"
                 | "hidden_labels"
+                | "auto_merge_labels"
                 | "ignored_reviewers"
                 | "title_rewrites"
                 | "review_wait_threshold"
@@ -719,6 +720,11 @@ fn parse_stack_status_config(
         .map(|value| parse_hidden_labels(file, &format!("{key}.hidden_labels"), value))
         .transpose()?
         .unwrap_or_default();
+    let auto_merge_labels = table
+        .get("auto_merge_labels")
+        .map(|value| parse_auto_merge_labels(file, &format!("{key}.auto_merge_labels"), value))
+        .transpose()?
+        .unwrap_or_default();
     let ignored_reviewers = table
         .get("ignored_reviewers")
         .map(|value| parse_ignored_reviewers(file, &format!("{key}.ignored_reviewers"), value))
@@ -742,6 +748,7 @@ fn parse_stack_status_config(
         ignored_labels,
         ignored_labels_when_merged,
         hidden_labels,
+        auto_merge_labels,
         ignored_reviewers,
         title_rewrites,
         review_wait_threshold_seconds,
@@ -954,17 +961,71 @@ fn parse_hidden_label(
     index: usize,
     value: &toml::Value,
 ) -> Result<HiddenLabelConfig, RepositoryError> {
+    let rule = parse_conditioned_label_rule(file, key, index, value, "hidden-label")?;
+    Ok(HiddenLabelConfig {
+        label: rule.label,
+        when: rule.when,
+    })
+}
+
+fn parse_auto_merge_labels(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<AutoMergeLabelConfig>, RepositoryError> {
+    let Some(rules) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of auto-merge label rules"),
+        });
+    };
+
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_auto_merge_label(file, key, index, value))
+        .collect()
+}
+
+fn parse_auto_merge_label(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<AutoMergeLabelConfig, RepositoryError> {
+    let rule = parse_conditioned_label_rule(file, key, index, value, "auto-merge label")?;
+    Ok(AutoMergeLabelConfig {
+        label: rule.label,
+        when: rule.when,
+    })
+}
+
+struct ConditionedLabelRule {
+    label: String,
+    when: Vec<HiddenLabelCondition>,
+}
+
+fn parse_conditioned_label_rule(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+    description: &str,
+) -> Result<ConditionedLabelRule, RepositoryError> {
     if value.is_str() {
         let item_key = format!("{key}[{index}]");
         let label = parse_non_empty_string_value(file, &item_key, value)?;
         validate_named_glob_rule(file, &item_key, label.clone(), "label-name glob")?;
-        return Ok(HiddenLabelConfig::always(label));
+        return Ok(ConditionedLabelRule {
+            label,
+            when: vec![HiddenLabelCondition::Always],
+        });
     }
 
     let Some(table) = value.as_table() else {
         return Err(RepositoryError::InvalidConfig {
             file: file.to_owned(),
-            message: format!("`{key}[{index}]` must be a hidden-label string or table"),
+            message: format!("`{key}[{index}]` must be a {description} string or table"),
         });
     };
 
@@ -986,7 +1047,7 @@ fn parse_hidden_label(
         .transpose()?
         .unwrap_or_else(|| vec![HiddenLabelCondition::Always]);
 
-    Ok(HiddenLabelConfig { label, when })
+    Ok(ConditionedLabelRule { label, when })
 }
 
 fn parse_hidden_label_conditions(

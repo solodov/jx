@@ -174,10 +174,11 @@ the created jj workspace, and shell integration does not enter it.
 
 Stack status and review views can classify repository-specific approval gate
 checks separately from test health, highlight stale review wait time, omit noisy
-checks, stack-status labels, or reviewer identities, hide pre-merge-only labels
-after merge, and rewrite title prefixes before display ellipsizing. Review views
-can also omit review-only labels without affecting stack status, and ignore
-command-style author comments that should not resurface dismissed reviews.
+checks, stack-status labels, or reviewer identities, report label-driven
+auto-merge state, hide pre-merge-only labels after merge, and rewrite title
+prefixes before display ellipsizing. Review views can also omit review-only
+labels without affecting stack status, and ignore command-style author comments
+that should not resurface dismissed reviews.
 Matching review-gate checks are removed from the `Chk` aggregate and drive the
 review state instead:
 all configured gate globs must have passing matching checks for the PR to render
@@ -188,11 +189,14 @@ checks still decide whether `Chk` is passing, pending, or failing. Review-wait
 thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
 stay green. Check ignore and reviewer ignore entries are Rust regexes; review-gate
-and label entries are globs. `hidden_labels` uses the same glob syntax plus
-snapshot-backed `when` conditions such as `ALWAYS`, `NOT_DRAFT`, `MERGED`, and
-`TARGETS_DEFAULT_BRANCH`. Existing `ignored_labels` entries are unconditional
-hides, and `ignored_labels_when_merged` entries are merged-only hides. Review
-rules support the same `hidden_labels` shape for review-only omissions. Conditions
+and label entries are globs. `auto_merge_labels` and `hidden_labels` use the
+same glob syntax plus snapshot-backed `when` conditions such as `ALWAYS`,
+`NOT_DRAFT`, `MERGED`, and `TARGETS_DEFAULT_BRANCH`. Configured auto-merge
+labels are hidden from label chips; matching non-draft open PRs show `◎` when
+armed, and otherwise-ready matching PRs show an orange `◆` to indicate that
+auto-merge is not armed. Existing `ignored_labels` entries are unconditional hides, and
+`ignored_labels_when_merged` entries are merged-only hides. Review rules support
+the same `hidden_labels` shape for review-only omissions. Conditions
 in one rule are ANDed; repeated rules for the same label are ORed. Supported
 conditions are `ALWAYS`, `DRAFT`, `NOT_DRAFT`, `OPEN`, `CLOSED`, `MERGED`,
 `NOT_MERGED`, `TARGETS_DEFAULT_BRANCH`, and `TARGETS_NON_DEFAULT_BRANCH`.
@@ -211,6 +215,7 @@ repo = "example-owner/example-repo"
 ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
 ignored_labels = ["generated-*"]
 ignored_labels_when_merged = ["auto-merge", "run-ci"]
+auto_merge_labels = ["auto-merge"]
 hidden_labels = [
   { label = "run-ci", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]

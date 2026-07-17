@@ -30,6 +30,11 @@ pub fn apply_pull_request_status_policy(
     config: &RepoStackStatusConfig,
 ) -> PullRequestStatusRecord {
     status.title = config.rewrite_title(&status.title);
+    let label_names = status
+        .labels
+        .iter()
+        .map(|label| label.name.clone())
+        .collect::<Vec<_>>();
     let had_checks = !status.checks.is_empty();
     apply_ignored_pull_request_status_facts(&mut status, config);
 
@@ -41,6 +46,7 @@ pub fn apply_pull_request_status_policy(
             status.review_status =
                 review_status_with_review_gate(status.review_status, &[], config);
         }
+        status.auto_merge_status = pull_request_auto_merge_status(&status, config, &label_names);
         return status;
     }
 
@@ -57,6 +63,7 @@ pub fn apply_pull_request_status_policy(
         status.review_status =
             review_status_with_review_gate(status.review_status, &checks, config);
     }
+    status.auto_merge_status = pull_request_auto_merge_status(&status, config, &label_names);
     status
 }
 
@@ -83,6 +90,36 @@ pub fn apply_review_request_status_policy(
     status
 }
 
+fn pull_request_auto_merge_status(
+    status: &PullRequestStatusRecord,
+    config: &RepoStackStatusConfig,
+    label_names: &[String],
+) -> PullRequestAutoMergeStatus {
+    if !config.auto_merge_applies_to(status) {
+        return PullRequestAutoMergeStatus::NotConfigured;
+    }
+    if label_names
+        .iter()
+        .any(|label| config.matches_auto_merge_label(status, label))
+    {
+        return PullRequestAutoMergeStatus::Armed;
+    }
+    if pull_request_is_ready_for_auto_merge(status) {
+        PullRequestAutoMergeStatus::Missing
+    } else {
+        PullRequestAutoMergeStatus::NotConfigured
+    }
+}
+
+fn pull_request_is_ready_for_auto_merge(status: &PullRequestStatusRecord) -> bool {
+    !status.draft
+        && !status.merged
+        && !status.closed
+        && status.check_status == PullRequestCheckStatus::Passing
+        && status.review_status == PullRequestReviewStatus::Approved
+        && status.merge_status != PullRequestMergeStatus::Conflicting
+}
+
 fn apply_ignored_pull_request_status_facts(
     status: &mut PullRequestStatusRecord,
     config: &RepoStackStatusConfig,
@@ -95,6 +132,7 @@ fn apply_ignored_pull_request_status_facts(
     if !config.ignored_labels.is_empty()
         || !config.ignored_labels_when_merged.is_empty()
         || !config.hidden_labels.is_empty()
+        || !config.auto_merge_labels.is_empty()
     {
         status.labels = status
             .labels

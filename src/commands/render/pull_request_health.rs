@@ -1,5 +1,7 @@
 use super::*;
-use crate::github::{PullRequestMergeStatus, PullRequestTimelineEventKind};
+use crate::github::{
+    PullRequestAutoMergeStatus, PullRequestMergeStatus, PullRequestTimelineEventKind,
+};
 
 pub(in crate::commands) const BOLD_STYLE: &str = "\x1b[1m";
 const BLACK_BOLD_STYLE: &str = "\x1b[1m\x1b[30m";
@@ -696,10 +698,41 @@ pub(in crate::commands) fn pull_request_node_symbol(
         "⊖"
     } else if draft {
         "◌"
+    } else if status
+        .is_some_and(|status| status.auto_merge_status == PullRequestAutoMergeStatus::Missing)
+    {
+        "◆"
+    } else if status
+        .is_some_and(|status| status.auto_merge_status == PullRequestAutoMergeStatus::Armed)
+    {
+        "◎"
     } else {
         "◯"
     };
     symbol.to_owned()
+}
+
+/// Renders the PR lifecycle marker and title, emphasizing configured auto-merge gaps.
+pub(in crate::commands) fn pull_request_node_title_with_restore(
+    status: Option<&PullRequestStatusRecord>,
+    draft: bool,
+    title: &str,
+    color: bool,
+    restore_style: &str,
+) -> String {
+    let symbol = pull_request_node_symbol(status, draft);
+    let Some(status) = status else {
+        return format!("{symbol} {title}");
+    };
+    match status.auto_merge_status {
+        PullRequestAutoMergeStatus::Missing if color => {
+            format!("{ORANGE_STYLE}{symbol} {title}{RESET_STYLE}{restore_style}")
+        }
+        PullRequestAutoMergeStatus::Armed if color && symbol == "◎" => {
+            format!("{CYAN_STYLE}{symbol}{RESET_STYLE}{restore_style} {title}")
+        }
+        _ => format!("{symbol} {title}"),
+    }
 }
 
 pub(in crate::commands) fn pull_request_check_symbol_with_restore(

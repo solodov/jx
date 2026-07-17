@@ -2196,6 +2196,7 @@ fn review_status_record(
         }],
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status: PullRequestReviewStatus::ReviewRequested,
+        auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers: ReviewerSelection::new(
             ["example-reviewer", "peer-reviewer"],
             Vec::<String>::new(),

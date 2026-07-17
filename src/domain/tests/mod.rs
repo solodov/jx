@@ -530,6 +530,7 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
             }],
             ignored_labels_when_merged: Vec::new(),
             hidden_labels: Vec::new(),
+            auto_merge_labels: Vec::new(),
             ignored_reviewers: vec![
                 crate::repository::IgnoredReviewerConfig {
                     name: "^ignored-.*$".to_owned(),
@@ -811,6 +812,7 @@ fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
             name: "run-*".to_owned(),
         }],
         hidden_labels: Vec::new(),
+        auto_merge_labels: Vec::new(),
         ignored_reviewers: Vec::new(),
         title_rewrites: Vec::new(),
         review_wait_threshold_seconds: None,
@@ -834,6 +836,57 @@ fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
             .map(|label| label.name.as_str())
             .collect::<Vec<_>>(),
         ["kept"]
+    );
+}
+
+#[test]
+fn pull_request_status_policy_reports_configured_auto_merge_state() {
+    // Verifies: configured workflow labels become semantic auto-merge state instead of label chips.
+    let config = crate::repository::RepoStackStatusConfig {
+        auto_merge_labels: vec![crate::repository::AutoMergeLabelConfig {
+            label: "auto-merge".to_owned(),
+            when: vec![crate::repository::HiddenLabelCondition::TargetsDefaultBranch],
+        }],
+        ..Default::default()
+    };
+    let mut armed = pull_request_status(34, "Armed", false);
+    armed.labels = vec![
+        crate::github::PullRequestLabel {
+            name: "auto-merge".to_owned(),
+            color: "fbca04".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "kept".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    let ready_missing = pull_request_status(35, "Ready missing", false);
+    let mut pending_missing = pull_request_status(36, "Pending missing", false);
+    pending_missing.check_status = crate::github::PullRequestCheckStatus::Pending;
+
+    let armed = apply_pull_request_status_policy(armed, &config);
+    let ready_missing = apply_pull_request_status_policy(ready_missing, &config);
+    let pending_missing = apply_pull_request_status_policy(pending_missing, &config);
+
+    assert_eq!(
+        armed.auto_merge_status,
+        crate::github::PullRequestAutoMergeStatus::Armed
+    );
+    assert_eq!(
+        armed
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["kept"]
+    );
+    assert_eq!(
+        ready_missing.auto_merge_status,
+        crate::github::PullRequestAutoMergeStatus::Missing
+    );
+    assert_eq!(
+        pending_missing.auto_merge_status,
+        crate::github::PullRequestAutoMergeStatus::NotConfigured
     );
 }
 
@@ -1029,6 +1082,7 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         checks: Vec::new(),
         merge_status: crate::github::PullRequestMergeStatus::Mergeable,
         review_status: crate::github::PullRequestReviewStatus::Approved,
+        auto_merge_status: crate::github::PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers: ReviewerSelection::default(),
         suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),

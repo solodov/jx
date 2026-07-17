@@ -3603,7 +3603,7 @@ async fn prepare_global_remote_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::PullRequestMergeStatus;
+    use crate::github::{PullRequestAutoMergeStatus, PullRequestMergeStatus};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -4227,6 +4227,7 @@ mod tests {
             checks: Vec::new(),
             merge_status: PullRequestMergeStatus::Mergeable,
             review_status: PullRequestReviewStatus::ReviewRequired,
+            auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
             requested_reviewers: ReviewerSelection::default(),
             suggested_reviewers: Vec::new(),
             approved_reviewers: Vec::new(),

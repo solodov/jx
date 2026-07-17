@@ -267,6 +267,7 @@ pub struct RepoStackStatusConfig {
     pub ignored_labels: Vec<IgnoredLabelConfig>,
     pub ignored_labels_when_merged: Vec<IgnoredLabelConfig>,
     pub hidden_labels: Vec<HiddenLabelConfig>,
+    pub auto_merge_labels: Vec<AutoMergeLabelConfig>,
     pub ignored_reviewers: Vec<IgnoredReviewerConfig>,
     pub title_rewrites: Vec<TitleRewriteConfig>,
     pub review_wait_threshold_seconds: Option<u64>,
@@ -282,6 +283,7 @@ impl RepoStackStatusConfig {
             layer.ignored_labels_when_merged,
         );
         merge_hidden_labels(&mut self.hidden_labels, layer.hidden_labels);
+        merge_auto_merge_labels(&mut self.auto_merge_labels, layer.auto_merge_labels);
         merge_ignored_reviewers(&mut self.ignored_reviewers, layer.ignored_reviewers);
         self.title_rewrites.extend(layer.title_rewrites);
         if layer.review_wait_threshold_seconds.is_some() {
@@ -318,6 +320,21 @@ impl RepoStackStatusConfig {
                 .hidden_labels
                 .iter()
                 .any(|rule| rule.matches(status, label))
+            || self.matches_auto_merge_label(status, label)
+    }
+
+    /// Returns whether any auto-merge label rule applies to the current PR snapshot.
+    pub fn auto_merge_applies_to(&self, status: &PullRequestStatusRecord) -> bool {
+        self.auto_merge_labels
+            .iter()
+            .any(|rule| rule.applies_to(status))
+    }
+
+    /// Returns whether a configured auto-merge label is present for this PR snapshot.
+    pub fn matches_auto_merge_label(&self, status: &PullRequestStatusRecord, label: &str) -> bool {
+        self.auto_merge_labels
+            .iter()
+            .any(|rule| rule.matches(status, label))
     }
 
     /// Returns whether a pull-request label should be omitted after the PR has merged.
@@ -464,6 +481,33 @@ impl HiddenLabelConfig {
     pub fn matches(&self, status: &PullRequestStatusRecord, label_name: &str) -> bool {
         label_glob_matches(&self.label, label_name)
             && self.when.iter().all(|condition| condition.matches(status))
+    }
+}
+
+/// Label-name glob that represents repository-specific auto-merge arming.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AutoMergeLabelConfig {
+    pub label: String,
+    pub when: Vec<HiddenLabelCondition>,
+}
+
+impl AutoMergeLabelConfig {
+    /// Returns an unconditional auto-merge label rule.
+    pub fn always(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            when: vec![HiddenLabelCondition::Always],
+        }
+    }
+
+    /// Returns whether this rule is relevant to the current PR snapshot.
+    pub fn applies_to(&self, status: &PullRequestStatusRecord) -> bool {
+        self.when.iter().all(|condition| condition.matches(status))
+    }
+
+    /// Returns whether this rule matches a label on the current PR snapshot.
+    pub fn matches(&self, status: &PullRequestStatusRecord, label_name: &str) -> bool {
+        self.applies_to(status) && label_glob_matches(&self.label, label_name)
     }
 }
 
@@ -969,6 +1013,18 @@ fn merge_ignored_labels(target: &mut Vec<IgnoredLabelConfig>, labels: Vec<Ignore
 }
 
 fn merge_hidden_labels(target: &mut Vec<HiddenLabelConfig>, labels: Vec<HiddenLabelConfig>) {
+    let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
+    for label in labels {
+        if seen.insert(label.clone()) {
+            target.push(label);
+        }
+    }
+}
+
+fn merge_auto_merge_labels(
+    target: &mut Vec<AutoMergeLabelConfig>,
+    labels: Vec<AutoMergeLabelConfig>,
+) {
     let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
     for label in labels {
         if seen.insert(label.clone()) {

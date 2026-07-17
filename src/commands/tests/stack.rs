@@ -364,6 +364,141 @@ fn stack_status_renders_review_decision_symbols() {
 }
 
 #[test]
+fn stack_status_renders_configured_auto_merge_state() {
+    // Verifies: configured auto-merge labels render as workflow state, not noisy label chips.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[repo.stack_status]
+auto_merge_labels = [
+  { label = "auto-merge", when = ["TARGETS_DEFAULT_BRANCH"] },
+]
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                stack_status_node(111, "topic/armed", "main", "Armed auto-merge", false),
+                stack_status_node(112, "topic/missing", "main", "Missing auto-merge", false),
+                stack_status_node(113, "topic/waiting", "main", "Waiting checks", false),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut armed = stack_status_record(
+        111,
+        "Armed auto-merge",
+        "topic/armed",
+        "main",
+        PullRequestCheckStatus::Pending,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    armed.labels = vec![
+        PullRequestLabel {
+            name: "auto-merge".to_owned(),
+            color: "fbca04".to_owned(),
+        },
+        PullRequestLabel {
+            name: "kept".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    let missing = stack_status_record(
+        112,
+        "Missing auto-merge",
+        "topic/missing",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    let waiting = stack_status_record(
+        113,
+        "Waiting checks",
+        "topic/waiting",
+        "main",
+        PullRequestCheckStatus::Pending,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "topic/armed".to_owned(),
+            "topic/missing".to_owned(),
+            "topic/waiting".to_owned(),
+        ],
+        pull_request_statuses: BTreeMap::from([(111, armed), (112, missing), (113, waiting)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let plain = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert!(plain.stdout.contains(&format!(
+        "{}  ◷    ✓    —     ◎ Armed auto-merge [kept]",
+        stack_status_pull_request_cell(111)
+    )));
+    assert!(plain.stdout.contains(&format!(
+        "{}  ✓    ✓    —     ◆ Missing auto-merge",
+        stack_status_pull_request_cell(112)
+    )));
+    assert!(plain.stdout.contains(&format!(
+        "{}  ◷    ✓    —     ◯ Waiting checks",
+        stack_status_pull_request_cell(113)
+    )));
+    assert!(!plain.stdout.contains("auto-merge]"));
+
+    let colored = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        test_prompt_handlers(),
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("colored stack status succeeds");
+
+    assert!(colored.stdout.contains("\x1b[36m◎\x1b[0m Armed auto-merge"));
+    assert!(colored
+        .stdout
+        .contains("\x1b[38;2;194;95;0m◆ Missing auto-merge\x1b[0m"));
+
+    let json = run_with_args_and_services(
+        ["jx", "stack", "status", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("stack status json succeeds");
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid json");
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][0]["autoMergeStatus"],
+        "armed"
+    );
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][1]["autoMergeStatus"],
+        "missing"
+    );
+    assert!(value["repositories"][0]["pullRequests"][2]
+        .get("autoMergeStatus")
+        .is_none());
+}
+
+#[test]
 fn stack_status_marks_unreviewed_review_cell() {
     // Verifies: absent review state uses a compact placeholder instead of leaving the column empty.
     let workspace = TestWorkspace::new();
@@ -2481,6 +2616,7 @@ fn stack_status_record(
         checks: Vec::new(),
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status,
+        auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers,
         suggested_reviewers: Vec::new(),
         approved_reviewers: Vec::new(),

@@ -383,8 +383,8 @@ fn stack_status_title(
         .map(|status| pull_request_reviewer_tokens(status, color && !draft, display_names))
         .unwrap_or_default();
     let prefix = compact_stack_prefix(&row.prefix);
-    let symbol = pull_request_node_symbol(status, draft);
-    let mut parts = vec![format!("{prefix}{symbol} {title}")];
+    let node_title = pull_request_node_title_with_restore(status, draft, &title, color, "");
+    let mut parts = vec![format!("{prefix}{node_title}")];
     if !label_chips.is_empty() {
         parts.push(label_chips.join(pull_request_label_separator(color)));
     }
@@ -629,6 +629,8 @@ struct StackStatusPullRequestJson {
     check_status: &'static str,
     merge_status: &'static str,
     review_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_merge_status: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     labels: Vec<StackStatusLabelJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -687,6 +689,10 @@ impl From<&PullRequestReviewerResponse> for StackStatusResponseJson {
     }
 }
 
+fn stack_status_auto_merge_status_label(status: &PullRequestStatusRecord) -> Option<&'static str> {
+    (!status.auto_merge_status.is_not_configured()).then(|| status.auto_merge_status.label())
+}
+
 fn stack_status_pull_requests_json(
     report: &PullRequestStackStatusReport,
 ) -> Vec<StackStatusPullRequestJson> {
@@ -722,6 +728,7 @@ fn stack_status_pull_requests_json(
                 review_status: status
                     .map(|status| status.review_status.label())
                     .unwrap_or("unknown"),
+                auto_merge_status: status.and_then(stack_status_auto_merge_status_label),
                 labels: status
                     .map(|status| {
                         status

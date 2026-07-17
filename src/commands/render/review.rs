@@ -182,6 +182,8 @@ struct ReviewPullRequestJson {
     check_status: &'static str,
     merge_status: &'static str,
     review_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_merge_status: Option<&'static str>,
     request_state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     viewer_review_signal: Option<&'static str>,
@@ -250,6 +252,7 @@ impl ReviewPullRequestJson {
             check_status: status.check_status.label(),
             merge_status: status.merge_status.label(),
             review_status: status.review_status.label(),
+            auto_merge_status: review_auto_merge_status_label(status),
             request_state: row.state.label(),
             viewer_review_signal: row.viewer_signal.label(),
             lag_since_unix: row.lag_since_unix,
@@ -318,6 +321,10 @@ impl From<&PullRequestLabel> for ReviewLabelJson {
             color: label.color.clone(),
         }
     }
+}
+
+fn review_auto_merge_status_label(status: &PullRequestStatusRecord) -> Option<&'static str> {
+    (!status.auto_merge_status.is_not_configured()).then(|| status.auto_merge_status.label())
 }
 
 #[derive(serde::Serialize)]
@@ -593,9 +600,14 @@ fn review_request_title(
     display_names: &BTreeMap<String, String>,
 ) -> String {
     let status = &row.status;
-    let marker = pull_request_node_symbol(Some(status), status.draft);
     let title = ellipsize_pull_request_title(&status.title);
-    let mut parts = vec![format!("{marker} {title}")];
+    let mut parts = vec![pull_request_node_title_with_restore(
+        Some(status),
+        status.draft,
+        &title,
+        color,
+        "",
+    )];
     if review_request_is_on_ice(status) {
         return parts.join(" ");
     }

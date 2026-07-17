@@ -13,9 +13,10 @@ use thiserror::Error;
 use crate::{
     github::{
         CommitComparison, ComparisonStatus, GitHubClient, GitHubError, LabelApplyResult,
-        PullRequestCheck, PullRequestCheckStatus, PullRequestCreate, PullRequestHead,
-        PullRequestRecord, PullRequestReviewStatus, PullRequestStatusRecord, PullRequestUpdate,
-        RepositoryAccess, ReviewerCandidate, ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
+        PullRequestAutoMergeStatus, PullRequestCheck, PullRequestCheckStatus, PullRequestCreate,
+        PullRequestHead, PullRequestMergeStatus, PullRequestRecord, PullRequestReviewStatus,
+        PullRequestStatusRecord, PullRequestUpdate, RepositoryAccess, ReviewerCandidate,
+        ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
     },
     jj::{
         BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, SkippedPushBookmarkSummary,
