@@ -21,7 +21,7 @@ use crate::{
     jj::{
         BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, SkippedPushBookmarkSummary,
         SkippedSameTreeBookmarkSummary, StatusRemoteFacts, StatusWorkspaceFacts, SyncPushOutcome,
-        TrackedPushOutcome, WorkspaceFacts,
+        TrackedPushOutcome, TrunkStateSummary, WorkspaceFacts,
     },
     repository::{
         GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,

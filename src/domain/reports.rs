@@ -196,6 +196,7 @@ pub struct TrackedPushReport {
 pub struct SyncReport {
     pub repository: RepositorySummary,
     pub fetch: FetchOutcome,
+    pub trunk: Option<TrunkStateSummary>,
     pub push: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
     pub skipped_same_tree_bookmarks: Vec<SkippedSameTreeBookmarkSummary>,

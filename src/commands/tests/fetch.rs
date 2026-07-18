@@ -36,6 +36,7 @@ fn fetch_omits_rebase_section_when_no_commits_move() {
     let services = FakeServices {
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 0,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -71,6 +72,7 @@ fn fetch_omits_rebase_section_when_repair_has_no_commit_detail() {
     let services = FakeServices {
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 1,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -171,6 +173,7 @@ path = "{repo}"
         global_fetch_ready_roots: Some(BTreeSet::from([ready.clone()])),
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 0,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -244,6 +247,7 @@ path = "{repo}"
     let services = FakeServices {
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 0,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -292,6 +296,7 @@ path = "{repo}"
     let services = FakeServices {
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 0,
             changed_remote_tags: 0,
             abandoned_commits: 0,

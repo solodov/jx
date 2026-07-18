@@ -235,7 +235,8 @@ impl JjWorkspace {
         self.repo = repo;
 
         Ok(FetchOutcome {
-            branch: fetch_trunk.branch,
+            branch: fetch_trunk.branch.clone(),
+            trunk: Some(trunk_state_summary(fetch_trunk.branch, &updated_trunk)),
             changed_remote_bookmarks: import_stats.changed_remote_bookmarks.len(),
             changed_remote_tags: import_stats.changed_remote_tags.len(),
             abandoned_commits: import_stats.abandoned_commits.len()

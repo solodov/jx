@@ -326,10 +326,21 @@ impl From<bool> for FetchTraceValue {
     }
 }
 
+/// Commit metadata for the resolved trunk target after a mutating sync step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrunkStateSummary {
+    pub branch: String,
+    pub short_change_id: String,
+    pub short_commit_id: String,
+    pub committed_at_unix_ms: i64,
+    pub description: String,
+}
+
 /// Outcome of fetching and importing fixed `origin` through the jj boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchOutcome {
     pub branch: String,
+    pub trunk: Option<TrunkStateSummary>,
     pub changed_remote_bookmarks: usize,
     pub changed_remote_tags: usize,
     pub abandoned_commits: usize,
@@ -346,6 +357,7 @@ pub struct AdvanceTrunkOutcome {
     pub branch: String,
     pub old_short_commit_id: String,
     pub new_short_commit_id: String,
+    pub trunk: Option<TrunkStateSummary>,
     pub current_updated: bool,
 }
 
@@ -625,4 +637,15 @@ pub(super) fn short_change_id(commit: &Commit) -> String {
         .chars()
         .take(SHORT_COMMIT_ID_LEN)
         .collect()
+}
+
+/// Builds the compact trunk state shown after single-repository sync.
+pub(super) fn trunk_state_summary(branch: impl Into<String>, commit: &Commit) -> TrunkStateSummary {
+    TrunkStateSummary {
+        branch: branch.into(),
+        short_change_id: short_change_id(commit),
+        short_commit_id: short_commit_id(commit.id()),
+        committed_at_unix_ms: commit.committer().timestamp.timestamp.0,
+        description: first_description_line(commit.description()).to_owned(),
+    }
 }

@@ -15,12 +15,15 @@ pub fn fetch_report(context: &RepositoryContext, outcome: FetchOutcome) -> Fetch
 pub fn sync_report(
     context: &RepositoryContext,
     fetch: FetchOutcome,
+    advanced_trunk: Option<TrunkStateSummary>,
     push: SyncPushOutcome,
     pull_requests: Vec<PullRequestRecord>,
 ) -> SyncReport {
+    let trunk = advanced_trunk.or_else(|| fetch.trunk.clone());
     SyncReport {
         repository: repository_summary(context),
         fetch,
+        trunk,
         push: push.pushed,
         skipped_conflicted_bookmarks: push.skipped_conflicted_bookmarks,
         skipped_same_tree_bookmarks: push.skipped_same_tree_bookmarks,

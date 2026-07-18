@@ -156,6 +156,7 @@ path = "{repo}"
         ],
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 0,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -359,6 +360,7 @@ path = "{repo}"
         },
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 0,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -417,6 +419,7 @@ path = "{repo}"
         up_to_date_sync_roots: BTreeSet::from([pull_only.clone()]),
         fetch: FetchOutcome {
             branch: "main".to_owned(),
+            trunk: None,
             changed_remote_bookmarks: 1,
             changed_remote_tags: 0,
             abandoned_commits: 0,
@@ -469,6 +472,47 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
             blank_sync_pull_request_cell(),
             example_bookmark_link("example-user/old")
         )
+    );
+}
+
+#[test]
+fn sync_renders_updated_trunk_state() {
+    // Verifies: Single-repo sync reports the local trunk target without a GitHub lookup.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let committed_at = chrono::Utc::now() - chrono::Duration::minutes(90);
+    let services = FakeServices {
+        fetch: FetchOutcome {
+            trunk: Some(crate::jj::TrunkStateSummary {
+                branch: "main".to_owned(),
+                short_change_id: "trunkchg".to_owned(),
+                short_commit_id: "abc12345".to_owned(),
+                committed_at_unix_ms: committed_at.timestamp_millis(),
+                description: "Update example trunk".to_owned(),
+            }),
+            rebased_commits: Vec::new(),
+            ..FakeServices::default().fetch
+        },
+        tracked_push: TrackedPushOutcome {
+            pushed_refs: 0,
+            bookmarks: Vec::new(),
+            pushed_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result =
+        run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\nTrunk:  trunkchg  1 hour ago  Update example trunk\n"
     );
 }
 
@@ -1173,11 +1217,38 @@ advance_trunk = true
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), []);
-    let services = FakeServices::default();
+    let committed_at = chrono::Utc::now() - chrono::Duration::hours(3);
+    let services = FakeServices {
+        fetch: FetchOutcome {
+            rebased_commits: Vec::new(),
+            ..FakeServices::default().fetch
+        },
+        advance_trunk: AdvanceTrunkOutcome {
+            trunk: Some(crate::jj::TrunkStateSummary {
+                branch: "main".to_owned(),
+                short_change_id: "newtrunk".to_owned(),
+                short_commit_id: "def67890".to_owned(),
+                committed_at_unix_ms: committed_at.timestamp_millis(),
+                description: "Publish example trunk".to_owned(),
+            }),
+            ..FakeServices::default().advance_trunk
+        },
+        tracked_push: TrackedPushOutcome {
+            pushed_refs: 0,
+            bookmarks: Vec::new(),
+            pushed_commits: Vec::new(),
+        },
+        ..FakeServices::default()
+    };
 
-    run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
+    let result =
+        run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert_eq!(services.advance_trunk_calls.get(), 1);
+    assert_eq!(
+        result.stdout,
+        "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\nTrunk:  newtrunk  3 hours ago  Publish example trunk\n"
+    );
 }
 
 #[test]

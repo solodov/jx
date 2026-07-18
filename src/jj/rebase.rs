@@ -42,9 +42,10 @@ impl JjWorkspace {
         let bookmark_needs_update = old_id != *target.id();
         if !bookmark_needs_update && !should_create_empty_child {
             return Ok(AdvanceTrunkOutcome {
-                branch,
+                branch: branch.clone(),
                 old_short_commit_id: short_commit_id(&old_id),
                 new_short_commit_id: short_commit_id(target.id()),
+                trunk: Some(trunk_state_summary(branch, &target)),
                 current_updated: false,
             });
         }
@@ -94,9 +95,10 @@ impl JjWorkspace {
 
         self.repo = repo;
         Ok(AdvanceTrunkOutcome {
-            branch,
+            branch: branch.clone(),
             old_short_commit_id: short_commit_id(&old_id),
             new_short_commit_id: short_commit_id(target.id()),
+            trunk: Some(trunk_state_summary(branch, &target)),
             current_updated: should_create_empty_child,
         })
     }

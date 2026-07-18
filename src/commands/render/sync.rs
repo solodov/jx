@@ -522,6 +522,9 @@ pub(in crate::commands) fn write_sync(
         &report.repository.origin_url,
     )?;
     writeln!(formatter, ")")?;
+    if let Some(trunk) = &report.trunk {
+        write_trunk_state(formatter, trunk)?;
+    }
 
     let rebased_commits = visible_rebased_commits(&report.fetch);
     let pushed_bookmarks = report
@@ -610,6 +613,51 @@ pub(in crate::commands) fn write_sync(
     }
 
     Ok(())
+}
+
+fn write_trunk_state(
+    formatter: &mut dyn Formatter,
+    trunk: &crate::jj::TrunkStateSummary,
+) -> io::Result<()> {
+    write!(formatter, "Trunk:  ")?;
+    write_commit_id(formatter, &trunk.short_change_id)?;
+    write!(formatter, "  {}  ", format_relative_age(trunk.committed_at_unix_ms))?;
+    write_description(formatter, &trunk.description)?;
+    writeln!(formatter)
+}
+
+fn format_relative_age(committed_at_unix_ms: i64) -> String {
+    let Some(committed_at) = chrono::DateTime::from_timestamp_millis(committed_at_unix_ms) else {
+        return "unknown age".to_owned();
+    };
+
+    format_relative_age_at(committed_at, chrono::Utc::now())
+}
+
+fn format_relative_age_at(
+    committed_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let seconds = now
+        .signed_duration_since(committed_at)
+        .num_seconds()
+        .max(0);
+    match seconds {
+        0..=59 => "just now".to_owned(),
+        60..=3_599 => relative_unit(seconds / 60, "minute"),
+        3_600..=86_399 => relative_unit(seconds / 3_600, "hour"),
+        86_400..=604_799 => relative_unit(seconds / 86_400, "day"),
+        604_800..=31_535_999 => relative_unit(seconds / 604_800, "week"),
+        _ => relative_unit(seconds / 31_536_000, "year"),
+    }
+}
+
+fn relative_unit(value: i64, unit: &str) -> String {
+    if value == 1 {
+        format!("1 {unit} ago")
+    } else {
+        format!("{value} {unit}s ago")
+    }
 }
 
 pub(in crate::commands) fn write_rebased_section(

@@ -582,6 +582,7 @@ impl Default for FakeServices {
             changed_file_bookmark_requests: std::cell::RefCell::new(Vec::new()),
             fetch: FetchOutcome {
                 branch: "main".to_owned(),
+                trunk: None,
                 changed_remote_bookmarks: 1,
                 changed_remote_tags: 0,
                 abandoned_commits: 0,
@@ -650,6 +651,7 @@ impl Default for FakeServices {
                 branch: "main".to_owned(),
                 old_short_commit_id: "11112222".to_owned(),
                 new_short_commit_id: "a1b2c3d4".to_owned(),
+                trunk: None,
                 current_updated: true,
             },
             advance_trunk_calls: std::cell::Cell::new(0),

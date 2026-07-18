@@ -630,7 +630,7 @@ impl StackMoveExecution<'_> {
             .sync_pull_requests_with_metadata(&push.pushed, &new_selection.metadata)?;
         self.progress.finish();
 
-        let report = domain::sync_report(self.context, fetch, push, pull_requests);
+        let report = domain::sync_report(self.context, fetch, None, push, pull_requests);
         let mut stdout = render_stack_move(&outcome, &target, true);
         stdout.push_str(&render_sync(
             &report,

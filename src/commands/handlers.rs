@@ -1818,7 +1818,7 @@ fn sync_current_stack_traced(
         pull_request_records_result_attrs,
     )?;
     progress.finish();
-    let report = domain::sync_report(&context, fetch, push, pull_requests);
+    let report = domain::sync_report(&context, fetch, None, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
         1
     } else {
@@ -1975,7 +1975,7 @@ fn sync_selected_revision_traced(
         pull_request_records_result_attrs,
     )?;
     progress.finish();
-    let report = domain::sync_report(&context, fetch, push, pull_requests);
+    let report = domain::sync_report(&context, fetch, None, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
         1
     } else {
@@ -2203,15 +2203,18 @@ fn sync_existing_origin_traced(
         .repo
         .advance_trunk_enabled_for(&context.origin.github);
     span.set([perf_attr("advance_trunk", advance_trunk)]);
-    if advance_trunk {
+    let advanced_trunk = if advance_trunk {
         progress.status("Advancing trunk bookmark…");
         span.measure_with_result_attrs(
             "advance_trunk",
             Vec::new(),
             || services.advance_trunk_for_sync(&context),
             advance_trunk_result_attrs,
-        )?;
-    }
+        )?
+        .trunk
+    } else {
+        None
+    };
     progress.status("Pushing tracked bookmarks…");
     let push_step = span.start_step("push_syncable_tracked", Vec::new());
     let push_result = services.push_syncable_tracked_with_metrics(&context, sync_push_options);
@@ -2238,7 +2241,7 @@ fn sync_existing_origin_traced(
         pull_request_records_result_attrs,
     )?;
     progress.finish();
-    let report = domain::sync_report(&context, fetch, push, pull_requests);
+    let report = domain::sync_report(&context, fetch, advanced_trunk, push, pull_requests);
     let exit_code = if sync_report_has_conflicts(&report) {
         1
     } else {
