@@ -24,7 +24,7 @@ pub(super) struct StackStatusFetches {
 
 pub(super) trait CommandServices {
     /// Renders the no-argument workspace log.
-    fn workspace_log(&self) -> Result<String, JjError>;
+    fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError>;
 
     /// Shows the current jj diff, optionally constraining it to non-test files.
     fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError>;
@@ -2000,8 +2000,8 @@ fn run_captured_command(cwd: &Path, command: &[String]) -> io::Result<CapturedCo
 }
 
 impl CommandServices for ProductionServices<'_> {
-    fn workspace_log(&self) -> Result<String, JjError> {
-        JjWorkspace::current_workspace_log(self.environment.current_dir())
+    fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
+        JjWorkspace::current_workspace_log(self.environment.current_dir(), annotations)
     }
 
     fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError> {

@@ -221,6 +221,14 @@ pub struct StatusRemoteFacts {
     pub local_ahead_by: i64,
 }
 
+/// One annotation rendered beside a log commit when a matching local bookmark points at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogBookmarkAnnotation {
+    pub bookmark: String,
+    pub label: String,
+    pub url: Option<String>,
+}
+
 /// Summary of a jj change/commit relevant to workflow planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSummary {

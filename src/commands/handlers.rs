@@ -9,7 +9,10 @@ pub(super) fn handle_request(
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
     let stdout = match request {
-        CommandRequest::Log => services.workspace_log()?,
+        CommandRequest::Log => {
+            let annotations = workspace_log_annotations(environment)?;
+            services.workspace_log(&annotations)?
+        }
         CommandRequest::Status => {
             let status = services.workspace_status(environment.current_dir(), output.color)?;
             render_workspace_status(&status)
@@ -112,6 +115,49 @@ pub(super) fn handle_request(
     };
 
     Ok(CommandResult::success(stdout))
+}
+
+fn workspace_log_annotations(
+    environment: &RuntimeEnvironment,
+) -> Result<Vec<LogBookmarkAnnotation>, CommandError> {
+    let context = match RepositoryContext::discover(environment) {
+        Ok(context) => context,
+        Err(error) if workspace_log_annotations_are_optional(&error) => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = read_stack_metadata(&context.repository_root)?;
+    let repository_url = context.origin.github.https_url();
+
+    Ok(metadata
+        .nodes
+        .iter()
+        .filter_map(|node| workspace_log_annotation(&repository_url, node))
+        .collect())
+}
+
+fn workspace_log_annotations_are_optional(error: &RepositoryError) -> bool {
+    matches!(
+        error,
+        RepositoryError::WorkspaceNotFound
+            | RepositoryError::MissingOrigin
+            | RepositoryError::OriginNotGitHub { .. }
+    )
+}
+
+fn workspace_log_annotation(
+    repository_url: &str,
+    node: &StackMetadataNode,
+) -> Option<LogBookmarkAnnotation> {
+    let pull_request = node.pull_request?;
+    Some(LogBookmarkAnnotation {
+        bookmark: node.branch.clone(),
+        label: format!("#{pull_request}"),
+        url: Some(
+            node.url
+                .clone()
+                .unwrap_or_else(|| format!("{repository_url}/pull/{pull_request}")),
+        ),
+    })
 }
 
 pub(super) fn render_pull_request_with_effects(

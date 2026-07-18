@@ -12,6 +12,54 @@ fn no_args_renders_workspace_scoped_log() {
 }
 
 #[test]
+fn no_args_passes_stack_pull_request_annotations_to_workspace_log() {
+    // Verifies: Default log rendering can link local PR bookmarks without contacting GitHub.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let root = workspace.path();
+    write_stack_metadata(
+        &root,
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![StackMetadataNode {
+                branch: "topic/current".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(42),
+                parent_pull_request: None,
+                title: "Current".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            }],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(root, []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx"], &environment, &services).expect("log succeeds");
+
+    assert_eq!(result.stdout, "workspace log\n");
+    assert_eq!(
+        services.workspace_log_annotations.borrow().as_slice(),
+        [vec![LogBookmarkAnnotation {
+            bookmark: "topic/current".to_owned(),
+            label: "#42".to_owned(),
+            url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
+        }]]
+    );
+}
+
+#[test]
 fn status_renders_shared_commit_status_without_github_context() {
     // Verifies: Status shows jj's commit summary, description, and file summary without origin.
     let environment = RuntimeEnvironment::new("/workspace", []);

@@ -2,11 +2,14 @@ use super::*;
 
 impl JjWorkspace {
     /// Renders the default jj log restricted to commits reachable from the current workspace.
-    pub fn current_workspace_log(current_dir: &Path) -> Result<String, JjError> {
+    pub fn current_workspace_log(
+        current_dir: &Path,
+        annotations: &[LogBookmarkAnnotation],
+    ) -> Result<String, JjError> {
         let workspace_root = find_jj_workspace_root(current_dir)?;
         let (workspace, repo) = load_workspace_for_log(&workspace_root)?;
 
-        render_current_workspace_log(&workspace, repo.as_ref(), current_dir)
+        render_current_workspace_log(&workspace, repo.as_ref(), current_dir, annotations)
     }
 
     /// Renders caller-provided content through jj's workspace formatter and color rules.
@@ -142,11 +145,56 @@ pub(super) fn jx_default_config_layers() -> Vec<ConfigLayer> {
         ConfigLayer::parse(
             ConfigSource::Default,
             r#"
+[templates]
+log = "jx_builtin_log_compact"
+
+[template-aliases]
+jx_builtin_log_compact = "jx_builtin_log_compact(self)"
+'jx_builtin_log_compact(commit)' = '''
+if(commit.root(),
+  format_jx_root_commit(commit),
+  label(
+    separate(" ",
+      if(commit.current_working_copy(), "working_copy"),
+      if(commit.immutable(), "immutable", "mutable"),
+      if(commit.conflict(), "conflicted"),
+    ),
+    concat(
+      format_jx_short_commit_header(commit) ++ "\n",
+      separate(" ",
+        if(commit.empty(), empty_commit_marker),
+        if(commit.description(),
+          commit.description().first_line(),
+          label(if(commit.empty(), "empty"), description_placeholder),
+        ),
+      ) ++ "\n",
+    ),
+  )
+)
+'''
+'format_jx_short_commit_header(commit)' = '''
+separate(" ",
+  format_short_change_id_with_change_offset(commit),
+  format_short_signature(commit.author()),
+  format_timestamp(commit_timestamp(commit)),
+  commit.bookmarks(),
+  commit.tags(),
+  commit.working_copies(),
+  format_commit_labels(commit),
+  if(config("ui.show-cryptographic-signatures").as_boolean(),
+    format_short_cryptographic_signature(commit.signature())
+  ),
+)
+'''
+'format_jx_root_commit(commit)' = '''
+label("root", "root()") ++ "\n"
+'''
+
 [colors]
 link = { underline = true }
 "#,
         )
-        .expect("jx default link color config is valid"),
+        .expect("jx default log template config is valid"),
     );
     layers
 }
@@ -155,9 +203,10 @@ pub(super) fn render_current_workspace_log(
     workspace: &Workspace,
     repo: &ReadonlyRepo,
     current_dir: &Path,
+    annotations: &[LogBookmarkAnnotation],
 ) -> Result<String, JjError> {
-    // Reuse jj-cli's graph and template machinery so `jx` follows the user's
-    // normal jj log aliases/templates instead of maintaining a parallel renderer.
+    // Reuse jj-cli's graph and template machinery so `jx` keeps user aliases and
+    // graph behavior while owning a compact default log template.
     let settings = workspace.settings();
     let ui = Ui::with_config(settings.config()).map_err(log_command_error)?;
     let fileset_aliases_map =
@@ -238,8 +287,11 @@ pub(super) fn render_current_workspace_log(
         repo,
         revset,
         prioritize_revset,
-        template,
-        node_template,
+        LogGraphTemplates {
+            commit: template,
+            node: node_template,
+        },
+        annotations,
     )
 }
 
@@ -324,8 +376,11 @@ pub(super) fn render_commit_ids_log(
         repo,
         revset,
         prioritize_revset,
-        template,
-        node_template,
+        LogGraphTemplates {
+            commit: template,
+            node: node_template,
+        },
+        &[],
     )
 }
 
@@ -483,20 +538,26 @@ where
     Ok(template)
 }
 
+pub(super) struct LogGraphTemplates<'repo> {
+    commit: TemplateRenderer<'repo, Commit>,
+    node: TemplateRenderer<'repo, Option<Commit>>,
+}
+
 pub(super) fn render_log_graph<'repo>(
     ui: &Ui,
     settings: &UserSettings,
     repo: &'repo ReadonlyRepo,
     revset: Box<dyn jj_lib::revset::Revset + 'repo>,
     prioritize_revset: RevsetExpressionEvaluator<'repo>,
-    template: TemplateRenderer<'repo, Commit>,
-    node_template: TemplateRenderer<'repo, Option<Commit>>,
+    templates: LogGraphTemplates<'repo>,
+    annotations: &[LogBookmarkAnnotation],
 ) -> Result<String, JjError> {
     let graph_style = GraphStyle::from_settings(settings).map_err(log_error)?;
     let use_elided_nodes = settings
         .get_bool("ui.log-synthetic-elided-nodes")
         .map_err(log_error)?;
     let with_content_format = LogContentFormat::new(ui, settings).map_err(log_error)?;
+    let annotations_by_bookmark = log_annotations_by_bookmark(annotations);
     let store = repo.store();
     let mut output = Vec::new();
 
@@ -551,13 +612,15 @@ pub(super) fn render_log_graph<'repo>(
             let within_graph = with_content_format.sub_width(graph.width(&key, &graphlog_edges));
             pollster::block_on(
                 within_graph.write(ui.new_formatter(&mut buffer).as_mut(), async |formatter| {
-                    template.format(&commit, formatter)
+                    templates.commit.format(&commit, formatter)
                 }),
             )
             .map_err(log_error)?;
+            let annotations = log_annotations_for_commit(repo, &commit, &annotations_by_bookmark);
+            append_log_annotations(ui, &mut buffer, &annotations)?;
 
             let commit = Some(commit);
-            let node_symbol = format_template(ui, &commit, &node_template);
+            let node_symbol = format_template(ui, &commit, &templates.node);
             graph
                 .add_node(
                     &key,
@@ -579,7 +642,7 @@ pub(super) fn render_log_graph<'repo>(
                     }),
                 )
                 .map_err(log_error)?;
-                let node_symbol = format_template(ui, &None, &node_template);
+                let node_symbol = format_template(ui, &None, &templates.node);
                 graph
                     .add_node(
                         &elided_key,
@@ -593,4 +656,70 @@ pub(super) fn render_log_graph<'repo>(
     }
 
     String::from_utf8(output).map_err(log_error)
+}
+
+fn log_annotations_by_bookmark(
+    annotations: &[LogBookmarkAnnotation],
+) -> BTreeMap<&str, &LogBookmarkAnnotation> {
+    annotations
+        .iter()
+        .map(|annotation| (annotation.bookmark.as_str(), annotation))
+        .collect()
+}
+
+fn log_annotations_for_commit<'a>(
+    repo: &ReadonlyRepo,
+    commit: &Commit,
+    annotations_by_bookmark: &'a BTreeMap<&str, &LogBookmarkAnnotation>,
+) -> Vec<&'a LogBookmarkAnnotation> {
+    repo.view()
+        .local_bookmarks_for_commit(commit.id())
+        .filter_map(|(bookmark, _)| annotations_by_bookmark.get(bookmark.as_str()).copied())
+        .collect()
+}
+
+fn append_log_annotations(
+    ui: &Ui,
+    buffer: &mut Vec<u8>,
+    annotations: &[&LogBookmarkAnnotation],
+) -> Result<(), JjError> {
+    if annotations.is_empty() || buffer.is_empty() {
+        return Ok(());
+    }
+
+    let mut annotation_buffer = Vec::new();
+    {
+        let mut formatter = ui.new_formatter(&mut annotation_buffer);
+        for annotation in annotations {
+            write!(formatter, " ").map_err(log_error)?;
+            write_log_annotation(formatter.as_mut(), annotation).map_err(log_error)?;
+        }
+    }
+
+    let insertion = buffer
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(buffer.len());
+    buffer.splice(insertion..insertion, annotation_buffer);
+    Ok(())
+}
+
+fn write_log_annotation(
+    formatter: &mut dyn Formatter,
+    annotation: &LogBookmarkAnnotation,
+) -> io::Result<()> {
+    if let Some(url) = &annotation.url {
+        write_osc8(formatter, url, &annotation.label)
+    } else {
+        write!(formatter, "{}", annotation.label)
+    }
+}
+
+fn write_osc8(formatter: &mut dyn Formatter, url: &str, label: &str) -> io::Result<()> {
+    write!(formatter.raw()?, "\x1b]8;;{url}\x1b\\")?;
+    formatter.push_label("link");
+    let result = write!(formatter, "{label}");
+    formatter.pop_label();
+    result?;
+    write!(formatter.raw()?, "\x1b]8;;\x1b\\")
 }

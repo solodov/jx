@@ -53,9 +53,9 @@ use crate::{
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOutcome, FetchTraceAttr, FetchTraceStep,
         FetchTraceValue, InitialPublishTarget, JjError, JjWorkspace, LocalStackBranch,
-        LocalStackBranchFacts, LocalStackBranchMetrics, PipeDiffTool, PushBookmarksMetrics,
-        PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary, StackMoveOutcome,
-        StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
+        LocalStackBranchFacts, LocalStackBranchMetrics, LogBookmarkAnnotation, PipeDiffTool,
+        PushBookmarksMetrics, PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary,
+        StackMoveOutcome, StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
         StackPublishSelection, StatusWorkspaceFacts, StatusWorkspaceMetrics, SyncPushMetrics,
         SyncPushMetricsOutcome, SyncPushOptions, SyncPushOutcome, TrackedPushOutcome,
         WorkingCopySnapshot, WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts,
@@ -69,8 +69,8 @@ use crate::{
         PullRequestStore, PullRequestWithHistory, RepoCheckConfig, RepoCheckTrigger, RepoHook,
         RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext, RepositoryError,
         RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
-        StoredPullRequestIdentity, StoredPullRequestTimeline, TokenSource, WorkflowConfig,
-        WorkspaceMetadata, PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION,
+        StackMetadataNode, StoredPullRequestIdentity, StoredPullRequestTimeline, TokenSource,
+        WorkflowConfig, WorkspaceMetadata, PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION,
     },
 };
 

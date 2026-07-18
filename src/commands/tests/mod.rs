@@ -378,6 +378,7 @@ fn preview_plan() -> PullRequestPlan {
 
 struct FakeServices {
     workspace_log: String,
+    workspace_log_annotations: std::cell::RefCell<Vec<Vec<LogBookmarkAnnotation>>>,
     previous_commit_log: String,
     next_commit_log: String,
     workspace_status: WorkspaceStatus,
@@ -495,6 +496,7 @@ impl Default for FakeServices {
 
         Self {
             workspace_log: "workspace log\n".to_owned(),
+            workspace_log_annotations: std::cell::RefCell::new(Vec::new()),
             previous_commit_log: "previous commit graph\n".to_owned(),
             next_commit_log: "next commit graph\n".to_owned(),
             workspace_status: workspace_status(),
@@ -807,7 +809,10 @@ impl FakeServices {
 }
 
 impl CommandServices for FakeServices {
-    fn workspace_log(&self) -> Result<String, JjError> {
+    fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
+        self.workspace_log_annotations
+            .borrow_mut()
+            .push(annotations.to_vec());
         Ok(self.workspace_log.clone())
     }
 
