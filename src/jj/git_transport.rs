@@ -101,7 +101,7 @@ pub(super) fn fetch_origin_refs(
         },
         |_| Vec::new(),
     )?;
-    let import_options = fetch_import_options();
+    let import_options = fetch_import_options(&git_settings);
     let tracked_bookmarks = measure_git_fetch_step(
         trace,
         "select_fetch_bookmarks",
@@ -240,6 +240,7 @@ fn import_refs_result_attrs(result: &Result<git::GitImportStats, JjError>) -> Ve
             ),
             fetch_trace_attr("changed_remote_tags", stats.changed_remote_tags.len()),
             fetch_trace_attr("abandoned_commits", stats.abandoned_commits.len()),
+            fetch_trace_attr("rewritten_commits", stats.rewritten_commit_ids.len()),
         ],
         Err(error) => git_ref_error_attrs(error),
     }
@@ -312,12 +313,10 @@ pub(super) fn tracked_origin_bookmarks(
     bookmarks.into_iter().collect()
 }
 
-pub(super) fn fetch_import_options() -> GitImportOptions {
+pub(super) fn fetch_import_options(git_settings: &GitSettings) -> GitImportOptions {
     GitImportOptions {
-        auto_local_bookmark: false,
-        // Fetch repair logic owns post-fetch rebases; importing should not let
-        // jj's generic Git-abandon pass rewrite immutable trunk children first.
-        abandon_unreachable_commits: false,
+        abandon_unreachable_commits: git_settings.abandon_unreachable_commits,
+        record_synthetic_predecessors: git_settings.record_synthetic_predecessors,
         remote_auto_track_bookmarks: HashMap::new(),
     }
 }

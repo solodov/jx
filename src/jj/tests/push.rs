@@ -88,10 +88,15 @@ fn syncable_tracked_push_skips_bookmarks_with_conflicted_commits() {
         .await;
         let deleted = write_child(tx.repo_mut(), &updated_trunk, "deleted branch").await;
 
-        let stats = rebase_trunk_children_onto_updated_trunk(
+        let trunk_children = vec![TrunkChildChange {
+            commit_id: local_conflict.id().clone(),
+            change_id: local_conflict.change_id().clone(),
+        }];
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
             tx.repo_mut(),
-            &[local_conflict.id().clone()],
+            &trunk_children,
             &updated_trunk,
+            &RevsetExpression::none(),
         )
         .await
         .expect("conflicting child is rebased");

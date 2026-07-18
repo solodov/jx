@@ -621,7 +621,11 @@ fn write_trunk_state(
 ) -> io::Result<()> {
     write!(formatter, "Trunk:  ")?;
     write_commit_id(formatter, &trunk.short_change_id)?;
-    write!(formatter, "  {}  ", format_relative_age(trunk.committed_at_unix_ms))?;
+    write!(
+        formatter,
+        "  {}  ",
+        format_relative_age(trunk.committed_at_unix_ms)
+    )?;
     write_description(formatter, &trunk.description)?;
     writeln!(formatter)
 }
@@ -638,10 +642,7 @@ fn format_relative_age_at(
     committed_at: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
-    let seconds = now
-        .signed_duration_since(committed_at)
-        .num_seconds()
-        .max(0);
+    let seconds = now.signed_duration_since(committed_at).num_seconds().max(0);
     match seconds {
         0..=59 => "just now".to_owned(),
         60..=3_599 => relative_unit(seconds / 60, "minute"),

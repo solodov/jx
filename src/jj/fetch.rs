@@ -62,12 +62,13 @@ impl JjWorkspace {
                 fetch_trace_attr("branch", &fetch_trunk.branch),
                 fetch_trace_attr("trunk_commit", fetch_trunk.commit.id().hex()),
             ],
-            || collect_child_ids(self.repo.as_ref(), fetch_trunk.commit.id()),
+            || collect_trunk_child_changes(self.repo.as_ref(), fetch_trunk.commit.id()),
             |result| match result {
                 Ok(children) => vec![fetch_trace_attr("child_count", children.len())],
                 Err(_) => Vec::new(),
             },
         )?;
+        let immutable_expression = self.fetch_immutable_expression()?;
 
         let mut tx = self.repo.start_transaction();
         let import_stats = fetch_origin_refs(
@@ -96,10 +97,11 @@ impl JjWorkspace {
                 fetch_trace_attr("child_count", trunk_children_before.len()),
             ],
             || {
-                pollster::block_on(rebase_trunk_children_onto_updated_trunk(
+                pollster::block_on(rebase_trunk_child_changes_onto_updated_trunk(
                     tx.repo_mut(),
                     &trunk_children_before,
                     &updated_trunk,
+                    &immutable_expression,
                 ))
             },
             fetch_rebase_stats_attrs,
@@ -249,6 +251,42 @@ impl JjWorkspace {
         })
     }
 
+    fn fetch_immutable_expression(&self) -> Result<Arc<ResolvedRevsetExpression>, JjError> {
+        let ui = Ui::null();
+        let settings = self.workspace.settings();
+        let fileset_aliases_map =
+            load_fileset_aliases(&ui, settings.config()).map_err(log_command_error)?;
+        let revset_aliases_map =
+            load_revset_aliases(&ui, settings.config()).map_err(log_command_error)?;
+        let revset_extensions = Arc::new(RevsetExtensions::default());
+        let path_converter = RepoPathUiConverter::Fs {
+            cwd: self.workspace.workspace_root().to_path_buf(),
+            base: self.workspace.workspace_root().to_path_buf(),
+        };
+        let workspace_context = RevsetWorkspaceContext {
+            path_converter: &path_converter,
+            workspace_name: self.workspace.workspace_name(),
+        };
+        let revset_context = revset_parse_context(
+            settings,
+            self.repo.as_ref(),
+            &fileset_aliases_map,
+            &revset_aliases_map,
+            &revset_extensions,
+            Some(workspace_context),
+        )?;
+        let expression = immutable_expression(&ui, &revset_context)?;
+        let id_prefix_context = IdPrefixContext::new(revset_extensions.clone());
+        RevsetExpressionEvaluator::new(
+            self.repo.as_ref(),
+            revset_extensions,
+            &id_prefix_context,
+            expression,
+        )
+        .resolve()
+        .map_err(log_error)
+    }
+
     /// Resolves the trunk branch fetch should refresh, using live remote HEAD to break stale local ambiguity.
     pub(super) fn resolve_fetch_trunk(
         &self,
@@ -353,26 +391,42 @@ pub(super) struct FetchTrunkSelection {
     pub(super) refresh_bookmarks: Vec<String>,
 }
 
-pub(super) async fn rebase_trunk_children_onto_updated_trunk(
+#[derive(Debug, Clone)]
+pub(super) struct TrunkChildChange {
+    pub(super) commit_id: CommitId,
+    pub(super) change_id: ChangeId,
+}
+
+pub(super) fn collect_trunk_child_changes(
+    repo: &dyn jj_lib::repo::Repo,
+    trunk_id: &CommitId,
+) -> Result<Vec<TrunkChildChange>, JjError> {
+    collect_child_ids(repo, trunk_id)?
+        .into_iter()
+        .map(|commit_id| {
+            let commit = load_commit_from_repo(repo, &commit_id)?;
+            Ok(TrunkChildChange {
+                commit_id,
+                change_id: commit.change_id().clone(),
+            })
+        })
+        .collect()
+}
+
+pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
     mut_repo: &mut MutableRepo,
-    trunk_children_before: &[CommitId],
+    trunk_children_before: &[TrunkChildChange],
     updated_trunk: &Commit,
+    immutable_expression: &Arc<ResolvedRevsetExpression>,
 ) -> Result<FetchRebaseStats, JjError> {
     let mut stats = FetchRebaseStats::default();
-    let options = fetch_rebase_options();
+    rebase_import_rewrites(mut_repo, immutable_expression, &mut stats).await?;
 
-    for child_id in trunk_children_before {
-        let child = match mut_repo.store().get_commit(child_id) {
-            Ok(child) => child,
-            Err(BackendError::ObjectNotFound { .. }) => {
-                stats.skipped_trunk_children += 1;
-                continue;
-            }
-            Err(error) => {
-                return Err(JjError::Backend {
-                    message: error.to_string(),
-                });
-            }
+    let options = fetch_rebase_options();
+    for child_change in trunk_children_before {
+        let Some(child) = resolve_visible_trunk_child_change(mut_repo, child_change)? else {
+            stats.skipped_trunk_children += 1;
+            continue;
         };
 
         if child.parent_ids().contains(updated_trunk.id())
@@ -406,15 +460,17 @@ pub(super) async fn rebase_trunk_children_onto_updated_trunk(
     if mut_repo.has_rewrites() {
         let mut rebased_descendants = 0;
         mut_repo
-            .rebase_descendants_with_options(&options, |old, rebased| match rebased {
-                RebasedCommit::Rewritten(new) => {
-                    stats
-                        .rebased_commits
-                        .push(rebased_commit_record(&old, &new));
-                    rebased_descendants += 1;
-                }
-                RebasedCommit::Abandoned { .. } => {
-                    stats.abandoned_empty_commits += 1;
+            .rebase_descendants_with_options(immutable_expression, &options, |old, rebased| {
+                match rebased {
+                    RebasedCommit::Rewritten(new) => {
+                        stats
+                            .rebased_commits
+                            .push(rebased_commit_record(&old, &new));
+                        rebased_descendants += 1;
+                    }
+                    RebasedCommit::Abandoned { .. } => {
+                        stats.abandoned_empty_commits += 1;
+                    }
                 }
             })
             .await
@@ -425,6 +481,73 @@ pub(super) async fn rebase_trunk_children_onto_updated_trunk(
     }
 
     Ok(stats)
+}
+
+async fn rebase_import_rewrites(
+    mut_repo: &mut MutableRepo,
+    immutable_expression: &Arc<ResolvedRevsetExpression>,
+    stats: &mut FetchRebaseStats,
+) -> Result<(), JjError> {
+    if !mut_repo.has_rewrites() {
+        return Ok(());
+    }
+
+    let mut rebased_descendants = 0;
+    mut_repo
+        .rebase_descendants_with_options(
+            immutable_expression,
+            &RebaseOptions::default(),
+            |old, rebased| match rebased {
+                RebasedCommit::Rewritten(new) => {
+                    stats
+                        .rebased_commits
+                        .push(rebased_commit_record(&old, &new));
+                    rebased_descendants += 1;
+                }
+                RebasedCommit::Abandoned { .. } => {
+                    stats.abandoned_empty_commits += 1;
+                }
+            },
+        )
+        .await
+        .map_err(|error| JjError::Backend {
+            message: error.to_string(),
+        })?;
+    stats.rebased_descendants += rebased_descendants;
+    Ok(())
+}
+
+fn resolve_visible_trunk_child_change(
+    repo: &dyn jj_lib::repo::Repo,
+    child: &TrunkChildChange,
+) -> Result<Option<Commit>, JjError> {
+    let Some(targets) =
+        repo.resolve_change_id(&child.change_id)
+            .map_err(|error| JjError::Index {
+                message: error.to_string(),
+            })?
+    else {
+        return Ok(None);
+    };
+
+    let visible = targets
+        .visible_with_offsets()
+        .map(|(_, commit_id)| commit_id)
+        .collect::<Vec<_>>();
+    let commit_id = match visible.as_slice() {
+        [] => return Ok(None),
+        [commit_id] => *commit_id,
+        commit_ids => match commit_ids
+            .iter()
+            .copied()
+            .find(|commit_id| *commit_id == &child.commit_id)
+        {
+            Some(commit_id) => commit_id,
+            None => return Ok(None),
+        },
+    };
+
+    load_commit_from_repo(repo, commit_id).map(Some)
 }
 
 pub(super) async fn repair_immutable_working_copy(

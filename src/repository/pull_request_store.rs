@@ -1177,10 +1177,9 @@ fn draft_change_timestamp(status: &PullRequestStatusRecord) -> Option<i64> {
 fn review_request_timestamp(status: &PullRequestStatusRecord, reviewer: &str) -> Option<i64> {
     let reviewer = if let Some(login) = reviewer.strip_prefix("user:") {
         login.to_owned()
-    } else if let Some(team) = reviewer.strip_prefix("team:") {
-        format!("team/{team}")
     } else {
-        return None;
+        let team = reviewer.strip_prefix("team:")?;
+        format!("team/{team}")
     };
     status
         .timeline_events

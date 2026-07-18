@@ -55,6 +55,57 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
 }
 
 #[test]
+fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
+    // Verifies: fetch lets jj apply remote rewrite mappings, then resolves trunk children by change id.
+    let fixture = TestWorkspace::new("fetch-change-id-trunk-child");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
+        let local_child = write_child(tx.repo_mut(), &old_trunk, "local child").await;
+        let updated_trunk = tx
+            .repo_mut()
+            .new_commit(vec![root.id().clone()], root.tree())
+            .set_change_id(old_trunk.change_id().clone())
+            .set_description("updated main trunk")
+            .write()
+            .await
+            .expect("write updated trunk with preserved change id");
+        let trunk_children = collect_trunk_child_changes(tx.repo(), old_trunk.id())
+            .expect("collect trunk child changes");
+
+        tx.repo_mut()
+            .set_rewritten_commit(old_trunk.id().clone(), updated_trunk.id().clone());
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &trunk_children,
+            &updated_trunk,
+            &RevsetExpression::none(),
+        )
+        .await
+        .expect("jj rewrite mapping is applied before trunk repair");
+
+        assert_eq!(stats.rebased_descendants, 1);
+        assert_eq!(stats.rebased_trunk_children, 0);
+        assert_eq!(stats.skipped_trunk_children, 1);
+        let visible = tx
+            .repo()
+            .resolve_change_id(local_child.change_id())
+            .expect("change id resolves")
+            .expect("change remains visible")
+            .into_visible()
+            .expect("visible child commit");
+        assert_eq!(visible.len(), 1);
+        let rebased_child = load_commit_from_repo(tx.repo(), &visible[0]).expect("load child");
+        assert_eq!(rebased_child.parent_ids(), &[updated_trunk.id().clone()]);
+    });
+}
+
+#[test]
 fn fetch_origin_refs_selects_trunk_tracked_and_refresh_bookmarks_only() {
     // Verifies: Fetch avoids enumerating every remote bookmark while still pruning stale candidates.
     let fixture = TestWorkspace::new("fetch-tracked-bookmarks");

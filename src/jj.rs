@@ -36,7 +36,7 @@ use jj_cli::{
     ui::Ui,
 };
 use jj_lib::{
-    backend::{BackendError, CommitId},
+    backend::{BackendError, ChangeId, CommitId},
     commit::Commit,
     config::{ConfigGetResultExt as _, ConfigLayer, ConfigSource, StackedConfig},
     git::{

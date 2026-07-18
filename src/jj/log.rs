@@ -411,9 +411,6 @@ pub(super) fn revset_parse_context<'a>(
         date_pattern_context: now.into(),
         default_ignored_remote: default_ignored_remote_name(repo.store()),
         fileset_aliases_map,
-        use_glob_by_default: settings
-            .get("ui.revsets-use-glob-by-default")
-            .map_err(log_error)?,
         extensions: revset_extensions,
         workspace,
     })
