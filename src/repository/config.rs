@@ -25,6 +25,7 @@ pub struct WorkflowConfig {
     pub diff: DiffConfig,
     pub auth: AuthConfig,
     pub shell: ShellConfig,
+    pub ui: UiConfig,
 }
 
 impl WorkflowConfig {
@@ -134,6 +135,9 @@ impl WorkflowConfig {
         if let Some(shell) = layer.shell {
             self.shell.apply_layer(shell);
         }
+        if let Some(ui) = layer.ui {
+            self.ui.apply_layer(ui);
+        }
     }
 
     fn validate(&self) -> Result<(), RepositoryError> {
@@ -184,6 +188,33 @@ impl AuthConfig {
     }
 }
 
+/// Terminal and dispatch preferences loaded from optional config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiConfig {
+    pub default_command: Vec<String>,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            default_command: vec!["log".to_owned()],
+        }
+    }
+}
+
+impl UiConfig {
+    fn apply_layer(&mut self, layer: UiConfigLayer) {
+        if let Some(default_command) = layer.default_command {
+            self.default_command = default_command;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct UiConfigLayer {
+    pub(super) default_command: Option<Vec<String>>,
+}
+
 /// Repository context discovery failures with actionable diagnostics.
 #[derive(Debug, Error)]
 pub enum RepositoryError {
@@ -209,7 +240,7 @@ pub enum RepositoryError {
         source: toml::de::Error,
     },
     #[error(
-        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.hooks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, and `[shell]` navigation/title options; remotes are not configurable."
+        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.hooks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, `[shell]` navigation/title options, and `[ui] default_command`; remotes are not configurable."
     )]
     UnsupportedConfigKey { file: String, key: String },
     #[error("Invalid workflow config `{file}`: {message}")]

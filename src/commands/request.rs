@@ -2,6 +2,7 @@ use super::*;
 
 /// Parsed operator intent after clap has validated subcommand-specific flags.
 pub(super) enum CommandRequest {
+    Default,
     Log,
     Status,
     PreviousCommit,
@@ -262,6 +263,7 @@ impl CommandRequest {
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
             Some(("review", matches)) => Ok(Self::Review(review_request(matches)?)),
+            Some(("log", _)) => Ok(Self::Log),
             Some(("status" | "st", _)) => Ok(Self::Status),
             Some(("prev-commit" | "prev", _)) => Ok(Self::PreviousCommit),
             Some(("next-commit" | "next", _)) => Ok(Self::NextCommit),
@@ -285,7 +287,7 @@ impl CommandRequest {
                 tracked: matches.get_flag("tracked"),
             })),
             Some(("sync", matches)) => Ok(Self::Sync(sync_request(matches)?)),
-            None => Ok(Self::Log),
+            None => Ok(Self::Default),
             _ => unreachable!("clap rejects unknown subcommands"),
         }
     }
@@ -306,7 +308,12 @@ impl CommandRequest {
         }
 
         match self {
-            Self::Log | Self::Status | Self::PreviousCommit | Self::NextCommit | Self::Check => {}
+            Self::Default
+            | Self::Log
+            | Self::Status
+            | Self::PreviousCommit
+            | Self::NextCommit
+            | Self::Check => {}
             Self::Diff(request) => attrs.extend([
                 perf_attr("has_revision", request.revision.is_some()),
                 perf_attr("path_count", request.paths.len()),
@@ -364,6 +371,7 @@ impl CommandRequest {
 
     fn command_path(&self) -> &'static str {
         match self {
+            Self::Default => "default",
             Self::Log => "log",
             Self::Status => "status",
             Self::PreviousCommit => "prev-commit",
@@ -1135,6 +1143,7 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(diff_path_arg())
                 .arg(diff_tool_args_arg()),
         )
+        .subcommand(ClapCommand::new("log").about("Show the jj log with jx annotations"))
         .subcommand(
             ClapCommand::new("status")
                 .visible_alias("st")

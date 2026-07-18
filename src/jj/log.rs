@@ -1,7 +1,7 @@
 use super::*;
 
 impl JjWorkspace {
-    /// Renders the default jj log restricted to commits reachable from the current workspace.
+    /// Renders the default jj log with jx bookmark annotations.
     pub fn current_workspace_log(
         current_dir: &Path,
         annotations: &[LogBookmarkAnnotation],
@@ -458,17 +458,6 @@ pub(super) fn log_revset<'repo>(
     )
     .map_err(log_error)?;
     print_parse_diagnostics(ui, "In `revsets.log`", &diagnostics).map_err(log_error)?;
-    // Keep the configured jj log behavior, but scope it to the active workspace
-    // so sibling workspace heads do not appear in the default `jx` view.
-    let current_workspace = RevsetExpression::working_copy(
-        revset_context
-            .workspace
-            .expect("workspace context is present")
-            .workspace_name
-            .to_owned(),
-    )
-    .ancestors();
-    let expression = expression.intersection(&current_workspace);
 
     RevsetExpressionEvaluator::new(
         repo,

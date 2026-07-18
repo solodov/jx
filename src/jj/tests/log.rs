@@ -9,8 +9,8 @@ fn short_commit_ids_are_eight_hex_characters() {
 }
 
 #[test]
-fn workspace_log_filters_other_workspace_heads() {
-    // Verifies: Workspace log filters other workspace heads.
+fn workspace_log_preserves_configured_jj_revset() {
+    // Verifies: jx log does not add workspace-head filtering on top of jj's revset.
     let fixture = TestWorkspace::new("workspace-log");
     let settings = log_test_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
@@ -42,7 +42,7 @@ fn workspace_log_filters_other_workspace_heads() {
 
     assert!(log.contains("current workspace change"), "{log}");
     assert!(log.contains("main trunk"), "{log}");
-    assert!(!log.contains("other workspace change"), "{log}");
+    assert!(log.contains("other workspace change"), "{log}");
 }
 
 #[test]

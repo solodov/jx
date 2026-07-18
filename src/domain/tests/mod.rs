@@ -3103,6 +3103,7 @@ fn context() -> RepositoryContext {
             diff: Default::default(),
             auth: Default::default(),
             shell: Default::default(),
+            ui: Default::default(),
         },
     }
 }

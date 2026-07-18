@@ -9,6 +9,9 @@ pub(super) fn handle_request(
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
     let stdout = match request {
+        CommandRequest::Default => {
+            return handle_default_request(environment, services, progress, prompts, output);
+        }
         CommandRequest::Log => {
             let annotations = workspace_log_annotations(environment)?;
             services.workspace_log(&annotations)?
@@ -115,6 +118,54 @@ pub(super) fn handle_request(
     };
 
     Ok(CommandResult::success(stdout))
+}
+
+fn handle_default_request(
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    prompts: PromptHandlers<'_>,
+    output: OutputMode,
+) -> Result<CommandResult, CommandError> {
+    let request = default_command_request(environment)?;
+    handle_request(request, environment, services, progress, prompts, output)
+}
+
+fn default_command_request(
+    environment: &RuntimeEnvironment,
+) -> Result<CommandRequest, CommandError> {
+    let config = WorkflowConfig::discover_for_clone(environment)?;
+    if config.ui.default_command.is_empty() {
+        return Err(CommandError::DefaultCommand {
+            command: String::new(),
+            message: "must name a subcommand".to_owned(),
+        });
+    }
+
+    let default_command = config.ui.default_command.join(" ");
+    let args = std::iter::once("jx".to_owned())
+        .chain(config.ui.default_command.clone())
+        .collect::<Vec<_>>();
+    let matches =
+        cli()
+            .try_get_matches_from(args)
+            .map_err(|error| CommandError::DefaultCommand {
+                command: default_command.clone(),
+                message: error.to_string(),
+            })?;
+    let request =
+        CommandRequest::from_matches(&matches).map_err(|error| CommandError::DefaultCommand {
+            command: default_command.clone(),
+            message: error.to_string(),
+        })?;
+    if matches!(request, CommandRequest::Default) {
+        return Err(CommandError::DefaultCommand {
+            command: default_command,
+            message: "must name a subcommand".to_owned(),
+        });
+    }
+
+    Ok(request)
 }
 
 fn workspace_log_annotations(

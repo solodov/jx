@@ -15,6 +15,16 @@ Config files compose in this order:
 Later scalar values override earlier ones. Lists such as reviewers are normalized
 and deduplicated where the workflow expects sets.
 
+## UI behavior
+
+Bare `jx` runs `log` by default. Set `ui.default_command` to a subcommand path
+when another view should be the no-argument entrypoint:
+
+```toml
+[ui]
+default_command = ["status"]
+```
+
 ## Clone and workspace layout
 
 This section is the configuration reference. See the [code layout guide](code-layout.md)

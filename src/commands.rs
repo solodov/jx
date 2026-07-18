@@ -168,6 +168,8 @@ pub enum CommandError {
         work_id: String,
         message: String,
     },
+    #[error("Invalid `ui.default_command` `{command}`: {message}")]
+    DefaultCommand { command: String, message: String },
     #[error("{message}")]
     Check { message: String },
     #[error("{message}")]

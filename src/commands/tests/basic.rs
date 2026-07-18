@@ -1,14 +1,59 @@
 use super::*;
 
 #[test]
-fn no_args_renders_workspace_scoped_log() {
-    // Verifies: No-argument invocation renders the workspace-scoped log.
+fn log_subcommand_renders_workspace_log() {
+    // Verifies: Integrations can call the compact log renderer explicitly.
+    let environment = RuntimeEnvironment::new("/workspace", []);
+    let services = FakeServices::default();
+
+    let result =
+        run_with_args_and_services(["jx", "log"], &environment, &services).expect("log succeeds");
+
+    assert_eq!(result.stdout, "workspace log\n");
+}
+
+#[test]
+fn no_args_uses_default_log_command() {
+    // Verifies: No-argument invocation keeps log as the built-in default command.
     let environment = RuntimeEnvironment::new("/workspace", []);
     let services = FakeServices::default();
 
     let result = run_with_args_and_services(["jx"], &environment, &services).expect("log succeeds");
 
     assert_eq!(result.stdout, "workspace log\n");
+}
+
+#[test]
+fn no_args_uses_configured_default_command() {
+    // Verifies: ui.default_command controls bare `jx` without changing explicit commands.
+    let workspace = TestWorkspace::new();
+    workspace.write_file(".jx/config.toml", "[ui]\ndefault_command = \"status\"\n");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx"], &environment, &services)
+        .expect("configured default succeeds");
+
+    assert_eq!(result.stdout, expected_workspace_status());
+    assert!(services.workspace_log_annotations.borrow().is_empty());
+}
+
+#[test]
+fn no_args_reports_invalid_configured_default_command() {
+    // Verifies: Bad ui.default_command values point operators back to config.
+    let workspace = TestWorkspace::new();
+    workspace.write_file(".jx/config.toml", "[ui]\ndefault_command = \"missing\"\n");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(["jx"], &environment, &services)
+        .expect_err("configured default is rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::DefaultCommand { ref command, ref message }
+            if command == "missing" && message.contains("missing")
+    ));
 }
 
 #[test]

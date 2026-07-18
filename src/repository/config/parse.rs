@@ -8,6 +8,7 @@ pub(super) struct WorkflowConfigLayer {
     pub(super) diff: Option<DiffConfig>,
     pub(super) auth: Option<AuthConfig>,
     pub(super) shell: Option<ShellConfigLayer>,
+    pub(super) ui: Option<UiConfigLayer>,
 }
 
 pub(super) fn parse_workflow_config_layer(
@@ -22,7 +23,10 @@ pub(super) fn parse_workflow_config_layer(
         })?;
 
     for key in table.keys() {
-        if !matches!(key.as_str(), "layout" | "repo" | "diff" | "auth" | "shell") {
+        if !matches!(
+            key.as_str(),
+            "layout" | "repo" | "diff" | "auth" | "shell" | "ui"
+        ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file,
                 key: key.clone(),
@@ -50,6 +54,10 @@ pub(super) fn parse_workflow_config_layer(
         .get("shell")
         .map(|value| parse_shell_config(&file, value))
         .transpose()?;
+    let ui = table
+        .get("ui")
+        .map(|value| parse_ui_config(&file, value))
+        .transpose()?;
 
     Ok(WorkflowConfigLayer {
         path,
@@ -58,6 +66,7 @@ pub(super) fn parse_workflow_config_layer(
         diff,
         auth,
         shell,
+        ui,
     })
 }
 
@@ -2031,6 +2040,48 @@ fn parse_shell_zoxide_mode(
     }
 }
 
+fn parse_ui_config(file: &str, value: &toml::Value) -> Result<UiConfigLayer, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: "`ui` must be a table".to_owned(),
+        });
+    };
+
+    for key in table.keys() {
+        if !matches!(key.as_str(), "default_command" | "default-command") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("ui.{key}"),
+            });
+        }
+    }
+    if table.contains_key("default_command") && table.contains_key("default-command") {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: "configure only one of `ui.default_command` or `ui.default-command`"
+                .to_owned(),
+        });
+    }
+
+    let default_command = table
+        .get("default_command")
+        .or_else(|| table.get("default-command"))
+        .map(|value| {
+            let command = parse_string_or_array(file, "ui.default_command", value)?;
+            if command.is_empty() {
+                return Err(RepositoryError::InvalidConfig {
+                    file: file.to_owned(),
+                    message: "`ui.default_command` must name a subcommand".to_owned(),
+                });
+            }
+            Ok(command)
+        })
+        .transpose()?;
+
+    Ok(UiConfigLayer { default_command })
+}
+
 fn parse_auth_config(file: &str, value: &toml::Value) -> Result<AuthConfig, RepositoryError> {
     let Some(table) = value.as_table() else {
         return Err(RepositoryError::InvalidConfig {
@@ -2164,6 +2215,24 @@ fn optional_string_array(
         .get(key.rsplit_once('.').map_or(key, |(_, key)| key))
         .map(|value| parse_string_array(file, key, value))
         .transpose()
+}
+
+fn parse_string_or_array(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<String>, RepositoryError> {
+    if value.is_str() {
+        return parse_non_empty_string_value(file, key, value).map(|value| vec![value]);
+    }
+    if !value.is_array() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be a string or array of strings"),
+        });
+    }
+
+    parse_string_array(file, key, value)
 }
 
 fn parse_string_array(
