@@ -18,7 +18,7 @@ fn fetch_renders_rebased_commit_details_like_sync() {
 
     assert_eq!(
             result.stdout,
-            "Fetched: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  aaaabbbb -> ccccdddd  example change\n  default@  eeeeffff -> 12345678  follow-up change\n"
+            "Fetched: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  changeaa  example change\n  default@  changebb  follow-up change\n"
         );
 }
 

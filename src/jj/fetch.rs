@@ -502,6 +502,7 @@ pub(super) fn fetch_rebase_options() -> RebaseOptions {
 
 pub(super) fn rebased_commit_record(old: &Commit, new: &Commit) -> RebasedCommitRecord {
     RebasedCommitRecord {
+        short_change_id: short_change_id(new),
         old_short_commit_id: short_commit_id(old.id()),
         new_commit_id: new.id().hex(),
         new_short_commit_id: short_commit_id(new.id()),
@@ -533,6 +534,7 @@ pub(super) fn rebased_commit_summaries(
                 commit_workspace_visibility(repo, Some(&commit_id), trunk_id, current_workspace)?;
 
             Ok(RebasedCommitSummary {
+                short_change_id: record.short_change_id,
                 old_short_commit_id: record.old_short_commit_id,
                 new_short_commit_id: record.new_short_commit_id,
                 description: record.description,
@@ -555,6 +557,7 @@ pub(super) struct FetchRebaseStats {
 
 #[derive(Debug)]
 pub(super) struct RebasedCommitRecord {
+    pub(super) short_change_id: String,
     pub(super) old_short_commit_id: String,
     pub(super) new_commit_id: String,
     pub(super) new_short_commit_id: String,

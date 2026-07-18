@@ -637,6 +637,8 @@ impl JjWorkspace {
             branch: branch.as_str().to_owned(),
             old_short_commit_id: Some(short_commit_id(remote_id)),
             new_short_commit_id: Some(short_commit_id(remote_id)),
+            old_short_change_id: commit_short_change_id(self.repo.as_ref(), Some(remote_id))?,
+            new_short_change_id: commit_short_change_id(self.repo.as_ref(), Some(remote_id))?,
             old_description: commit_description(self.repo.as_ref(), Some(remote_id))?,
             new_description: commit_description(self.repo.as_ref(), Some(remote_id))?,
             pull_request_description: bookmark_pull_request_description(
@@ -958,6 +960,8 @@ pub(super) fn pushed_bookmark_summaries(
                 branch: branch.as_str().to_owned(),
                 old_short_commit_id: update.before.as_ref().map(short_commit_id),
                 new_short_commit_id: update.after.as_ref().map(short_commit_id),
+                old_short_change_id: commit_short_change_id(repo, update.before.as_ref())?,
+                new_short_change_id: commit_short_change_id(repo, update.after.as_ref())?,
                 old_description: commit_description(repo, update.before.as_ref())?,
                 new_description: commit_description(repo, update.after.as_ref())?,
                 pull_request_description: bookmark_pull_request_description(
@@ -975,6 +979,18 @@ pub(super) fn pushed_bookmark_summaries(
             })
         })
         .collect()
+}
+
+/// Returns a short jj change id for the commit when sync output needs log-compatible handles.
+pub(super) fn commit_short_change_id(
+    repo: &dyn jj_lib::repo::Repo,
+    commit_id: Option<&CommitId>,
+) -> Result<Option<String>, JjError> {
+    commit_id
+        .map(|commit_id| {
+            load_commit_from_repo(repo, commit_id).map(|commit| short_change_id(&commit))
+        })
+        .transpose()
 }
 
 pub(super) fn commit_description(

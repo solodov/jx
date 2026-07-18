@@ -1293,6 +1293,8 @@ fn stack_context_sync_push(
             branch: pull_request.head_branch.clone(),
             old_short_commit_id: None,
             new_short_commit_id: None,
+            old_short_change_id: None,
+            new_short_change_id: None,
             old_description: None,
             new_description: Some(pull_request.title.clone()),
             pull_request_description: Some(pull_request_description(pull_request)),

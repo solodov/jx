@@ -465,7 +465,7 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
     assert_eq!(
         result.stdout,
         format!(
-            "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  aaaabbbb -> ccccdddd  example change\n  default@  eeeeffff -> 12345678  follow-up change\n\nPushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  example change default@\n\nDeleted bookmarks:\n  {}: 99990000 obsolete example change\n",
+            "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  changeaa  example change\n  default@  changebb  follow-up change\n\nPushed commits:\n  Commit    PR       Title\n  changecc  {}  example change default@\n\nDeleted bookmarks:\n  {}: changedd obsolete example change\n",
             blank_sync_pull_request_cell(),
             example_bookmark_link("example-user/old")
         )
@@ -625,6 +625,8 @@ fn sync_stack_refreshes_stored_metadata_by_pull_request_number() {
                 branch: "topic/child".to_owned(),
                 old_short_commit_id: Some("11112222".to_owned()),
                 new_short_commit_id: Some("33334444".to_owned()),
+                old_short_change_id: Some("changeoo".to_owned()),
+                new_short_change_id: Some("changech".to_owned()),
                 old_description: Some("old child".to_owned()),
                 new_description: Some("Child".to_owned()),
                 pull_request_description: Some("Child".to_owned()),
@@ -1225,11 +1227,11 @@ fn sync_links_pull_requests_in_pushed_commit_table() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  current pull request default@\n",
+        "Pushed commits:\n  Commit    PR       Title\n  changecc  {}  current pull request default@\n",
         sync_pull_request_cell(1234)
     )));
     assert!(result.stdout.contains(&format!(
-        "Deleted bookmarks:\n  {}: 99990000 obsolete example change\n  ↳ PR {}\n",
+        "Deleted bookmarks:\n  {}: changedd obsolete example change\n  ↳ PR {}\n",
         example_bookmark_link("example-user/old"),
         example_pull_request_link(1200)
     )));
@@ -1252,6 +1254,8 @@ fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
             branch: "b".to_owned(),
             old_short_commit_id: Some("11112222".to_owned()),
             new_short_commit_id: Some("22223333".to_owned()),
+            old_short_change_id: Some("changebb".to_owned()),
+            new_short_change_id: Some("changesh".to_owned()),
             old_description: Some("previous short branch".to_owned()),
             new_description: Some("short branch".to_owned()),
             pull_request_description: Some("short branch".to_owned()),
@@ -1262,6 +1266,8 @@ fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
             branch: "long".to_owned(),
             old_short_commit_id: Some("22223333".to_owned()),
             new_short_commit_id: Some("33334444".to_owned()),
+            old_short_change_id: Some("changesh".to_owned()),
+            new_short_change_id: Some("changelg".to_owned()),
             old_description: Some("previous long branch".to_owned()),
             new_description: Some("long branch".to_owned()),
             pull_request_description: Some("long branch".to_owned()),
@@ -1272,6 +1278,8 @@ fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
             branch: "old".to_owned(),
             old_short_commit_id: Some("44445555".to_owned()),
             new_short_commit_id: None,
+            old_short_change_id: Some("changeod".to_owned()),
+            new_short_change_id: None,
             old_description: Some("old branch".to_owned()),
             new_description: None,
             pull_request_description: None,
@@ -1284,12 +1292,12 @@ fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  22223333  {}  short branch default@\n  33334444  {}  long branch default@\n",
+        "Pushed commits:\n  Commit    PR       Title\n  changesh  {}  short branch default@\n  changelg  {}  long branch default@\n",
         blank_sync_pull_request_cell(),
         blank_sync_pull_request_cell()
     )));
     assert!(result.stdout.contains(&format!(
-        "Deleted bookmarks:\n  {}: 44445555 old branch\n",
+        "Deleted bookmarks:\n  {}: changeod old branch\n",
         example_bookmark_link("old")
     )));
 }
@@ -1308,6 +1316,7 @@ fn sync_expands_and_aligns_workspace_rows() {
     let mut services = FakeServices::default();
     services.fetch.rebased_commits = vec![
         RebasedCommitSummary {
+            short_change_id: "changemt".to_owned(),
             old_short_commit_id: "aaaamult".to_owned(),
             new_short_commit_id: "bbbbmult".to_owned(),
             description: "multi workspace".to_owned(),
@@ -1316,6 +1325,7 @@ fn sync_expands_and_aligns_workspace_rows() {
             workspace_visibility: visible_in(&["default", "review"], true),
         },
         RebasedCommitSummary {
+            short_change_id: "changeot".to_owned(),
             old_short_commit_id: "aaaaothr".to_owned(),
             new_short_commit_id: "bbbbothr".to_owned(),
             description: "other workspace".to_owned(),
@@ -1324,6 +1334,7 @@ fn sync_expands_and_aligns_workspace_rows() {
             workspace_visibility: visible_in(&["review"], false),
         },
         RebasedCommitSummary {
+            short_change_id: "changecu".to_owned(),
             old_short_commit_id: "aaaacurr".to_owned(),
             new_short_commit_id: "bbbbcurr".to_owned(),
             description: "current workspace".to_owned(),
@@ -1332,6 +1343,7 @@ fn sync_expands_and_aligns_workspace_rows() {
             workspace_visibility: current_workspace_visibility(),
         },
         RebasedCommitSummary {
+            short_change_id: "changenw".to_owned(),
             old_short_commit_id: "aaaanone".to_owned(),
             new_short_commit_id: "bbbbnone".to_owned(),
             description: "no workspace".to_owned(),
@@ -1346,7 +1358,7 @@ fn sync_expands_and_aligns_workspace_rows() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(
-            "Rebased on origin/main:\n  default@  aaaamult -> bbbbmult  multi workspace\n  default@  aaaacurr -> bbbbcurr  current workspace\n  review@   aaaamult -> bbbbmult  multi workspace\n  review@   aaaaothr -> bbbbothr  other workspace\n            aaaanone -> bbbbnone  no workspace\n"
+            "Rebased on origin/main:\n  default@  changemt  multi workspace\n  default@  changecu  current workspace\n  review@   changemt  multi workspace\n  review@   changeot  other workspace\n            changenw  no workspace\n"
         ));
 }
 
@@ -1374,7 +1386,7 @@ fn sync_omits_deleted_bookmark_section_when_none_were_deleted() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  example change default@\n",
+        "Pushed commits:\n  Commit    PR       Title\n  changecc  {}  example change default@\n",
         blank_sync_pull_request_cell()
     )));
     assert!(!result.stdout.contains("Deleted bookmarks:"));
@@ -1479,7 +1491,7 @@ fn sync_pushes_clean_bookmarks_and_reports_conflicted_skips() {
 
     assert_eq!(result.exit_code, 1);
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  a1b2c3d4  {}  example change default@\n",
+        "Pushed commits:\n  Commit    PR       Title\n  changecc  {}  example change default@\n",
         blank_sync_pull_request_cell()
     )));
     assert!(result.stdout.contains(&format!(

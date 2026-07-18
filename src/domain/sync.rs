@@ -303,7 +303,7 @@ pub fn ensure_fetch_is_pushable(outcome: &FetchOutcome) -> Result<(), WorkflowEr
         .rebased_commits
         .iter()
         .filter(|commit| commit.has_conflict)
-        .map(|commit| commit.new_short_commit_id.clone())
+        .map(|commit| commit.short_change_id.clone())
         .collect::<Vec<_>>();
 
     if conflicted.is_empty() {

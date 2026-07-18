@@ -351,6 +351,7 @@ pub struct WorkspaceVisibility {
 /// One commit rewritten by fetch so local work sits on the updated origin trunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RebasedCommitSummary {
+    pub short_change_id: String,
     pub old_short_commit_id: String,
     pub new_short_commit_id: String,
     pub description: String,
@@ -588,6 +589,8 @@ pub struct PushedBookmarkSummary {
     pub branch: String,
     pub old_short_commit_id: Option<String>,
     pub new_short_commit_id: Option<String>,
+    pub old_short_change_id: Option<String>,
+    pub new_short_change_id: Option<String>,
     pub old_description: Option<String>,
     pub new_description: Option<String>,
     pub pull_request_description: Option<String>,
@@ -604,4 +607,14 @@ pub struct PushedCommitSummary {
 
 pub(super) fn short_commit_id(commit_id: &CommitId) -> String {
     commit_id.hex().chars().take(SHORT_COMMIT_ID_LEN).collect()
+}
+
+/// Returns jj's operator-facing change id prefix shown by default log output.
+pub(super) fn short_change_id(commit: &Commit) -> String {
+    commit
+        .change_id()
+        .reverse_hex()
+        .chars()
+        .take(SHORT_COMMIT_ID_LEN)
+        .collect()
 }

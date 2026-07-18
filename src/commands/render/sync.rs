@@ -741,9 +741,7 @@ pub(in crate::commands) fn write_rebased_commit(
 ) -> io::Result<()> {
     let commit = row.item;
     write_workspace_prefix(formatter, row.workspace, workspace_width)?;
-    write_commit_id(formatter, &commit.old_short_commit_id)?;
-    write!(formatter, " -> ")?;
-    write_commit_id(formatter, &commit.new_short_commit_id)?;
+    write_commit_id(formatter, &commit.short_change_id)?;
     write!(formatter, "  ")?;
     write_description(formatter, &commit.description)?;
     if commit.has_conflict {
@@ -823,7 +821,7 @@ pub(in crate::commands) fn write_pushed_bookmark_commit(
 ) -> io::Result<()> {
     let bookmark = row.item;
     let commit = bookmark
-        .new_short_commit_id
+        .new_short_change_id
         .as_deref()
         .expect("caller filters pushed bookmarks");
     let title = pushed_bookmark_title(bookmark, pull_request);
@@ -923,9 +921,9 @@ pub(in crate::commands) fn write_deleted_bookmark(
     pull_request: Option<&PullRequestRecord>,
 ) -> io::Result<()> {
     let commit = bookmark
-        .old_short_commit_id
+        .old_short_change_id
         .as_deref()
-        .expect("deleted tracked bookmarks have an old commit");
+        .expect("deleted tracked bookmarks have an old change");
     let description = bookmark
         .old_description
         .as_deref()

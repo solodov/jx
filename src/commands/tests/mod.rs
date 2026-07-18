@@ -589,6 +589,7 @@ impl Default for FakeServices {
                 current_repaired: true,
                 rebased_commits: vec![
                     RebasedCommitSummary {
+                        short_change_id: "changeaa".to_owned(),
                         old_short_commit_id: "aaaabbbb".to_owned(),
                         new_short_commit_id: "ccccdddd".to_owned(),
                         description: "example change".to_owned(),
@@ -597,6 +598,7 @@ impl Default for FakeServices {
                         workspace_visibility: current_workspace_visibility(),
                     },
                     RebasedCommitSummary {
+                        short_change_id: "changebb".to_owned(),
                         old_short_commit_id: "eeeeffff".to_owned(),
                         new_short_commit_id: "12345678".to_owned(),
                         description: "follow-up change".to_owned(),
@@ -605,6 +607,7 @@ impl Default for FakeServices {
                         workspace_visibility: current_workspace_visibility(),
                     },
                     RebasedCommitSummary {
+                        short_change_id: "changezz".to_owned(),
                         old_short_commit_id: "9999aaaa".to_owned(),
                         new_short_commit_id: "bbbbcccc".to_owned(),
                         description: "(no description)".to_owned(),
@@ -655,6 +658,8 @@ impl Default for FakeServices {
                         branch: "example-user/current".to_owned(),
                         old_short_commit_id: Some("11112222".to_owned()),
                         new_short_commit_id: Some("a1b2c3d4".to_owned()),
+                        old_short_change_id: Some("changeoo".to_owned()),
+                        new_short_change_id: Some("changecc".to_owned()),
                         old_description: Some("previous example change".to_owned()),
                         new_description: Some("example change".to_owned()),
                         pull_request_description: Some("example change".to_owned()),
@@ -665,6 +670,8 @@ impl Default for FakeServices {
                         branch: "example-user/old".to_owned(),
                         old_short_commit_id: Some("99990000".to_owned()),
                         new_short_commit_id: None,
+                        old_short_change_id: Some("changedd".to_owned()),
+                        new_short_change_id: None,
                         old_description: Some("obsolete example change".to_owned()),
                         new_description: None,
                         pull_request_description: None,

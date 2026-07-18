@@ -1405,7 +1405,7 @@ fn sync_conflict_detail(fetch: &FetchOutcome, push: &SyncPushOutcome) -> Option<
         .rebased_commits
         .iter()
         .filter(|commit| commit.has_conflict)
-        .map(|commit| commit.new_short_commit_id.as_str())
+        .map(|commit| commit.short_change_id.as_str())
         .collect::<Vec<_>>();
     if !rebased_conflicts.is_empty() {
         parts.push(format!(
