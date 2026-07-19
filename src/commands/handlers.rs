@@ -1001,7 +1001,12 @@ fn handle_work_complete_traced(
         let locations = span.measure_with_result_attrs(
             "filter_candidates",
             [perf_attr("prefix_len", request.prefix.len())],
-            || Ok::<_, CommandError>(filter_work_locations_by_prefix(&locations, &request.prefix)),
+            || {
+                Ok::<_, CommandError>(filter_navigation_work_locations_by_query(
+                    &locations,
+                    &request.prefix,
+                ))
+            },
             |result| count_result_attrs(result, "candidate_count"),
         )?;
         span.set([perf_attr("candidate_count", locations.len())]);

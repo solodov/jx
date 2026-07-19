@@ -438,6 +438,17 @@ pub(super) fn filter_work_locations_by_prefix(
         .collect()
 }
 
+pub(super) fn filter_navigation_work_locations_by_query(
+    locations: &[WorkLocation],
+    query: &str,
+) -> Vec<WorkLocation> {
+    locations
+        .iter()
+        .filter(|location| navigation_match_rank(&location.key, query).is_some())
+        .cloned()
+        .collect()
+}
+
 pub(super) fn navigation_work_locations_from_global(
     config: &WorkflowConfig,
     environment: &RuntimeEnvironment,
@@ -922,7 +933,7 @@ fn navigation_match_rank(candidate: &str, query: &str) -> Option<NavigationMatch
         Some(NavigationMatchRank::Exact)
     } else if candidate.starts_with(query) {
         Some(NavigationMatchRank::Prefix)
-    } else if !candidate.contains('/') && candidate.contains(query) {
+    } else if candidate.contains(query) {
         Some(NavigationMatchRank::Contains)
     } else {
         None

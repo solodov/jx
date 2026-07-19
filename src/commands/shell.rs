@@ -581,7 +581,7 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
     key="${{row%%$'\t'*}}"
     if [[ -z "$cur" || "$key" == "$cur"* ]]; then
       prefix_candidates+=("$row")
-    elif [[ "$key" != */* && "$key" == *"$cur"* ]]; then
+    elif [[ "$key" == *"$cur"* ]]; then
       fragment_candidates+=("$row")
     fi
   done
@@ -643,10 +643,10 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   fi
 {prefer_completion}
   while IFS= read -r candidate; do
-    [[ -n "$candidate" && "$candidate" == "$cur"* ]] && {helper_prefix}_add_candidate "$candidate"
+    [[ -n "$candidate" && "$candidate" == *"$cur"* ]] && {helper_prefix}_add_candidate "$candidate"
   done < <({helper_prefix}_jx_completion_candidates)
 {auto_zoxide_completion}
-  COMPREPLY=($(compgen -W "${{candidates[*]}}" -- "$cur"))
+  COMPREPLY=("${{candidates[@]}}")
 }}
 
 complete -o nospace -F {helper_prefix}_completion {completion_commands}
@@ -758,7 +758,7 @@ fn bash_navigation_prefer_completion(helper_prefix: &str, zoxide: ShellZoxideMod
   fi
   {helper_prefix}_add_zoxide_candidates "$cur"
   if (( ${{#candidates[@]}} > 0 )); then
-    COMPREPLY=($(compgen -W "${{candidates[*]}}" -- "$cur"))
+    COMPREPLY=("${{candidates[@]}}")
     return
   fi
 "#

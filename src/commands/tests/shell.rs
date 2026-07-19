@@ -79,7 +79,7 @@ zoxide = "auto"
         .contains("if [[ -z \"$cur\" || \"$key\" == \"$cur\"* ]]; then"));
     assert!(result
         .stdout
-        .contains("elif [[ \"$key\" != */* && \"$key\" == *\"$cur\"* ]]; then"));
+        .contains("elif [[ \"$key\" == *\"$cur\"* ]]; then"));
     assert!(result
         .stdout
         .contains("picker_candidates=(\"${prefix_candidates[@]}\" \"${fragment_candidates[@]}\")"));
@@ -106,6 +106,7 @@ zoxide = "auto"
     assert!(result.stdout.contains("__jx_u_redraw_current_line"));
     assert!(result.stdout.contains("printf '\\e[5n' > /dev/tty"));
     assert!(result.stdout.contains("COMPREPLY=(\"$key\")"));
+    assert!(result.stdout.contains("COMPREPLY=(\"${candidates[@]}\")"));
     assert!(result.stdout.contains("command -v fzf"));
     assert!(result.stdout.contains("command -v zoxide"));
     assert!(result.stdout.contains("[[ -n \"$1\" ]] || return 0"));

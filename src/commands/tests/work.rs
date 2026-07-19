@@ -1093,7 +1093,7 @@ slug_repositories = ["example-org/*"]
         &environment,
         &services,
     )
-    .expect_err("raw repo name is not a slugged navigation key");
+    .expect_err("raw repo fragment is ambiguous for slugged navigation");
 
     assert_eq!(
         completion.stdout,
@@ -1102,8 +1102,49 @@ slug_repositories = ["example-org/*"]
     assert_eq!(root.stdout, format!("{}\n", fix.display()));
     assert!(matches!(
         raw,
-        CommandError::Repository(RepositoryError::WorkLocationNotFound { .. })
+        CommandError::Repository(RepositoryError::WorkLocationAmbiguous { .. })
     ));
+}
+
+#[test]
+fn work_navigation_matches_substrings_in_qualified_keys() {
+    // Verifies: repository-qualified workspace keys use the same substring matching as bare keys.
+    let workspace = TestWorkspace::new_uninitialized_under("outside");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "repo"
+root = "~/projects"
+path = "{repo}"
+
+[shell]
+slug_repositories = ["repo/*"]
+"#,
+    );
+    let primary = workspace.home.join("projects/foo");
+    let backend = workspace.home.join("projects/.work/foo/backend");
+    create_jj_workspace_marker(&primary);
+    create_jj_workspace_marker(&backend);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let completion = run_with_args_and_services(
+        ["jx", "work", "complete", "--navigation", "--prefix", "ack"],
+        &environment,
+        &services,
+    )
+    .expect("navigation completion succeeds");
+    let root = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "ack"],
+        &environment,
+        &services,
+    )
+    .expect("navigation root succeeds");
+
+    assert_eq!(completion.stdout, "repo/foo@backend\n");
+    assert_eq!(root.stdout, format!("{}\n", backend.display()));
 }
 
 #[test]
