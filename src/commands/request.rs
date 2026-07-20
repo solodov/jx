@@ -178,6 +178,7 @@ pub(super) struct OpenRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OpenTarget {
     Repository,
+    File { path: PathBuf, line: Option<u64> },
     PullRequest { selector: Option<String> },
     PullRequests { all: bool },
 }
@@ -261,7 +262,7 @@ impl CommandRequest {
             Some(("work", matches)) => Ok(Self::Work(work_request(matches)?)),
             Some(("stack" | "sk", matches)) => Ok(Self::Stack(stack_request(matches)?)),
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
-            Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches))),
+            Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches)?)),
             Some(("review", matches)) => Ok(Self::Review(review_request(matches)?)),
             Some(("log", _)) => Ok(Self::Log),
             Some(("status" | "st", _)) => Ok(Self::Status),
@@ -399,6 +400,10 @@ impl CommandRequest {
                 ..
             }) => "open.repository",
             Self::Open(OpenRequest {
+                target: OpenTarget::File { .. },
+                ..
+            }) => "open.file",
+            Self::Open(OpenRequest {
                 target: OpenTarget::PullRequest { .. },
                 ..
             }) => "open.pr",
@@ -507,6 +512,9 @@ fn add_open_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &OpenRequest) {
     ]);
     match &request.target {
         OpenTarget::Repository => {}
+        OpenTarget::File { line, .. } => {
+            attrs.extend([perf_attr("has_line", line.is_some())]);
+        }
         OpenTarget::PullRequest { selector } => {
             attrs.extend([perf_attr("has_selector", selector.is_some())]);
         }
@@ -769,30 +777,36 @@ fn shell_request(matches: &ArgMatches) -> Result<ShellRequest, clap::Error> {
     }
 }
 
-fn open_request(matches: &ArgMatches) -> OpenRequest {
+fn open_request(matches: &ArgMatches) -> Result<OpenRequest, clap::Error> {
     match matches.subcommand() {
-        Some(("pr", matches)) => OpenRequest {
+        Some(("file", matches)) => Ok(OpenRequest {
+            target: open_file_target(matches)?,
+            repository: None,
+            repo_filters: Vec::new(),
+            print: matches.get_flag("print"),
+        }),
+        Some(("pr", matches)) => Ok(OpenRequest {
             target: OpenTarget::PullRequest {
                 selector: open_pr_selector(matches),
             },
             repository: None,
             repo_filters: Vec::new(),
             print: matches.get_flag("print"),
-        },
-        Some(("prs", matches)) => OpenRequest {
+        }),
+        Some(("prs", matches)) => Ok(OpenRequest {
             target: OpenTarget::PullRequests {
                 all: matches.get_flag("all"),
             },
             repository: repository_arg(matches),
             repo_filters: repo_filters(matches),
             print: matches.get_flag("print"),
-        },
-        _ => OpenRequest {
+        }),
+        _ => Ok(OpenRequest {
             target: OpenTarget::Repository,
             repository: repository_arg(matches),
             repo_filters: repo_filters(matches),
             print: matches.get_flag("print"),
-        },
+        }),
     }
 }
 
@@ -819,6 +833,46 @@ fn revisions(matches: &ArgMatches) -> Vec<String> {
         .filter(|revision| !revision.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn open_file_target(matches: &ArgMatches) -> Result<OpenTarget, clap::Error> {
+    let (path, suffix_line) = split_open_file_path_line(&required_arg(matches, "path"))?;
+    let positional_line = matches.get_one::<u64>("line").copied();
+    if suffix_line.is_some() && positional_line.is_some() {
+        return Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "provide the file line either as PATH:LINE or as a separate LINE, not both",
+        ));
+    }
+
+    Ok(OpenTarget::File {
+        path: PathBuf::from(path),
+        line: positional_line.or(suffix_line),
+    })
+}
+
+fn split_open_file_path_line(path: &str) -> Result<(String, Option<u64>), clap::Error> {
+    let Some((file_path, line)) = path.rsplit_once(':') else {
+        return Ok((path.to_owned(), None));
+    };
+    if file_path.is_empty() || line.is_empty() || !line.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok((path.to_owned(), None));
+    }
+
+    let line = line.parse::<u64>().map_err(|_| {
+        clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "file line number is too large to open in GitHub",
+        )
+    })?;
+    if line == 0 {
+        return Err(clap::Error::raw(
+            ErrorKind::ValueValidation,
+            "file line number must be greater than zero",
+        ));
+    }
+
+    Ok((file_path.to_owned(), Some(line)))
 }
 
 fn open_pr_selector(matches: &ArgMatches) -> Option<String> {
@@ -1217,10 +1271,17 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(
             ClapCommand::new("open")
                 .visible_alias("o")
-                .about("Open a configured repository or pull request in the browser")
+                .about("Open a configured repository, file, or pull request in the browser")
                 .arg(open_print_arg())
                 .arg(open_repo_arg())
                 .arg(repository_arg_definition().conflicts_with("repo"))
+                .subcommand(
+                    ClapCommand::new("file")
+                        .about("Open a workspace file in GitHub")
+                        .arg(open_file_path_arg())
+                        .arg(open_file_line_arg())
+                        .arg(open_print_arg()),
+                )
                 .subcommand(
                     ClapCommand::new("pr")
                         .visible_alias("pull-request")
@@ -1542,6 +1603,20 @@ fn open_commit_arg() -> Arg {
         .value_name("COMMIT_OR_BOOKMARK")
         .conflicts_with("selector")
         .help("Open the pull request for a specific jj revision or local bookmark")
+}
+
+fn open_file_path_arg() -> Arg {
+    Arg::new("path")
+        .value_name("PATH[:LINE]")
+        .required(true)
+        .help("Open this workspace-relative or absolute file path in GitHub")
+}
+
+fn open_file_line_arg() -> Arg {
+    Arg::new("line")
+        .value_name("LINE")
+        .value_parser(clap::value_parser!(u64).range(1..))
+        .help("Open the file anchored to this one-based line number")
 }
 
 fn open_pr_selector_arg() -> Arg {

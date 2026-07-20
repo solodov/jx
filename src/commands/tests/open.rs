@@ -46,6 +46,142 @@ fn o_alias_runs_open() {
 }
 
 #[test]
+fn open_file_prints_workspace_file_url() {
+    // Verifies: File navigation resolves a workspace path to a GitHub blob URL without launching a browser.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file("src/main.rs", "fn main() {}\n");
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "file", "--print", "src/main.rs"],
+        &environment,
+        &services,
+    )
+    .expect("open file print succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/blob/HEAD/src/main.rs\n"
+    );
+    assert!(services.opened_urls.borrow().is_empty());
+}
+
+#[test]
+fn open_file_accepts_line_number() {
+    // Verifies: File navigation can anchor GitHub to a one-based source line.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "file", "src/lib.rs", "42"],
+        &environment,
+        &services,
+    )
+    .expect("open file line succeeds");
+
+    let expected = "https://github.com/example-owner/example-repo/blob/HEAD/src/lib.rs#L42";
+    assert_eq!(services.opened_urls.borrow().as_slice(), [expected]);
+    assert_eq!(result.stdout, format!("Opened: {expected}\n"));
+}
+
+#[test]
+fn open_file_accepts_path_line_suffix_and_encodes_path() {
+    // Verifies: PATH:LINE shorthand preserves GitHub-safe path URLs for names with reserved characters.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "file", "--print", "src/file name#.rs:7"],
+        &environment,
+        &services,
+    )
+    .expect("open file path line succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/blob/HEAD/src/file%20name%23.rs#L7\n"
+    );
+}
+
+#[test]
+fn open_file_resolves_relative_to_current_directory() {
+    // Verifies: File navigation follows the operator's current directory inside the workspace.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file("src/lib.rs", "pub fn example() {}\n");
+    let environment = RuntimeEnvironment::new(workspace.path().join("src"), []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "open", "file", "--print", "lib.rs"],
+        &environment,
+        &services,
+    )
+    .expect("open file from child directory succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "https://github.com/example-owner/example-repo/blob/HEAD/src/lib.rs\n"
+    );
+}
+
+#[test]
+fn open_file_rejects_paths_outside_workspace() {
+    // Verifies: File navigation never turns a path outside the checkout into a misleading repo URL.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+    let outside = workspace
+        .path()
+        .join("..")
+        .join("outside.rs")
+        .to_string_lossy()
+        .into_owned();
+
+    let error = run_with_args_and_services(
+        ["jx", "open", "file", "--print", outside.as_str()],
+        &environment,
+        &services,
+    )
+    .expect_err("outside paths are rejected");
+
+    assert!(matches!(error, CommandError::Check { .. }));
+    assert!(error.to_string().contains("outside jj workspace"));
+}
+
+#[test]
 fn open_accepts_specific_repository_argument() {
     // Verifies: Open resolves a layout project key and launches that repository URL.
     let workspace = TestWorkspace::new();

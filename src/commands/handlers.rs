@@ -364,6 +364,7 @@ fn handle_open(
             .iter()
             .map(|target| target.repository.https_url())
             .collect::<Vec<_>>(),
+        OpenTarget::File { path, line } => vec![github_file_url(environment, path, *line)?],
         OpenTarget::PullRequest { selector } => {
             vec![selected_pull_request_url(
                 environment,
@@ -386,6 +387,98 @@ fn handle_open(
     }
 
     Ok(render_opened_urls(&urls))
+}
+
+fn github_file_url(
+    environment: &RuntimeEnvironment,
+    path: &Path,
+    line: Option<u64>,
+) -> Result<String, CommandError> {
+    let context = LocalRepositoryContext::discover(environment)?;
+    let workspace_root = context.workspace_root.clone();
+    let target = open_target_for_local_context(context, environment)?;
+    let relative_path = workspace_relative_file_path(path, &workspace_root, environment)?;
+    let mut url = format!(
+        "{}/blob/HEAD/{}",
+        target.repository.https_url(),
+        encode_github_path(&relative_path)
+    );
+    if let Some(line) = line {
+        url.push_str(&format!("#L{line}"));
+    }
+
+    Ok(url)
+}
+
+fn workspace_relative_file_path(
+    path: &Path,
+    workspace_root: &Path,
+    environment: &RuntimeEnvironment,
+) -> Result<PathBuf, CommandError> {
+    let selected_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        environment.current_dir().join(path)
+    };
+    let selected_path = normalize_logical_path(&selected_path);
+    let workspace_root = normalize_logical_path(workspace_root);
+    let relative_path =
+        selected_path
+            .strip_prefix(&workspace_root)
+            .map_err(|_| CommandError::Check {
+                message: format!(
+                    "File `{}` is outside jj workspace `{}`",
+                    display_path(&selected_path, environment),
+                    display_path(&workspace_root, environment)
+                ),
+            })?;
+    if relative_path.as_os_str().is_empty() {
+        return Err(CommandError::Check {
+            message: "File path must name a file inside the jj workspace".to_owned(),
+        });
+    }
+
+    Ok(relative_path.to_path_buf())
+}
+
+fn normalize_logical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn encode_github_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(segment) => {
+                Some(encode_url_path_segment(&segment.to_string_lossy()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn encode_url_path_segment(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 fn selected_pull_request_url(
