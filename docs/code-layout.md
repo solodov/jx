@@ -138,7 +138,9 @@ for navigation and workspace management.
   use `jx sync --all` to conservatively sync every eligible primary repository.
 - `jx stack publish` uses an explicit `--task-id` when present; otherwise it can
   read the task id stored in workspace-local metadata created by
-  `jx work add --task-id`.
+  `jx work add --task-id`. `jx work add --project` stores project context in
+  the same metadata for grouped workspace listing, and `jx work add --child`
+  records the current workspace as the new workspace's parent.
 - `jx shell init bash` exposes layout keys to shell completion. Navigation
   completion prefers current-repository layout workspace aliases, `trunk`/`root`
   aliases, and same-repository layout keys before other global work locations;
@@ -162,11 +164,12 @@ navigation, which keeps organization-scoped workspaces such as
 
 ## Workspace metadata
 
-Task workspaces keep the task id visible in navigation while storing the task
-association as workspace-local metadata.
+Task workspaces keep the task id visible in navigation while storing task,
+project, and parent associations as workspace-local metadata.
 
 ```sh
-jx work add fix --task-id ABC-123
+jx work add github-navigation --project github-navigation
+jx work add fix --task-id ABC-123 --child
 ```
 
 This creates a managed workspace whose directory and jj workspace name are both:
@@ -187,11 +190,21 @@ The `.gitignore` file ignores the whole `.jx` metadata directory, and
 
 ```toml
 task_id = "ABC-123"
+project = "github-navigation"
+
+[parent]
+workspace_name = "github-navigation"
+project = "github-navigation"
 ```
 
 The visible workspace name makes completion entries such as `repo@ABC-123-fix`
 scannable. The metadata file remains the source of truth for `jx stack publish`,
-so the workspace name is not parsed for task information.
+so the workspace name is not parsed for task information. Project metadata does
+not affect workspace names; `jx work list` uses it only to group related
+workspaces. Child metadata captures the current workspace snapshot and inherits
+its project, but `--revision` still controls the jj checkout base. `jx work info
+--format json` exposes the current workspace metadata and repository identity for
+integrations without requiring direct `.jx` parsing.
 
 ## All-repository fetch and sync
 

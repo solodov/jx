@@ -74,6 +74,8 @@ fn pull_request_bare_fixes_uses_workspace_task_id() {
         &workspace.path(),
         &WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         },
     )
     .expect("workspace metadata writes");
@@ -367,6 +369,8 @@ run = "prepend_task_id"
         &workspace.path(),
         &WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         },
     )
     .expect("metadata writes");
@@ -608,6 +612,8 @@ fn pull_request_infers_task_id_from_workspace_metadata() {
         &workspace.path(),
         &WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         },
     )
     .expect("metadata writes");
@@ -647,6 +653,8 @@ fn pull_request_no_task_id_ignores_workspace_metadata() {
         &workspace.path(),
         &WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         },
     )
     .expect("metadata writes");
@@ -681,6 +689,8 @@ fn pull_request_task_id_flag_overrides_workspace_metadata() {
         &workspace.path(),
         &WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         },
     )
     .expect("metadata writes");

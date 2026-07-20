@@ -26,7 +26,32 @@ pub(super) struct WorkAddPlan {
     pub(super) workspace_name: String,
     pub(super) revision: Option<String>,
     pub(super) task_id: Option<String>,
+    pub(super) project: Option<String>,
+    pub(super) parent: Option<WorkspaceParentMetadata>,
     pub(super) shared_paths: PlannedSharedWorkspacePaths,
+}
+
+/// Render-ready workspace facts enriched with local jx metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkListEntry {
+    pub(super) workspace: WorkspaceEntry,
+    pub(super) project: Option<String>,
+}
+
+/// Render-ready global work location facts enriched with local jx metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkLocationListEntry {
+    pub(super) location: WorkLocation,
+    pub(super) project: Option<String>,
+}
+
+/// Current workspace details exposed as a stable integration boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkInfo {
+    pub(super) workspace: WorkspaceEntry,
+    pub(super) repository_root: PathBuf,
+    pub(super) identity: RepositoryIdentity,
+    pub(super) metadata: WorkspaceMetadata,
 }
 
 impl WorkAddPlan {
@@ -141,8 +166,10 @@ pub(super) fn plan_work_add(
     request: &WorkAddRequest,
     context: &LocalRepositoryContext,
     environment: &RuntimeEnvironment,
+    parent_workspace: Option<&WorkspaceEntry>,
 ) -> Result<WorkAddPlan, CommandError> {
     let task_id = domain::normalize_task_id(request.task_id.as_deref())?;
+    let (project, parent) = work_add_metadata_context(request, context, parent_workspace)?;
     let workspace_name = workspace_name_for_task(&request.name, task_id.as_deref());
     validate_workspace_name(&workspace_name)?;
     let identity = workspace_identity(context, environment)?;
@@ -169,6 +196,8 @@ pub(super) fn plan_work_add(
         workspace_name,
         revision: request.revision.clone(),
         task_id,
+        project,
+        parent,
         shared_paths,
     })
 }
@@ -181,14 +210,16 @@ pub(super) fn apply_work_add_setup(plan: &WorkAddPlan) -> Result<(), WorkAddSetu
 }
 
 fn write_work_add_metadata(plan: &WorkAddPlan) -> Result<(), WorkAddSetupError> {
-    let Some(task_id) = &plan.task_id else {
+    if plan.task_id.is_none() && plan.project.is_none() && plan.parent.is_none() {
         return Ok(());
-    };
+    }
 
     write_workspace_metadata(
         &plan.destination,
         &WorkspaceMetadata {
-            task_id: Some(task_id.clone()),
+            task_id: plan.task_id.clone(),
+            project: plan.project.clone(),
+            parent: plan.parent.clone(),
         },
     )
     .map_err(|source| WorkAddSetupError::new(plan, source))
@@ -289,6 +320,112 @@ fn symlink_shared_workspace_path(source: &Path, destination: &Path) -> io::Resul
 
 fn workspace_name_for_task(name: &str, task_id: Option<&str>) -> String {
     task_id.map_or_else(|| name.to_owned(), |task_id| format!("{task_id}-{name}"))
+}
+
+fn work_add_metadata_context(
+    request: &WorkAddRequest,
+    context: &LocalRepositoryContext,
+    parent_workspace: Option<&WorkspaceEntry>,
+) -> Result<(Option<String>, Option<WorkspaceParentMetadata>), CommandError> {
+    let project = normalize_project_key(request.project.as_deref())?;
+    if !request.child {
+        return Ok((project, None));
+    }
+
+    let Some(parent_workspace) = parent_workspace else {
+        return Err(CommandError::Check {
+            message: "Child workspaces require a current workspace".to_owned(),
+        });
+    };
+    let parent_metadata = read_workspace_metadata(&context.workspace_root)?;
+    let Some(parent_project) = parent_metadata.project.clone() else {
+        return Err(CommandError::Check {
+            message: "Child workspaces require current workspace project metadata".to_owned(),
+        });
+    };
+    if project
+        .as_deref()
+        .is_some_and(|project| project != parent_project.as_str())
+    {
+        return Err(CommandError::Check {
+            message: format!(
+                "Child workspace project must match current workspace project `{parent_project}`"
+            ),
+        });
+    }
+
+    let parent = WorkspaceParentMetadata {
+        workspace_name: parent_workspace.name.clone(),
+        task_id: parent_metadata.task_id,
+        project: Some(parent_project.clone()),
+    };
+    Ok((Some(parent_project), Some(parent)))
+}
+
+fn normalize_project_key(project: Option<&str>) -> Result<Option<String>, CommandError> {
+    let Some(project) = project.map(str::trim).filter(|project| !project.is_empty()) else {
+        return Ok(None);
+    };
+    if !is_project_key(project) {
+        return Err(CommandError::Check {
+            message: format!(
+                "Project key `{project}` may contain only ASCII letters, numbers, `.`, `_`, or `-`, and cannot start or end with `.`"
+            ),
+        });
+    }
+
+    Ok(Some(project.to_owned()))
+}
+
+fn is_project_key(project: &str) -> bool {
+    !project.starts_with('.')
+        && !project.ends_with('.')
+        && project
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+pub(super) fn work_list_entries(
+    workspaces: Vec<WorkspaceEntry>,
+) -> Result<Vec<WorkListEntry>, RepositoryError> {
+    workspaces
+        .into_iter()
+        .map(|workspace| {
+            let project = read_workspace_metadata(&workspace.root)?.project;
+            Ok(WorkListEntry { workspace, project })
+        })
+        .collect()
+}
+
+pub(super) fn work_location_list_entries(
+    locations: Vec<WorkLocation>,
+) -> Result<Vec<WorkLocationListEntry>, RepositoryError> {
+    locations
+        .into_iter()
+        .map(|location| {
+            let project = read_workspace_metadata(&location.root)?.project;
+            Ok(WorkLocationListEntry { location, project })
+        })
+        .collect()
+}
+
+pub(super) fn current_work_info(
+    context: &LocalRepositoryContext,
+    workspace: WorkspaceEntry,
+    environment: &RuntimeEnvironment,
+) -> Result<WorkInfo, CommandError> {
+    let identity = workspace_identity(context, environment)?;
+    let metadata = read_workspace_metadata(&context.workspace_root)?;
+    Ok(WorkInfo {
+        workspace: WorkspaceEntry {
+            root: context.workspace_root.clone(),
+            is_current: true,
+            ..workspace
+        },
+        repository_root: context.repository_root.clone(),
+        identity,
+        metadata,
+    })
 }
 
 pub(super) fn workspace_identity(

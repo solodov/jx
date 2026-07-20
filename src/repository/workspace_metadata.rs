@@ -11,6 +11,20 @@ const WORKSPACE_METADATA_GITIGNORE_CONTENT: &str = "/.gitignore\n/workspace.toml
 pub struct WorkspaceMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<WorkspaceParentMetadata>,
+}
+
+/// Snapshot of the workspace that a child workspace was created from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct WorkspaceParentMetadata {
+    pub workspace_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// Durable local PR stack state used to render and synchronize stack context.
@@ -57,7 +71,7 @@ pub struct StackMetadataNode {
 
 impl WorkspaceMetadata {
     fn is_empty(&self) -> bool {
-        self.task_id.is_none()
+        self.task_id.is_none() && self.project.is_none() && self.parent.is_none()
     }
 }
 

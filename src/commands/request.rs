@@ -40,6 +40,7 @@ pub(super) struct CloneRequest {
 pub(super) enum WorkRequest {
     Add(WorkAddRequest),
     List(WorkListRequest),
+    Info(WorkInfoRequest),
     Complete(WorkCompleteRequest),
     Root(WorkRootRequest),
     Trunk(WorkTrunkRequest),
@@ -115,6 +116,8 @@ pub(super) struct WorkAddRequest {
     pub(super) name: String,
     pub(super) revision: Option<String>,
     pub(super) task_id: Option<String>,
+    pub(super) project: Option<String>,
+    pub(super) child: bool,
     pub(super) shell_cd_target: bool,
 }
 
@@ -122,6 +125,17 @@ pub(super) struct WorkAddRequest {
 pub(super) struct WorkListRequest {
     pub(super) all: bool,
     pub(super) prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkInfoRequest {
+    pub(super) format: WorkInfoFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkInfoFormat {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +395,7 @@ impl CommandRequest {
             Self::Clone(_) => "clone",
             Self::Work(WorkRequest::Add(_)) => "work.add",
             Self::Work(WorkRequest::List(_)) => "work.list",
+            Self::Work(WorkRequest::Info(_)) => "work.info",
             Self::Work(WorkRequest::Complete(_)) => "work.complete",
             Self::Work(WorkRequest::Root(_)) => "work.root",
             Self::Work(WorkRequest::Trunk(_)) => "work.trunk",
@@ -426,12 +441,17 @@ fn add_work_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &WorkRequest) {
         WorkRequest::Add(request) => attrs.extend([
             perf_attr("has_revision", request.revision.is_some()),
             perf_attr("has_task_id", request.task_id.is_some()),
+            perf_attr("has_project", request.project.is_some()),
+            perf_attr("child", request.child),
             perf_attr("shell_cd_target", request.shell_cd_target),
         ]),
         WorkRequest::List(request) => attrs.extend([
             perf_attr("all", request.all),
             perf_attr("has_prefix", !request.prefix.is_empty()),
         ]),
+        WorkRequest::Info(request) => {
+            attrs.extend([perf_attr("format", work_info_format_name(request.format))])
+        }
         WorkRequest::Complete(request) => attrs.extend([
             perf_attr("has_prefix", !request.prefix.is_empty()),
             perf_attr("repositories", request.repositories),
@@ -501,6 +521,13 @@ fn stack_status_format_name(format: StackStatusFormat) -> &'static str {
     match format {
         StackStatusFormat::Human => "human",
         StackStatusFormat::Json => "json",
+    }
+}
+
+fn work_info_format_name(format: WorkInfoFormat) -> &'static str {
+    match format {
+        WorkInfoFormat::Human => "human",
+        WorkInfoFormat::Json => "json",
     }
 }
 
@@ -582,11 +609,16 @@ fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
             name: required_arg(matches, "name"),
             revision: revision(matches),
             task_id: task_id(matches),
+            project: project(matches),
+            child: matches.get_flag("child"),
             shell_cd_target: matches.get_flag("shell-cd-target"),
         })),
         Some(("list", matches)) => Ok(WorkRequest::List(WorkListRequest {
             all: matches.get_flag("all"),
             prefix: string_arg(matches, "prefix").unwrap_or_default(),
+        })),
+        Some(("info", matches)) => Ok(WorkRequest::Info(WorkInfoRequest {
+            format: work_info_format(matches),
         })),
         Some(("complete", matches)) => Ok(WorkRequest::Complete(WorkCompleteRequest {
             prefix: string_arg(matches, "prefix").unwrap_or_default(),
@@ -824,6 +856,10 @@ fn task_id(matches: &ArgMatches) -> Option<String> {
     matches.get_one::<String>("task-id").cloned()
 }
 
+fn project(matches: &ArgMatches) -> Option<String> {
+    matches.get_one::<String>("project").cloned()
+}
+
 fn revisions(matches: &ArgMatches) -> Vec<String> {
     matches
         .get_many::<String>("revision")
@@ -959,6 +995,18 @@ fn remote_status_format(matches: &ArgMatches) -> RemoteStatusFormat {
         "human" => RemoteStatusFormat::Human,
         "json" => RemoteStatusFormat::Json,
         _ => unreachable!("clap rejects unsupported remote-status formats"),
+    }
+}
+
+fn work_info_format(matches: &ArgMatches) -> WorkInfoFormat {
+    match matches
+        .get_one::<String>("format")
+        .map(String::as_str)
+        .expect("clap applies the work-info format default")
+    {
+        "human" => WorkInfoFormat::Human,
+        "json" => WorkInfoFormat::Json,
+        _ => unreachable!("clap rejects unsupported work-info formats"),
     }
 }
 
@@ -1220,6 +1268,8 @@ pub(super) fn cli() -> ClapCommand {
                         .arg(workspace_name_arg())
                         .arg(workspace_revision_arg())
                         .arg(task_id_arg())
+                        .arg(project_arg())
+                        .arg(work_child_arg())
                         .arg(work_shell_cd_target_arg()),
                 )
                 .subcommand(
@@ -1227,6 +1277,11 @@ pub(super) fn cli() -> ClapCommand {
                         .about("List jj workspaces and roots")
                         .arg(work_all_arg())
                         .arg(work_prefix_arg()),
+                )
+                .subcommand(
+                    ClapCommand::new("info")
+                        .about("Show current workspace metadata and repository identity")
+                        .arg(work_info_format_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("complete")
@@ -1494,6 +1549,13 @@ fn work_shell_cd_target_arg() -> Arg {
         .action(ArgAction::SetTrue)
 }
 
+fn work_child_arg() -> Arg {
+    Arg::new("child")
+        .long("child")
+        .action(ArgAction::SetTrue)
+        .help("Record the current workspace as this new workspace's parent")
+}
+
 fn workspace_revision_arg() -> Arg {
     Arg::new("revision")
         .short('r')
@@ -1548,6 +1610,15 @@ fn work_complete_format_arg() -> Arg {
         .hide(true)
 }
 
+fn work_info_format_arg() -> Arg {
+    Arg::new("format")
+        .long("format")
+        .value_name("FORMAT")
+        .default_value("human")
+        .value_parser(["human", "json"])
+        .help("Select work info output format")
+}
+
 fn work_key_arg() -> Arg {
     Arg::new("key")
         .value_name("KEY")
@@ -1568,6 +1639,13 @@ fn task_id_arg() -> Arg {
         .long("task-id")
         .value_name("TASK_ID")
         .help("Associate a task identifier with generated workspace or PR bookmark names")
+}
+
+fn project_arg() -> Arg {
+    Arg::new("project")
+        .long("project")
+        .value_name("PROJECT")
+        .help("Store this project key in workspace metadata")
 }
 
 fn no_task_id_arg() -> Arg {

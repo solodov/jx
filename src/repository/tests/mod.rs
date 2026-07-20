@@ -384,6 +384,8 @@ fn workspace_metadata_write_creates_ignored_state_file() {
         &workspace.path(),
         &WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         },
     )
     .expect("metadata writes");
@@ -396,6 +398,8 @@ fn workspace_metadata_write_creates_ignored_state_file() {
         read_workspace_metadata(&workspace.path()).expect("metadata reads"),
         WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         }
     );
 }

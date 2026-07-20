@@ -101,12 +101,14 @@ workspace_shared_paths = [".pi", "nested/state", "missing/state"]
         name: "fix".to_owned(),
         revision: Some("main".to_owned()),
         task_id: Some("ABC-123".to_owned()),
+        project: None,
+        child: false,
         shell_cd_target: false,
     };
     let primary = workspace.home.join("projects/jx");
     let destination = workspace.home.join("projects/.work/jx/ABC-123-fix");
 
-    let plan = plan_work_add(&request, &context, &environment).expect("plan builds");
+    let plan = plan_work_add(&request, &context, &environment, None).expect("plan builds");
 
     assert_eq!(
         plan.identity,
@@ -122,6 +124,8 @@ workspace_shared_paths = [".pi", "nested/state", "missing/state"]
     assert_eq!(plan.workspace_name, "ABC-123-fix");
     assert_eq!(plan.revision.as_deref(), Some("main"));
     assert_eq!(plan.task_id.as_deref(), Some("ABC-123"));
+    assert_eq!(plan.project, None);
+    assert_eq!(plan.parent, None);
     assert_eq!(
         plan.shared_paths.effective_paths,
         vec![".pi", "nested/state", "missing/state"]
@@ -534,12 +538,320 @@ path = "{repo}"
         read_workspace_metadata(&expected_destination).expect("metadata reads"),
         WorkspaceMetadata {
             task_id: Some("ABC-123".to_owned()),
+            project: None,
+            parent: None,
         }
     );
     assert_eq!(
         fs::read_to_string(expected_destination.join(".jx/.gitignore")).expect("gitignore"),
         "/.gitignore\n/workspace.toml\n/stack.toml\n"
     );
+}
+
+#[test]
+fn work_add_project_writes_metadata_without_changing_workspace_name() {
+    // Verifies: Project context stays metadata-only so names remain focused on the local task workspace.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: Vec::new(),
+        }),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "add", "fix", "--project", "github-navigation"],
+        &environment,
+        &services,
+    )
+    .expect("project workspace add succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("Added workspace: {}\n", expected_destination.display())
+    );
+    assert_eq!(
+        read_workspace_metadata(&expected_destination).expect("metadata reads"),
+        WorkspaceMetadata {
+            task_id: None,
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        }
+    );
+}
+
+#[test]
+fn work_add_child_inherits_project_and_records_parent_workspace() {
+    // Verifies: Child workspaces inherit project context while recording the parent workspace snapshot.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/project");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: None,
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("parent metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/ABC-123-fix");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "ABC-123-fix".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: Vec::new(),
+        }),
+        workspaces: vec![WorkspaceEntry {
+            name: "project".to_owned(),
+            root: workspace.path(),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "add",
+            "fix",
+            "--task-id",
+            "ABC-123",
+            "--child",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("child workspace add succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("Added workspace: {}\n", expected_destination.display())
+    );
+    assert_eq!(
+        read_workspace_metadata(&expected_destination).expect("child metadata reads"),
+        WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+            project: Some("github-navigation".to_owned()),
+            parent: Some(WorkspaceParentMetadata {
+                workspace_name: "project".to_owned(),
+                task_id: None,
+                project: Some("github-navigation".to_owned()),
+            }),
+        }
+    );
+}
+
+#[test]
+fn work_add_child_records_parent_task_id() {
+    // Verifies: Child metadata preserves the parent task when the current workspace is task-scoped.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/ABC-123-fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("parent metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let expected_destination = workspace.home.join("projects/.work/jx/ABC-124-follow-up");
+    let services = FakeServices {
+        expected_workspace_add: Some(WorkspaceAddOptions {
+            name: "ABC-124-follow-up".to_owned(),
+            destination: expected_destination.clone(),
+            revision: None,
+            shared_paths: Vec::new(),
+        }),
+        workspaces: vec![WorkspaceEntry {
+            name: "ABC-123-fix".to_owned(),
+            root: workspace.path(),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "add",
+            "follow-up",
+            "--task-id",
+            "ABC-124",
+            "--child",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("child workspace add succeeds");
+
+    assert_eq!(
+        read_workspace_metadata(&expected_destination)
+            .expect("child metadata reads")
+            .parent,
+        Some(WorkspaceParentMetadata {
+            workspace_name: "ABC-123-fix".to_owned(),
+            task_id: Some("ABC-123".to_owned()),
+            project: Some("github-navigation".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn work_add_child_rejects_project_mismatch() {
+    // Verifies: Explicit child project intent cannot drift from the parent workspace project.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/project");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: None,
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("parent metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![WorkspaceEntry {
+            name: "project".to_owned(),
+            root: workspace.path(),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "add",
+            "fix",
+            "--child",
+            "--project",
+            "other-project",
+        ],
+        &environment,
+        &services,
+    )
+    .expect_err("mismatched child projects are rejected");
+
+    assert!(matches!(error, CommandError::Check { .. }));
+    assert!(error
+        .to_string()
+        .contains("current workspace project `github-navigation`"));
+}
+
+#[test]
+fn work_add_child_requires_parent_project() {
+    // Verifies: Parent links stay project-scoped rather than becoming unrelated workspace edges.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/project");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![WorkspaceEntry {
+            name: "project".to_owned(),
+            root: workspace.path(),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "add", "fix", "--child"],
+        &environment,
+        &services,
+    )
+    .expect_err("parent project is required");
+
+    assert!(matches!(error, CommandError::Check { .. }));
+    assert!(error
+        .to_string()
+        .contains("current workspace project metadata"));
+}
+
+#[test]
+fn work_add_rejects_invalid_project_key() {
+    // Verifies: Project keys stay line-safe for workspace metadata and grouped terminal output.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "add", "fix", "--project", "bad/project"],
+        &environment,
+        &services,
+    )
+    .expect_err("invalid project keys are rejected");
+
+    assert!(matches!(error, CommandError::Check { .. }));
+    assert!(error.to_string().contains("Project key `bad/project`"));
 }
 
 #[test]
@@ -595,6 +907,154 @@ fn work_list_marks_current_workspace_in_plain_output_and_aligns_paths() {
     assert_eq!(
         result.stdout,
         "default@  /Users/example/projects/jx\nfix       /Users/example/projects/.work/jx/fix\n"
+    );
+}
+
+#[test]
+fn work_info_json_renders_current_workspace_metadata() {
+    // Verifies: Integrations can read current workspace context without parsing .jx internals.
+    let workspace = TestWorkspace::new_under("projects/.work/jx/ABC-123-fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    write_workspace_metadata(
+        &workspace.path(),
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+            project: Some("github-navigation".to_owned()),
+            parent: Some(WorkspaceParentMetadata {
+                workspace_name: "project".to_owned(),
+                task_id: None,
+                project: Some("github-navigation".to_owned()),
+            }),
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![WorkspaceEntry {
+            name: "ABC-123-fix".to_owned(),
+            root: workspace.path(),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "info", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("work info json succeeds");
+
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("valid json");
+    assert_eq!(value["command"], "work-info");
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["workspace"]["name"], "ABC-123-fix");
+    assert_eq!(
+        value["workspace"]["root"],
+        workspace.path().display().to_string()
+    );
+    assert_eq!(
+        value["workspace"]["repositoryRoot"],
+        workspace.home.join("projects/jx").display().to_string()
+    );
+    assert_eq!(value["repository"]["source"], "github");
+    assert_eq!(value["repository"]["host"], "github.com");
+    assert_eq!(value["repository"]["owner"], "example-owner");
+    assert_eq!(value["repository"]["repo"], "jx");
+    assert_eq!(value["repository"]["slug"], "example-owner/jx");
+    assert_eq!(value["metadata"]["taskId"], "ABC-123");
+    assert_eq!(value["metadata"]["project"], "github-navigation");
+    assert_eq!(value["metadata"]["parent"]["workspaceName"], "project");
+    assert_eq!(
+        value["metadata"]["parent"]["taskId"],
+        serde_json::Value::Null
+    );
+    assert_eq!(value["metadata"]["parent"]["project"], "github-navigation");
+}
+
+#[test]
+fn work_list_groups_workspace_metadata_projects() {
+    // Verifies: Project metadata groups related workspaces while preserving unprojected workspaces.
+    let workspace = TestWorkspace::new();
+    let default_root = workspace.home.join("projects/jx");
+    let first_root = workspace.home.join("projects/.work/jx/first");
+    let second_root = workspace.home.join("projects/.work/jx/second");
+    let other_root = workspace.home.join("projects/.work/jx/other");
+    write_workspace_metadata(
+        &first_root,
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("metadata writes");
+    write_workspace_metadata(
+        &second_root,
+        &WorkspaceMetadata {
+            task_id: None,
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("metadata writes");
+    write_workspace_metadata(
+        &other_root,
+        &WorkspaceMetadata {
+            task_id: None,
+            project: Some("review-inbox".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![
+            WorkspaceEntry {
+                name: "default".to_owned(),
+                root: default_root.clone(),
+                is_current: true,
+            },
+            WorkspaceEntry {
+                name: "first".to_owned(),
+                root: first_root.clone(),
+                is_current: false,
+            },
+            WorkspaceEntry {
+                name: "second".to_owned(),
+                root: second_root.clone(),
+                is_current: false,
+            },
+            WorkspaceEntry {
+                name: "other".to_owned(),
+                root: other_root.clone(),
+                is_current: false,
+            },
+        ],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "work", "list"], &environment, &services)
+        .expect("workspace list succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "github-navigation\n  first   {}\n  second  {}\n\nreview-inbox\n  other  {}\n\nNo project\n  default@  {}\n",
+            first_root.display(),
+            second_root.display(),
+            other_root.display(),
+            default_root.display()
+        )
     );
 }
 
@@ -1486,6 +1946,53 @@ owner = "beta"
     .expect("work completion succeeds");
 
     assert_eq!(result.stdout, "alpha/tool\nalpha/tool@fix\nbeta/tool\n");
+}
+
+#[test]
+fn work_list_all_groups_project_metadata() {
+    // Verifies: Global work listing can group project workspaces across configured layout roots.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let project_root = workspace.home.join("projects/project");
+    let workspace_root = workspace.home.join("projects/.work/project/fix");
+    create_jj_workspace_marker(&project_root);
+    create_jj_workspace_marker(&workspace_root);
+    write_workspace_metadata(
+        &workspace_root,
+        &WorkspaceMetadata {
+            task_id: Some("ABC-123".to_owned()),
+            project: Some("github-navigation".to_owned()),
+            parent: None,
+        },
+    )
+    .expect("metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "work", "list", "--all", "--prefix", "project"],
+        &environment,
+        &services,
+    )
+    .expect("global work list succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!(
+            "github-navigation\n  project@fix  {}\n\nNo project\n  project  {}\n",
+            workspace_root.display(),
+            project_root.display()
+        )
+    );
 }
 
 #[test]

@@ -70,7 +70,8 @@ use crate::{
         RepoHookEvent, RepoWorkItemEvent, RepoWorkItemHandler, RepositoryContext, RepositoryError,
         RepositoryIdentity, RuntimeEnvironment, ShellConfig, ShellZoxideMode, StackMetadata,
         StackMetadataNode, StoredPullRequestIdentity, StoredPullRequestTimeline, TokenSource,
-        WorkflowConfig, WorkspaceMetadata, PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION,
+        WorkflowConfig, WorkspaceMetadata, WorkspaceParentMetadata,
+        PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION,
     },
 };
 

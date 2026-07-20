@@ -779,7 +779,12 @@ fn handle_work(
     match request {
         WorkRequest::Add(request) => {
             let context = LocalRepositoryContext::discover(environment)?;
-            let plan = plan_work_add(&request, &context, environment)?;
+            let parent_workspace = if request.child {
+                Some(services.current_workspace_entry(environment.current_dir())?)
+            } else {
+                None
+            };
+            let plan = plan_work_add(&request, &context, environment, parent_workspace.as_ref())?;
             let options = plan.workspace_options();
             progress.status("Adding workspace…");
             services.add_workspace(&plan.primary_checkout_root, &options)?;
@@ -798,11 +803,19 @@ fn handle_work(
                 let config = WorkflowConfig::discover_global(environment)?;
                 let locations = global_work_locations(&config, environment)?;
                 let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
-                Ok(render_global_work_list(&locations))
+                let entries = work_location_list_entries(locations)?;
+                Ok(render_global_work_list(&entries))
             } else {
                 let workspaces = services.workspace_entries(environment.current_dir())?;
-                Ok(render_work_list(&workspaces, output_mode.color))
+                let entries = work_list_entries(workspaces)?;
+                Ok(render_work_list(&entries, output_mode.color))
             }
+        }
+        WorkRequest::Info(request) => {
+            let context = LocalRepositoryContext::discover(environment)?;
+            let workspace = services.current_workspace_entry(environment.current_dir())?;
+            let info = current_work_info(&context, workspace, environment)?;
+            Ok(render_work_info(&info, request.format))
         }
         WorkRequest::Complete(request) => handle_work_complete(request, environment, services),
         WorkRequest::Root(request) => handle_work_root(request, environment, services),

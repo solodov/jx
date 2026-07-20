@@ -35,8 +35,13 @@ the checkout at `root/path`. `jx work` uses the same identity to place managed
 workspaces at `root/workspace_dir/path/name`, keeping primary checkouts visible
 while parallel work stays under the hidden workspace directory. Task workspaces
 created with `jx work add --task-id` prefix that workspace name with the task id
-and store the task id in workspace-local metadata for `jx stack publish`. `jx sync` can use
-the same layout in reverse to initialize a local jj/Git repository and infer
+and store the task id in workspace-local metadata for `jx stack publish`.
+`jx work add --project` stores a separate project key in the same metadata so
+`jx work list` can group related workspaces without changing names. `jx work add
+--child` records the current project workspace as the new workspace's parent and
+inherits its project. `jx work info --format json` exposes the current workspace
+metadata for integrations. `jx sync` can use the same layout in reverse to
+initialize a local jj/Git repository and infer
 private GitHub repository creation when a layout path has no repo or remotes.
 Without config, `owner/repo` uses the built-in GitHub source and clones to
 `~/src/github.com/owner/repo` with an SSH URL. When the current directory is a
