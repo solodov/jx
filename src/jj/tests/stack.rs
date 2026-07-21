@@ -116,7 +116,7 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
     // Verifies: Local stack metadata repair derives PR bases from jj ancestry, not GitHub state.
     let fixture = TestWorkspace::new("local-stack-branches");
     let settings = user_settings().expect("settings");
-    let (workspace, repo) = pollster::block_on(async {
+    let (workspace, repo, parent_id, child_id) = pollster::block_on(async {
         let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
             .await
             .expect("initialize jj workspace");
@@ -125,6 +125,8 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
         let parent = write_child(tx.repo_mut(), &trunk, "parent change").await;
         let child = write_child(tx.repo_mut(), &parent, "child change").await;
+        let parent_id = parent.id().hex();
+        let child_id = child.id().hex();
 
         set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
         set_local_bookmark(tx.repo_mut(), "topic/parent", parent.id());
@@ -137,7 +139,7 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
             .commit("arrange local stack branches")
             .await
             .expect("commit");
-        (workspace, repo)
+        (workspace, repo, parent_id, child_id)
     });
     let subject = JjWorkspace { workspace, repo };
 
@@ -153,12 +155,14 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
                 base_branch: "topic/parent".to_owned(),
                 parent_branch: Some("topic/parent".to_owned()),
                 title: "child change".to_owned(),
+                commit_id: child_id,
             },
             LocalStackBranch {
                 branch: "topic/parent".to_owned(),
                 base_branch: "main".to_owned(),
                 parent_branch: None,
                 title: "parent change".to_owned(),
+                commit_id: parent_id,
             },
         ]
     );

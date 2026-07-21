@@ -13,6 +13,48 @@ fn sync_pull_request_cell(number: u64) -> String {
     )
 }
 
+fn sync_pull_request_status(
+    number: u64,
+    head_branch: &str,
+    latest_commit_oid: &str,
+) -> PullRequestStatusRecord {
+    PullRequestStatusRecord {
+        number,
+        title: "Ready PR".to_owned(),
+        url: Some(format!(
+            "https://github.com/example-owner/example-repo/pull/{number}"
+        )),
+        created_at: None,
+        head_branch: head_branch.to_owned(),
+        base_branch: "main".to_owned(),
+        default_branch: Some("main".to_owned()),
+        author: Some("example-user".to_owned()),
+        draft: false,
+        merged: false,
+        closed: false,
+        merged_at: None,
+        closed_at: None,
+        check_status: PullRequestCheckStatus::Passing,
+        checks: Vec::new(),
+        merge_status: PullRequestMergeStatus::Mergeable,
+        review_status: PullRequestReviewStatus::Approved,
+        auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
+        requested_reviewers: ReviewerSelection::default(),
+        suggested_reviewers: Vec::new(),
+        approved_reviewers: Vec::new(),
+        changes_requested_reviewers: Vec::new(),
+        commented_reviewers: Vec::new(),
+        addressed_reviewers: Vec::new(),
+        reviewer_responses: Vec::new(),
+        reviewer_mentions: Vec::new(),
+        dismissed_reviewers: Vec::new(),
+        review_activity: Vec::new(),
+        timeline_events: Vec::new(),
+        labels: Vec::new(),
+        latest_commit_oid: Some(latest_commit_oid.to_owned()),
+    }
+}
+
 #[test]
 fn global_sync_renderer_sorts_each_section_by_directory() {
     // Verifies: Global sync output keeps each status section in stable filesystem order.
@@ -472,6 +514,139 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
             blank_sync_pull_request_cell(),
             example_bookmark_link("example-user/old")
         )
+    );
+}
+
+#[test]
+fn sync_protects_test_green_review_pending_root_and_syncs_only_changed_protected_bookmarks() {
+    // Verifies: PR-aware sync avoids churn once policy-normalized tests pass, even while review is pending.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[repo.sync]
+rebase_strategy = "stack_green_pull_requests"
+rebase_needed_labels = ["rebase-needed"]
+
+[repo.stack_status]
+review_gate_checks = ["review gate"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let root_commit = "1111222233334444555566667777888899990000";
+    let child_commit = "2222333344445555666677778888999900001111";
+    let mut root_status = sync_pull_request_status(10, "topic/root", root_commit);
+    root_status.check_status = PullRequestCheckStatus::Failing;
+    root_status.review_status = PullRequestReviewStatus::ReviewRequired;
+    root_status.checks = vec![
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+        PullRequestCheck {
+            name: "review gate".to_owned(),
+            status: PullRequestCheckStatus::Failing,
+        },
+    ];
+    root_status.labels = vec![PullRequestLabel {
+        name: "merge-queue".to_owned(),
+        color: "0e8a16".to_owned(),
+    }];
+    let services = FakeServices {
+        fetch: FetchOutcome {
+            rebased_commits: Vec::new(),
+            ..FakeServices::default().fetch
+        },
+        local_stack_branches: std::cell::RefCell::new(vec![vec![
+            LocalStackBranch {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                title: "Root".to_owned(),
+                commit_id: root_commit.to_owned(),
+            },
+            LocalStackBranch {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                title: "Child".to_owned(),
+                commit_id: child_commit.to_owned(),
+            },
+        ]]),
+        authored_open_pull_requests_by_head: BTreeMap::from([(
+            "topic/root".to_owned(),
+            PullRequestRecord {
+                number: 10,
+                title: "Root".to_owned(),
+                body: None,
+                head_branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                html_url: Some("https://github.com/example-owner/example-repo/pull/10".to_owned()),
+                draft: false,
+                merged: false,
+                reviewers: ReviewerSelection::default(),
+            },
+        )]),
+        pull_request_statuses: BTreeMap::from([(10, root_status)]),
+        tracked_push: TrackedPushOutcome {
+            pushed_refs: 1,
+            bookmarks: vec![
+                PushedBookmarkSummary {
+                    branch: "topic/root".to_owned(),
+                    old_short_commit_id: Some("11112222".to_owned()),
+                    new_short_commit_id: Some("11112222".to_owned()),
+                    old_short_change_id: Some("rootold".to_owned()),
+                    new_short_change_id: Some("rootold".to_owned()),
+                    old_description: Some("Root".to_owned()),
+                    new_description: Some("Root".to_owned()),
+                    pull_request_description: Some("Root".to_owned()),
+                    pull_request_base: Some("main".to_owned()),
+                    new_workspace_visibility: current_workspace_visibility(),
+                },
+                PushedBookmarkSummary {
+                    branch: "topic/child".to_owned(),
+                    old_short_commit_id: Some("22223333".to_owned()),
+                    new_short_commit_id: Some("33334444".to_owned()),
+                    old_short_change_id: Some("childld".to_owned()),
+                    new_short_change_id: Some("childnw".to_owned()),
+                    old_description: Some("Old child".to_owned()),
+                    new_description: Some("Child".to_owned()),
+                    pull_request_description: Some("Child".to_owned()),
+                    pull_request_base: Some("topic/root".to_owned()),
+                    new_workspace_visibility: current_workspace_visibility(),
+                },
+            ],
+            pushed_commits: vec![PushedCommitSummary {
+                short_commit_id: "33334444".to_owned(),
+                description: "Child".to_owned(),
+            }],
+        },
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
+
+    assert_eq!(
+        services.fetch_options.borrow().as_slice(),
+        &[FetchOptions {
+            protected_rebase_roots: vec!["topic/root".to_owned()],
+        }]
+    );
+    let pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(
+        pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.branch.as_str())
+            .collect::<Vec<_>>(),
+        ["topic/child"]
     );
 }
 

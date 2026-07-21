@@ -97,6 +97,7 @@ fn syncable_tracked_push_skips_bookmarks_with_conflicted_commits() {
             &trunk_children,
             &updated_trunk,
             &RevsetExpression::none(),
+            &BTreeMap::new(),
         )
         .await
         .expect("conflicting child is rebased");

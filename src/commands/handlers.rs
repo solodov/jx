@@ -1505,7 +1505,12 @@ fn global_sync_existing_origin(
     services: &dyn CommandServices,
     local_ahead_by: i64,
 ) -> Result<GlobalSyncOutcome, CommandError> {
-    let fetch = fetch_origin_with_retries(&context, services)?;
+    let rebase_plan = sync_rebase_plan(&context, services)?;
+    let fetch = fetch_origin_with_options_and_retries(
+        &context,
+        services,
+        rebase_plan.fetch_options.clone(),
+    )?;
     let mut changed = fetch_outcome_changed(&fetch);
     if context
         .config
@@ -1519,7 +1524,8 @@ fn global_sync_existing_origin(
     changed |= tracked_push_changed(&push.pushed) || !push.skipped_same_tree_bookmarks.is_empty();
     let manager =
         PullRequestStackManager::new(&context, services, PerfLog::disabled(), environment);
-    let _ = manager.sync_pull_requests(&push.pushed)?;
+    let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
+    let _ = manager.sync_pull_requests(&pull_request_push)?;
 
     if let Some(detail) = sync_conflict_detail(&fetch, &push) {
         Ok(GlobalSyncOutcome::SyncedWithConflicts { detail })
@@ -1541,11 +1547,19 @@ fn fetch_origin_with_retries(
     context: &RepositoryContext,
     services: &dyn CommandServices,
 ) -> Result<FetchOutcome, JjError> {
+    fetch_origin_with_options_and_retries(context, services, FetchOptions::default())
+}
+
+fn fetch_origin_with_options_and_retries(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+    options: FetchOptions,
+) -> Result<FetchOutcome, JjError> {
     let retry_delays = fetch_origin_retry_delays();
     let mut attempt = 0;
 
     loop {
-        match services.fetch_origin(context) {
+        match services.fetch_origin_with_options(context, options.clone()) {
             Ok(outcome) => return Ok(outcome),
             Err(error) if should_retry_origin_fetch(&error) && attempt < retry_delays.len() => {
                 let delay = retry_delays[attempt];
@@ -1854,6 +1868,145 @@ fn record_sync_push_metric_step(
         attrs,
         None::<&CommandError>,
     );
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SyncRebasePlan {
+    fetch_options: FetchOptions,
+    protected_branches: BTreeSet<String>,
+}
+
+fn sync_rebase_plan(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+) -> Result<SyncRebasePlan, CommandError> {
+    let sync_config = context.config.repo.sync_for(&context.origin.github);
+    if sync_config.rebase_strategy() != RepoSyncRebaseStrategy::StackGreenPullRequests {
+        return Ok(SyncRebasePlan::default());
+    }
+
+    let local_branches = services.local_stack_branches(context)?;
+    let root_branches = local_branches
+        .iter()
+        .filter(|branch| branch.parent_branch.is_none())
+        .collect::<Vec<_>>();
+    if root_branches.is_empty() {
+        return Ok(SyncRebasePlan::default());
+    }
+
+    let author = services.authenticated_login(&context.token_source)?;
+    let mut roots_by_number = BTreeMap::new();
+    for root in root_branches {
+        let Some(pull_request) =
+            services.find_authored_open_pull_request_for_head(context, &root.branch, &author)?
+        else {
+            continue;
+        };
+        roots_by_number.insert(pull_request.number, root);
+    }
+    if roots_by_number.is_empty() {
+        return Ok(SyncRebasePlan::default());
+    }
+
+    let numbers = roots_by_number.keys().copied().collect::<Vec<_>>();
+    let statuses = services.pull_request_statuses(context, &numbers)?;
+    let stack_status_config = context.config.repo.stack_status_for(&context.origin.github);
+    let mut protected_roots = BTreeSet::new();
+    for status in statuses {
+        let Some(root) = roots_by_number.get(&status.number) else {
+            continue;
+        };
+        if status.head_branch.as_str() != root.branch.as_str() {
+            continue;
+        }
+        if status.latest_commit_oid.as_deref() != Some(root.commit_id.as_str()) {
+            continue;
+        }
+        if status
+            .labels
+            .iter()
+            .any(|label| sync_config.matches_rebase_needed_label(&label.name))
+        {
+            continue;
+        }
+
+        let status = domain::apply_pull_request_status_policy(status, &stack_status_config);
+        if pull_request_status_has_green_stack_checks(&status) {
+            protected_roots.insert(root.branch.clone());
+        }
+    }
+
+    let protected_branches = protected_subtree_branches(&local_branches, &protected_roots);
+    Ok(SyncRebasePlan {
+        fetch_options: FetchOptions {
+            protected_rebase_roots: protected_roots.into_iter().collect(),
+        },
+        protected_branches,
+    })
+}
+
+fn sync_rebase_plan_result_attrs(result: &Result<SyncRebasePlan, CommandError>) -> Vec<PerfAttr> {
+    match result {
+        Ok(plan) => vec![
+            perf_attr(
+                "protected_rebase_root_count",
+                plan.fetch_options.protected_rebase_roots.len(),
+            ),
+            perf_attr("protected_branch_count", plan.protected_branches.len()),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn protected_subtree_branches(
+    local_branches: &[LocalStackBranch],
+    protected_roots: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut protected = protected_roots.clone();
+    loop {
+        let mut changed = false;
+        for branch in local_branches {
+            if protected.contains(&branch.branch) {
+                continue;
+            }
+            if branch
+                .parent_branch
+                .as_ref()
+                .is_some_and(|parent| protected.contains(parent))
+            {
+                changed |= protected.insert(branch.branch.clone());
+            }
+        }
+        if !changed {
+            return protected;
+        }
+    }
+}
+
+fn pull_request_sync_push(
+    push: &TrackedPushOutcome,
+    protected_branches: &BTreeSet<String>,
+) -> TrackedPushOutcome {
+    if protected_branches.is_empty() {
+        return push.clone();
+    }
+
+    TrackedPushOutcome {
+        pushed_refs: push.pushed_refs,
+        bookmarks: push
+            .bookmarks
+            .iter()
+            .filter(|bookmark| {
+                !protected_branches.contains(&bookmark.branch) || pushed_bookmark_changed(bookmark)
+            })
+            .cloned()
+            .collect(),
+        pushed_commits: push.pushed_commits.clone(),
+    }
+}
+
+fn pushed_bookmark_changed(bookmark: &PushedBookmarkSummary) -> bool {
+    bookmark.old_short_commit_id != bookmark.new_short_commit_id
 }
 
 fn sync_current_stack(
@@ -2302,11 +2455,26 @@ fn sync_existing_origin_traced(
     run_sync_repo_checks(&context, services, || {
         services.changed_files_for_tracked_push(&context)
     })?;
+    let rebase_plan = span.measure_with_result_attrs(
+        "plan_sync_rebase",
+        Vec::new(),
+        || sync_rebase_plan(&context, services),
+        sync_rebase_plan_result_attrs,
+    )?;
     progress.status("Fetching origin…");
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
-        Vec::new(),
-        || fetch_origin_with_retries(&context, services),
+        [perf_attr(
+            "protected_rebase_root_count",
+            rebase_plan.fetch_options.protected_rebase_roots.len(),
+        )],
+        || {
+            fetch_origin_with_options_and_retries(
+                &context,
+                services,
+                rebase_plan.fetch_options.clone(),
+            )
+        },
         fetch_result_attrs,
     )?;
     let advance_trunk = context
@@ -2345,10 +2513,14 @@ fn sync_existing_origin_traced(
         PerfLog::from_environment(environment),
         environment,
     );
+    let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
-        [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
-        || manager.sync_pull_requests(&push.pushed),
+        [perf_attr(
+            "bookmark_count",
+            pull_request_push.bookmarks.len(),
+        )],
+        || manager.sync_pull_requests(&pull_request_push),
         pull_request_records_result_attrs,
     )?;
     progress.finish();

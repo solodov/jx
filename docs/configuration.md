@@ -120,6 +120,27 @@ local trunk bookmark to the newest contiguous stack commit with changes, a
 non-empty description, and no conflicts before pushing tracked bookmarks, then
 leaves an empty working-copy change on top when needed.
 
+`repo.sync.rebase_strategy` controls whether repository sync rebases local stacks
+after fetching origin. The default `always` preserves historical behavior. The
+opt-in `stack_green_pull_requests` strategy leaves a trunk-child stack in place
+when that root PR has passing policy-normalized checks by the same stack-status
+policy used by `jx stack status`, the local bookmark matches the PR head commit,
+and no configured `rebase_needed_labels` glob is present. Review approval is not
+required for this sync protection. Descendant PRs in a protected stack are only
+metadata-synced when their bookmark was actually pushed.
+
+```toml
+[repo.sync]
+rebase_strategy = "always"
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[repo.rules.sync]
+rebase_strategy = "stack_green_pull_requests"
+rebase_needed_labels = ["rebase-needed"]
+```
+
 Check commands run before selected lifecycle operations when at least one
 changed file matches the configured repo-relative glob patterns. Commands are
 argv arrays, run from the workspace root, and must exit successfully without
@@ -288,6 +309,29 @@ open attempts; no-op matches are kept quiet. Prepare effects appear in the PR
 preview, and create/update effects appear after publishing. `prepend_task_id`
 rewrites the selected commit title before PR planning, using `TASK-ID: title`
 and normalizing common existing task prefixes.
+
+Pull-request handlers can run generic commands when `jx stack status` observes a
+tracked PR as merged. Commands run once per handler and PR from the repository
+root, and each start, success, or error is appended to the central
+`~/.local/state/jx/jx-pull-request-handlers.log` JSONL log. Set
+`JX_PULL_REQUEST_HANDLER_LOG=/path/to/log` to override the path or `off` to disable
+this log. The command is configured as an argument array, not a shell string, and
+supports placeholders such as `{repo}`, `{pr_number}`, `{pr_url}`, `{title}`, `{branch}`,
+`{base_branch}`, and `{merged_at}`:
+
+```toml
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.pull_request_handlers]]
+id = "notify-merged-pr"
+on = "pull_request.merged"
+command = ["terminal-notifier", "-title", "PR merged", "-message", "{title}", "-open", "{pr_url}"]
+```
+
+Matching rule handlers compose after base handlers. A matching rule can replace a
+previous handler with the same `id`, or disable it with `id = "..."` and
+`enabled = false`.
 
 Work item handlers can run generic commands when `jx stack status` observes a
 PR with `fixes_work_ids` transition to merged. Commands run from the repository

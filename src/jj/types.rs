@@ -336,6 +336,13 @@ pub struct TrunkStateSummary {
     pub description: String,
 }
 
+/// Options that control how fetch repairs local stacks after importing `origin`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FetchOptions {
+    /// Local bookmark heads whose trunk-child changes should not be rebased.
+    pub protected_rebase_roots: Vec<String>,
+}
+
 /// Outcome of fetching and importing fixed `origin` through the jj boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchOutcome {
@@ -404,6 +411,7 @@ pub struct LocalStackBranch {
     pub base_branch: String,
     pub parent_branch: Option<String>,
     pub title: String,
+    pub commit_id: String,
 }
 
 /// Local branch ancestry plus jj-internal timings for performance tracing.

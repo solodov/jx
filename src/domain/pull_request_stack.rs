@@ -104,19 +104,29 @@ fn pull_request_auto_merge_status(
     {
         return PullRequestAutoMergeStatus::Armed;
     }
-    if pull_request_is_ready_for_auto_merge(status) {
+    if pull_request_status_is_stack_green(status) {
         PullRequestAutoMergeStatus::Missing
     } else {
         PullRequestAutoMergeStatus::NotConfigured
     }
 }
 
-fn pull_request_is_ready_for_auto_merge(status: &PullRequestStatusRecord) -> bool {
+/// Returns whether policy-normalized checks are green enough to avoid sync churn.
+pub fn pull_request_status_has_green_stack_checks(status: &PullRequestStatusRecord) -> bool {
+    pull_request_status_is_open_and_mergeable(status)
+        && status.check_status == PullRequestCheckStatus::Passing
+}
+
+/// Returns whether a policy-normalized PR appears fully ready in stack status.
+pub fn pull_request_status_is_stack_green(status: &PullRequestStatusRecord) -> bool {
+    pull_request_status_has_green_stack_checks(status)
+        && status.review_status == PullRequestReviewStatus::Approved
+}
+
+fn pull_request_status_is_open_and_mergeable(status: &PullRequestStatusRecord) -> bool {
     !status.draft
         && !status.merged
         && !status.closed
-        && status.check_status == PullRequestCheckStatus::Passing
-        && status.review_status == PullRequestReviewStatus::Approved
         && status.merge_status != PullRequestMergeStatus::Conflicting
 }
 

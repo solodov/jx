@@ -412,6 +412,16 @@ pub(super) trait CommandServices {
     /// Fetches origin and applies jj stack repair/rebase behavior.
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError>;
 
+    /// Fetches origin with explicit stack-rebase behavior.
+    fn fetch_origin_with_options(
+        &self,
+        context: &RepositoryContext,
+        options: FetchOptions,
+    ) -> Result<FetchOutcome, JjError> {
+        let _ = options;
+        self.fetch_origin(context)
+    }
+
     /// Moves the current change and descendants onto a stack target or trunk.
     fn move_current_stack(
         &self,
@@ -2618,6 +2628,15 @@ impl CommandServices for ProductionServices<'_> {
     }
 
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
+        self.fetch_origin_with_options(context, FetchOptions::default())
+    }
+
+    fn fetch_origin_with_options(
+        &self,
+        context: &RepositoryContext,
+        options: FetchOptions,
+    ) -> Result<FetchOutcome, JjError> {
+        let protected_rebase_root_count = options.protected_rebase_roots.len();
         let mut span = PerfLog::from_environment(self.environment).start(
             "jj.fetch_origin",
             [
@@ -2627,13 +2646,14 @@ impl CommandServices for ProductionServices<'_> {
                     context.workspace_root.display().to_string(),
                 ),
                 perf_attr("pid", u64::from(std::process::id())),
+                perf_attr("protected_rebase_root_count", protected_rebase_root_count),
             ],
         );
         let result = (|| {
             let mut workspace = JjWorkspace::load(context.workspace_root.clone())?;
             span.set([perf_attr("jj_workspace", workspace.workspace_name())]);
             let mut trace = |step| record_fetch_trace_step(&mut span, step);
-            workspace.fetch_origin_with_trace(&mut trace)
+            workspace.fetch_origin_with_options_and_trace(options, &mut trace)
         })();
         if let Ok(fetch) = &result {
             span.set(fetch_outcome_attrs(fetch));

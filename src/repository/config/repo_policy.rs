@@ -25,6 +25,15 @@ impl RepoConfig {
         enabled
     }
 
+    /// Returns effective sync policy for this repository.
+    pub fn sync_for(&self, repository: &GitHubRepository) -> RepoSyncConfig {
+        let mut config = self.base.sync.clone();
+        for rule in self.matching_rules(repository) {
+            config.apply_layer(rule.policy.sync.clone());
+        }
+        config
+    }
+
     /// Returns effective event handlers for this repository in deterministic execution order.
     pub fn event_handlers_for(&self, repository: &GitHubRepository) -> Vec<RepoEventHandler> {
         let mut handlers = Vec::new();
@@ -53,6 +62,19 @@ impl RepoConfig {
         apply_work_item_handler_configs(&mut handlers, &self.base.work_item_handlers);
         for rule in self.matching_rules(repository) {
             apply_work_item_handler_configs(&mut handlers, &rule.policy.work_item_handlers);
+        }
+        handlers
+    }
+
+    /// Returns effective pull-request handlers for this repository in deterministic execution order.
+    pub fn pull_request_handlers_for(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Vec<RepoPullRequestHandler> {
+        let mut handlers = Vec::new();
+        apply_pull_request_handler_configs(&mut handlers, &self.base.pull_request_handlers);
+        for rule in self.matching_rules(repository) {
+            apply_pull_request_handler_configs(&mut handlers, &rule.policy.pull_request_handlers);
         }
         handlers
     }
@@ -207,9 +229,11 @@ impl RepoConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoPolicyConfig {
     pub advance_trunk: Option<bool>,
+    pub sync: RepoSyncConfig,
     pub event_handlers: Vec<RepoEventHandlerConfig>,
     pub work_items: RepoWorkItemsConfig,
     pub work_item_handlers: Vec<RepoWorkItemHandlerConfig>,
+    pub pull_request_handlers: Vec<RepoPullRequestHandlerConfig>,
     pub hooks: Vec<RepoHookConfig>,
     pub checks: Vec<RepoCheckConfig>,
     pub reviewers: Vec<ReviewerTarget>,
@@ -224,9 +248,14 @@ impl RepoPolicyConfig {
         if layer.advance_trunk.is_some() {
             self.advance_trunk = layer.advance_trunk;
         }
+        self.sync.apply_layer(layer.sync);
         merge_event_handler_configs(&mut self.event_handlers, &layer.event_handlers);
         self.work_items.apply_layer(layer.work_items);
         merge_work_item_handler_configs(&mut self.work_item_handlers, &layer.work_item_handlers);
+        merge_pull_request_handler_configs(
+            &mut self.pull_request_handlers,
+            &layer.pull_request_handlers,
+        );
         merge_hook_configs(&mut self.hooks, &layer.hooks);
         merge_check_configs(&mut self.checks, &layer.checks);
         merge_reviewers(&mut self.reviewers, layer.reviewers);
@@ -238,6 +267,42 @@ impl RepoPolicyConfig {
         self.stack_status.apply_layer(layer.stack_status);
         self.review.apply_layer(layer.review);
     }
+}
+
+/// Sync behavior that can vary by repository policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoSyncConfig {
+    pub rebase_strategy: Option<RepoSyncRebaseStrategy>,
+    pub rebase_needed_labels: Vec<String>,
+}
+
+impl RepoSyncConfig {
+    fn apply_layer(&mut self, layer: RepoSyncConfig) {
+        if layer.rebase_strategy.is_some() {
+            self.rebase_strategy = layer.rebase_strategy;
+        }
+        merge_string_set(&mut self.rebase_needed_labels, layer.rebase_needed_labels);
+    }
+
+    /// Returns the effective strategy for deciding whether sync should rebase local stacks.
+    pub fn rebase_strategy(&self) -> RepoSyncRebaseStrategy {
+        self.rebase_strategy
+            .unwrap_or(RepoSyncRebaseStrategy::Always)
+    }
+
+    /// Returns whether a label means the PR should be rebased before syncing.
+    pub fn matches_rebase_needed_label(&self, label: &str) -> bool {
+        self.rebase_needed_labels
+            .iter()
+            .any(|pattern| label_glob_matches(pattern, label))
+    }
+}
+
+/// Strategy for `jx sync` stack rebasing after fetching origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoSyncRebaseStrategy {
+    Always,
+    StackGreenPullRequests,
 }
 
 /// Work-item side-effect behavior that can vary by repository policy.
@@ -600,6 +665,13 @@ pub enum RepoWorkItemHandlerConfig {
     Disable { id: String },
 }
 
+/// One configured pull-request handler or a disabling override by handler id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoPullRequestHandlerConfig {
+    Handler(RepoPullRequestHandler),
+    Disable { id: String },
+}
+
 /// One configured lifecycle hook or a disabling override by hook id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoHookConfig {
@@ -670,6 +742,14 @@ pub struct RepoWorkItemHandler {
     pub command: Vec<String>,
 }
 
+/// Side effect to run when a matching pull-request status event is observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoPullRequestHandler {
+    pub id: Option<String>,
+    pub on: RepoPullRequestEvent,
+    pub command: Vec<String>,
+}
+
 /// Mutating command to run at a configured repository lifecycle point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoHook {
@@ -708,6 +788,21 @@ impl RepoWorkItemEvent {
     pub fn label(self) -> &'static str {
         match self {
             Self::Fixed => "work_item.fixed",
+        }
+    }
+}
+
+/// Pull-request status events supported by configured handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RepoPullRequestEvent {
+    Merged,
+}
+
+impl RepoPullRequestEvent {
+    /// Stable config label for this event, used in operator-facing handler output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Merged => "pull_request.merged",
         }
     }
 }
@@ -906,6 +1001,55 @@ fn work_item_handler_config_id(config: &RepoWorkItemHandlerConfig) -> Option<&st
     }
 }
 
+fn apply_pull_request_handler_configs(
+    target: &mut Vec<RepoPullRequestHandler>,
+    configs: &[RepoPullRequestHandlerConfig],
+) {
+    for config in configs {
+        match config {
+            RepoPullRequestHandlerConfig::Handler(handler) => {
+                if let Some(id) = &handler.id {
+                    target.retain(|existing| existing.id.as_deref() != Some(id.as_str()));
+                }
+                target.push(handler.clone());
+            }
+            RepoPullRequestHandlerConfig::Disable { id } => {
+                target.retain(|handler| handler.id.as_deref() != Some(id.as_str()));
+            }
+        }
+    }
+}
+
+fn merge_pull_request_handler_configs(
+    target: &mut Vec<RepoPullRequestHandlerConfig>,
+    configs: &[RepoPullRequestHandlerConfig],
+) {
+    for config in configs {
+        match config {
+            RepoPullRequestHandlerConfig::Handler(handler) => {
+                if let Some(id) = &handler.id {
+                    target.retain(|existing| {
+                        pull_request_handler_config_id(existing) != Some(id.as_str())
+                    });
+                }
+                target.push(config.clone());
+            }
+            RepoPullRequestHandlerConfig::Disable { id } => {
+                target.retain(|existing| {
+                    pull_request_handler_config_id(existing) != Some(id.as_str())
+                });
+            }
+        }
+    }
+}
+
+fn pull_request_handler_config_id(config: &RepoPullRequestHandlerConfig) -> Option<&str> {
+    match config {
+        RepoPullRequestHandlerConfig::Handler(handler) => handler.id.as_deref(),
+        RepoPullRequestHandlerConfig::Disable { id } => Some(id.as_str()),
+    }
+}
+
 fn apply_hook_configs(target: &mut Vec<RepoHook>, configs: &[RepoHookConfig]) {
     for config in configs {
         match config {
@@ -960,6 +1104,15 @@ fn merge_reviewers(target: &mut Vec<ReviewerTarget>, reviewers: Vec<ReviewerTarg
     for reviewer in reviewers {
         if seen.insert(reviewer.clone()) {
             target.push(reviewer);
+        }
+    }
+}
+
+fn merge_string_set(target: &mut Vec<String>, values: Vec<String>) {
+    let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
+    for value in values {
+        if seen.insert(value.clone()) {
+            target.push(value);
         }
     }
 }

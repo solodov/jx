@@ -192,6 +192,7 @@ impl JjWorkspace {
                 base_branch,
                 parent_branch,
                 title: first_description_line(target.description()).to_owned(),
+                commit_id: target.id().hex(),
             });
         }
 

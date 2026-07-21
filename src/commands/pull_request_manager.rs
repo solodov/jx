@@ -1,6 +1,8 @@
 use super::*;
 use crate::repository::StackMetadataWorkItemHandlerRun;
 
+const PULL_REQUEST_HANDLER_LOG_FILE: &str = "jx-pull-request-handlers.log";
+const PULL_REQUEST_HANDLER_ACTION: &str = "pull_request_handler";
 const WORK_ITEM_HANDLER_LOG_FILE: &str = "jx-work-item-handlers.log";
 
 /// Command-side integration boundary for pull-request stack state.
@@ -35,7 +37,7 @@ impl<'a> PullRequestStackManager<'a> {
         context: &'a RepositoryContext,
         services: &'a dyn CommandServices,
         perf: PerfLog,
-        environment: &RuntimeEnvironment,
+        environment: &'a RuntimeEnvironment,
     ) -> Self {
         Self {
             context,
@@ -810,6 +812,60 @@ fn merge_work_ids(target: &mut Vec<String>, work_ids: &[String]) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PullRequestMergedEffect {
+    repository: GitHubRepository,
+    pull_request: u64,
+    pull_request_url: Option<String>,
+    title: String,
+    branch: String,
+    base_branch: String,
+    merged_at: Option<String>,
+}
+
+fn pull_request_merged_effects(
+    context: &RepositoryContext,
+    metadata: &StackMetadata,
+    statuses: &[PullRequestStatusRecord],
+) -> Vec<PullRequestMergedEffect> {
+    let statuses_by_number = statuses
+        .iter()
+        .map(|status| (status.number, status))
+        .collect::<BTreeMap<_, _>>();
+    let mut effects = Vec::new();
+    let mut seen = BTreeSet::new();
+    for node in &metadata.nodes {
+        if !node.merged {
+            continue;
+        }
+        let Some(pull_request) = node.pull_request else {
+            continue;
+        };
+        if !seen.insert(pull_request) {
+            continue;
+        }
+        let status = statuses_by_number.get(&pull_request).copied();
+        effects.push(PullRequestMergedEffect {
+            repository: context.origin.github.clone(),
+            pull_request,
+            pull_request_url: status
+                .and_then(|status| status.url.clone())
+                .or(node.url.clone()),
+            title: status
+                .map(|status| status.title.clone())
+                .unwrap_or_else(|| node.title.clone()),
+            branch: status
+                .map(|status| status.head_branch.clone())
+                .unwrap_or_else(|| node.branch.clone()),
+            base_branch: status
+                .map(|status| status.base_branch.clone())
+                .unwrap_or_else(|| node.base_branch.clone()),
+            merged_at: status.and_then(|status| status.merged_at.clone()),
+        });
+    }
+    effects
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct WorkItemFixedEffect {
     work_id: String,
     repository: GitHubRepository,
@@ -862,13 +918,17 @@ fn work_item_handler_run(
 /// Maintains durable stack-status metadata through the single path shared by local and global status views.
 pub(super) struct StackStatusMetadataMaintainer<'a> {
     context: &'a RepositoryContext,
+    environment: &'a RuntimeEnvironment,
+    pull_request_handler_log: PullRequestHandlerLog,
     work_item_handler_log: WorkItemHandlerLog,
 }
 
 impl<'a> StackStatusMetadataMaintainer<'a> {
-    pub(super) fn new(context: &'a RepositoryContext, environment: &RuntimeEnvironment) -> Self {
+    pub(super) fn new(context: &'a RepositoryContext, environment: &'a RuntimeEnvironment) -> Self {
         Self {
             context,
+            environment,
+            pull_request_handler_log: PullRequestHandlerLog::from_environment(environment),
             work_item_handler_log: WorkItemHandlerLog::from_environment(environment),
         }
     }
@@ -882,6 +942,14 @@ impl<'a> StackStatusMetadataMaintainer<'a> {
         let mut refreshed =
             domain::refresh_stack_metadata_pull_request_statuses(statuses, metadata);
         // Reconcile side effects before completed stacks age out so missing ledgers do not skip configured cleanup.
+        apply_pull_request_effects(
+            self.context,
+            self.environment,
+            &self.context.repository_root,
+            &refreshed,
+            statuses,
+            &self.pull_request_handler_log,
+        )?;
         apply_work_item_effects(
             self.context,
             &self.context.repository_root,
@@ -902,6 +970,267 @@ impl<'a> StackStatusMetadataMaintainer<'a> {
 /// Updated stack metadata after status maintenance has run to completion.
 pub(super) struct StackStatusMetadataMaintenance {
     pub(super) metadata: StackMetadata,
+}
+
+fn apply_pull_request_effects(
+    context: &RepositoryContext,
+    environment: &RuntimeEnvironment,
+    repository_root: &Path,
+    metadata: &StackMetadata,
+    statuses: &[PullRequestStatusRecord],
+    log: &PullRequestHandlerLog,
+) -> Result<(), CommandError> {
+    let handlers = context
+        .config
+        .repo
+        .pull_request_handlers_for(&context.origin.github)
+        .into_iter()
+        .filter(|handler| handler.on == RepoPullRequestEvent::Merged)
+        .collect::<Vec<_>>();
+    if handlers.is_empty() {
+        return Ok(());
+    }
+
+    let effects = pull_request_merged_effects(context, metadata, statuses);
+    if effects.is_empty() {
+        return Ok(());
+    }
+
+    let store = PullRequestStore::open(environment)?;
+    let mut applied_runs = BTreeSet::new();
+    for effect in &effects {
+        for handler in &handlers {
+            let handler_label = pull_request_handler_label(handler);
+            let run = (handler.on, handler_label.clone(), effect.pull_request);
+            if applied_runs.contains(&run)
+                || store.has_pull_request_action(
+                    &effect.repository,
+                    effect.pull_request,
+                    PULL_REQUEST_HANDLER_ACTION,
+                    handler.on.label(),
+                    Some(handler_label.as_str()),
+                )?
+            {
+                continue;
+            }
+            let command = render_pull_request_handler_command(handler, effect);
+            run_pull_request_handler(handler, effect, &command, repository_root, log)?;
+            store.record_pull_request_action(
+                &effect.repository,
+                effect.pull_request,
+                PULL_REQUEST_HANDLER_ACTION,
+                handler.on.label(),
+                Some(handler_label.as_str()),
+                pull_request_handler_action_details(handler, effect, &command),
+            )?;
+            applied_runs.insert(run);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PullRequestHandlerLog {
+    path: Option<PathBuf>,
+}
+
+impl PullRequestHandlerLog {
+    fn from_environment(environment: &RuntimeEnvironment) -> Self {
+        Self {
+            path: pull_request_handler_log_path(environment),
+        }
+    }
+
+    fn append(
+        &self,
+        repository_root: &Path,
+        handler: &RepoPullRequestHandler,
+        effect: &PullRequestMergedEffect,
+        command: &[String],
+        status: &str,
+        message: Option<&str>,
+    ) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        else {
+            return;
+        };
+        let mut record = serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "status": status,
+            "handler": pull_request_handler_label(handler),
+            "event": handler.on.label(),
+            "repo": effect.repository.slug(),
+            "prNumber": effect.pull_request,
+            "prUrl": effect.pull_request_url.as_deref(),
+            "title": effect.title.as_str(),
+            "branch": effect.branch.as_str(),
+            "baseBranch": effect.base_branch.as_str(),
+            "mergedAt": effect.merged_at.as_deref(),
+            "cwd": repository_root.display().to_string(),
+            "command": command,
+        });
+        if let Some(message) = message {
+            record["message"] = serde_json::Value::String(message.to_owned());
+        }
+        if serde_json::to_writer(&mut file, &record).is_ok() {
+            let _ = writeln!(file);
+        }
+    }
+}
+
+fn pull_request_handler_log_path(environment: &RuntimeEnvironment) -> Option<PathBuf> {
+    if let Some(path) = environment
+        .variable("JX_PULL_REQUEST_HANDLER_LOG")
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        if matches!(path, "off" | "false" | "0") {
+            return None;
+        }
+        return Some(PathBuf::from(path));
+    }
+
+    environment
+        .variable("XDG_STATE_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            environment
+                .home_dir()
+                .map(|home| home.join(".local").join("state"))
+        })
+        .map(|root| root.join("jx").join(PULL_REQUEST_HANDLER_LOG_FILE))
+}
+
+fn run_pull_request_handler(
+    handler: &RepoPullRequestHandler,
+    effect: &PullRequestMergedEffect,
+    command: &[String],
+    repository_root: &Path,
+    log: &PullRequestHandlerLog,
+) -> Result<(), CommandError> {
+    let handler_label = pull_request_handler_label(handler);
+    let Some(program) = command.first() else {
+        log.append(
+            repository_root,
+            handler,
+            effect,
+            command,
+            "error",
+            Some("command is empty"),
+        );
+        return Err(CommandError::PullRequestHandler {
+            handler: handler_label,
+            pull_request: effect.pull_request,
+            message: "command is empty".to_owned(),
+        });
+    };
+    log.append(repository_root, handler, effect, command, "start", None);
+    let status = ProcessCommand::new(program)
+        .args(command.iter().skip(1))
+        .current_dir(repository_root)
+        .status()
+        .map_err(|source| {
+            let message = source.to_string();
+            log.append(
+                repository_root,
+                handler,
+                effect,
+                command,
+                "error",
+                Some(message.as_str()),
+            );
+            CommandError::PullRequestHandler {
+                handler: handler_label.clone(),
+                pull_request: effect.pull_request,
+                message,
+            }
+        })?;
+    if !status.success() {
+        let message = status.to_string();
+        log.append(
+            repository_root,
+            handler,
+            effect,
+            command,
+            "error",
+            Some(message.as_str()),
+        );
+        return Err(CommandError::PullRequestHandler {
+            handler: handler_label,
+            pull_request: effect.pull_request,
+            message,
+        });
+    }
+    log.append(repository_root, handler, effect, command, "success", None);
+    Ok(())
+}
+
+fn render_pull_request_handler_command(
+    handler: &RepoPullRequestHandler,
+    effect: &PullRequestMergedEffect,
+) -> Vec<String> {
+    handler
+        .command
+        .iter()
+        .map(|arg| render_pull_request_handler_arg(arg, effect))
+        .collect()
+}
+
+fn render_pull_request_handler_arg(arg: &str, effect: &PullRequestMergedEffect) -> String {
+    arg.replace("{repo}", &effect.repository.slug())
+        .replace("{pr_number}", &effect.pull_request.to_string())
+        .replace(
+            "{pr_url}",
+            effect.pull_request_url.as_deref().unwrap_or_default(),
+        )
+        .replace("{title}", &effect.title)
+        .replace("{branch}", &effect.branch)
+        .replace("{base_branch}", &effect.base_branch)
+        .replace(
+            "{merged_at}",
+            effect.merged_at.as_deref().unwrap_or_default(),
+        )
+}
+
+fn pull_request_handler_action_details(
+    handler: &RepoPullRequestHandler,
+    effect: &PullRequestMergedEffect,
+    command: &[String],
+) -> serde_json::Value {
+    serde_json::json!({
+        "handler": pull_request_handler_label(handler),
+        "event": handler.on.label(),
+        "repo": effect.repository.slug(),
+        "prNumber": effect.pull_request,
+        "prUrl": effect.pull_request_url.as_deref(),
+        "title": effect.title.as_str(),
+        "branch": effect.branch.as_str(),
+        "baseBranch": effect.base_branch.as_str(),
+        "mergedAt": effect.merged_at.as_deref(),
+        "command": command,
+    })
+}
+
+fn pull_request_handler_label(handler: &RepoPullRequestHandler) -> String {
+    handler
+        .id
+        .clone()
+        .unwrap_or_else(|| handler.on.label().to_owned())
 }
 
 fn apply_work_item_effects(

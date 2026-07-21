@@ -922,6 +922,120 @@ command = ["sh", "-c", "printf '%s\\n' \"$1\" >> \"$2\"", "_", "{{work_id}}", "{
 }
 
 #[test]
+fn stack_status_runs_pull_request_merge_handler_once() {
+    // Verifies: configured PR side effects run once when stack status observes a tracked PR merge.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let marker = workspace.home.join("merged-pr.txt");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        &format!(
+            r#"
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.pull_request_handlers]]
+id = "notify-merge"
+on = "pull_request.merged"
+command = ["sh", "-c", "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" \"$6\" \"$(pwd)\" >> \"$7\"", "_", "{{repo}}", "{{pr_number}}", "{{pr_url}}", "{{title}}", "{{branch}}", "{{merged_at}}", "{}"]
+"#,
+            marker.display()
+        ),
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                103,
+                "topic/merged",
+                "main",
+                "Merged change",
+                false,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = stack_status_record(
+        103,
+        "Merged change",
+        "topic/merged",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    status.merged = true;
+    status.closed = true;
+    status.merged_at = Some("2026-06-09T12:00:00Z".to_owned());
+    let services = FakeServices {
+        pull_request_bookmarks: vec!["topic/merged".to_owned()],
+        pull_request_statuses: BTreeMap::from([(103, status)]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("first stack status succeeds");
+    run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("second stack status succeeds");
+
+    let marker_contents = std::fs::read_to_string(marker).expect("handler marker is written");
+    let marker_lines = marker_contents.lines().collect::<Vec<_>>();
+    assert_eq!(marker_lines.len(), 7);
+    assert_eq!(marker_lines[0], "example-owner/example-repo");
+    assert_eq!(marker_lines[1], "103");
+    assert_eq!(
+        marker_lines[2],
+        "https://github.com/example-owner/example-repo/pull/103"
+    );
+    assert_eq!(marker_lines[3], "Merged change");
+    assert_eq!(marker_lines[4], "topic/merged");
+    assert_eq!(marker_lines[5], "2026-06-09T12:00:00Z");
+    assert_eq!(
+        std::fs::canonicalize(marker_lines[6]).expect("handler cwd exists"),
+        std::fs::canonicalize(workspace.path()).expect("workspace path exists")
+    );
+    let log = std::fs::read_to_string(
+        workspace
+            .home
+            .join(".local/state/jx/jx-pull-request-handlers.log"),
+    )
+    .expect("handler log is written");
+    let events = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("handler log json"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["status"], "start");
+    assert_eq!(events[1]["status"], "success");
+    assert_eq!(events[0]["handler"], "notify-merge");
+    assert_eq!(events[0]["event"], "pull_request.merged");
+    assert_eq!(events[0]["prNumber"], 103);
+    let timeline = PullRequestStore::open(&environment)
+        .expect("pull request store opens")
+        .stored_pull_request_timeline(
+            &GitHubRepository {
+                owner: "example-owner".to_owned(),
+                name: "example-repo".to_owned(),
+            },
+            103,
+        )
+        .expect("pull request timeline loads")
+        .expect("handler action is recorded");
+    assert_eq!(timeline.actions.len(), 1);
+    assert_eq!(timeline.actions[0].action, "pull_request_handler");
+    assert_eq!(timeline.actions[0].source, "pull_request.merged");
+    assert_eq!(timeline.actions[0].reason.as_deref(), Some("notify-merge"));
+}
+
+#[test]
 fn stack_status_renders_reviewer_display_names() {
     // Verifies: stack status keeps login-based facts but renders cached public names for humans.
     let workspace = TestWorkspace::new();
@@ -5056,6 +5170,7 @@ fn local_stack_branch(
         base_branch: base_branch.to_owned(),
         parent_branch: parent_branch.map(str::to_owned),
         title: branch.to_owned(),
+        commit_id: format!("{branch}-commit"),
     }
 }
 

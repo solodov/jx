@@ -85,6 +85,7 @@ fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
             &trunk_children,
             &updated_trunk,
             &RevsetExpression::none(),
+            &BTreeMap::new(),
         )
         .await
         .expect("jj rewrite mapping is applied before trunk repair");
@@ -102,6 +103,62 @@ fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
         assert_eq!(visible.len(), 1);
         let rebased_child = load_commit_from_repo(tx.repo(), &visible[0]).expect("load child");
         assert_eq!(rebased_child.parent_ids(), &[updated_trunk.id().clone()]);
+    });
+}
+
+#[test]
+fn fetch_rebase_skips_protected_trunk_child_subtree() {
+    // Verifies: PR-aware sync can preserve a green trunk-child PR and its descendants.
+    let fixture = TestWorkspace::new("fetch-protected-trunk-child");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
+        let protected_child = write_child(tx.repo_mut(), &old_trunk, "protected child").await;
+        let protected_descendant =
+            write_child(tx.repo_mut(), &protected_child, "protected descendant").await;
+        let updated_trunk = write_child(tx.repo_mut(), &root, "updated main trunk").await;
+        let trunk_children = collect_trunk_child_changes(tx.repo(), old_trunk.id())
+            .expect("collect trunk child changes");
+        let protected_rebase_roots =
+            BTreeMap::from([(protected_child.change_id().clone(), "topic/root".to_owned())]);
+
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &trunk_children,
+            &updated_trunk,
+            &RevsetExpression::none(),
+            &protected_rebase_roots,
+        )
+        .await
+        .expect("protected child is skipped");
+
+        assert_eq!(stats.rebased_trunk_children, 0);
+        assert_eq!(stats.rebased_descendants, 0);
+        assert_eq!(stats.skipped_trunk_children, 1);
+        let visible_child = tx
+            .repo()
+            .resolve_change_id(protected_child.change_id())
+            .expect("change id resolves")
+            .expect("protected child remains visible")
+            .into_visible()
+            .expect("visible child commit");
+        let visible_descendant = tx
+            .repo()
+            .resolve_change_id(protected_descendant.change_id())
+            .expect("change id resolves")
+            .expect("protected descendant remains visible")
+            .into_visible()
+            .expect("visible descendant commit");
+        let child = load_commit_from_repo(tx.repo(), &visible_child[0]).expect("load child");
+        let descendant =
+            load_commit_from_repo(tx.repo(), &visible_descendant[0]).expect("load descendant");
+        assert_eq!(child.parent_ids(), &[old_trunk.id().clone()]);
+        assert_eq!(descendant.parent_ids(), &[child.id().clone()]);
     });
 }
 

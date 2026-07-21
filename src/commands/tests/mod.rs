@@ -6,11 +6,11 @@ use crate::{
     },
     github::{
         AuthenticatedUser, LabelApplyResult, PullRequestAutoMergeStatus, PullRequestCheck,
-        PullRequestCheckStatus, PullRequestHead, PullRequestLabel, PullRequestRecord,
-        PullRequestReviewActivity, PullRequestReviewRequest, PullRequestReviewRequests,
-        PullRequestReviewStatus, PullRequestReviewerResponse, PullRequestStatusRecord,
-        PullRequestTimelineEvent, PullRequestTimelineEventKind, ReviewerSelection,
-        ReviewerSyncResult,
+        PullRequestCheckStatus, PullRequestHead, PullRequestLabel, PullRequestMergeStatus,
+        PullRequestRecord, PullRequestReviewActivity, PullRequestReviewRequest,
+        PullRequestReviewRequests, PullRequestReviewStatus, PullRequestReviewerResponse,
+        PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
+        ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebasedCommitSummary,
@@ -420,6 +420,7 @@ struct FakeServices {
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
     up_to_date_sync_roots: BTreeSet<PathBuf>,
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
+    fetch_options: std::cell::RefCell<Vec<FetchOptions>>,
     fetch_origin_failures_before_success: std::cell::Cell<usize>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
@@ -573,6 +574,7 @@ impl Default for FakeServices {
             origin_push_access_roots: None,
             up_to_date_sync_roots: BTreeSet::new(),
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
+            fetch_options: std::cell::RefCell::new(Vec::new()),
             fetch_origin_failures_before_success: std::cell::Cell::new(0),
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
@@ -1311,9 +1313,18 @@ impl CommandServices for FakeServices {
     }
 
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
+        self.fetch_origin_with_options(context, FetchOptions::default())
+    }
+
+    fn fetch_origin_with_options(
+        &self,
+        context: &RepositoryContext,
+        options: FetchOptions,
+    ) -> Result<FetchOutcome, JjError> {
         self.fetch_origin_roots
             .borrow_mut()
             .push(context.workspace_root.clone());
+        self.fetch_options.borrow_mut().push(options);
         let remaining_failures = self.fetch_origin_failures_before_success.get();
         if remaining_failures > 0 {
             self.fetch_origin_failures_before_success

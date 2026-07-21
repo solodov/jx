@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS pull_request_history (
   details_json TEXT NOT NULL DEFAULT '{}'
 );
 
--- Local operator actions that affect decision policy.
+-- Local operator or automation actions tied to a PR.
 -- Actions are single-operator because this is a personal local state store.
 CREATE TABLE IF NOT EXISTS pull_request_actions (
   -- Local action row id.
@@ -122,13 +122,13 @@ CREATE TABLE IF NOT EXISTS pull_request_actions (
   -- Pull request this action applies to.
   pr_id INTEGER NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
 
-  -- Action name, e.g. dismiss or undismiss.
+  -- Action name, e.g. dismiss, undismiss, or pull_request_handler.
   action TEXT NOT NULL,
 
-  -- Origin of the action, e.g. manual or migration.
+  -- Origin of the action, e.g. manual, migration, or pull_request.merged.
   source TEXT NOT NULL,
 
-  -- Short action reason, e.g. manual, approved, commented, draft.
+  -- Short action reason, e.g. manual, approved, commented, draft, or a handler id.
   reason TEXT,
 
   -- When the local action occurred, as a UTC Unix timestamp in seconds.
@@ -450,7 +450,38 @@ impl PullRequestStore {
         Ok(dismissals)
     }
 
-    /// Records a local operator action that can affect future PR decisions.
+    /// Returns whether a matching local PR action has already been recorded.
+    pub fn has_pull_request_action(
+        &self,
+        repository: &GitHubRepository,
+        number: u64,
+        action: &str,
+        source: &str,
+        reason: Option<&str>,
+    ) -> Result<bool, RepositoryError> {
+        let Some(pr_id) = self.stored_pull_request_id(repository, number)? else {
+            return Ok(false);
+        };
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM pull_request_actions
+                    WHERE pr_id = ?1
+                      AND action = ?2
+                      AND source = ?3
+                      AND ((?4 IS NULL AND reason IS NULL) OR reason = ?4)
+                    LIMIT 1
+                 )",
+                params![pr_id, action, source, reason],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|source| self.query_error(source))?;
+        Ok(exists != 0)
+    }
+
+    /// Records a local operator or automation action tied to a PR.
     pub fn record_pull_request_action(
         &self,
         repository: &GitHubRepository,

@@ -7,12 +7,30 @@ impl JjWorkspace {
     /// sits directly on the updated trunk.
     pub fn fetch_origin(&mut self) -> Result<FetchOutcome, JjError> {
         let mut trace = |_| {};
-        self.fetch_origin_with_trace(&mut trace)
+        self.fetch_origin_with_options_and_trace(FetchOptions::default(), &mut trace)
+    }
+
+    /// Fetches origin with explicit stack-rebase behavior.
+    pub fn fetch_origin_with_options(
+        &mut self,
+        options: FetchOptions,
+    ) -> Result<FetchOutcome, JjError> {
+        let mut trace = |_| {};
+        self.fetch_origin_with_options_and_trace(options, &mut trace)
     }
 
     /// Fetches origin while emitting fetch substeps as they complete.
     pub fn fetch_origin_with_trace(
         &mut self,
+        trace: &mut dyn FnMut(FetchTraceStep),
+    ) -> Result<FetchOutcome, JjError> {
+        self.fetch_origin_with_options_and_trace(FetchOptions::default(), trace)
+    }
+
+    /// Fetches origin with explicit stack-rebase behavior while emitting fetch substeps.
+    pub fn fetch_origin_with_options_and_trace(
+        &mut self,
+        options: FetchOptions,
         trace: &mut dyn FnMut(FetchTraceStep),
     ) -> Result<FetchOutcome, JjError> {
         self.ensure_git_backed()?;
@@ -68,6 +86,19 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
+        let protected_rebase_roots = measure_fetch_step(
+            trace,
+            "resolve_protected_rebase_roots",
+            [fetch_trace_attr(
+                "root_count",
+                options.protected_rebase_roots.len(),
+            )],
+            || self.protected_rebase_root_changes(&options.protected_rebase_roots),
+            |result| match result {
+                Ok(roots) => vec![fetch_trace_attr("resolved_root_count", roots.len())],
+                Err(_) => Vec::new(),
+            },
+        )?;
         let immutable_expression = self.fetch_immutable_expression()?;
 
         let mut tx = self.repo.start_transaction();
@@ -102,6 +133,7 @@ impl JjWorkspace {
                     &trunk_children_before,
                     &updated_trunk,
                     &immutable_expression,
+                    &protected_rebase_roots,
                 ))
             },
             fetch_rebase_stats_attrs,
@@ -249,6 +281,30 @@ impl JjWorkspace {
             current_repaired,
             rebased_commits,
         })
+    }
+
+    fn protected_rebase_root_changes(
+        &self,
+        branches: &[String],
+    ) -> Result<BTreeMap<ChangeId, String>, JjError> {
+        let mut roots = BTreeMap::new();
+        for branch in branches {
+            let bookmark = RefName::new(branch);
+            let target = self.repo.view().get_local_bookmark(bookmark);
+            if target.has_conflict() {
+                return Err(JjError::ConflictedBookmark {
+                    branch: branch.clone(),
+                });
+            }
+            let Some(commit_id) = target.as_normal() else {
+                return Err(JjError::MissingLocalBookmark {
+                    branch: branch.clone(),
+                });
+            };
+            let commit = self.load_commit(commit_id)?;
+            roots.insert(commit.change_id().clone(), branch.clone());
+        }
+        Ok(roots)
     }
 
     fn fetch_immutable_expression(&self) -> Result<Arc<ResolvedRevsetExpression>, JjError> {
@@ -418,6 +474,7 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
     trunk_children_before: &[TrunkChildChange],
     updated_trunk: &Commit,
     immutable_expression: &Arc<ResolvedRevsetExpression>,
+    protected_rebase_roots: &BTreeMap<ChangeId, String>,
 ) -> Result<FetchRebaseStats, JjError> {
     let mut stats = FetchRebaseStats::default();
     rebase_import_rewrites(mut_repo, immutable_expression, &mut stats).await?;
@@ -431,6 +488,7 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
 
         if child.parent_ids().contains(updated_trunk.id())
             || is_ancestor_or_equal_in_repo(mut_repo, child.id(), updated_trunk.id())?
+            || protected_rebase_roots.contains_key(child.change_id())
         {
             stats.skipped_trunk_children += 1;
             continue;

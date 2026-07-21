@@ -64,7 +64,7 @@ fn pull_request_store_migrates_documented_history_schema() {
         1
     );
     assert!(pull_request_store_schema_sql()
-        .contains("-- Local operator actions that affect decision policy."));
+        .contains("-- Local operator or automation actions tied to a PR."));
     assert!(pull_request_store_schema_sql()
         .contains("-- Refresh/dedup guard from GitHub's updatedAt timestamp."));
 }
@@ -950,6 +950,46 @@ reviewers = ["external-reviewer"]
 }
 
 #[test]
+fn sync_rebase_strategy_composes_for_matching_repo() {
+    // Verifies: repo-scoped sync strategy stays default-preserving while allowing repo overrides.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[repo.sync]
+rebase_strategy = "always"
+rebase_needed_labels = ["global-rebase"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.sync]
+rebase_strategy = "stack_green_pull_requests"
+rebase_needed_labels = ["rebase-needed", "team/*"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let sync = context.config.repo.sync_for(&context.origin.github);
+
+    assert_eq!(
+        sync.rebase_strategy(),
+        RepoSyncRebaseStrategy::StackGreenPullRequests
+    );
+    assert_eq!(
+        sync.rebase_needed_labels,
+        vec![
+            "global-rebase".to_owned(),
+            "rebase-needed".to_owned(),
+            "team/*".to_owned(),
+        ]
+    );
+    assert!(sync.matches_rebase_needed_label("team/backend"));
+}
+
+#[test]
 fn stack_status_review_gate_checks_compose_for_matching_repo() {
     // Verifies: Stack status check classification can be scoped by repository policy.
     let workspace = TestWorkspace::new();
@@ -1253,6 +1293,98 @@ labels = ["buz", "buz"]
         &handlers[2].run,
         RepoEventHandlerRun::AddLabels { labels } if labels == &vec!["buz".to_owned()]
     ));
+}
+
+#[test]
+fn repo_pull_request_handlers_compose_and_override_for_matching_repo() {
+    // Verifies: PR status handlers compose by repo rule and can be disabled by handler id.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(origin_config());
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[[repo.pull_request_handlers]]
+id = "notify-merge"
+on = "pull_request.merged"
+command = ["notify", "{title}"]
+
+[[repo.pull_request_handlers]]
+id = "audit-merge"
+on = "pull_request.merged"
+command = ["audit", "{pr_number}"]
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[[repo.rules.pull_request_handlers]]
+id = "notify-merge"
+enabled = false
+
+[[repo.rules.pull_request_handlers]]
+id = "local-merge"
+on = "pull_request.merged"
+command = ["local", "{repo}"]
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let handlers = context
+        .config
+        .repo
+        .pull_request_handlers_for(&context.origin.github);
+
+    assert_eq!(handlers.len(), 2);
+    assert_eq!(handlers[0].id.as_deref(), Some("audit-merge"));
+    assert_eq!(handlers[0].on, RepoPullRequestEvent::Merged);
+    assert_eq!(
+        handlers[0].command,
+        vec!["audit".to_owned(), "{pr_number}".to_owned()]
+    );
+    assert_eq!(handlers[1].id.as_deref(), Some("local-merge"));
+    assert_eq!(
+        handlers[1].command,
+        vec!["local".to_owned(), "{repo}".to_owned()]
+    );
+}
+
+#[test]
+fn repo_pull_request_handlers_reject_invalid_shape() {
+    // Verifies: PR handler config requires supported events and command argv.
+    let cases = [
+        (
+            "[[repo.pull_request_handlers]]\non = \"pull_request.closed\"\ncommand = [\"notify\"]",
+            "unsupported pull request handler event",
+        ),
+        (
+            "[[repo.pull_request_handlers]]\non = \"pull_request.merged\"",
+            "command",
+        ),
+        (
+            "[[repo.pull_request_handlers]]\non = \"pull_request.merged\"\ncommand = []",
+            "must not be empty",
+        ),
+        ("[[repo.pull_request_handlers]]\nenabled = false", "id"),
+        (
+            "[[repo.pull_request_handlers]]\nid = \"disabled\"\nenabled = false",
+            "",
+        ),
+    ];
+
+    for (contents, expected) in cases {
+        let workspace = TestWorkspace::new();
+        workspace.write_git_config(origin_config());
+        workspace.write_file(".jx/config.toml", contents);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+        let result = RepositoryContext::discover(&environment);
+
+        if expected.is_empty() {
+            result.expect("disabled PR handler with id is accepted");
+        } else {
+            let error = result.expect_err("invalid PR handler is rejected");
+            assert!(error.to_string().contains(expected), "{contents}: {error}");
+        }
+    }
 }
 
 #[test]

@@ -500,9 +500,11 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
         if !matches!(
             key.as_str(),
             "advance_trunk"
+                | "sync"
                 | "event_handlers"
                 | "work_items"
                 | "work_item_handlers"
+                | "pull_request_handlers"
                 | "hooks"
                 | "checks"
                 | "reviewers"
@@ -565,9 +567,11 @@ fn parse_repo_rule(
             key.as_str(),
             "repo"
                 | "advance_trunk"
+                | "sync"
                 | "event_handlers"
                 | "work_items"
                 | "work_item_handlers"
+                | "pull_request_handlers"
                 | "hooks"
                 | "checks"
                 | "reviewers"
@@ -600,6 +604,11 @@ fn parse_repo_policy(
         .get("advance_trunk")
         .map(|value| parse_bool_value(file, &format!("{key_prefix}.advance_trunk"), value))
         .transpose()?;
+    let sync = table
+        .get("sync")
+        .map(|value| parse_sync_config(file, &format!("{key_prefix}.sync"), value))
+        .transpose()?
+        .unwrap_or_default();
     let event_handlers = table
         .get("event_handlers")
         .map(|value| parse_event_handlers(file, &format!("{key_prefix}.event_handlers"), value))
@@ -614,6 +623,13 @@ fn parse_repo_policy(
         .get("work_item_handlers")
         .map(|value| {
             parse_work_item_handlers(file, &format!("{key_prefix}.work_item_handlers"), value)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let pull_request_handlers = table
+        .get("pull_request_handlers")
+        .map(|value| {
+            parse_pull_request_handlers(file, &format!("{key_prefix}.pull_request_handlers"), value)
         })
         .transpose()?
         .unwrap_or_default();
@@ -657,9 +673,11 @@ fn parse_repo_policy(
 
     Ok(RepoPolicyConfig {
         advance_trunk,
+        sync,
         event_handlers,
         work_items,
         work_item_handlers,
+        pull_request_handlers,
         hooks,
         checks,
         reviewers,
@@ -668,6 +686,67 @@ fn parse_repo_policy(
         stack_status,
         review,
     })
+}
+
+fn parse_sync_config(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<RepoSyncConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "rebase_strategy" | "rebase_needed_labels") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}.{name}"),
+            });
+        }
+    }
+
+    let rebase_strategy = table
+        .get("rebase_strategy")
+        .map(|value| parse_sync_rebase_strategy(file, &format!("{key}.rebase_strategy"), value))
+        .transpose()?;
+    let rebase_needed_labels = table
+        .get("rebase_needed_labels")
+        .map(|value| {
+            parse_named_glob_rules(
+                file,
+                &format!("{key}.rebase_needed_labels"),
+                value,
+                "label glob",
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(RepoSyncConfig {
+        rebase_strategy,
+        rebase_needed_labels,
+    })
+}
+
+fn parse_sync_rebase_strategy(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<RepoSyncRebaseStrategy, RepositoryError> {
+    match parse_non_empty_string_value(file, key, value)?.as_str() {
+        "always" => Ok(RepoSyncRebaseStrategy::Always),
+        "stack_green_pull_requests" => Ok(RepoSyncRebaseStrategy::StackGreenPullRequests),
+        strategy => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!(
+                "`{key}` strategy `{strategy}` is unsupported; expected `always` or `stack_green_pull_requests`"
+            ),
+        }),
+    }
 }
 
 fn parse_stack_status_config(
@@ -1483,6 +1562,97 @@ fn parse_work_item_event(
         event => Err(RepositoryError::InvalidConfig {
             file: file.to_owned(),
             message: format!("unsupported work item handler event `{event}`"),
+        }),
+    }
+}
+
+fn parse_pull_request_handlers(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<RepoPullRequestHandlerConfig>, RepositoryError> {
+    let Some(handlers) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    handlers
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_pull_request_handler(file, key, index, value))
+        .collect()
+}
+
+fn parse_pull_request_handler(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoPullRequestHandlerConfig, RepositoryError> {
+    let Some(table) = value.as_table() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}[{index}]` must be a table"),
+        });
+    };
+
+    for name in table.keys() {
+        if !matches!(name.as_str(), "id" | "enabled" | "on" | "command") {
+            return Err(RepositoryError::UnsupportedConfigKey {
+                file: file.to_owned(),
+                key: format!("{key}[{index}].{name}"),
+            });
+        }
+    }
+
+    let id = table
+        .get("id")
+        .map(|value| parse_non_empty_string_value(file, &format!("{key}[{index}].id"), value))
+        .transpose()?;
+    let enabled = table
+        .get("enabled")
+        .map(|value| parse_bool_value(file, &format!("{key}[{index}].enabled"), value))
+        .transpose()?
+        .unwrap_or(true);
+    if !enabled {
+        let Some(id) = id else {
+            return Err(RepositoryError::InvalidConfig {
+                file: file.to_owned(),
+                message: format!("`{key}[{index}].id` is required when disabling a handler"),
+            });
+        };
+        return Ok(RepoPullRequestHandlerConfig::Disable { id });
+    }
+
+    let on =
+        parse_pull_request_handler_event(file, key, index, required_value(file, table, "on")?)?;
+    let command_key = format!("{key}[{index}].command");
+    let command = parse_string_array(file, &command_key, required_value(file, table, "command")?)?;
+    if command.is_empty() {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{command_key}` must not be empty"),
+        });
+    }
+
+    Ok(RepoPullRequestHandlerConfig::Handler(
+        RepoPullRequestHandler { id, on, command },
+    ))
+}
+
+fn parse_pull_request_handler_event(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<RepoPullRequestEvent, RepositoryError> {
+    match parse_non_empty_string_value(file, &format!("{key}[{index}].on"), value)?.as_str() {
+        "pull_request.merged" => Ok(RepoPullRequestEvent::Merged),
+        event => Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("unsupported pull request handler event `{event}`"),
         }),
     }
 }

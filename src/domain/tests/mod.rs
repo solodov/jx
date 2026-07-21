@@ -235,6 +235,7 @@ fn local_stack_refresh_preserves_completed_parent_context() {
         base_branch: "main".to_owned(),
         parent_branch: None,
         title: "Open child local title".to_owned(),
+        commit_id: "1111222233334444".to_owned(),
     };
 
     let refreshed = apply_local_stack_branches(&[local_child], &metadata);
@@ -863,10 +864,14 @@ fn pull_request_status_policy_reports_configured_auto_merge_state() {
     let ready_missing = pull_request_status(35, "Ready missing", false);
     let mut pending_missing = pull_request_status(36, "Pending missing", false);
     pending_missing.check_status = crate::github::PullRequestCheckStatus::Pending;
+    let mut review_required_missing = pull_request_status(37, "Review pending missing", false);
+    review_required_missing.review_status = crate::github::PullRequestReviewStatus::ReviewRequired;
 
     let armed = apply_pull_request_status_policy(armed, &config);
     let ready_missing = apply_pull_request_status_policy(ready_missing, &config);
     let pending_missing = apply_pull_request_status_policy(pending_missing, &config);
+    let review_required_missing =
+        apply_pull_request_status_policy(review_required_missing, &config);
 
     assert_eq!(
         armed.auto_merge_status,
@@ -886,6 +891,10 @@ fn pull_request_status_policy_reports_configured_auto_merge_state() {
     );
     assert_eq!(
         pending_missing.auto_merge_status,
+        crate::github::PullRequestAutoMergeStatus::NotConfigured
+    );
+    assert_eq!(
+        review_required_missing.auto_merge_status,
         crate::github::PullRequestAutoMergeStatus::NotConfigured
     );
 }
