@@ -294,7 +294,7 @@ impl RepoSyncConfig {
     pub fn matches_rebase_needed_label(&self, label: &str) -> bool {
         self.rebase_needed_labels
             .iter()
-            .any(|pattern| label_glob_matches(pattern, label))
+            .any(|configured| configured == label)
     }
 }
 
@@ -328,6 +328,7 @@ impl RepoWorkItemsConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoStackStatusConfig {
     pub review_gate_checks: Vec<ReviewGateCheckConfig>,
+    pub auto_merge_prerequisite_checks: Vec<AutoMergePrerequisiteCheckConfig>,
     pub ignored_checks: Vec<IgnoredCheckConfig>,
     pub ignored_labels: Vec<IgnoredLabelConfig>,
     pub ignored_labels_when_merged: Vec<IgnoredLabelConfig>,
@@ -341,6 +342,10 @@ pub struct RepoStackStatusConfig {
 impl RepoStackStatusConfig {
     fn apply_layer(&mut self, layer: RepoStackStatusConfig) {
         merge_review_gate_checks(&mut self.review_gate_checks, layer.review_gate_checks);
+        merge_auto_merge_prerequisite_checks(
+            &mut self.auto_merge_prerequisite_checks,
+            layer.auto_merge_prerequisite_checks,
+        );
         merge_ignored_checks(&mut self.ignored_checks, layer.ignored_checks);
         merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
         merge_ignored_labels(
@@ -359,6 +364,13 @@ impl RepoStackStatusConfig {
     /// Returns whether a GitHub check should be omitted from stack/review status health.
     pub fn ignores_check(&self, check: &str) -> bool {
         self.ignored_checks.iter().any(|rule| rule.matches(check))
+    }
+
+    /// Returns whether a GitHub check represents a manual auto-merge prerequisite.
+    pub fn matches_auto_merge_prerequisite_check(&self, check: &str) -> bool {
+        self.auto_merge_prerequisite_checks
+            .iter()
+            .any(|rule| rule.matches(check))
     }
 
     /// Returns whether a GitHub check contributes to the repository-specific review gate.
@@ -507,26 +519,37 @@ pub struct IgnoredCheckConfig {
 impl IgnoredCheckConfig {
     /// Returns whether this regex matches a GitHub check run or status context name.
     pub fn matches(&self, check_name: &str) -> bool {
-        regex::Regex::new(&self.name)
-            .ok()
-            .is_some_and(|regex| regex.is_match(check_name))
+        regex_matches(&self.name, check_name)
     }
 }
 
-/// Label-name glob hidden from stack/review status presentation.
+/// Check-name regex that represents a manual prerequisite before auto-merge can proceed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoMergePrerequisiteCheckConfig {
+    pub name: String,
+}
+
+impl AutoMergePrerequisiteCheckConfig {
+    /// Returns whether this regex matches a GitHub check run or status context name.
+    pub fn matches(&self, check_name: &str) -> bool {
+        regex_matches(&self.name, check_name)
+    }
+}
+
+/// Label name hidden from stack/review status presentation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgnoredLabelConfig {
     pub name: String,
 }
 
 impl IgnoredLabelConfig {
-    /// Returns whether this rule matches a GitHub label name.
+    /// Returns whether this rule matches a GitHub label name exactly.
     pub fn matches(&self, label_name: &str) -> bool {
-        label_glob_matches(&self.name, label_name)
+        self.name == label_name
     }
 }
 
-/// Label-name glob hidden when all snapshot-backed conditions match.
+/// Label name hidden when all snapshot-backed conditions match.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HiddenLabelConfig {
     pub label: String,
@@ -544,12 +567,11 @@ impl HiddenLabelConfig {
 
     /// Returns whether this rule hides a label for the current PR snapshot.
     pub fn matches(&self, status: &PullRequestStatusRecord, label_name: &str) -> bool {
-        label_glob_matches(&self.label, label_name)
-            && self.when.iter().all(|condition| condition.matches(status))
+        self.label == label_name && self.when.iter().all(|condition| condition.matches(status))
     }
 }
 
-/// Label-name glob that represents repository-specific auto-merge arming.
+/// Label name that represents repository-specific auto-merge arming.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AutoMergeLabelConfig {
     pub label: String,
@@ -572,7 +594,7 @@ impl AutoMergeLabelConfig {
 
     /// Returns whether this rule matches a label on the current PR snapshot.
     pub fn matches(&self, status: &PullRequestStatusRecord, label_name: &str) -> bool {
-        self.applies_to(status) && label_glob_matches(&self.label, label_name)
+        self.applies_to(status) && self.label == label_name
     }
 }
 
@@ -613,11 +635,10 @@ impl HiddenLabelCondition {
     }
 }
 
-fn label_glob_matches(pattern: &str, label_name: &str) -> bool {
-    Glob::new(pattern)
+fn regex_matches(pattern: &str, value: &str) -> bool {
+    regex::Regex::new(pattern)
         .ok()
-        .map(|glob| glob.compile_matcher().is_match(label_name))
-        .unwrap_or(false)
+        .is_some_and(|regex| regex.is_match(value))
 }
 
 /// Reviewer-name regex hidden from stack/review status presentation.
@@ -635,19 +656,16 @@ impl IgnoredReviewerConfig {
     }
 }
 
-/// Check-name glob whose matching status contexts encode repository approval policy.
+/// Check-name regex whose matching status contexts encode repository approval policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewGateCheckConfig {
     pub name: String,
 }
 
 impl ReviewGateCheckConfig {
-    /// Returns whether this rule matches a GitHub check run or status context name.
+    /// Returns whether this regex matches a GitHub check run or status context name.
     pub fn matches(&self, check_name: &str) -> bool {
-        Glob::new(&self.name)
-            .ok()
-            .map(|glob| glob.compile_matcher().is_match(check_name))
-            .unwrap_or(false)
+        regex_matches(&self.name, check_name)
     }
 }
 
@@ -1129,6 +1147,21 @@ fn merge_workspace_shared_paths(target: &mut Vec<String>, paths: &[String]) {
 fn merge_review_gate_checks(
     target: &mut Vec<ReviewGateCheckConfig>,
     checks: Vec<ReviewGateCheckConfig>,
+) {
+    let mut seen = target
+        .iter()
+        .map(|check| check.name.clone())
+        .collect::<BTreeSet<_>>();
+    for check in checks {
+        if seen.insert(check.name.clone()) {
+            target.push(check);
+        }
+    }
+}
+
+fn merge_auto_merge_prerequisite_checks(
+    target: &mut Vec<AutoMergePrerequisiteCheckConfig>,
+    checks: Vec<AutoMergePrerequisiteCheckConfig>,
 ) {
     let mut seen = target
         .iter()

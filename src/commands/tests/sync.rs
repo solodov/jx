@@ -535,7 +535,7 @@ rebase_strategy = "stack_green_pull_requests"
 rebase_needed_labels = ["rebase-needed"]
 
 [repo.stack_status]
-review_gate_checks = ["review gate"]
+review_gate_checks = ["^review gate$"]
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), []);

@@ -217,6 +217,8 @@ pub enum PullRequestAutoMergeStatus {
     NotConfigured,
     /// A configured label indicates the PR should merge automatically once ready.
     Armed,
+    /// A configured label is present, but manual prerequisites must be cleared first.
+    PrerequisitesRequired,
     /// The PR appears ready to merge, but no configured auto-merge label is present.
     Missing,
 }
@@ -227,6 +229,7 @@ impl PullRequestAutoMergeStatus {
         match self {
             Self::NotConfigured => "not_configured",
             Self::Armed => "armed",
+            Self::PrerequisitesRequired => "prerequisites_required",
             Self::Missing => "missing",
         }
     }

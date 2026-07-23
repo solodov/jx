@@ -523,11 +523,12 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
         status,
         &crate::repository::RepoStackStatusConfig {
             review_gate_checks: Vec::new(),
+            auto_merge_prerequisite_checks: Vec::new(),
             ignored_checks: vec![crate::repository::IgnoredCheckConfig {
                 name: "^generated-.*".to_owned(),
             }],
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
-                name: "generated-*".to_owned(),
+                name: "generated-noise".to_owned(),
             }],
             ignored_labels_when_merged: Vec::new(),
             hidden_labels: Vec::new(),
@@ -613,13 +614,13 @@ fn review_request_status_policy_filters_review_only_labels() {
         status,
         &crate::repository::RepoStackStatusConfig {
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
-                name: "stack-*".to_owned(),
+                name: "stack-noise".to_owned(),
             }],
             ..Default::default()
         },
         &crate::repository::RepoReviewConfig {
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
-                name: "review-*".to_owned(),
+                name: "review-noise".to_owned(),
             }],
             hidden_labels: Vec::new(),
             ignored_author_response_comments: vec![
@@ -665,7 +666,7 @@ fn pull_request_status_policy_filters_snapshot_conditioned_labels() {
     ready_stack.base_branch = "topic/root".to_owned();
     let config = crate::repository::RepoStackStatusConfig {
         hidden_labels: vec![crate::repository::HiddenLabelConfig {
-            label: "run-*".to_owned(),
+            label: "run-ci".to_owned(),
             when: vec![
                 crate::repository::HiddenLabelCondition::NotDraft,
                 crate::repository::HiddenLabelCondition::TargetsDefaultBranch,
@@ -807,10 +808,11 @@ fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
     merged_status.labels = open_status.labels.clone();
     let config = crate::repository::RepoStackStatusConfig {
         review_gate_checks: Vec::new(),
+        auto_merge_prerequisite_checks: Vec::new(),
         ignored_checks: Vec::new(),
         ignored_labels: Vec::new(),
         ignored_labels_when_merged: vec![crate::repository::IgnoredLabelConfig {
-            name: "run-*".to_owned(),
+            name: "run-ci".to_owned(),
         }],
         hidden_labels: Vec::new(),
         auto_merge_labels: Vec::new(),
@@ -896,6 +898,60 @@ fn pull_request_status_policy_reports_configured_auto_merge_state() {
     assert_eq!(
         review_required_missing.auto_merge_status,
         crate::github::PullRequestAutoMergeStatus::NotConfigured
+    );
+}
+
+#[test]
+fn pull_request_status_policy_moves_auto_merge_prerequisites_out_of_test_health() {
+    // Verifies: manual merge prerequisites change auto-merge state without making Chk look like failed tests.
+    let config = crate::repository::RepoStackStatusConfig {
+        auto_merge_labels: vec![crate::repository::AutoMergeLabelConfig {
+            label: "auto-merge".to_owned(),
+            when: vec![crate::repository::HiddenLabelCondition::TargetsDefaultBranch],
+        }],
+        auto_merge_prerequisite_checks: vec![crate::repository::AutoMergePrerequisiteCheckConfig {
+            name: "^Settings( - .*)?$".to_owned(),
+        }],
+        ..Default::default()
+    };
+    let mut status = pull_request_status(38, "Settings required", false);
+    status.check_status = crate::github::PullRequestCheckStatus::Failing;
+    status.labels = vec![crate::github::PullRequestLabel {
+        name: "auto-merge".to_owned(),
+        color: "fbca04".to_owned(),
+    }];
+    status.checks = vec![
+        crate::github::PullRequestCheck {
+            name: "Settings".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Failing,
+        },
+        crate::github::PullRequestCheck {
+            name: "Settings - PRODUCTION".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Failing,
+        },
+        crate::github::PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+        },
+    ];
+
+    let filtered = apply_pull_request_status_policy(status, &config);
+
+    assert_eq!(
+        filtered.check_status,
+        crate::github::PullRequestCheckStatus::Passing
+    );
+    assert_eq!(
+        filtered
+            .checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ci/build"]
+    );
+    assert_eq!(
+        filtered.auto_merge_status,
+        crate::github::PullRequestAutoMergeStatus::PrerequisitesRequired
     );
 }
 

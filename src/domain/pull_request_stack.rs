@@ -46,14 +46,20 @@ pub fn apply_pull_request_status_policy(
             status.review_status =
                 review_status_with_review_gate(status.review_status, &[], config);
         }
-        status.auto_merge_status = pull_request_auto_merge_status(&status, config, &label_names);
+        status.auto_merge_status =
+            pull_request_auto_merge_status(&status, config, &label_names, false);
         return status;
     }
 
     let checks = latest_checks_by_name(&status.checks);
+    let auto_merge_prerequisites_require_action =
+        auto_merge_prerequisite_checks_require_action(&checks, config);
     let remaining_checks = checks
         .iter()
-        .filter(|check| !config.matches_review_gate_check(&check.name))
+        .filter(|check| {
+            !config.matches_review_gate_check(&check.name)
+                && !config.matches_auto_merge_prerequisite_check(&check.name)
+        })
         .cloned()
         .collect::<Vec<_>>();
     status.check_status = aggregate_check_status(&remaining_checks);
@@ -63,7 +69,12 @@ pub fn apply_pull_request_status_policy(
         status.review_status =
             review_status_with_review_gate(status.review_status, &checks, config);
     }
-    status.auto_merge_status = pull_request_auto_merge_status(&status, config, &label_names);
+    status.auto_merge_status = pull_request_auto_merge_status(
+        &status,
+        config,
+        &label_names,
+        auto_merge_prerequisites_require_action,
+    );
     status
 }
 
@@ -94,15 +105,22 @@ fn pull_request_auto_merge_status(
     status: &PullRequestStatusRecord,
     config: &RepoStackStatusConfig,
     label_names: &[String],
+    auto_merge_prerequisites_require_action: bool,
 ) -> PullRequestAutoMergeStatus {
     if !config.auto_merge_applies_to(status) {
         return PullRequestAutoMergeStatus::NotConfigured;
     }
-    if label_names
+    let auto_merge_label_present = label_names
         .iter()
-        .any(|label| config.matches_auto_merge_label(status, label))
-    {
+        .any(|label| config.matches_auto_merge_label(status, label));
+    if auto_merge_label_present && auto_merge_prerequisites_require_action {
+        return PullRequestAutoMergeStatus::PrerequisitesRequired;
+    }
+    if auto_merge_label_present {
         return PullRequestAutoMergeStatus::Armed;
+    }
+    if auto_merge_prerequisites_require_action {
+        return PullRequestAutoMergeStatus::NotConfigured;
     }
     if pull_request_status_is_stack_green(status) {
         PullRequestAutoMergeStatus::Missing
@@ -236,6 +254,16 @@ fn aggregate_check_status(checks: &[PullRequestCheck]) -> PullRequestCheckStatus
         return PullRequestCheckStatus::Unknown;
     }
     PullRequestCheckStatus::Passing
+}
+
+fn auto_merge_prerequisite_checks_require_action(
+    checks: &[PullRequestCheck],
+    config: &RepoStackStatusConfig,
+) -> bool {
+    checks.iter().any(|check| {
+        config.matches_auto_merge_prerequisite_check(&check.name)
+            && check.status != PullRequestCheckStatus::Passing
+    })
 }
 
 fn review_status_with_review_gate(

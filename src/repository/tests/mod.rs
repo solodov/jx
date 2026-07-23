@@ -966,7 +966,7 @@ repo = "example-owner/*"
 
 [repo.rules.sync]
 rebase_strategy = "stack_green_pull_requests"
-rebase_needed_labels = ["rebase-needed", "team/*"]
+rebase_needed_labels = ["rebase-needed", "team/backend"]
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), []);
@@ -983,10 +983,11 @@ rebase_needed_labels = ["rebase-needed", "team/*"]
         vec![
             "global-rebase".to_owned(),
             "rebase-needed".to_owned(),
-            "team/*".to_owned(),
+            "team/backend".to_owned(),
         ]
     );
     assert!(sync.matches_rebase_needed_label("team/backend"));
+    assert!(!sync.matches_rebase_needed_label("team/web"));
 }
 
 #[test]
@@ -1008,7 +1009,8 @@ auto_merge_labels = [
   { label = "global-auto-merge", when = ["TARGETS_DEFAULT_BRANCH"] },
 ]
 ignored_reviewers = ["^global-bot$"]
-review_gate_checks = ["global approval"]
+review_gate_checks = ["^global approval$"]
+auto_merge_prerequisite_checks = ["^global manual action$"]
 review_wait_threshold = "8h"
 
 [[repo.stack_status.title_rewrites]]
@@ -1020,16 +1022,17 @@ repo = "example-owner/*"
 
 [repo.rules.stack_status]
 ignored_checks = ["^repo-noise-check.*"]
-ignored_labels = ["repo-noise*"]
-ignored_labels_when_merged = ["repo-merge-noise*"]
+ignored_labels = ["repo-noise-label"]
+ignored_labels_when_merged = ["repo-merge-noise-label"]
 hidden_labels = [
-  { label = "repo-ready*", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+  { label = "repo-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
 auto_merge_labels = [
-  { label = "repo-auto-merge*", when = ["TARGETS_DEFAULT_BRANCH"] },
+  { label = "repo-auto-merge", when = ["TARGETS_DEFAULT_BRANCH"] },
 ]
 ignored_reviewers = ["^repo-bot-.*$"]
-review_gate_checks = ["repo approval*"]
+review_gate_checks = ["^repo approval.*$"]
+auto_merge_prerequisite_checks = ["^repo manual action.*$"]
 review_wait_threshold = "4h"
 
 [[repo.rules.stack_status.title_rewrites]]
@@ -1046,14 +1049,26 @@ replace = "$1"
         stack_status.review_gate_checks,
         vec![
             ReviewGateCheckConfig {
-                name: "global approval".to_owned(),
+                name: "^global approval$".to_owned(),
             },
             ReviewGateCheckConfig {
-                name: "repo approval*".to_owned(),
+                name: "^repo approval.*$".to_owned(),
             },
         ]
     );
     assert!(stack_status.review_gate_checks[1].matches("repo approval required"));
+    assert_eq!(
+        stack_status.auto_merge_prerequisite_checks,
+        vec![
+            AutoMergePrerequisiteCheckConfig {
+                name: "^global manual action$".to_owned(),
+            },
+            AutoMergePrerequisiteCheckConfig {
+                name: "^repo manual action.*$".to_owned(),
+            },
+        ]
+    );
+    assert!(stack_status.matches_auto_merge_prerequisite_check("repo manual action required"));
     assert!(stack_status.ignores_check("global-noise-check"));
     assert!(stack_status.ignores_check("repo-noise-check-required"));
     assert!(stack_status.ignores_label("global-noise"));
@@ -1071,7 +1086,7 @@ replace = "$1"
                 ],
             },
             HiddenLabelConfig {
-                label: "repo-ready*".to_owned(),
+                label: "repo-ready".to_owned(),
                 when: vec![
                     HiddenLabelCondition::NotDraft,
                     HiddenLabelCondition::TargetsDefaultBranch,
@@ -1087,7 +1102,7 @@ replace = "$1"
                 when: vec![HiddenLabelCondition::TargetsDefaultBranch],
             },
             AutoMergeLabelConfig {
-                label: "repo-auto-merge*".to_owned(),
+                label: "repo-auto-merge".to_owned(),
                 when: vec![HiddenLabelCondition::TargetsDefaultBranch],
             },
         ]
@@ -1151,9 +1166,9 @@ ignored_author_response_comments = ["^/global command$"]
 repo = "example-owner/*"
 
 [repo.rules.review]
-ignored_labels = ["repo-review-noise*"]
+ignored_labels = ["repo-review-noise-extra"]
 hidden_labels = [
-  { label = "repo-review-ready*", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+  { label = "repo-review-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
 ignored_author_response_comments = ["^/repo command$"]
 "#,
@@ -1180,7 +1195,7 @@ ignored_author_response_comments = ["^/repo command$"]
                 ],
             },
             HiddenLabelConfig {
-                label: "repo-review-ready*".to_owned(),
+                label: "repo-review-ready".to_owned(),
                 when: vec![
                     HiddenLabelCondition::NotDraft,
                     HiddenLabelCondition::TargetsDefaultBranch,

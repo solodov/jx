@@ -125,7 +125,7 @@ after fetching origin. The default `always` preserves historical behavior. The
 opt-in `stack_green_pull_requests` strategy leaves a trunk-child stack in place
 when that root PR has passing policy-normalized checks by the same stack-status
 policy used by `jx stack status`, the local bookmark matches the PR head commit,
-and no configured `rebase_needed_labels` glob is present. Review approval is not
+and no configured `rebase_needed_labels` entry is present. Review approval is not
 required for this sync protection. Stack commands continue to treat the PR base
 branch as trunk while allowing the local stack to start at the older trunk commit
 that current trunk descends from. Descendant PRs in a protected stack are only
@@ -219,20 +219,25 @@ labels without affecting stack status, and ignore command-style author comments
 that should not resurface dismissed reviews.
 Matching review-gate checks are removed from the `Chk` aggregate and drive the
 review state instead:
-all configured gate globs must have passing matching checks for the PR to render
+all configured gate regexes must have passing matching checks for the PR to render
 approved unless GitHub still reports a protected review requirement, while
-missing, pending, unknown, or failing gate checks render as waiting review.
-Ignored checks are removed without affecting check or review state. Remaining
-checks still decide whether `Chk` is passing, pending, or failing. Review-wait
-thresholds accept `m`, `h`, or `d` suffixes; fresh waits
+missing, pending, unknown, or failing gate checks render as waiting review. The
+review column is undefined for drafts and PRs targeting a non-default base branch
+because those PRs are not independently mergeable into trunk yet.
+Ignored checks are removed without affecting check or review state. Configured
+auto-merge prerequisite checks are also removed from `Chk`; non-passing matches
+make armed auto-merge render as waiting for manual prerequisites instead of as a
+test failure. Remaining checks still decide whether `Chk` is passing, pending, or
+failing. Review-wait thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
-stay green. Check ignore and reviewer ignore entries are Rust regexes; review-gate
-and label entries are globs. `auto_merge_labels` and `hidden_labels` use the
-same glob syntax plus snapshot-backed `when` conditions such as `ALWAYS`,
-`NOT_DRAFT`, `MERGED`, and `TARGETS_DEFAULT_BRANCH`. Configured auto-merge
-labels are hidden from label chips; matching non-draft open PRs show `◎` when
-armed, and otherwise-ready matching PRs show an orange `◆` to indicate that
-auto-merge is not armed. Existing `ignored_labels` entries are unconditional hides, and
+stay green. Check ignore, review-gate, auto-merge prerequisite, and reviewer
+entries are Rust regexes. Label entries are exact names; `auto_merge_labels` and
+`hidden_labels` add snapshot-backed `when` conditions such as `ALWAYS`,
+`NOT_DRAFT`, `MERGED`, and `TARGETS_DEFAULT_BRANCH`. Configured auto-merge labels are hidden from label
+chips; matching non-draft open PRs show `◎` when armed, matching armed PRs with
+non-passing prerequisites show an orange `◈`, and otherwise-ready matching PRs
+show an orange `◆` to indicate that auto-merge is not armed. Existing
+`ignored_labels` entries are unconditional hides, and
 `ignored_labels_when_merged` entries are merged-only hides. Review rules support
 the same `hidden_labels` shape for review-only omissions. Conditions
 in one rule are ANDed; repeated rules for the same label are ORed. Supported
@@ -251,14 +256,15 @@ repo = "example-owner/example-repo"
 
 [repo.rules.stack_status]
 ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
-ignored_labels = ["generated-*"]
+ignored_labels = ["generated-noise"]
 ignored_labels_when_merged = ["auto-merge", "run-ci"]
 auto_merge_labels = ["auto-merge"]
 hidden_labels = [
   { label = "run-ci", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
 ignored_reviewers = ["^automation-bot$", "-bot$"]
-review_gate_checks = ["approval gate"]
+review_gate_checks = ["^approval gate$"]
+auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
 review_wait_threshold = "4h"
 
 [repo.rules.review]

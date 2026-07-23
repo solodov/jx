@@ -716,11 +716,11 @@ fn parse_sync_config(
     let rebase_needed_labels = table
         .get("rebase_needed_labels")
         .map(|value| {
-            parse_named_glob_rules(
+            parse_named_string_rules(
                 file,
                 &format!("{key}.rebase_needed_labels"),
                 value,
-                "label glob",
+                "label name",
             )
         })
         .transpose()?
@@ -765,6 +765,7 @@ fn parse_stack_status_config(
         if !matches!(
             name.as_str(),
             "review_gate_checks"
+                | "auto_merge_prerequisite_checks"
                 | "ignored_checks"
                 | "ignored_labels"
                 | "ignored_labels_when_merged"
@@ -784,6 +785,17 @@ fn parse_stack_status_config(
     let review_gate_checks = table
         .get("review_gate_checks")
         .map(|value| parse_review_gate_checks(file, &format!("{key}.review_gate_checks"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let auto_merge_prerequisite_checks = table
+        .get("auto_merge_prerequisite_checks")
+        .map(|value| {
+            parse_auto_merge_prerequisite_checks(
+                file,
+                &format!("{key}.auto_merge_prerequisite_checks"),
+                value,
+            )
+        })
         .transpose()?
         .unwrap_or_default();
     let ignored_checks = table
@@ -832,6 +844,7 @@ fn parse_stack_status_config(
 
     Ok(RepoStackStatusConfig {
         review_gate_checks,
+        auto_merge_prerequisite_checks,
         ignored_checks,
         ignored_labels,
         ignored_labels_when_merged,
@@ -938,10 +951,23 @@ fn parse_review_gate_checks(
     key: &str,
     value: &toml::Value,
 ) -> Result<Vec<ReviewGateCheckConfig>, RepositoryError> {
-    parse_named_glob_rules(file, key, value, "check-name glob").map(|rules| {
+    parse_named_regex_rules(file, key, value, "check-name regex").map(|rules| {
         rules
             .into_iter()
             .map(|name| ReviewGateCheckConfig { name })
+            .collect()
+    })
+}
+
+fn parse_auto_merge_prerequisite_checks(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<AutoMergePrerequisiteCheckConfig>, RepositoryError> {
+    parse_named_regex_rules(file, key, value, "check-name regex").map(|rules| {
+        rules
+            .into_iter()
+            .map(|name| AutoMergePrerequisiteCheckConfig { name })
             .collect()
     })
 }
@@ -1016,7 +1042,7 @@ fn parse_ignored_labels(
     key: &str,
     value: &toml::Value,
 ) -> Result<Vec<IgnoredLabelConfig>, RepositoryError> {
-    parse_named_glob_rules(file, key, value, "label-name glob").map(|rules| {
+    parse_named_string_rules(file, key, value, "label name").map(|rules| {
         rules
             .into_iter()
             .map(|name| IgnoredLabelConfig { name })
@@ -1103,7 +1129,6 @@ fn parse_conditioned_label_rule(
     if value.is_str() {
         let item_key = format!("{key}[{index}]");
         let label = parse_non_empty_string_value(file, &item_key, value)?;
-        validate_named_glob_rule(file, &item_key, label.clone(), "label-name glob")?;
         return Ok(ConditionedLabelRule {
             label,
             when: vec![HiddenLabelCondition::Always],
@@ -1128,7 +1153,6 @@ fn parse_conditioned_label_rule(
 
     let label_key = format!("{key}[{index}].label");
     let label = required_non_empty_string(file, table, &label_key)?;
-    validate_named_glob_rule(file, &label_key, label.clone(), "label-name glob")?;
     let when = table
         .get("when")
         .map(|value| parse_hidden_label_conditions(file, &format!("{key}[{index}].when"), value))
@@ -1213,13 +1237,13 @@ fn parse_named_regex_rules(
     parse_named_rules(file, key, value, description, validate_named_regex_rule)
 }
 
-fn parse_named_glob_rules(
+fn parse_named_string_rules(
     file: &str,
     key: &str,
     value: &toml::Value,
     description: &str,
 ) -> Result<Vec<String>, RepositoryError> {
-    parse_named_rules(file, key, value, description, validate_named_glob_rule)
+    parse_named_rules(file, key, value, description, validate_named_string_rule)
 }
 
 fn parse_named_rules(
@@ -1291,16 +1315,12 @@ fn validate_named_regex_rule(
     Ok(name)
 }
 
-fn validate_named_glob_rule(
-    file: &str,
-    key: &str,
+fn validate_named_string_rule(
+    _file: &str,
+    _key: &str,
     name: String,
-    description: &str,
+    _description: &str,
 ) -> Result<String, RepositoryError> {
-    Glob::new(&name).map_err(|source| RepositoryError::InvalidConfig {
-        file: file.to_owned(),
-        message: format!("`{key}` must be a valid {description}: {source}"),
-    })?;
     Ok(name)
 }
 

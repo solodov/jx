@@ -698,6 +698,10 @@ pub(in crate::commands) fn pull_request_node_symbol(
         "⊖"
     } else if draft {
         "◌"
+    } else if status.is_some_and(|status| {
+        status.auto_merge_status == PullRequestAutoMergeStatus::PrerequisitesRequired
+    }) {
+        "◈"
     } else if status
         .is_some_and(|status| status.auto_merge_status == PullRequestAutoMergeStatus::Missing)
     {
@@ -725,7 +729,9 @@ pub(in crate::commands) fn pull_request_node_title_with_restore(
         return format!("{symbol} {title}");
     };
     match status.auto_merge_status {
-        PullRequestAutoMergeStatus::Missing if color => {
+        PullRequestAutoMergeStatus::Missing | PullRequestAutoMergeStatus::PrerequisitesRequired
+            if color =>
+        {
             format!("{ORANGE_STYLE}{symbol} {title}{RESET_STYLE}{restore_style}")
         }
         PullRequestAutoMergeStatus::Armed if color && symbol == "◎" => {
@@ -802,6 +808,14 @@ pub(in crate::commands) fn pull_request_review_symbol_with_restore(
             restore_style,
         );
     };
+    if pull_request_review_state_is_undefined(status) {
+        return styled_pull_request_symbol_with_restore(
+            "-",
+            PullRequestSymbolStyle::Muted,
+            color,
+            restore_style,
+        );
+    }
     if status.review_status == PullRequestReviewStatus::ChangesRequested {
         return styled_pull_request_symbol_with_restore(
             "!",
@@ -848,6 +862,14 @@ pub(in crate::commands) fn pull_request_review_symbol_with_restore(
         color,
         restore_style,
     )
+}
+
+fn pull_request_review_state_is_undefined(status: &PullRequestStatusRecord) -> bool {
+    status.draft
+        || status
+            .default_branch
+            .as_ref()
+            .is_some_and(|default_branch| status.base_branch != *default_branch)
 }
 
 pub(in crate::commands) fn pull_request_review_wait_style(

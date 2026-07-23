@@ -205,7 +205,7 @@ fn stack_status_renders_check_and_review_summary() {
         stack_status_pull_request_cell(101)
     )));
     assert!(result.stdout.contains(&format!(
-        "{}  ◷    ?    <1h   └ ◌ Child change [ui] reviewer-one, team/platform, suggested-reviewer",
+        "{}  ◷    -    <1h   └ ◌ Child change [ui] reviewer-one, team/platform, suggested-reviewer",
         stack_status_pull_request_cell(102)
     )));
     assert!(!result.stdout.contains("Legend:"));
@@ -227,6 +227,13 @@ fn stack_status_renders_review_decision_symbols() {
             version: 1,
             work_item_handler_runs: Vec::new(),
             nodes: vec![
+                stack_status_node(
+                    104,
+                    "topic/stacked-approved",
+                    "main",
+                    "Stacked approved",
+                    false,
+                ),
                 stack_status_node(105, "topic/approved", "main", "Approved clean", false),
                 stack_status_node(
                     106,
@@ -249,6 +256,15 @@ fn stack_status_renders_review_decision_symbols() {
         },
     )
     .expect("stack metadata writes");
+    let stacked_approved = stack_status_record(
+        104,
+        "Stacked approved",
+        "topic/stacked-approved",
+        "topic/root",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
     let mut approved_clean = stack_status_record(
         105,
         "Approved clean",
@@ -311,6 +327,7 @@ fn stack_status_renders_review_decision_symbols() {
     approval_pending_gate.approved_reviewers = vec!["reviewer-approved".to_owned()];
     let services = FakeServices {
         pull_request_bookmarks: vec![
+            "topic/stacked-approved".to_owned(),
             "topic/approved".to_owned(),
             "topic/approved-comments".to_owned(),
             "topic/comments".to_owned(),
@@ -319,6 +336,7 @@ fn stack_status_renders_review_decision_symbols() {
             "topic/gate-pending".to_owned(),
         ],
         pull_request_statuses: BTreeMap::from([
+            (104, stacked_approved),
             (105, approved_clean),
             (106, approved_with_comments),
             (107, comments_pending),
@@ -343,6 +361,9 @@ fn stack_status_renders_review_decision_symbols() {
     )
     .expect("colored stack status succeeds");
 
+    assert!(result
+        .stdout
+        .contains("\x1b[32m✓\x1b[0m    \x1b[2m-\x1b[0m    —     ◯ Stacked approved"));
     assert!(result
         .stdout
         .contains("\x1b[32m✓\x1b[0m    —     ◯ Approved clean"));
@@ -380,6 +401,7 @@ fn stack_status_renders_configured_auto_merge_state() {
 auto_merge_labels = [
   { label = "auto-merge", when = ["TARGETS_DEFAULT_BRANCH"] },
 ]
+auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
 "#,
     );
     write_stack_metadata(
@@ -391,6 +413,7 @@ auto_merge_labels = [
                 stack_status_node(111, "topic/armed", "main", "Armed auto-merge", false),
                 stack_status_node(112, "topic/missing", "main", "Missing auto-merge", false),
                 stack_status_node(113, "topic/waiting", "main", "Waiting checks", false),
+                stack_status_node(114, "topic/settings", "main", "Settings required", false),
             ],
         },
     )
@@ -432,13 +455,48 @@ auto_merge_labels = [
         PullRequestReviewStatus::Approved,
         ReviewerSelection::default(),
     );
+    let mut settings_required = stack_status_record(
+        114,
+        "Settings required",
+        "topic/settings",
+        "main",
+        PullRequestCheckStatus::Failing,
+        PullRequestReviewStatus::Approved,
+        ReviewerSelection::default(),
+    );
+    settings_required.labels = vec![
+        PullRequestLabel {
+            name: "auto-merge".to_owned(),
+            color: "fbca04".to_owned(),
+        },
+        PullRequestLabel {
+            name: "kept".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+    settings_required.checks = vec![
+        PullRequestCheck {
+            name: "Settings - PRODUCTION".to_owned(),
+            status: PullRequestCheckStatus::Failing,
+        },
+        PullRequestCheck {
+            name: "ci/build".to_owned(),
+            status: PullRequestCheckStatus::Passing,
+        },
+    ];
     let services = FakeServices {
         pull_request_bookmarks: vec![
             "topic/armed".to_owned(),
             "topic/missing".to_owned(),
             "topic/waiting".to_owned(),
+            "topic/settings".to_owned(),
         ],
-        pull_request_statuses: BTreeMap::from([(111, armed), (112, missing), (113, waiting)]),
+        pull_request_statuses: BTreeMap::from([
+            (111, armed),
+            (112, missing),
+            (113, waiting),
+            (114, settings_required),
+        ]),
         ..FakeServices::default()
     };
     let environment = RuntimeEnvironment::new(workspace.path(), []);
@@ -457,6 +515,10 @@ auto_merge_labels = [
     assert!(plain.stdout.contains(&format!(
         "{}  ◷    ✓    —     ◯ Waiting checks",
         stack_status_pull_request_cell(113)
+    )));
+    assert!(plain.stdout.contains(&format!(
+        "{}  ✓    ✓    —     ◈ Settings required [kept]",
+        stack_status_pull_request_cell(114)
     )));
     assert!(!plain.stdout.contains("auto-merge]"));
 
@@ -477,6 +539,9 @@ auto_merge_labels = [
     assert!(colored
         .stdout
         .contains("\x1b[38;2;194;95;0m◆ Missing auto-merge\x1b[0m"));
+    assert!(colored
+        .stdout
+        .contains("\x1b[38;2;194;95;0m◈ Settings required\x1b[0m"));
 
     let json = run_with_args_and_services(
         ["jx", "stack", "status", "--format", "json"],
@@ -496,6 +561,10 @@ auto_merge_labels = [
     assert!(value["repositories"][0]["pullRequests"][2]
         .get("autoMergeStatus")
         .is_none());
+    assert_eq!(
+        value["repositories"][0]["pullRequests"][3]["autoMergeStatus"],
+        "prerequisites_required"
+    );
 }
 
 #[test]
@@ -732,7 +801,7 @@ review_wait_threshold = "4h"
         .contains("\x1b[36m?\x1b[0m    \x1b[2m1h  \x1b[0m  ◯ Fresh waiting"));
     assert!(result
         .stdout
-        .contains("?    \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  ◌ Draft waiting"));
+        .contains("-    \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  ◌ Draft waiting"));
     assert!(result
         .stdout
         .contains("\x1b[32m✓\x1b[0m    \x1b[32m7h  \x1b[0m  \x1b[32m● Merged change\x1b[0m"));
@@ -1286,7 +1355,7 @@ fn stack_status_moves_configured_review_gate_failures_to_review_column() {
 repo = "example-owner/example-repo"
 
 [repo.rules.stack_status]
-review_gate_checks = ["approval gate"]
+review_gate_checks = ["^approval gate$"]
 
 [[repo.rules.stack_status.ignored_checks]]
 name = "^ci/noisy-advisory$"
@@ -1387,7 +1456,7 @@ fn stack_status_counts_passing_review_gate_checks_as_approved() {
 repo = "example-owner/example-repo"
 
 [repo.rules.stack_status]
-review_gate_checks = ["approval gate", "committer gate"]
+review_gate_checks = ["^approval gate$", "^committer gate$"]
 "#,
     );
     write_stack_metadata(
@@ -1462,7 +1531,7 @@ fn stack_status_preserves_github_review_required_with_passing_review_gate_checks
 repo = "example-owner/example-repo"
 
 [repo.rules.stack_status]
-review_gate_checks = ["approval gate", "committer gate"]
+review_gate_checks = ["^approval gate$", "^committer gate$"]
 "#,
     );
     write_stack_metadata(
@@ -1652,7 +1721,7 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
         &[vec![451]]
     );
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ?    —     ◌ Example branch-only status example-reviewer",
+        "{}  ✓    -    —     ◌ Example branch-only status example-reviewer",
         stack_status_pull_request_cell(451)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");

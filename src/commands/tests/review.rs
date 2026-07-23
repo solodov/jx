@@ -2023,7 +2023,7 @@ fn review_applies_configured_review_gate_policy() {
 repo = "example-owner/api-alpha"
 
 [repo.rules.stack_status]
-review_gate_checks = ["approval gate"]
+review_gate_checks = ["^approval gate$"]
 
 [[repo.rules.stack_status.ignored_checks]]
 name = "^ci/noisy-advisory$"
