@@ -404,6 +404,22 @@ pub struct StackMoveOutcome {
     pub current_updated: bool,
 }
 
+/// Controls whether stack readers require the stack base to be the current trunk head.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StackBasePolicy {
+    /// Stack paths must start at the current trunk head.
+    #[default]
+    CurrentTrunk,
+    /// Stack paths may start at a historical trunk commit that current trunk descends from.
+    AllowHistoricalTrunkBase,
+}
+
+impl StackBasePolicy {
+    pub(super) fn allows_historical_trunk_base(self) -> bool {
+        self == Self::AllowHistoricalTrunkBase
+    }
+}
+
 /// Local branch ancestry derived from jj after stack mutations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalStackBranch {

@@ -145,6 +145,10 @@ impl JjWorkspace {
     }
 
     pub(super) fn resolve_trunk_destination(&self) -> Result<(String, Commit), JjError> {
+        self.resolve_unanchored_origin_trunk()
+    }
+
+    pub(super) fn resolve_unanchored_origin_trunk(&self) -> Result<(String, Commit), JjError> {
         let mut candidates = Vec::new();
         let mut conflicted = Vec::new();
 
@@ -174,6 +178,80 @@ impl JjWorkspace {
         let trunk = self.load_commit(&candidate.commit_id)?;
 
         Ok((candidate.branch, trunk))
+    }
+
+    pub(super) fn stack_path_for_target(
+        &self,
+        target: &Commit,
+        policy: StackBasePolicy,
+    ) -> Result<(String, Commit, Vec<Commit>), JjError> {
+        match self.resolve_unanchored_origin_trunk() {
+            Ok((branch, trunk_head)) => {
+                let (stack_base, path) =
+                    self.stack_path_from_trunk_head(&trunk_head, target, policy)?;
+                Ok((branch, stack_base, path))
+            }
+            Err(error) if policy.allows_historical_trunk_base() => Err(error),
+            Err(_) => {
+                let (branch, trunk) = self.resolve_trunk(target)?;
+                let path = self.linear_stack_path(&trunk, target)?;
+                Ok((branch, trunk, path))
+            }
+        }
+    }
+
+    pub(super) fn stack_path_from_trunk_head(
+        &self,
+        trunk_head: &Commit,
+        target: &Commit,
+        policy: StackBasePolicy,
+    ) -> Result<(Commit, Vec<Commit>), JjError> {
+        match self.linear_stack_path(trunk_head, target) {
+            Ok(path) => Ok((trunk_head.clone(), path)),
+            Err(error) if !policy.allows_historical_trunk_base() => Err(error),
+            Err(_) => self.historical_stack_path_from_trunk_head(trunk_head, target),
+        }
+    }
+
+    fn historical_stack_path_from_trunk_head(
+        &self,
+        trunk_head: &Commit,
+        target: &Commit,
+    ) -> Result<(Commit, Vec<Commit>), JjError> {
+        let mut reverse_path = Vec::new();
+        let mut cursor = target.clone();
+        let mut seen = HashSet::new();
+
+        loop {
+            if self.is_ancestor_or_equal(cursor.id(), trunk_head.id())? {
+                reverse_path.reverse();
+                return Ok((cursor, reverse_path));
+            }
+
+            if !seen.insert(cursor.id().clone()) {
+                return Err(JjError::NonLinearStack {
+                    message: format!(
+                        "cycle detected while walking from selected change {} to trunk {}",
+                        short_commit_id(target.id()),
+                        short_commit_id(trunk_head.id())
+                    ),
+                });
+            }
+
+            reverse_path.push(cursor.clone());
+            let parents = cursor.parent_ids();
+            if parents.len() != 1 {
+                return Err(JjError::NonLinearStack {
+                    message: format!(
+                        "commit {} has {} parents; expected a linear path from trunk to selected change",
+                        short_commit_id(cursor.id()),
+                        parents.len()
+                    ),
+                });
+            }
+
+            cursor = self.load_commit(&parents[0])?;
+        }
     }
 
     pub(super) fn resolve_trunk_for_remote(

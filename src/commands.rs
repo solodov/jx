@@ -55,7 +55,7 @@ use crate::{
         FetchTraceStep, FetchTraceValue, InitialPublishTarget, JjError, JjWorkspace,
         LocalStackBranch, LocalStackBranchFacts, LocalStackBranchMetrics, LogBookmarkAnnotation,
         PipeDiffTool, PushBookmarksMetrics, PushBookmarksOutcome, PushOutcome,
-        PushedBookmarkSummary, StackMoveOutcome, StackMoveTarget, StackPlanFacts,
+        PushedBookmarkSummary, StackBasePolicy, StackMoveOutcome, StackMoveTarget, StackPlanFacts,
         StackPlanSelection, StackPublishFacts, StackPublishSelection, StatusWorkspaceFacts,
         StatusWorkspaceMetrics, SyncPushMetrics, SyncPushMetricsOutcome, SyncPushOptions,
         SyncPushOutcome, TrackedPushOutcome, WorkingCopySnapshot, WorkspaceAddOptions,

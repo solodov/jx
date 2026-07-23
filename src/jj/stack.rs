@@ -114,12 +114,18 @@ impl JjWorkspace {
     }
 
     /// Returns local bookmark ancestry suitable for repairing `jx` stack metadata.
-    pub fn local_stack_branches(&self) -> Result<Vec<LocalStackBranch>, JjError> {
-        Ok(self.local_stack_branch_facts()?.branches)
+    pub fn local_stack_branches(
+        &self,
+        stack_base_policy: StackBasePolicy,
+    ) -> Result<Vec<LocalStackBranch>, JjError> {
+        Ok(self.local_stack_branch_facts(stack_base_policy)?.branches)
     }
 
     /// Returns local bookmark ancestry and jj-internal timing metrics for performance tracing.
-    pub fn local_stack_branch_facts(&self) -> Result<LocalStackBranchFacts, JjError> {
+    pub fn local_stack_branch_facts(
+        &self,
+        stack_base_policy: StackBasePolicy,
+    ) -> Result<LocalStackBranchFacts, JjError> {
         self.ensure_git_backed()?;
         let total = Instant::now();
         let mut metrics = LocalStackBranchMetrics::default();
@@ -135,7 +141,7 @@ impl JjWorkspace {
         metrics.local_bookmark_count = bookmarks.len();
 
         let started = Instant::now();
-        let fixed_trunk = self.local_stack_fixed_trunk()?;
+        let fixed_trunk = self.resolve_unanchored_origin_trunk().ok();
         metrics.resolve_trunk_us += duration_us(started.elapsed());
         if fixed_trunk.is_some() {
             metrics.resolved_trunk_count += 1;
@@ -154,27 +160,40 @@ impl JjWorkspace {
             metrics.load_commit_us += duration_us(started.elapsed());
             metrics.loaded_commit_count += 1;
 
-            let (trunk_branch, trunk) = if let Some((trunk_branch, trunk)) = &fixed_trunk {
-                (trunk_branch.clone(), trunk.clone())
-            } else {
-                let started = Instant::now();
-                let Ok((trunk_branch, trunk)) = self.resolve_trunk(&target) else {
-                    metrics.resolve_trunk_us += duration_us(started.elapsed());
+            let (trunk_branch, stack_base, stack_path) =
+                if let Some((trunk_branch, trunk_head)) = &fixed_trunk {
+                    let started = Instant::now();
+                    let Ok((stack_base, stack_path)) =
+                        self.stack_path_from_trunk_head(trunk_head, &target, stack_base_policy)
+                    else {
+                        metrics.linear_stack_path_us += duration_us(started.elapsed());
+                        metrics.skipped_non_linear_count += 1;
+                        continue;
+                    };
+                    metrics.linear_stack_path_us += duration_us(started.elapsed());
+                    (trunk_branch.clone(), stack_base, stack_path)
+                } else if stack_base_policy.allows_historical_trunk_base() {
                     metrics.skipped_missing_trunk_count += 1;
                     continue;
-                };
-                metrics.resolve_trunk_us += duration_us(started.elapsed());
-                metrics.resolved_trunk_count += 1;
-                (trunk_branch, trunk)
-            };
+                } else {
+                    let started = Instant::now();
+                    let Ok((trunk_branch, trunk)) = self.resolve_trunk(&target) else {
+                        metrics.resolve_trunk_us += duration_us(started.elapsed());
+                        metrics.skipped_missing_trunk_count += 1;
+                        continue;
+                    };
+                    metrics.resolve_trunk_us += duration_us(started.elapsed());
+                    metrics.resolved_trunk_count += 1;
 
-            let started = Instant::now();
-            let Ok(stack_path) = self.linear_stack_path(&trunk, &target) else {
-                metrics.linear_stack_path_us += duration_us(started.elapsed());
-                metrics.skipped_non_linear_count += 1;
-                continue;
-            };
-            metrics.linear_stack_path_us += duration_us(started.elapsed());
+                    let started = Instant::now();
+                    let Ok(stack_path) = self.linear_stack_path(&trunk, &target) else {
+                        metrics.linear_stack_path_us += duration_us(started.elapsed());
+                        metrics.skipped_non_linear_count += 1;
+                        continue;
+                    };
+                    metrics.linear_stack_path_us += duration_us(started.elapsed());
+                    (trunk_branch, trunk, stack_path)
+                };
             metrics.stack_path_count += 1;
             if stack_path.is_empty() {
                 metrics.skipped_trunk_count += 1;
@@ -182,7 +201,7 @@ impl JjWorkspace {
             }
 
             let started = Instant::now();
-            let parent_branch = self.nearest_ancestor_bookmark(&trunk, &stack_path);
+            let parent_branch = self.nearest_ancestor_bookmark(&stack_base, &stack_path);
             metrics.nearest_ancestor_bookmark_us += duration_us(started.elapsed());
             let base_branch = parent_branch
                 .clone()
@@ -205,52 +224,23 @@ impl JjWorkspace {
         Ok(LocalStackBranchFacts { branches, metrics })
     }
 
-    fn local_stack_fixed_trunk(&self) -> Result<Option<(String, Commit)>, JjError> {
-        let mut candidates = Vec::new();
-        let mut conflicted = Vec::new();
-        for (branch, remote_ref) in self
-            .repo
-            .view()
-            .remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
-        {
-            let branch_name = branch.as_str().to_owned();
-            let ref_target = &remote_ref.target;
-            if ref_target.has_conflict() {
-                conflicted.push(branch_name);
-                continue;
-            }
-            let Some(commit_id) = ref_target.as_normal() else {
-                continue;
-            };
-            candidates.push(TrunkCandidate {
-                branch: branch_name,
-                commit_id: commit_id.clone(),
-            });
-        }
-
-        let Ok(candidate) =
-            select_trunk_candidate_with_hint(ORIGIN_REMOTE_NAME, candidates, conflicted, None)
-        else {
-            return Ok(None);
-        };
-        let trunk = self.load_commit(&candidate.commit_id)?;
-        Ok(Some((candidate.branch, trunk)))
-    }
-
     /// Returns local stack facts for either inferred full-stack or explicit-revset publishing.
     pub fn stack_publish_facts(
         &self,
         selection: &StackPublishSelection,
+        stack_base_policy: StackBasePolicy,
     ) -> Result<StackPublishFacts, JjError> {
         self.ensure_git_backed()?;
         let total = Instant::now();
         let mut metrics = StackPublishMetrics::default();
         let mut facts = match selection {
-            StackPublishSelection::InferredStack { anchor } => {
-                self.inferred_stack_publish_facts(anchor.as_deref(), &mut metrics)
-            }
+            StackPublishSelection::InferredStack { anchor } => self.inferred_stack_publish_facts(
+                anchor.as_deref(),
+                stack_base_policy,
+                &mut metrics,
+            ),
             StackPublishSelection::ExplicitRevisions { revisions } => {
-                self.explicit_stack_publish_facts(revisions, &mut metrics)
+                self.explicit_stack_publish_facts(revisions, stack_base_policy, &mut metrics)
             }
         }?;
         metrics.node_count = facts.nodes.len();
@@ -264,13 +254,15 @@ impl JjWorkspace {
     pub fn stack_plan_facts(
         &self,
         selection: &StackPlanSelection,
+        stack_base_policy: StackBasePolicy,
     ) -> Result<StackPlanFacts, JjError> {
         self.ensure_git_backed()?;
         match selection {
             StackPlanSelection::InferredStack { anchor } => {
                 let anchor = self.target_for_revision(anchor.as_deref())?;
-                let (trunk, root) = self.stack_plan_root(&anchor)?;
-                let (nodes, indexes_by_commit) = self.stack_plan_neighbourhood(root)?;
+                let (trunk, root) = self.stack_plan_root(&anchor, stack_base_policy)?;
+                let (nodes, indexes_by_commit) =
+                    self.stack_plan_neighbourhood(root, stack_base_policy)?;
                 let anchor_index = indexes_by_commit.get(anchor.id()).copied();
                 Ok(StackPlanFacts {
                     trunk,
@@ -280,12 +272,16 @@ impl JjWorkspace {
                 })
             }
             StackPlanSelection::ExplicitRevisions { revisions } => {
-                self.explicit_stack_plan_facts(revisions)
+                self.explicit_stack_plan_facts(revisions, stack_base_policy)
             }
         }
     }
 
-    fn explicit_stack_plan_facts(&self, revisions: &[String]) -> Result<StackPlanFacts, JjError> {
+    fn explicit_stack_plan_facts(
+        &self,
+        revisions: &[String],
+        stack_base_policy: StackBasePolicy,
+    ) -> Result<StackPlanFacts, JjError> {
         let selected = self.resolve_publish_revisions(revisions)?;
         if selected.is_empty() {
             return Err(JjError::EmptyStackPublishSelection);
@@ -296,7 +292,7 @@ impl JjWorkspace {
         let mut root: Option<Commit> = None;
         for commit in selected {
             selected_ids.insert(commit.id().clone());
-            let (next_trunk, next_root) = self.stack_plan_root(&commit)?;
+            let (next_trunk, next_root) = self.stack_plan_root(&commit, stack_base_policy)?;
             match root.as_ref() {
                 Some(root) if root.id() != next_root.id() => {
                     return Err(JjError::StackPublishMultipleStacks);
@@ -310,7 +306,7 @@ impl JjWorkspace {
         }
 
         let root = root.ok_or(JjError::EmptyStackPublishSelection)?;
-        let (nodes, indexes_by_commit) = self.stack_plan_neighbourhood(root)?;
+        let (nodes, indexes_by_commit) = self.stack_plan_neighbourhood(root, stack_base_policy)?;
         let mut selected_indexes = Vec::new();
         for commit_id in &selected_ids {
             let Some(index) = indexes_by_commit.get(commit_id).copied() else {
@@ -328,9 +324,12 @@ impl JjWorkspace {
         })
     }
 
-    fn stack_plan_root(&self, target: &Commit) -> Result<(TrunkSummary, Commit), JjError> {
-        let (branch, trunk) = self.resolve_trunk(target)?;
-        let path = self.linear_stack_path(&trunk, target)?;
+    fn stack_plan_root(
+        &self,
+        target: &Commit,
+        stack_base_policy: StackBasePolicy,
+    ) -> Result<(TrunkSummary, Commit), JjError> {
+        let (branch, stack_base, path) = self.stack_path_for_target(target, stack_base_policy)?;
         let Some(root) = path.first() else {
             return Err(JjError::EmptyStackPublishSelection);
         };
@@ -338,8 +337,8 @@ impl JjWorkspace {
         Ok((
             TrunkSummary {
                 branch,
-                commit_id: trunk.id().hex(),
-                short_commit_id: short_commit_id(trunk.id()),
+                commit_id: stack_base.id().hex(),
+                short_commit_id: short_commit_id(stack_base.id()),
             },
             root.clone(),
         ))
@@ -348,10 +347,17 @@ impl JjWorkspace {
     fn stack_plan_neighbourhood(
         &self,
         root: Commit,
+        stack_base_policy: StackBasePolicy,
     ) -> Result<(Vec<StackPlanNodeFacts>, BTreeMap<CommitId, usize>), JjError> {
         let mut nodes = Vec::new();
         let mut indexes_by_commit = BTreeMap::new();
-        self.append_stack_plan_node(root, None, &mut nodes, &mut indexes_by_commit)?;
+        self.append_stack_plan_node(
+            root,
+            None,
+            stack_base_policy,
+            &mut nodes,
+            &mut indexes_by_commit,
+        )?;
         Ok((nodes, indexes_by_commit))
     }
 
@@ -359,6 +365,7 @@ impl JjWorkspace {
         &self,
         commit: Commit,
         parent_index: Option<usize>,
+        stack_base_policy: StackBasePolicy,
         nodes: &mut Vec<StackPlanNodeFacts>,
         indexes_by_commit: &mut BTreeMap<CommitId, usize>,
     ) -> Result<(), JjError> {
@@ -374,7 +381,7 @@ impl JjWorkspace {
         let index = nodes.len();
         indexes_by_commit.insert(commit.id().clone(), index);
         nodes.push(StackPlanNodeFacts {
-            workspace: self.facts_for_commit(commit.clone())?,
+            workspace: self.facts_for_commit(commit.clone(), stack_base_policy)?,
             parent_index,
         });
 
@@ -388,7 +395,13 @@ impl JjWorkspace {
         for child in children {
             match stack_child_relationship(&child, commit.id()) {
                 StackChildRelationship::Linear => {
-                    self.append_stack_plan_node(child, Some(index), nodes, indexes_by_commit)?;
+                    self.append_stack_plan_node(
+                        child,
+                        Some(index),
+                        stack_base_policy,
+                        nodes,
+                        indexes_by_commit,
+                    )?;
                 }
                 StackChildRelationship::Boundary => {
                     // Merge children depend on this commit but are not part of its single-parent stack.
@@ -410,6 +423,7 @@ impl JjWorkspace {
     fn inferred_stack_publish_facts(
         &self,
         anchor: Option<&str>,
+        stack_base_policy: StackBasePolicy,
         metrics: &mut StackPublishMetrics,
     ) -> Result<StackPublishFacts, JjError> {
         let started = Instant::now();
@@ -417,8 +431,8 @@ impl JjWorkspace {
         metrics.target_resolution_us += duration_us(started.elapsed());
         metrics.target_resolution_count += 1;
 
-        let (trunk_branch, trunk, mut path) =
-            self.publish_stack_path_for_target(&anchor, metrics)?;
+        let (trunk_branch, stack_base, mut path) =
+            self.publish_stack_path_for_target(&anchor, stack_base_policy, metrics)?;
         if path.is_empty() {
             return Err(JjError::EmptyStackPublishSelection);
         }
@@ -479,7 +493,7 @@ impl JjWorkspace {
             None,
             Some(anchor_index),
             &trunk_branch,
-            &trunk,
+            &stack_base,
             metrics,
         )
     }
@@ -487,6 +501,7 @@ impl JjWorkspace {
     fn explicit_stack_publish_facts(
         &self,
         revisions: &[String],
+        stack_base_policy: StackBasePolicy,
         metrics: &mut StackPublishMetrics,
     ) -> Result<StackPublishFacts, JjError> {
         let started = Instant::now();
@@ -503,8 +518,8 @@ impl JjWorkspace {
         let mut longest_trunk = None;
         for commit in selected {
             selected_ids.insert(commit.id().clone());
-            let (trunk_branch, trunk, path) =
-                self.publish_stack_path_for_target(&commit, metrics)?;
+            let (trunk_branch, stack_base, path) =
+                self.publish_stack_path_for_target(&commit, stack_base_policy, metrics)?;
             let Some(root) = path.first() else {
                 return Err(JjError::EmptyStackPublishSelection);
             };
@@ -517,7 +532,7 @@ impl JjWorkspace {
             }
             if path.len() > longest_path.len() {
                 longest_path = path;
-                longest_trunk = Some((trunk_branch, trunk));
+                longest_trunk = Some((trunk_branch, stack_base));
             }
         }
 
@@ -532,7 +547,7 @@ impl JjWorkspace {
             return Err(JjError::StackPublishNonLinearSelection);
         }
 
-        let Some((trunk_branch, trunk)) = longest_trunk else {
+        let Some((trunk_branch, stack_base)) = longest_trunk else {
             return Err(JjError::EmptyStackPublishSelection);
         };
         self.stack_publish_facts_from_path(
@@ -540,7 +555,7 @@ impl JjWorkspace {
             Some(&selected_ids),
             None,
             &trunk_branch,
-            &trunk,
+            &stack_base,
             metrics,
         )
     }
@@ -561,68 +576,55 @@ impl JjWorkspace {
     fn publish_stack_path_for_target(
         &self,
         target: &Commit,
+        stack_base_policy: StackBasePolicy,
         metrics: &mut StackPublishMetrics,
     ) -> Result<(String, Commit, Vec<Commit>), JjError> {
         let started = Instant::now();
-        let fixed_trunk = self.local_stack_fixed_trunk()?;
+        let unanchored_trunk = self.resolve_unanchored_origin_trunk();
         metrics.resolve_trunk_us += duration_us(started.elapsed());
-        if let Some((trunk_branch, trunk)) = fixed_trunk {
-            let started = Instant::now();
-            match self.linear_stack_path(&trunk, target) {
-                Ok(path) => {
-                    metrics.linear_stack_path_us += duration_us(started.elapsed());
-                    metrics.resolved_trunk_count += 1;
-                    metrics.stack_path_count += 1;
-                    return Ok((trunk_branch, trunk, path));
-                }
-                Err(_) => {
-                    metrics.linear_stack_path_us += duration_us(started.elapsed());
-                }
+        match unanchored_trunk {
+            Ok((trunk_branch, trunk_head)) => {
+                let started = Instant::now();
+                let (stack_base, path) =
+                    self.stack_path_from_trunk_head(&trunk_head, target, stack_base_policy)?;
+                metrics.linear_stack_path_us += duration_us(started.elapsed());
+                metrics.resolved_trunk_count += 1;
+                metrics.stack_path_count += 1;
+                Ok((trunk_branch, stack_base, path))
+            }
+            Err(error) if stack_base_policy.allows_historical_trunk_base() => Err(error),
+            Err(_) => {
+                let started = Instant::now();
+                let (trunk_branch, trunk) = self.resolve_trunk(target)?;
+                metrics.resolve_trunk_us += duration_us(started.elapsed());
+                metrics.resolved_trunk_count += 1;
+
+                let started = Instant::now();
+                let path = self.linear_stack_path(&trunk, target)?;
+                metrics.linear_stack_path_us += duration_us(started.elapsed());
+                metrics.stack_path_count += 1;
+                Ok((trunk_branch, trunk, path))
             }
         }
-
-        let started = Instant::now();
-        let (trunk_branch, trunk) = self.resolve_trunk(target)?;
-        metrics.resolve_trunk_us += duration_us(started.elapsed());
-        metrics.resolved_trunk_count += 1;
-
-        let started = Instant::now();
-        let path = self.linear_stack_path(&trunk, target)?;
-        metrics.linear_stack_path_us += duration_us(started.elapsed());
-        metrics.stack_path_count += 1;
-        Ok((trunk_branch, trunk, path))
     }
 
     fn stack_publish_workspace_facts(
         &self,
         trunk_branch: &str,
-        trunk: &Commit,
+        stack_base: &Commit,
         stack_path: &[Commit],
         local_bookmarks: &[String],
     ) -> Result<WorkspaceFacts, JjError> {
         let Some(target) = stack_path.last() else {
             return Err(JjError::EmptyStackPublishSelection);
         };
-        let trunk_commit_id = trunk.id().hex();
-        let changed = changed_file_facts_for_commit(self.repo.as_ref(), target)?;
-
-        Ok(WorkspaceFacts {
-            workspace_root: self.workspace_root(),
-            target_change: self.change_summary(target)?,
-            trunk: TrunkSummary {
-                branch: trunk_branch.to_owned(),
-                commit_id: trunk_commit_id.clone(),
-                short_commit_id: short_commit_id(trunk.id()),
-            },
-            trunk_git_commit_sha: trunk_commit_id,
-            origin_branch: trunk_branch.to_owned(),
-            local_bookmarks: local_bookmarks.to_vec(),
-            local_bookmarks_at_target: self.local_bookmarks_for_commit(target.id()),
-            nearest_ancestor_bookmark: self.nearest_ancestor_bookmark(trunk, stack_path),
-            changed_files: changed.files,
-            change_lines: changed.lines,
-            stack_index: stack_path.len().saturating_sub(1),
-        })
+        self.facts_for_stack_path(
+            target,
+            trunk_branch,
+            stack_base,
+            stack_path,
+            local_bookmarks,
+        )
     }
 
     fn stack_publish_facts_from_path(
@@ -631,7 +633,7 @@ impl JjWorkspace {
         publish_ids: Option<&BTreeSet<CommitId>>,
         anchor_index: Option<usize>,
         trunk_branch: &str,
-        trunk: &Commit,
+        stack_base: &Commit,
         metrics: &mut StackPublishMetrics,
     ) -> Result<StackPublishFacts, JjError> {
         let local_bookmarks = self.local_bookmarks();
@@ -645,7 +647,7 @@ impl JjWorkspace {
             let started = Instant::now();
             let workspace = self.stack_publish_workspace_facts(
                 trunk_branch,
-                trunk,
+                stack_base,
                 &path[..=index],
                 &local_bookmarks,
             )?;

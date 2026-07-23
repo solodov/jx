@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 impl JjWorkspace {
     /// Returns read-side facts for the current working-copy change.
     pub fn facts(&self) -> Result<WorkspaceFacts, JjError> {
-        self.facts_for_revision(None)
+        self.facts_for_revision(None, StackBasePolicy::CurrentTrunk)
     }
 
     /// Returns local cached trunk facts for each configured remote status should report.
@@ -112,9 +112,13 @@ impl JjWorkspace {
     }
 
     /// Returns read-side facts for the selected revision, or the working copy when omitted.
-    pub fn facts_for_revision(&self, revision: Option<&str>) -> Result<WorkspaceFacts, JjError> {
+    pub fn facts_for_revision(
+        &self,
+        revision: Option<&str>,
+        stack_base_policy: StackBasePolicy,
+    ) -> Result<WorkspaceFacts, JjError> {
         self.ensure_git_backed()?;
-        self.facts_for_commit(self.target_for_revision(revision)?)
+        self.facts_for_commit(self.target_for_revision(revision)?, stack_base_policy)
     }
 
     /// Returns local bookmark heads that can have associated pull requests.
@@ -200,7 +204,7 @@ impl JjWorkspace {
     ) -> Result<WorkspaceFacts, JjError> {
         self.ensure_git_backed()?;
         let target = self.target_for_revision(revision)?;
-        match self.facts_for_commit(target.clone()) {
+        match self.facts_for_commit(target.clone(), StackBasePolicy::CurrentTrunk) {
             Ok(facts) => Ok(facts),
             Err(JjError::MissingTrunk { remote }) if remote == ORIGIN_REMOTE_NAME => {
                 self.push_facts_without_trunk(target)
@@ -216,26 +220,48 @@ impl JjWorkspace {
         }
     }
 
-    pub(super) fn facts_for_commit(&self, target: Commit) -> Result<WorkspaceFacts, JjError> {
-        let (origin_branch, trunk) = self.resolve_trunk(&target)?;
-        let stack_path = self.linear_stack_path(&trunk, &target)?;
+    pub(super) fn facts_for_commit(
+        &self,
+        target: Commit,
+        stack_base_policy: StackBasePolicy,
+    ) -> Result<WorkspaceFacts, JjError> {
+        let (origin_branch, stack_base, stack_path) =
+            self.stack_path_for_target(&target, stack_base_policy)?;
         let local_bookmarks = self.local_bookmarks();
+        self.facts_for_stack_path(
+            &target,
+            &origin_branch,
+            &stack_base,
+            &stack_path,
+            &local_bookmarks,
+        )
+    }
+
+    pub(super) fn facts_for_stack_path(
+        &self,
+        target: &Commit,
+        origin_branch: &str,
+        stack_base: &Commit,
+        stack_path: &[Commit],
+        local_bookmarks: &[String],
+    ) -> Result<WorkspaceFacts, JjError> {
         let local_bookmarks_at_target = self.local_bookmarks_for_commit(target.id());
-        let nearest_ancestor_bookmark = self.nearest_ancestor_bookmark(&trunk, &stack_path);
+        let nearest_ancestor_bookmark = self.nearest_ancestor_bookmark(stack_base, stack_path);
         let stack_index = stack_path.len().saturating_sub(1);
-        let changed = changed_file_facts_for_commit(self.repo.as_ref(), &target)?;
+        let changed = changed_file_facts_for_commit(self.repo.as_ref(), target)?;
+        let stack_base_commit_id = stack_base.id().hex();
 
         Ok(WorkspaceFacts {
             workspace_root: self.workspace_root(),
-            target_change: self.change_summary(&target)?,
+            target_change: self.change_summary(target)?,
             trunk: TrunkSummary {
-                branch: origin_branch.clone(),
-                commit_id: trunk.id().hex(),
-                short_commit_id: short_commit_id(trunk.id()),
+                branch: origin_branch.to_owned(),
+                commit_id: stack_base_commit_id.clone(),
+                short_commit_id: short_commit_id(stack_base.id()),
             },
-            trunk_git_commit_sha: trunk.id().hex(),
-            origin_branch,
-            local_bookmarks,
+            trunk_git_commit_sha: stack_base_commit_id,
+            origin_branch: origin_branch.to_owned(),
+            local_bookmarks: local_bookmarks.to_vec(),
             local_bookmarks_at_target,
             nearest_ancestor_bookmark,
             changed_files: changed.files,

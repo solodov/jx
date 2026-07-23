@@ -2060,11 +2060,26 @@ fn sync_current_stack_traced(
     run_sync_repo_checks(&context, services, || {
         services.changed_files_for_bookmarks(&context, &selection.branches)
     })?;
+    let rebase_plan = span.measure_with_result_attrs(
+        "plan_sync_rebase",
+        Vec::new(),
+        || sync_rebase_plan(&context, services),
+        sync_rebase_plan_result_attrs,
+    )?;
     progress.status("Fetching origin…");
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
-        Vec::new(),
-        || fetch_origin_with_retries(&context, services),
+        [perf_attr(
+            "protected_rebase_root_count",
+            rebase_plan.fetch_options.protected_rebase_roots.len(),
+        )],
+        || {
+            fetch_origin_with_options_and_retries(
+                &context,
+                services,
+                rebase_plan.fetch_options.clone(),
+            )
+        },
         fetch_result_attrs,
     )?;
     progress.status("Pushing stack bookmarks…");
@@ -2075,10 +2090,14 @@ fn sync_current_stack_traced(
         sync_push_outcome_result_attrs,
     )?;
     progress.status("Syncing pull request descriptions…");
+    let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
-        [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
-        || manager.sync_pull_requests_with_metadata(&push.pushed, &selection.metadata),
+        [perf_attr(
+            "bookmark_count",
+            pull_request_push.bookmarks.len(),
+        )],
+        || manager.sync_pull_requests_with_metadata(&pull_request_push, &selection.metadata),
         pull_request_records_result_attrs,
     )?;
     progress.finish();
@@ -2209,13 +2228,28 @@ fn sync_selected_revision_traced(
     output: OutputMode,
     span: &mut PerfSpan,
 ) -> Result<CommandResult, CommandError> {
+    let rebase_plan = span.measure_with_result_attrs(
+        "plan_sync_rebase",
+        Vec::new(),
+        || sync_rebase_plan(&context, services),
+        sync_rebase_plan_result_attrs,
+    )?;
     let workspace = services.workspace_facts(&context, selection.revision)?;
     run_sync_repo_checks(&context, services, || Ok(workspace.changed_files.clone()))?;
     progress.status("Fetching origin…");
     let fetch = span.measure_with_result_attrs(
         "fetch_origin",
-        Vec::new(),
-        || fetch_origin_with_retries(&context, services),
+        [perf_attr(
+            "protected_rebase_root_count",
+            rebase_plan.fetch_options.protected_rebase_roots.len(),
+        )],
+        || {
+            fetch_origin_with_options_and_retries(
+                &context,
+                services,
+                rebase_plan.fetch_options.clone(),
+            )
+        },
         fetch_result_attrs,
     )?;
     progress.status("Pushing selected bookmark…");
@@ -2232,10 +2266,14 @@ fn sync_selected_revision_traced(
         PerfLog::from_environment(environment),
         environment,
     );
+    let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
-        [perf_attr("bookmark_count", push.pushed.bookmarks.len())],
-        || manager.sync_pull_requests(&push.pushed),
+        [perf_attr(
+            "bookmark_count",
+            pull_request_push.bookmarks.len(),
+        )],
+        || manager.sync_pull_requests(&pull_request_push),
         pull_request_records_result_attrs,
     )?;
     progress.finish();

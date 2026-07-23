@@ -105,7 +105,7 @@ fn facts_report_changed_files_for_selected_commit() {
 
     let current_facts = subject.facts().expect("current facts load");
     let ancestor_facts = subject
-        .facts_for_revision(Some(&ancestor.id().hex()))
+        .facts_for_revision(Some(&ancestor.id().hex()), StackBasePolicy::CurrentTrunk)
         .expect("ancestor facts load");
 
     assert_eq!(current_facts.target_change.commit_id, current.id().hex());
@@ -146,7 +146,7 @@ fn facts_for_revision_reports_selected_commit_without_changing_workspace() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .facts_for_revision(Some(&selected_revision))
+        .facts_for_revision(Some(&selected_revision), StackBasePolicy::CurrentTrunk)
         .expect("selected revision facts load");
 
     assert_eq!(facts.target_change.commit_id, selected_revision);

@@ -144,7 +144,7 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .local_stack_branch_facts()
+        .local_stack_branch_facts(StackBasePolicy::CurrentTrunk)
         .expect("local stack branch facts load");
 
     assert_eq!(
@@ -171,6 +171,139 @@ fn local_stack_branches_reflect_nearest_bookmarked_parent() {
     assert_eq!(facts.metrics.normal_bookmark_count, 2);
     assert_eq!(facts.metrics.resolved_trunk_count, 1);
     assert_eq!(facts.metrics.stack_path_count, 2);
+}
+
+#[test]
+fn local_stack_branches_allow_historical_trunk_base() {
+    // Verifies: protected stacks can keep PR bases on main while their commit base lags trunk.
+    let fixture = TestWorkspace::new("local-stack-historical-base");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, root_id, child_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
+        let stack_root = write_child(tx.repo_mut(), &old_trunk, "root change").await;
+        let stack_child = write_child(tx.repo_mut(), &stack_root, "child change").await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated main trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/root", stack_root.id());
+        set_local_bookmark(tx.repo_mut(), "topic/root", stack_root.id());
+        set_local_bookmark(tx.repo_mut(), "topic/child", stack_child.id());
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                stack_child.id().clone(),
+            )
+            .expect("set current working-copy change");
+
+        let root_id = stack_root.id().hex();
+        let child_id = stack_child.id().hex();
+        let repo = tx
+            .commit("arrange historical stack branches")
+            .await
+            .expect("commit");
+        (workspace, repo, root_id, child_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let strict = subject
+        .local_stack_branch_facts(StackBasePolicy::CurrentTrunk)
+        .expect("strict local stack facts load");
+    assert!(strict.branches.is_empty());
+
+    let facts = subject
+        .local_stack_branch_facts(StackBasePolicy::AllowHistoricalTrunkBase)
+        .expect("historical local stack facts load");
+
+    assert_eq!(
+        facts.branches,
+        vec![
+            LocalStackBranch {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                title: "child change".to_owned(),
+                commit_id: child_id,
+            },
+            LocalStackBranch {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                title: "root change".to_owned(),
+                commit_id: root_id,
+            },
+        ]
+    );
+}
+
+#[test]
+fn stack_publish_facts_allow_historical_trunk_base_without_using_pr_remote_as_trunk() {
+    // Verifies: stack publish keeps semantic trunk as main even when origin has PR refs at stack commits.
+    let fixture = TestWorkspace::new("stack-publish-historical-base");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, old_trunk_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
+        let stack_root = write_child(tx.repo_mut(), &old_trunk, "root change").await;
+        let stack_child = write_child(tx.repo_mut(), &stack_root, "child change").await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated main trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/root", stack_root.id());
+        set_local_bookmark(tx.repo_mut(), "topic/root", stack_root.id());
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                stack_child.id().clone(),
+            )
+            .expect("set current working-copy change");
+
+        let old_trunk_id = old_trunk.id().hex();
+        let repo = tx
+            .commit("arrange historical stack publish")
+            .await
+            .expect("commit");
+        (workspace, repo, old_trunk_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let strict_error = subject
+        .stack_publish_facts(
+            &StackPublishSelection::InferredStack { anchor: None },
+            StackBasePolicy::CurrentTrunk,
+        )
+        .expect_err("strict stack facts reject lagging trunk base");
+    assert!(matches!(strict_error, JjError::NonLinearStack { .. }));
+
+    let facts = subject
+        .stack_publish_facts(
+            &StackPublishSelection::InferredStack { anchor: None },
+            StackBasePolicy::AllowHistoricalTrunkBase,
+        )
+        .expect("historical stack publish facts load");
+
+    assert_eq!(facts.publish_indexes, vec![0, 1]);
+    assert_eq!(facts.anchor_index, Some(1));
+    assert_eq!(facts.nodes[0].parent_index, None);
+    assert_eq!(facts.nodes[1].parent_index, Some(0));
+    assert_eq!(facts.nodes[0].workspace.origin_branch, "main");
+    assert_eq!(facts.nodes[0].workspace.trunk.commit_id, old_trunk_id);
+    assert_eq!(facts.nodes[0].workspace.nearest_ancestor_bookmark, None);
+    assert_eq!(
+        facts.nodes[1]
+            .workspace
+            .nearest_ancestor_bookmark
+            .as_deref(),
+        Some("topic/root")
+    );
 }
 
 #[test]
@@ -205,9 +338,12 @@ fn stack_plan_facts_include_branching_neighbourhood() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .stack_plan_facts(&StackPlanSelection::ExplicitRevisions {
-            revisions: vec![format!("{left_id} | {right_id}")],
-        })
+        .stack_plan_facts(
+            &StackPlanSelection::ExplicitRevisions {
+                revisions: vec![format!("{left_id} | {right_id}")],
+            },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect("stack plan facts load");
 
     assert_eq!(facts.selected_indexes, vec![1, 2]);
@@ -267,7 +403,10 @@ fn stack_plan_facts_stop_before_merge_child() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .stack_plan_facts(&StackPlanSelection::InferredStack { anchor: None })
+        .stack_plan_facts(
+            &StackPlanSelection::InferredStack { anchor: None },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect("merge child is excluded from stack plan");
 
     assert_eq!(facts.selected_indexes, vec![0]);
@@ -310,9 +449,12 @@ fn stack_plan_facts_reject_multiple_selected_roots() {
     let subject = JjWorkspace { workspace, repo };
 
     let error = subject
-        .stack_plan_facts(&StackPlanSelection::ExplicitRevisions {
-            revisions: vec![left_id, right_id],
-        })
+        .stack_plan_facts(
+            &StackPlanSelection::ExplicitRevisions {
+                revisions: vec![left_id, right_id],
+            },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect_err("multi-root plan is rejected");
 
     assert!(matches!(error, JjError::StackPublishMultipleStacks));
@@ -348,7 +490,10 @@ fn stack_publish_facts_infer_full_linear_stack_around_current() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .stack_publish_facts(&StackPublishSelection::InferredStack { anchor: None })
+        .stack_publish_facts(
+            &StackPublishSelection::InferredStack { anchor: None },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect("stack publish facts load");
 
     assert_eq!(facts.publish_indexes, vec![0, 1, 2]);
@@ -415,7 +560,10 @@ fn stack_publish_facts_stop_before_merge_child() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .stack_publish_facts(&StackPublishSelection::InferredStack { anchor: None })
+        .stack_publish_facts(
+            &StackPublishSelection::InferredStack { anchor: None },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect("merge child is excluded from inferred stack");
 
     assert_eq!(facts.publish_indexes, vec![0]);
@@ -462,9 +610,12 @@ fn stack_publish_facts_keep_explicit_revset_subset() {
     let subject = JjWorkspace { workspace, repo };
 
     let facts = subject
-        .stack_publish_facts(&StackPublishSelection::ExplicitRevisions {
-            revisions: vec![format!("{parent_id} | {child_id}")],
-        })
+        .stack_publish_facts(
+            &StackPublishSelection::ExplicitRevisions {
+                revisions: vec![format!("{parent_id} | {child_id}")],
+            },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect("stack publish facts load");
 
     assert_eq!(facts.publish_indexes, vec![0, 2]);
@@ -518,9 +669,12 @@ fn stack_publish_facts_reject_multiple_selected_stacks() {
     let subject = JjWorkspace { workspace, repo };
 
     let error = subject
-        .stack_publish_facts(&StackPublishSelection::ExplicitRevisions {
-            revisions: vec![left_id, right_id],
-        })
+        .stack_publish_facts(
+            &StackPublishSelection::ExplicitRevisions {
+                revisions: vec![left_id, right_id],
+            },
+            StackBasePolicy::CurrentTrunk,
+        )
         .expect_err("multi-stack publish is rejected");
 
     assert!(matches!(error, JjError::StackPublishMultipleStacks));

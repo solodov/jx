@@ -2009,6 +2009,15 @@ fn run_captured_command(cwd: &Path, command: &[String]) -> io::Result<CapturedCo
     Ok(CapturedCommandOutput { status, output })
 }
 
+fn stack_base_policy_for_context(context: &RepositoryContext) -> StackBasePolicy {
+    let sync_config = context.config.repo.sync_for(&context.origin.github);
+    if sync_config.rebase_strategy() == RepoSyncRebaseStrategy::StackGreenPullRequests {
+        StackBasePolicy::AllowHistoricalTrunkBase
+    } else {
+        StackBasePolicy::CurrentTrunk
+    }
+}
+
 impl CommandServices for ProductionServices<'_> {
     fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
         JjWorkspace::current_workspace_log(self.environment.current_dir(), annotations)
@@ -2118,7 +2127,8 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         revision: Option<&str>,
     ) -> Result<WorkspaceFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.facts_for_revision(revision)
+        JjWorkspace::load(context.workspace_root.clone())?
+            .facts_for_revision(revision, stack_base_policy_for_context(context))
     }
 
     fn push_workspace_facts(
@@ -2676,14 +2686,16 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
     ) -> Result<Vec<LocalStackBranch>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.local_stack_branches()
+        JjWorkspace::load(context.workspace_root.clone())?
+            .local_stack_branches(stack_base_policy_for_context(context))
     }
 
     fn local_stack_branch_facts(
         &self,
         context: &RepositoryContext,
     ) -> Result<LocalStackBranchFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.local_stack_branch_facts()
+        JjWorkspace::load(context.workspace_root.clone())?
+            .local_stack_branch_facts(stack_base_policy_for_context(context))
     }
 
     fn stack_publish_facts(
@@ -2691,7 +2703,8 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         selection: &StackPublishSelection,
     ) -> Result<StackPublishFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.stack_publish_facts(selection)
+        JjWorkspace::load(context.workspace_root.clone())?
+            .stack_publish_facts(selection, stack_base_policy_for_context(context))
     }
 
     fn stack_plan_facts(
@@ -2699,7 +2712,8 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         selection: &StackPlanSelection,
     ) -> Result<StackPlanFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.stack_plan_facts(selection)
+        JjWorkspace::load(context.workspace_root.clone())?
+            .stack_plan_facts(selection, stack_base_policy_for_context(context))
     }
 
     fn ensure_bookmark(

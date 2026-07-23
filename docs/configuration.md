@@ -126,7 +126,9 @@ opt-in `stack_green_pull_requests` strategy leaves a trunk-child stack in place
 when that root PR has passing policy-normalized checks by the same stack-status
 policy used by `jx stack status`, the local bookmark matches the PR head commit,
 and no configured `rebase_needed_labels` glob is present. Review approval is not
-required for this sync protection. Descendant PRs in a protected stack are only
+required for this sync protection. Stack commands continue to treat the PR base
+branch as trunk while allowing the local stack to start at the older trunk commit
+that current trunk descends from. Descendant PRs in a protected stack are only
 metadata-synced when their bookmark was actually pushed.
 
 ```toml
