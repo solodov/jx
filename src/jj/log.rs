@@ -144,7 +144,7 @@ pub(super) fn jx_default_config_layers() -> Vec<ConfigLayer> {
     layers.push(
         ConfigLayer::parse(
             ConfigSource::Default,
-            r#"
+            r##"
 [templates]
 log = "jx_builtin_log_compact"
 
@@ -177,7 +177,7 @@ separate(" ",
   format_short_change_id_with_change_offset(commit),
   format_short_signature(commit.author()),
   format_timestamp(commit_timestamp(commit)),
-  commit.bookmarks(),
+  format_jx_local_bookmarks(local_bookmarks),
   commit.tags(),
   commit.working_copies(),
   format_commit_labels(commit),
@@ -186,13 +186,24 @@ separate(" ",
   ),
 )
 '''
+'format_jx_local_bookmark(bookmark)' = '''
+label(
+  if(bookmark.synced(), "bookmark_synced", "bookmark_unsynced"),
+  stringify(bookmark.name()),
+)
+'''
+'format_jx_local_bookmarks(bookmarks)' = '''
+bookmarks.map(|bookmark| format_jx_local_bookmark(bookmark)).join(" ")
+'''
 'format_jx_root_commit(commit)' = '''
 label("root", "root()") ++ "\n"
 '''
 
 [colors]
 link = { underline = true }
-"#,
+bookmark_synced = { fg = "#5a32a3", bold = false }
+bookmark_unsynced = { fg = "#5a32a3", bg = "#efe8fb", bold = false }
+"##,
         )
         .expect("jx default log template config is valid"),
     );
