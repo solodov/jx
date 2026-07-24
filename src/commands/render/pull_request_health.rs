@@ -8,6 +8,7 @@ const BLACK_BOLD_STYLE: &str = "\x1b[1m\x1b[30m";
 const BLACK_ITALIC_STYLE: &str = "\x1b[3m\x1b[30m";
 pub(in crate::commands) const DIM_STYLE: &str = "\x1b[2m";
 pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
+pub(in crate::commands) const DRAFT_CONFLICT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;218;128;132m";
 const DRAFT_TEXT_RGB: (u8, u8, u8) = (190, 184, 176);
 pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
 const GREEN_ITALIC_STYLE: &str = "\x1b[3m\x1b[32m";

@@ -902,6 +902,23 @@ fn pull_request_status_policy_reports_configured_auto_merge_state() {
 }
 
 #[test]
+fn stack_green_status_requires_known_mergeable_state() {
+    // Verifies: sync protection waits for GitHub to confirm mergeability before preserving a green stack.
+    let mergeable = pull_request_status(39, "Mergeable", false);
+    let mut conflicting = pull_request_status(40, "Conflicting", false);
+    conflicting.merge_status = crate::github::PullRequestMergeStatus::Conflicting;
+    let mut unknown = pull_request_status(41, "Unknown", false);
+    unknown.merge_status = crate::github::PullRequestMergeStatus::Unknown;
+
+    assert!(pull_request_status_has_green_stack_checks(&mergeable));
+    assert!(pull_request_status_is_stack_green(&mergeable));
+    assert!(!pull_request_status_has_green_stack_checks(&conflicting));
+    assert!(!pull_request_status_is_stack_green(&conflicting));
+    assert!(!pull_request_status_has_green_stack_checks(&unknown));
+    assert!(!pull_request_status_is_stack_green(&unknown));
+}
+
+#[test]
 fn pull_request_status_policy_moves_auto_merge_prerequisites_out_of_test_health() {
     // Verifies: manual merge prerequisites change auto-merge state without making Chk look like failed tests.
     let config = crate::repository::RepoStackStatusConfig {

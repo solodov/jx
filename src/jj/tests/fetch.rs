@@ -163,6 +163,77 @@ fn fetch_rebase_skips_protected_trunk_child_subtree() {
 }
 
 #[test]
+fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
+    // Verifies: once a previously protected root lands, local children move onto current trunk.
+    let fixture = TestWorkspace::new("fetch-landed-trunk-child-descendants");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old hypothetical trunk").await;
+        let landed_child = write_child(tx.repo_mut(), &old_trunk, "landed hypothetical root").await;
+        let empty_default = write_child(tx.repo_mut(), &landed_child, "").await;
+        let follow_up = write_child(tx.repo_mut(), &empty_default, "hypothetical follow-up").await;
+        let updated_trunk =
+            write_child(tx.repo_mut(), &landed_child, "updated hypothetical trunk").await;
+        let trunk_children = collect_trunk_child_changes(tx.repo(), old_trunk.id())
+            .expect("collect trunk child changes");
+        let protected_rebase_roots = BTreeMap::from([(
+            landed_child.change_id().clone(),
+            "hypothetical/root".to_owned(),
+        )]);
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                empty_default.id().clone(),
+            )
+            .expect("set working-copy commit");
+
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &trunk_children,
+            &updated_trunk,
+            &RevsetExpression::none(),
+            &protected_rebase_roots,
+        )
+        .await
+        .expect("landed descendants rebase");
+
+        assert_eq!(stats.skipped_trunk_children, 1);
+        assert_eq!(stats.rebased_trunk_children, 1);
+        assert_eq!(stats.rebased_descendants, 1);
+        let visible_default = tx
+            .repo()
+            .resolve_change_id(empty_default.change_id())
+            .expect("default change id resolves")
+            .expect("default remains visible")
+            .into_visible()
+            .expect("visible default commit");
+        let visible_follow_up = tx
+            .repo()
+            .resolve_change_id(follow_up.change_id())
+            .expect("follow-up change id resolves")
+            .expect("follow-up remains visible")
+            .into_visible()
+            .expect("visible follow-up commit");
+        let default = load_commit_from_repo(tx.repo(), &visible_default[0]).expect("load default");
+        let follow_up =
+            load_commit_from_repo(tx.repo(), &visible_follow_up[0]).expect("load follow-up");
+        assert_eq!(default.parent_ids(), &[updated_trunk.id().clone()]);
+        assert_eq!(follow_up.parent_ids(), &[default.id().clone()]);
+        assert_eq!(
+            tx.repo()
+                .view()
+                .get_wc_commit_id(workspace.workspace_name()),
+            Some(default.id())
+        );
+    });
+}
+
+#[test]
 fn fetch_origin_refs_selects_trunk_tracked_and_refresh_bookmarks_only() {
     // Verifies: Fetch avoids enumerating every remote bookmark while still pruning stale candidates.
     let fixture = TestWorkspace::new("fetch-tracked-bookmarks");

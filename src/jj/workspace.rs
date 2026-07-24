@@ -188,7 +188,7 @@ impl JjWorkspace {
         match self.resolve_unanchored_origin_trunk() {
             Ok((branch, trunk_head)) => {
                 let (stack_base, path) =
-                    self.stack_path_from_trunk_head(&trunk_head, target, policy)?;
+                    self.stack_path_from_trunk_head(&branch, &trunk_head, target, policy)?;
                 Ok((branch, stack_base, path))
             }
             Err(error) if policy.allows_historical_trunk_base() => Err(error),
@@ -202,6 +202,7 @@ impl JjWorkspace {
 
     pub(super) fn stack_path_from_trunk_head(
         &self,
+        trunk_branch: &str,
         trunk_head: &Commit,
         target: &Commit,
         policy: StackBasePolicy,
@@ -209,12 +210,13 @@ impl JjWorkspace {
         match self.linear_stack_path(trunk_head, target) {
             Ok(path) => Ok((trunk_head.clone(), path)),
             Err(error) if !policy.allows_historical_trunk_base() => Err(error),
-            Err(_) => self.historical_stack_path_from_trunk_head(trunk_head, target),
+            Err(_) => self.historical_stack_path_from_trunk_head(trunk_branch, trunk_head, target),
         }
     }
 
     fn historical_stack_path_from_trunk_head(
         &self,
+        trunk_branch: &str,
         trunk_head: &Commit,
         target: &Commit,
     ) -> Result<(Commit, Vec<Commit>), JjError> {
@@ -223,7 +225,9 @@ impl JjWorkspace {
         let mut seen = HashSet::new();
 
         loop {
-            if self.is_ancestor_or_equal(cursor.id(), trunk_head.id())? {
+            if self.is_ancestor_or_equal(cursor.id(), trunk_head.id())?
+                && self.can_use_historical_stack_base(cursor.id(), trunk_branch)
+            {
                 reverse_path.reverse();
                 return Ok((cursor, reverse_path));
             }
@@ -252,6 +256,22 @@ impl JjWorkspace {
 
             cursor = self.load_commit(&parents[0])?;
         }
+    }
+
+    fn can_use_historical_stack_base(&self, commit_id: &CommitId, trunk_branch: &str) -> bool {
+        !self
+            .repo
+            .view()
+            .local_bookmarks_for_commit(commit_id)
+            .any(|(branch, _)| branch.as_str() != trunk_branch)
+            && !self
+                .repo
+                .view()
+                .remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
+                .any(|(branch, remote_ref)| {
+                    branch.as_str() != trunk_branch
+                        && remote_ref.target.as_normal() == Some(commit_id)
+                })
     }
 
     pub(super) fn resolve_trunk_for_remote(

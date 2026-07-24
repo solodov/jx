@@ -2261,6 +2261,72 @@ fn stack_status_marks_merge_conflicts_with_prohibited_node_symbol() {
 }
 
 #[test]
+fn stack_status_subdues_draft_merge_conflict_rows() {
+    // Verifies: draft conflicts stay visible without giving WIP rows ready-PR urgency.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![stack_status_node(
+                304,
+                "topic/draft-conflict",
+                "main",
+                "Draft conflict",
+                true,
+            )],
+        },
+    )
+    .expect("stack metadata writes");
+    let mut status = stack_status_record(
+        304,
+        "Draft conflict",
+        "topic/draft-conflict",
+        "main",
+        PullRequestCheckStatus::Passing,
+        PullRequestReviewStatus::ReviewRequested,
+        ReviewerSelection::new(["draft-reviewer"], std::iter::empty::<&str>()),
+    );
+    status.draft = true;
+    status.merge_status = PullRequestMergeStatus::Conflicting;
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([(304, status)]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let prompts = test_prompt_handlers();
+
+    let result = run_with_args_and_progress(
+        ["jx", "stack", "status"],
+        &environment,
+        &services,
+        &NoProgress,
+        prompts,
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("colored stack status succeeds");
+
+    let draft_line = result
+        .stdout
+        .lines()
+        .find(|line| line.contains("Draft conflict"))
+        .expect("draft conflict row renders");
+    assert!(draft_line.starts_with(DRAFT_CONFLICT_ROW_STYLE));
+    assert!(!draft_line.starts_with(CONFLICT_STYLE));
+    assert!(draft_line.contains("⊘ Draft conflict draft-reviewer"));
+}
+
+#[test]
 fn stack_status_json_renders_machine_readable_pull_request_health() {
     // Verifies: JSON output exposes stable labels for scripting without terminal formatting.
     let workspace = TestWorkspace::new();

@@ -145,7 +145,7 @@ fn pull_request_status_is_open_and_mergeable(status: &PullRequestStatusRecord) -
     !status.draft
         && !status.merged
         && !status.closed
-        && status.merge_status != PullRequestMergeStatus::Conflicting
+        && status.merge_status == PullRequestMergeStatus::Mergeable
 }
 
 fn apply_ignored_pull_request_status_facts(

@@ -307,6 +307,58 @@ fn stack_publish_facts_allow_historical_trunk_base_without_using_pr_remote_as_tr
 }
 
 #[test]
+fn stack_publish_facts_use_pre_pr_trunk_base_when_pr_commit_landed() {
+    // Verifies: historical stack bases stop before local PR bookmarks already contained in trunk.
+    let fixture = TestWorkspace::new("stack-publish-landed-pr-base");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, old_trunk_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old hypothetical trunk").await;
+        let landed_pr = write_child(tx.repo_mut(), &old_trunk, "landed hypothetical PR").await;
+        let current = write_child(tx.repo_mut(), &landed_pr, "hypothetical follow-up").await;
+        let updated_trunk =
+            write_child(tx.repo_mut(), &landed_pr, "updated hypothetical trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_origin_bookmark(tx.repo_mut(), "hypothetical/pr", landed_pr.id());
+        set_local_bookmark(tx.repo_mut(), "hypothetical/pr", landed_pr.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let old_trunk_id = old_trunk.id().hex();
+        let repo = tx
+            .commit("arrange landed historical stack publish")
+            .await
+            .expect("commit");
+        (workspace, repo, old_trunk_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_publish_facts(
+            &StackPublishSelection::InferredStack { anchor: None },
+            StackBasePolicy::AllowHistoricalTrunkBase,
+        )
+        .expect("historical stack publish facts load");
+
+    assert_eq!(facts.publish_indexes, vec![0, 1]);
+    assert_eq!(facts.nodes[0].workspace.origin_branch, "main");
+    assert_eq!(facts.nodes[0].workspace.trunk.commit_id, old_trunk_id);
+    assert_eq!(
+        facts.nodes[1]
+            .workspace
+            .nearest_ancestor_bookmark
+            .as_deref(),
+        Some("hypothetical/pr")
+    );
+}
+
+#[test]
 fn stack_plan_facts_include_branching_neighbourhood() {
     // Verifies: stack plan allows sibling branches under a shared stack root.
     let fixture = TestWorkspace::new("stack-plan-neighbourhood");

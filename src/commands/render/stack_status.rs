@@ -515,6 +515,8 @@ fn lifecycle_label(
 fn stack_status_row_style(conflict: bool, closed: bool, draft: bool, color: bool) -> &'static str {
     if !color {
         ""
+    } else if conflict && draft {
+        DRAFT_CONFLICT_ROW_STYLE
     } else if conflict {
         CONFLICT_STYLE
     } else if closed {

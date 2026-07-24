@@ -486,33 +486,37 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
             continue;
         };
 
-        if child.parent_ids().contains(updated_trunk.id())
-            || is_ancestor_or_equal_in_repo(mut_repo, child.id(), updated_trunk.id())?
-            || protected_rebase_roots.contains_key(child.change_id())
-        {
+        if child.parent_ids().contains(updated_trunk.id()) {
             stats.skipped_trunk_children += 1;
             continue;
         }
 
-        let rebased = rebase_commit_with_options(
-            CommitRewriter::new(mut_repo, child.clone(), vec![updated_trunk.id().clone()]),
-            &options,
-        )
-        .await
-        .map_err(|error| JjError::Backend {
-            message: error.to_string(),
-        })?;
-        match rebased {
-            RebasedCommit::Rewritten(rebased) => {
-                stats
-                    .rebased_commits
-                    .push(rebased_commit_record(&child, &rebased));
-                stats.rebased_trunk_children += 1;
-            }
-            RebasedCommit::Abandoned { .. } => {
-                stats.abandoned_empty_commits += 1;
-            }
+        if is_ancestor_or_equal_in_repo(mut_repo, child.id(), updated_trunk.id())? {
+            rebase_landed_trunk_child_descendants(
+                mut_repo,
+                &child,
+                updated_trunk,
+                &options,
+                &mut stats,
+            )
+            .await?;
+            stats.skipped_trunk_children += 1;
+            continue;
         }
+
+        if protected_rebase_roots.contains_key(child.change_id()) {
+            stats.skipped_trunk_children += 1;
+            continue;
+        }
+
+        rebase_trunk_child_onto_updated_trunk(
+            mut_repo,
+            &child,
+            updated_trunk,
+            &options,
+            &mut stats,
+        )
+        .await?;
     }
 
     if mut_repo.has_rewrites() {
@@ -539,6 +543,60 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
     }
 
     Ok(stats)
+}
+
+async fn rebase_landed_trunk_child_descendants(
+    mut_repo: &mut MutableRepo,
+    landed_child: &Commit,
+    updated_trunk: &Commit,
+    options: &RebaseOptions,
+    stats: &mut FetchRebaseStats,
+) -> Result<(), JjError> {
+    for descendant_id in collect_child_ids(mut_repo, landed_child.id())? {
+        if descendant_id == *updated_trunk.id()
+            || is_ancestor_or_equal_in_repo(mut_repo, &descendant_id, updated_trunk.id())?
+        {
+            continue;
+        }
+
+        let descendant = load_commit_from_repo(mut_repo, &descendant_id)?;
+        if descendant.parent_ids().contains(updated_trunk.id()) {
+            continue;
+        }
+
+        rebase_trunk_child_onto_updated_trunk(mut_repo, &descendant, updated_trunk, options, stats)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn rebase_trunk_child_onto_updated_trunk(
+    mut_repo: &mut MutableRepo,
+    child: &Commit,
+    updated_trunk: &Commit,
+    options: &RebaseOptions,
+    stats: &mut FetchRebaseStats,
+) -> Result<(), JjError> {
+    let rebased = rebase_commit_with_options(
+        CommitRewriter::new(mut_repo, child.clone(), vec![updated_trunk.id().clone()]),
+        options,
+    )
+    .await
+    .map_err(|error| JjError::Backend {
+        message: error.to_string(),
+    })?;
+    match rebased {
+        RebasedCommit::Rewritten(rebased) => {
+            stats
+                .rebased_commits
+                .push(rebased_commit_record(child, &rebased));
+            stats.rebased_trunk_children += 1;
+        }
+        RebasedCommit::Abandoned { .. } => {
+            stats.abandoned_empty_commits += 1;
+        }
+    }
+    Ok(())
 }
 
 async fn rebase_import_rewrites(

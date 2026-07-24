@@ -123,13 +123,15 @@ leaves an empty working-copy change on top when needed.
 `repo.sync.rebase_strategy` controls whether repository sync rebases local stacks
 after fetching origin. The default `always` preserves historical behavior. The
 opt-in `stack_green_pull_requests` strategy leaves a trunk-child stack in place
-when that root PR has passing policy-normalized checks by the same stack-status
-policy used by `jx stack status`, the local bookmark matches the PR head commit,
-and no configured `rebase_needed_labels` entry is present. Review approval is not
-required for this sync protection. Stack commands continue to treat the PR base
-branch as trunk while allowing the local stack to start at the older trunk commit
-that current trunk descends from. Descendant PRs in a protected stack are only
-metadata-synced when their bookmark was actually pushed.
+when that root PR is mergeable, has passing policy-normalized checks by the same
+stack-status policy used by `jx stack status`, the local bookmark matches the PR
+head commit, and no configured `rebase_needed_labels` entry is present. Review
+approval is not required for this sync protection. Stack commands continue to
+treat the PR base branch as trunk while allowing the local stack to start at the
+older trunk commit that current trunk descends from. Once trunk contains the
+protected root, sync moves any remaining local descendants onto current trunk.
+Descendant PRs in a protected stack are only metadata-synced when their bookmark
+was actually pushed.
 
 ```toml
 [repo.sync]

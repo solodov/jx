@@ -163,9 +163,12 @@ impl JjWorkspace {
             let (trunk_branch, stack_base, stack_path) =
                 if let Some((trunk_branch, trunk_head)) = &fixed_trunk {
                     let started = Instant::now();
-                    let Ok((stack_base, stack_path)) =
-                        self.stack_path_from_trunk_head(trunk_head, &target, stack_base_policy)
-                    else {
+                    let Ok((stack_base, stack_path)) = self.stack_path_from_trunk_head(
+                        trunk_branch,
+                        trunk_head,
+                        &target,
+                        stack_base_policy,
+                    ) else {
                         metrics.linear_stack_path_us += duration_us(started.elapsed());
                         metrics.skipped_non_linear_count += 1;
                         continue;
@@ -585,8 +588,12 @@ impl JjWorkspace {
         match unanchored_trunk {
             Ok((trunk_branch, trunk_head)) => {
                 let started = Instant::now();
-                let (stack_base, path) =
-                    self.stack_path_from_trunk_head(&trunk_head, target, stack_base_policy)?;
+                let (stack_base, path) = self.stack_path_from_trunk_head(
+                    &trunk_branch,
+                    &trunk_head,
+                    target,
+                    stack_base_policy,
+                )?;
                 metrics.linear_stack_path_us += duration_us(started.elapsed());
                 metrics.resolved_trunk_count += 1;
                 metrics.stack_path_count += 1;
