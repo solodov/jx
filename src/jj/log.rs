@@ -6,7 +6,7 @@ impl JjWorkspace {
         current_dir: &Path,
         annotations: &[LogBookmarkAnnotation],
     ) -> Result<String, JjError> {
-        let workspace_root = find_jj_workspace_root(current_dir)?;
+        let workspace_root = super::status::snapshot_working_copy_for_read(current_dir)?;
         let (workspace, repo) = load_workspace_for_log(&workspace_root)?;
 
         render_current_workspace_log(&workspace, repo.as_ref(), current_dir, annotations)

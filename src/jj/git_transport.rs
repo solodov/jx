@@ -529,15 +529,7 @@ impl JjWorkspace {
     }
 
     fn snapshot_working_copy_for_initial_publish(&mut self) -> Result<(), JjError> {
-        let workspace_root = self.workspace.workspace_root().to_path_buf();
-        // jj-lib loads do not snapshot pending disk changes. Reuse jj's normal
-        // command entrypoint so initial repository creation publishes the files
-        // the operator already has in the working copy.
-        super::status::run_jj_status(&workspace_root, false)?;
-        let refreshed = Self::load(workspace_root)?;
-        self.workspace = refreshed.workspace;
-        self.repo = refreshed.repo;
-        Ok(())
+        self.reload_after_working_copy_snapshot()
     }
 
     fn should_describe_initial_publish_target(&self, commit: &Commit) -> bool {

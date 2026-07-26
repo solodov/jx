@@ -1,16 +1,31 @@
 use super::*;
 
 impl JjWorkspace {
+    /// Loads a workspace after jj has captured pending disk changes.
+    pub fn load_after_working_copy_snapshot(
+        current_dir: impl AsRef<Path>,
+    ) -> Result<Self, JjError> {
+        let workspace_root = snapshot_working_copy_for_read(current_dir.as_ref())?;
+        Self::load(workspace_root)
+    }
+
     /// Snapshots pending disk changes and returns the current jj working-copy commit id.
     pub fn snapshot_working_copy(current_dir: &Path) -> Result<WorkingCopySnapshot, JjError> {
-        let workspace_root = find_jj_workspace_root(current_dir)?;
-        run_jj_status(&workspace_root, false)?;
-        let workspace = Self::load(workspace_root)?;
+        let workspace = Self::load_after_working_copy_snapshot(current_dir)?;
         let commit = workspace.current_commit()?;
 
         Ok(WorkingCopySnapshot {
             commit_id: commit.id().hex(),
         })
+    }
+
+    /// Refreshes this wrapper after jj has captured pending disk changes.
+    pub(super) fn reload_after_working_copy_snapshot(&mut self) -> Result<(), JjError> {
+        let workspace_root = self.workspace.workspace_root().to_path_buf();
+        let refreshed = Self::load_after_working_copy_snapshot(&workspace_root)?;
+        self.workspace = refreshed.workspace;
+        self.repo = refreshed.repo;
+        Ok(())
     }
 
     /// Returns status lines for the current working-copy commit using jj's own summary rendering.
@@ -30,6 +45,15 @@ impl JjWorkspace {
         }
         Ok(status)
     }
+}
+
+/// Snapshots pending disk changes through jj's command path and returns the workspace root.
+pub(super) fn snapshot_working_copy_for_read(current_dir: &Path) -> Result<PathBuf, JjError> {
+    let workspace_root = find_jj_workspace_root(current_dir)?;
+    // jj-lib loads are read-only with respect to the working copy. Reuse jj's
+    // command entrypoint so jx read commands see the same disk state as jj.
+    run_jj_status(&workspace_root, false)?;
+    Ok(workspace_root)
 }
 
 pub(super) fn run_jj_status(current_dir: &Path, color: bool) -> Result<String, JjError> {

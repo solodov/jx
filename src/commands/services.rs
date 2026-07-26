@@ -2018,6 +2018,23 @@ fn stack_base_policy_for_context(context: &RepositoryContext) -> StackBasePolicy
     }
 }
 
+/// Loads jj-lib state after jj has captured pending working-copy changes.
+fn load_current_jj_workspace(context: &RepositoryContext) -> Result<JjWorkspace, JjError> {
+    JjWorkspace::load_after_working_copy_snapshot(&context.workspace_root)
+}
+
+/// Loads remote status facts from a freshly snapshotted working-copy view.
+fn load_status_workspace_facts(
+    context: &RepositoryContext,
+) -> Result<StatusWorkspaceFacts, JjError> {
+    load_current_jj_workspace(context)?.status_facts(
+        context
+            .github_remotes
+            .iter()
+            .map(|remote| remote.name.as_str()),
+    )
+}
+
 impl CommandServices for ProductionServices<'_> {
     fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
         JjWorkspace::current_workspace_log(self.environment.current_dir(), annotations)
@@ -2072,7 +2089,7 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         workspace_root: &Path,
     ) -> Result<InitialPublishTarget, JjError> {
-        JjWorkspace::load(workspace_root.to_path_buf())?.initial_publish_target()
+        JjWorkspace::load_after_working_copy_snapshot(workspace_root)?.initial_publish_target()
     }
 
     fn prepare_initial_publish_target(
@@ -2127,7 +2144,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         revision: Option<&str>,
     ) -> Result<WorkspaceFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_current_jj_workspace(context)?
             .facts_for_revision(revision, stack_base_policy_for_context(context))
     }
 
@@ -2136,7 +2153,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         revision: Option<&str>,
     ) -> Result<WorkspaceFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_facts_for_revision(revision)
+        load_current_jj_workspace(context)?.push_facts_for_revision(revision)
     }
 
     fn working_copy_snapshot(
@@ -2187,12 +2204,7 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
     ) -> Result<StatusWorkspaceFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.status_facts(
-            context
-                .github_remotes
-                .iter()
-                .map(|remote| remote.name.as_str()),
-        )
+        load_status_workspace_facts(context)
     }
 
     fn status_report(
@@ -2392,12 +2404,7 @@ impl CommandServices for ProductionServices<'_> {
                 }
 
                 let started = Instant::now();
-                let workspace = JjWorkspace::load(context.workspace_root.clone())?.status_facts(
-                    context
-                        .github_remotes
-                        .iter()
-                        .map(|remote| remote.name.as_str()),
-                )?;
+                let workspace = load_status_workspace_facts(context)?;
                 let trunk = domain::stack_trunk_status_report(context, workspace, &github).await?;
                 Ok((Some(trunk), Some(duration_us(started.elapsed()))))
             };
@@ -2633,8 +2640,7 @@ impl CommandServices for ProductionServices<'_> {
     }
 
     fn global_fetch_ready(&self, context: &RepositoryContext) -> Result<bool, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
-            .is_empty_working_copy_child_of_origin_trunk()
+        load_current_jj_workspace(context)?.is_empty_working_copy_child_of_origin_trunk()
     }
 
     fn fetch_origin(&self, context: &RepositoryContext) -> Result<FetchOutcome, JjError> {
@@ -2679,14 +2685,14 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         target: &StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.move_current_stack(target.clone())
+        load_current_jj_workspace(context)?.move_current_stack(target.clone())
     }
 
     fn local_stack_branches(
         &self,
         context: &RepositoryContext,
     ) -> Result<Vec<LocalStackBranch>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_current_jj_workspace(context)?
             .local_stack_branches(stack_base_policy_for_context(context))
     }
 
@@ -2694,7 +2700,7 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
     ) -> Result<LocalStackBranchFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_current_jj_workspace(context)?
             .local_stack_branch_facts(stack_base_policy_for_context(context))
     }
 
@@ -2703,7 +2709,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         selection: &StackPublishSelection,
     ) -> Result<StackPublishFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_current_jj_workspace(context)?
             .stack_publish_facts(selection, stack_base_policy_for_context(context))
     }
 
@@ -2712,7 +2718,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         selection: &StackPlanSelection,
     ) -> Result<StackPlanFacts, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_current_jj_workspace(context)?
             .stack_plan_facts(selection, stack_base_policy_for_context(context))
     }
 
@@ -2764,7 +2770,7 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
     ) -> Result<Vec<String>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.changed_files_for_tracked_push()
+        load_current_jj_workspace(context)?.changed_files_for_tracked_push()
     }
 
     fn changed_files_for_bookmarks(
@@ -2781,7 +2787,7 @@ impl CommandServices for ProductionServices<'_> {
         revision: Option<&str>,
         options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_revision(revision, options)
+        load_current_jj_workspace(context)?.push_syncable_revision(revision, options)
     }
 
     fn push_syncable_tracked(
@@ -2789,7 +2795,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_syncable_tracked(options)
+        load_current_jj_workspace(context)?.push_syncable_tracked(options)
     }
 
     fn push_syncable_tracked_with_metrics(
@@ -2797,8 +2803,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         options: SyncPushOptions,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
-            .push_syncable_tracked_with_metrics(options)
+        load_current_jj_workspace(context)?.push_syncable_tracked_with_metrics(options)
     }
 
     fn sync_pull_requests(
@@ -3301,7 +3306,7 @@ fn spawn_global_stack_status_facts_load(
         let workspace = measure_global_stack_status_preparation_step(
             &mut metrics.load_jj_workspace_us,
             || {
-                JjWorkspace::load(workspace_root)
+                JjWorkspace::load_after_working_copy_snapshot(workspace_root)
                     .map_err(CommandError::from)
                     .map_err(|error| error.to_string())
             },
@@ -3618,12 +3623,7 @@ async fn prepare_global_remote_status(
         let result: Result<(RepositoryContext, StatusWorkspaceFacts), CommandError> = (|| {
             let environment = environment.with_current_dir(&root);
             let context = RepositoryContext::discover(&environment)?;
-            let workspace = JjWorkspace::load(context.workspace_root.clone())?.status_facts(
-                context
-                    .github_remotes
-                    .iter()
-                    .map(|remote| remote.name.as_str()),
-            )?;
+            let workspace = load_status_workspace_facts(&context)?;
 
             Ok((context, workspace))
         })();

@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn current_workspace_log_snapshots_pending_disk_changes() {
+    // Verifies: the public log entrypoint refreshes disk changes before reading via jj-lib.
+    if !jj_cli_is_available() {
+        eprintln!("skipping log snapshot test because jj CLI is unavailable");
+        return;
+    }
+
+    let fixture = TestWorkspace::new("workspace-log-snapshot");
+    let settings = log_test_settings().expect("settings");
+    pollster::block_on(Workspace::init_internal_git(&settings, fixture.path()))
+        .expect("initialize jj workspace");
+    fs::write(fixture.path().join("README.md"), "pending\n").expect("write pending file");
+
+    let log = JjWorkspace::current_workspace_log(fixture.path(), &[]).expect("log renders");
+    let workspace = JjWorkspace::load(fixture.path()).expect("workspace reloads");
+    let current = workspace.current_commit().expect("current commit");
+    let is_empty = pollster::block_on(current.is_empty(workspace.repo.as_ref()))
+        .expect("current commit emptiness");
+
+    assert!(!is_empty, "{log}");
+}
+
+#[test]
 fn short_commit_ids_are_eight_hex_characters() {
     // Verifies: Short commit IDs are eight hex characters.
     let commit_id = CommitId::from_hex("0123456789abcdef");
@@ -158,4 +181,11 @@ fn workspace_log_links_pull_request_annotations_for_matching_bookmarks() {
         ),
         "{log}"
     );
+}
+
+fn jj_cli_is_available() -> bool {
+    Command::new("jj")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
