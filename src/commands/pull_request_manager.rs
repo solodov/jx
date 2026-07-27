@@ -162,6 +162,14 @@ impl<'a> PullRequestStackManager<'a> {
         let selected_branches = self
             .services
             .pull_request_candidate_bookmarks(self.context, selector)?;
+        self.sync_selection_for_branches(&selected_branches)
+    }
+
+    /// Selects local stack component branches from already-resolved PR branches.
+    pub(super) fn sync_selection_for_branches(
+        &self,
+        selected_branches: &[String],
+    ) -> Result<PullRequestStackSyncSelection, CommandError> {
         let metadata = self.sync_metadata()?;
         let local_branches = self.local_pull_request_branches()?;
         let syncable_metadata = prune_merged_stack_metadata_trees(&metadata);
@@ -171,7 +179,7 @@ impl<'a> PullRequestStackManager<'a> {
             &[],
             PullRequestStackSelection::default(),
         )
-        .local_component_branches_for(&selected_branches);
+        .local_component_branches_for(selected_branches);
 
         Ok(PullRequestStackSyncSelection { branches, metadata })
     }

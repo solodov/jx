@@ -27,7 +27,7 @@ fn stack_move_resolves_bookmark_fragment_after_revision_lookup() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_current_stack(StackMoveTarget::Onto("base-target".to_owned()))
+        .move_stack(None, StackMoveTarget::Onto("base-target".to_owned()))
         .expect("stack move succeeds");
 
     let current = subject.current_commit().expect("current commit loads");
@@ -62,13 +62,73 @@ fn stack_trunk_moves_current_to_latest_origin_trunk() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_current_stack(StackMoveTarget::Trunk)
+        .move_stack(None, StackMoveTarget::Trunk)
         .expect("current change is moved onto updated trunk");
 
     let current = subject.current_commit().expect("current commit loads");
     assert_eq!(current.parent_ids(), vec![updated_trunk_id]);
     assert_eq!(outcome.rebased_commits, 1);
     assert!(outcome.current_updated);
+}
+
+#[test]
+fn stack_revision_moves_selected_stack_without_changing_unrelated_current() {
+    // Verifies: `jx stack -r <bookmark> --trunk` can move another stack while leaving the working copy alone.
+    let fixture = TestWorkspace::new("stack-trunk-selected-revision");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, old_trunk_id, updated_trunk_id, current_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
+        let selected = write_child(tx.repo_mut(), &old_trunk, "selected change").await;
+        let selected_child = write_child(tx.repo_mut(), &selected, "selected child").await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated trunk").await;
+        let current = write_child(tx.repo_mut(), &old_trunk, "current change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_local_bookmark(tx.repo_mut(), "topic/selected", selected.id());
+        set_local_bookmark(tx.repo_mut(), "topic/selected-child", selected_child.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange selected stack move")
+            .await
+            .expect("commit");
+        (
+            workspace,
+            repo,
+            old_trunk.id().clone(),
+            updated_trunk.id().clone(),
+            current.id().clone(),
+        )
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let outcome = subject
+        .move_stack(Some("topic/selected"), StackMoveTarget::Trunk)
+        .expect("selected stack is moved onto updated trunk");
+
+    let selected_id = subject
+        .repo
+        .view()
+        .get_local_bookmark(RefName::new("topic/selected"))
+        .as_normal()
+        .cloned()
+        .expect("selected bookmark remains normal");
+    let selected = subject
+        .load_commit(&selected_id)
+        .expect("moved selected commit loads");
+    let current = subject.current_commit().expect("current commit loads");
+    assert_eq!(selected.parent_ids(), vec![updated_trunk_id]);
+    assert_eq!(current.id(), &current_id);
+    assert_eq!(current.parent_ids(), vec![old_trunk_id]);
+    assert_eq!(outcome.rebased_commits, 2);
+    assert!(!outcome.current_updated);
 }
 
 #[test]
@@ -99,7 +159,7 @@ fn stack_trunk_accepts_current_that_already_landed_on_trunk() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_current_stack(StackMoveTarget::Trunk)
+        .move_stack(None, StackMoveTarget::Trunk)
         .expect("landed current is accepted as up to date");
 
     let current = subject.current_commit().expect("current commit loads");
@@ -691,6 +751,53 @@ fn stack_publish_facts_keep_explicit_revset_subset() {
 }
 
 #[test]
+fn stack_publish_facts_accept_bookmark_fragment_revision() {
+    // Verifies: stack publish -r accepts the same local bookmark fragments as stack move targets.
+    let fixture = TestWorkspace::new("stack-publish-bookmark-fragment");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let parent = write_child(tx.repo_mut(), &trunk, "parent change").await;
+        let child = write_child(tx.repo_mut(), &parent, "child change").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "topic/child", child.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), child.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange bookmark-fragment stack publish")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_publish_facts(
+            &StackPublishSelection::ExplicitRevisions {
+                revisions: vec!["child".to_owned()],
+            },
+            StackBasePolicy::CurrentTrunk,
+        )
+        .expect("stack publish facts load");
+
+    assert_eq!(facts.publish_indexes, vec![1]);
+    assert_eq!(facts.nodes.len(), 2);
+    assert_eq!(
+        facts.nodes[1].workspace.target_change.description,
+        "child change"
+    );
+    assert_eq!(facts.metrics.resolved_revision_count, 1);
+}
+
+#[test]
 fn stack_publish_facts_reject_multiple_selected_stacks() {
     // Verifies: one publish invocation cannot span unrelated stack roots yet.
     let fixture = TestWorkspace::new("stack-publish-multiple-stacks");
@@ -764,7 +871,7 @@ fn stack_move_reports_ambiguous_bookmark_fragments() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let error = subject
-        .move_current_stack(StackMoveTarget::Onto("base".to_owned()))
+        .move_stack(None, StackMoveTarget::Onto("base".to_owned()))
         .expect_err("ambiguous bookmark fragment is rejected");
 
     assert!(matches!(

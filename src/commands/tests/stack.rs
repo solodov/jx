@@ -12,6 +12,7 @@ fn stack_help_describes_cached_display_and_live_refresh() {
     assert!(help.contains(".jx/stack.toml"));
     assert!(help.contains("without contacting GitHub"));
     assert!(help.contains("create or update pull requests"));
+    assert!(help.contains("--revision"));
     assert!(help.contains("--onto"));
     assert!(help.contains("--trunk"));
     assert!(help.contains("--no-sync"));
@@ -88,6 +89,22 @@ fn stack_status_interactive_flags_parse_without_loading_dashboard() {
     assert_eq!(request.format, StackStatusFormat::Human);
     assert!(request.interactive);
     assert_eq!(request.refresh_seconds, 20);
+}
+
+#[test]
+fn stack_move_revision_flags_parse() {
+    // Verifies: stack move accepts the same -r/--revision selector name as stack publish.
+    let matches = cli()
+        .try_get_matches_from(["jx", "stack", "-r", "topic/root", "--trunk", "--no-sync"])
+        .expect("stack move revision args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+
+    let CommandRequest::Stack(StackRequest::Move(request)) = request else {
+        panic!("expected stack move request");
+    };
+    assert_eq!(request.revision.as_deref(), Some("topic/root"));
+    assert_eq!(request.target, StackMoveTarget::Trunk);
+    assert!(request.no_sync);
 }
 
 #[test]
@@ -5155,8 +5172,8 @@ fn stack_onto_moves_current_stack_and_syncs_old_and_new_components() {
     .expect("stack move succeeds");
 
     assert_eq!(
-        services.stack_move_targets.borrow().as_slice(),
-        &[StackMoveTarget::Onto("new-root".to_owned())]
+        services.stack_move_requests.borrow().as_slice(),
+        &[(None, StackMoveTarget::Onto("new-root".to_owned()))]
     );
     assert_eq!(
         services.push_syncable_revision_requests.borrow().as_slice(),
@@ -5179,6 +5196,82 @@ fn stack_onto_moves_current_stack_and_syncs_old_and_new_components() {
     assert!(result
         .stdout
         .starts_with("Moved current stack from a1b2c3d4 onto new-root\nSynced:"));
+}
+
+#[test]
+fn stack_revision_moves_selected_stack_and_syncs_that_component() {
+    // Verifies: -r moves and syncs the selected stack component instead of the current one.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                stack_node("topic/current", "main", None, 9, "Current"),
+                stack_node("topic/root", "main", None, 10, "Root"),
+                stack_node("topic/child", "topic/root", Some("topic/root"), 11, "Child"),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        pull_request_bookmarks: vec![
+            "topic/current".to_owned(),
+            "topic/root".to_owned(),
+            "topic/child".to_owned(),
+        ],
+        open_pull_request_candidates: vec!["topic/root".to_owned()],
+        local_stack_branches: std::cell::RefCell::new(vec![
+            vec![
+                local_stack_branch("topic/current", "main", None),
+                local_stack_branch("topic/root", "main", None),
+                local_stack_branch("topic/child", "topic/root", Some("topic/root")),
+            ],
+            vec![
+                local_stack_branch("topic/current", "main", None),
+                local_stack_branch("topic/root", "main", None),
+                local_stack_branch("topic/child", "topic/root", Some("topic/root")),
+            ],
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "--revision", "topic/root", "--trunk"],
+        &environment,
+        &services,
+    )
+    .expect("selected stack move succeeds");
+
+    assert_eq!(
+        services.stack_move_requests.borrow().as_slice(),
+        &[(Some("topic/root".to_owned()), StackMoveTarget::Trunk)]
+    );
+    assert_eq!(
+        services.open_pull_request_selectors.borrow().as_slice(),
+        &[Some("topic/root".to_owned())]
+    );
+    assert_eq!(
+        services.push_syncable_revision_requests.borrow().as_slice(),
+        &[
+            Some("topic/root".to_owned()),
+            Some("topic/child".to_owned())
+        ]
+    );
+    assert!(result
+        .stdout
+        .starts_with("Moved selected stack from a1b2c3d4 onto trunk\nSynced:"));
 }
 
 #[test]
@@ -5220,8 +5313,8 @@ fn stack_move_no_sync_updates_local_metadata_without_github_mutations() {
     .expect("local stack move succeeds");
 
     assert_eq!(
-        services.stack_move_targets.borrow().as_slice(),
-        &[StackMoveTarget::Trunk]
+        services.stack_move_requests.borrow().as_slice(),
+        &[(None, StackMoveTarget::Trunk)]
     );
     assert!(services.fetch_origin_roots.borrow().is_empty());
     assert!(services.push_syncable_revision_requests.borrow().is_empty());

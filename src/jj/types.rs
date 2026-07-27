@@ -387,14 +387,14 @@ pub struct RebasedCommitSummary {
     pub workspace_visibility: WorkspaceVisibility,
 }
 
-/// Destination for moving the current jj stack through `jx stack`.
+/// Destination for moving a selected jj stack through `jx stack`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StackMoveTarget {
     Onto(String),
     Trunk,
 }
 
-/// Outcome of moving the current jj change and descendants to a new parent.
+/// Outcome of moving a selected jj change and descendants to a new parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackMoveOutcome {
     pub source_short_commit_id: String,

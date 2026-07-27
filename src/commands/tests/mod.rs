@@ -430,7 +430,7 @@ struct FakeServices {
     changed_file_bookmark_requests: std::cell::RefCell<Vec<Vec<String>>>,
     fetch: FetchOutcome,
     stack_move: StackMoveOutcome,
-    stack_move_targets: std::cell::RefCell<Vec<StackMoveTarget>>,
+    stack_move_requests: std::cell::RefCell<Vec<(Option<String>, StackMoveTarget)>>,
     local_stack_branches: std::cell::RefCell<Vec<Vec<LocalStackBranch>>>,
     stack_publish_facts: Option<StackPublishFacts>,
     stack_publish_facts_by_revision: BTreeMap<String, StackPublishFacts>,
@@ -629,7 +629,7 @@ impl Default for FakeServices {
                 skipped_commits: 0,
                 current_updated: true,
             },
-            stack_move_targets: std::cell::RefCell::new(Vec::new()),
+            stack_move_requests: std::cell::RefCell::new(Vec::new()),
             local_stack_branches: std::cell::RefCell::new(Vec::new()),
             stack_publish_facts: None,
             stack_publish_facts_by_revision: BTreeMap::new(),
@@ -1337,12 +1337,15 @@ impl CommandServices for FakeServices {
         Ok(self.fetch.clone())
     }
 
-    fn move_current_stack(
+    fn move_stack(
         &self,
         _context: &RepositoryContext,
+        revision: Option<&str>,
         target: &StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError> {
-        self.stack_move_targets.borrow_mut().push(target.clone());
+        self.stack_move_requests
+            .borrow_mut()
+            .push((revision.map(str::to_owned), target.clone()));
         Ok(self.stack_move.clone())
     }
 

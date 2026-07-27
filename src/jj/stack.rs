@@ -2,25 +2,30 @@ use super::*;
 use std::time::{Duration, Instant};
 
 impl JjWorkspace {
-    /// Moves the current change and its descendants onto a stack target or trunk.
-    pub fn move_current_stack(
+    /// Moves the selected change and its descendants onto a stack target or trunk.
+    pub fn move_stack(
         &mut self,
+        revision: Option<&str>,
         target: StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError> {
         self.ensure_git_backed()?;
 
         let current_before = self.current_commit()?;
         let current_before_tree = current_before.tree();
+        let source_before = match revision {
+            Some(revision) => self.resolve_stack_move_source(revision)?,
+            None => current_before.clone(),
+        };
         let target_is_trunk = matches!(target, StackMoveTarget::Trunk);
         let target = match target {
             StackMoveTarget::Onto(target) => self.resolve_stack_move_target(&target)?,
             StackMoveTarget::Trunk => self.resolve_trunk_destination()?.1,
         };
 
-        let source_short_commit_id = short_commit_id(current_before.id());
+        let source_short_commit_id = short_commit_id(source_before.id());
         let target_short_commit_id = short_commit_id(target.id());
-        let target_is_descendant = self.is_ancestor_or_equal(current_before.id(), target.id())?;
-        if current_before.id() == target.id() || (target_is_trunk && target_is_descendant) {
+        let target_is_descendant = self.is_ancestor_or_equal(source_before.id(), target.id())?;
+        if source_before.id() == target.id() || (target_is_trunk && target_is_descendant) {
             return Ok(StackMoveOutcome {
                 source_short_commit_id,
                 target_short_commit_id,
@@ -38,7 +43,7 @@ impl JjWorkspace {
         let location = MoveCommitsLocation {
             new_parent_ids: vec![target.id().clone()],
             new_child_ids: Vec::new(),
-            target: MoveCommitsTarget::Roots(vec![current_before.id().clone()]),
+            target: MoveCommitsTarget::Roots(vec![source_before.id().clone()]),
         };
         let options = RebaseOptions {
             empty: EmptyBehavior::Keep,
@@ -83,7 +88,7 @@ impl JjWorkspace {
             })?;
         let repo = pollster::block_on(tx.commit(format!(
             "jx stack move {} onto {}",
-            current_before.id().hex(),
+            source_before.id().hex(),
             target.id().hex()
         )))
         .map_err(|error| JjError::Transaction {
@@ -567,13 +572,27 @@ impl JjWorkspace {
         let mut commits = Vec::new();
         let mut seen = BTreeSet::new();
         for revision in revisions {
-            for commit in self.resolve_revisions(revision, "In selected jj revision")? {
+            for commit in self.resolve_stack_publish_revision(revision)? {
                 if seen.insert(commit.id().clone()) {
                     commits.push(commit);
                 }
             }
         }
         Ok(commits)
+    }
+
+    fn resolve_stack_publish_revision(&self, revision: &str) -> Result<Vec<Commit>, JjError> {
+        match self.resolve_revisions(revision, "In selected jj revision") {
+            Ok(commits) => Ok(commits),
+            Err(error) if can_try_stack_bookmark_fragment(&error) => {
+                let branch = self.resolve_local_bookmark_fragment(revision)?;
+                Ok(vec![self.resolve_single_revision(
+                    &branch,
+                    "In selected jj revision",
+                )?])
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn publish_stack_path_for_target(
@@ -677,12 +696,24 @@ impl JjWorkspace {
         })
     }
 
+    fn resolve_stack_move_source(&self, revision: &str) -> Result<Commit, JjError> {
+        self.resolve_stack_move_revision(revision, "In `jx stack --revision`")
+    }
+
     fn resolve_stack_move_target(&self, target: &str) -> Result<Commit, JjError> {
-        match self.resolve_single_revision(target, "In `jx stack --onto`") {
+        self.resolve_stack_move_revision(target, "In `jx stack --onto`")
+    }
+
+    fn resolve_stack_move_revision(
+        &self,
+        revision: &str,
+        diagnostics_source: &'static str,
+    ) -> Result<Commit, JjError> {
+        match self.resolve_single_revision(revision, diagnostics_source) {
             Ok(commit) => Ok(commit),
             Err(error) if can_try_stack_bookmark_fragment(&error) => {
-                let branch = self.resolve_local_bookmark_fragment(target)?;
-                self.resolve_single_revision(&branch, "In `jx stack --onto`")
+                let branch = self.resolve_local_bookmark_fragment(revision)?;
+                self.resolve_single_revision(&branch, diagnostics_source)
             }
             Err(error) => Err(error),
         }

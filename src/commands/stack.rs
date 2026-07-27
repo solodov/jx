@@ -81,7 +81,7 @@ pub(super) fn handle_stack(
                 output.color,
             )?))
         }
-        StackRequest::Move { target, no_sync } => StackMoveExecution {
+        StackRequest::Move(request) => StackMoveExecution {
             environment,
             services,
             progress,
@@ -89,7 +89,7 @@ pub(super) fn handle_stack(
             manager: &manager,
             output,
         }
-        .run(target, no_sync),
+        .run(request),
         StackRequest::Plan(request) => {
             progress.status("Planning pull request stack…");
             let selection = stack_plan_selection(&request.revisions);
@@ -589,24 +589,30 @@ struct StackMoveExecution<'a> {
 }
 
 impl StackMoveExecution<'_> {
-    fn run(&self, target: StackMoveTarget, no_sync: bool) -> Result<CommandResult, CommandError> {
-        let old_selection = if no_sync {
+    fn run(&self, request: StackMoveRequest) -> Result<CommandResult, CommandError> {
+        let revision = request.revision.as_deref();
+        let old_selection = if request.no_sync {
             None
         } else {
-            self.progress.status("Loading current stack…");
+            self.progress.status(stack_move_load_status(revision));
             self.manager.refresh_local_stack_metadata()?;
-            Some(self.manager.sync_selection_for_selector(None)?)
+            Some(self.manager.sync_selection_for_selector(revision)?)
         };
 
-        self.progress.status("Moving current stack…");
-        let outcome = self.services.move_current_stack(self.context, &target)?;
+        self.progress.status(stack_move_status(revision));
+        let outcome = self
+            .services
+            .move_stack(self.context, revision, &request.target)?;
 
-        if no_sync {
+        if request.no_sync {
             self.progress.status("Refreshing local stack metadata…");
             self.manager.refresh_local_stack_metadata()?;
             self.progress.finish();
             return Ok(CommandResult::success(render_stack_move(
-                &outcome, &target, false,
+                &outcome,
+                &request.target,
+                revision,
+                false,
             )));
         }
 
@@ -615,7 +621,16 @@ impl StackMoveExecution<'_> {
         self.progress.status("Refreshing local stack metadata…");
         self.manager.refresh_local_stack_metadata()?;
         self.progress.status("Selecting affected stack bookmarks…");
-        let new_selection = self.manager.sync_selection_for_selector(None)?;
+        let new_selection = if revision.is_some() {
+            self.manager.sync_selection_for_branches(
+                old_selection
+                    .as_ref()
+                    .map(|selection| selection.branches.as_slice())
+                    .unwrap_or_default(),
+            )?
+        } else {
+            self.manager.sync_selection_for_selector(None)?
+        };
         let branches = affected_stack_branches(old_selection.as_ref(), &new_selection);
         self.progress.status("Pushing stack bookmarks…");
         let push = push_syncable_stack_branches(
@@ -631,7 +646,7 @@ impl StackMoveExecution<'_> {
         self.progress.finish();
 
         let report = domain::sync_report(self.context, fetch, None, push, pull_requests);
-        let mut stdout = render_stack_move(&outcome, &target, true);
+        let mut stdout = render_stack_move(&outcome, &request.target, revision, true);
         stdout.push_str(&render_sync(
             &report,
             self.environment.current_dir(),
@@ -2057,16 +2072,22 @@ fn stack_sync_report_has_conflicts(report: &SyncReport) -> bool {
         || !report.skipped_conflicted_bookmarks.is_empty()
 }
 
-fn render_stack_move(outcome: &StackMoveOutcome, target: &StackMoveTarget, synced: bool) -> String {
+fn render_stack_move(
+    outcome: &StackMoveOutcome,
+    target: &StackMoveTarget,
+    revision: Option<&str>,
+    synced: bool,
+) -> String {
     let target_label = match target {
         StackMoveTarget::Onto(target) => target.as_str(),
         StackMoveTarget::Trunk => "trunk",
     };
+    let subject = stack_move_subject(revision);
     let mut output = if outcome.rebased_commits == 0 {
-        format!("Stack unchanged: current stack is already on {target_label}\n")
+        format!("Stack unchanged: {subject} is already on {target_label}\n")
     } else {
         format!(
-            "Moved current stack from {} onto {target_label}\n",
+            "Moved {subject} from {} onto {target_label}\n",
             outcome.source_short_commit_id
         )
     };
@@ -2074,6 +2095,30 @@ fn render_stack_move(outcome: &StackMoveOutcome, target: &StackMoveTarget, synce
         output.push_str("Sync skipped (--no-sync)\n");
     }
     output
+}
+
+fn stack_move_load_status(revision: Option<&str>) -> &'static str {
+    if revision.is_some() {
+        "Loading selected stack…"
+    } else {
+        "Loading current stack…"
+    }
+}
+
+fn stack_move_status(revision: Option<&str>) -> &'static str {
+    if revision.is_some() {
+        "Moving selected stack…"
+    } else {
+        "Moving current stack…"
+    }
+}
+
+fn stack_move_subject(revision: Option<&str>) -> &'static str {
+    if revision.is_some() {
+        "selected stack"
+    } else {
+        "current stack"
+    }
 }
 
 fn open_stack_pull_request(

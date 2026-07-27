@@ -50,18 +50,20 @@ pub(super) enum WorkRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StackRequest {
     Show,
-    Open {
-        print: bool,
-    },
+    Open { print: bool },
     Refresh,
-    Move {
-        target: StackMoveTarget,
-        no_sync: bool,
-    },
+    Move(StackMoveRequest),
     Plan(StackPlanRequest),
     Publish(StackPublishRequest),
     CompleteReviewers(StackReviewerCompleteRequest),
     Status(StackStatusRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StackMoveRequest {
+    pub(super) revision: Option<String>,
+    pub(super) target: StackMoveTarget,
+    pub(super) no_sync: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,7 +405,7 @@ impl CommandRequest {
             Self::Stack(StackRequest::Show) => "stack.show",
             Self::Stack(StackRequest::Open { .. }) => "stack.open",
             Self::Stack(StackRequest::Refresh) => "stack.refresh",
-            Self::Stack(StackRequest::Move { .. }) => "stack.move",
+            Self::Stack(StackRequest::Move(_)) => "stack.move",
             Self::Stack(StackRequest::Plan(_)) => "stack.plan",
             Self::Stack(StackRequest::Publish(_)) => "stack.publish",
             Self::Stack(StackRequest::CompleteReviewers(_)) => "stack.complete-reviewers",
@@ -474,9 +476,10 @@ fn add_stack_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &StackRequest) {
     match request {
         StackRequest::Show | StackRequest::Refresh => {}
         StackRequest::Open { print } => attrs.extend([perf_attr("print", *print)]),
-        StackRequest::Move { target, no_sync } => attrs.extend([
-            perf_attr("target", stack_move_target_name(target)),
-            perf_attr("no_sync", *no_sync),
+        StackRequest::Move(request) => attrs.extend([
+            perf_attr("target", stack_move_target_name(&request.target)),
+            perf_attr("explicit_revision", request.revision.is_some()),
+            perf_attr("no_sync", request.no_sync),
         ]),
         StackRequest::Plan(request) => attrs.extend([
             perf_attr("revision_count", request.revisions.len()),
@@ -653,16 +656,18 @@ fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
     }
 
     if let Some(target) = matches.get_one::<String>("onto") {
-        return Ok(StackRequest::Move {
+        return Ok(StackRequest::Move(StackMoveRequest {
+            revision: revision(matches),
             target: StackMoveTarget::Onto(target.clone()),
             no_sync: matches.get_flag("no-sync"),
-        });
+        }));
     }
     if matches.get_flag("trunk") {
-        return Ok(StackRequest::Move {
+        return Ok(StackRequest::Move(StackMoveRequest {
+            revision: revision(matches),
             target: StackMoveTarget::Trunk,
             no_sync: matches.get_flag("no-sync"),
-        });
+        }));
     }
 
     match matches.subcommand() {
@@ -1439,7 +1444,7 @@ fn stack_command() -> ClapCommand {
         .visible_alias("sk")
         .about("Show, move, publish, or refresh repo-local pull request stack state")
         .long_about(
-            "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to fetch GitHub check and review summaries for the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish exactly the selected revset. Use -o/--onto to move the current change and descendants onto a commit, change, or bookmark target, or -t/--trunk to move it onto trunk; stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+            "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to fetch GitHub check and review summaries for the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish selected revisions, bookmarks, or revsets. Use -r/--revision with -o/--onto or -t/--trunk to move a selected commit or bookmark and its descendants; without -r, stack moves use the current change. Stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
         )
         .args_conflicts_with_subcommands(true)
         .group(
@@ -1448,6 +1453,7 @@ fn stack_command() -> ClapCommand {
                 .multiple(false),
         )
         .arg(stack_interactive_arg())
+        .arg(stack_move_revision_arg())
         .arg(stack_onto_arg())
         .arg(stack_trunk_arg())
         .arg(stack_no_sync_arg().requires("stack-move-target"))
@@ -1492,7 +1498,7 @@ fn stack_command() -> ClapCommand {
                 .visible_alias("pub")
                 .about("Publish or update GitHub pull requests for a local stack")
                 .long_about(
-                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection. With -A/--apply-to-stack and one -r/--revision, the revision becomes the stack anchor and jx publishes the full stack containing it. Task IDs, labels, reviewers, fix intent, and bare --ready/--draft apply only to the current commit or single selected revision by default; pass -A/--apply-to-stack to apply publish intent to every published revision. Use --ready=REVSET / --draft=REVSET for explicit readiness subsets.",
+                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision commits, bookmarks, or revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection. With -A/--apply-to-stack and one -r/--revision, the revision becomes the stack anchor and jx publishes the full stack containing it. Task IDs, labels, reviewers, fix intent, and bare --ready/--draft apply only to the current commit or single selected revision by default; pass -A/--apply-to-stack to apply publish intent to every published revision. Use --ready=REVSET / --draft=REVSET for explicit readiness subsets.",
                 )
                 .arg(stack_publish_revision_arg())
                 .arg(task_id_arg())
@@ -1660,9 +1666,9 @@ fn stack_publish_revision_arg() -> Arg {
     Arg::new("revision")
         .short('r')
         .long("revision")
-        .value_name("REVSET")
+        .value_name("COMMIT_OR_BOOKMARK")
         .action(ArgAction::Append)
-        .help("Publish exactly the selected jj revset; repeat for multiple revsets")
+        .help("Publish exactly the selected jj revision, local bookmark, or revset; repeat for multiple selections")
 }
 
 fn stack_plan_revision_arg() -> Arg {
@@ -1713,13 +1719,23 @@ fn stack_interactive_arg() -> Arg {
         .help("Select a stored pull request from the stack and open it")
 }
 
+fn stack_move_revision_arg() -> Arg {
+    Arg::new("revision")
+        .short('r')
+        .long("revision")
+        .value_name("COMMIT_OR_BOOKMARK")
+        .requires("stack-move-target")
+        .conflicts_with("interactive")
+        .help("Move a specific jj revision or local bookmark instead of the working copy")
+}
+
 fn stack_onto_arg() -> Arg {
     Arg::new("onto")
         .short('o')
         .long("onto")
         .value_name("COMMIT_OR_BOOKMARK")
         .conflicts_with_all(["interactive", "trunk"])
-        .help("Move the current change and descendants onto a commit, change, or bookmark target, then sync")
+        .help("Move the selected change and descendants onto a commit, change, or bookmark target, then sync")
 }
 
 fn stack_trunk_arg() -> Arg {
@@ -1728,7 +1744,7 @@ fn stack_trunk_arg() -> Arg {
         .long("trunk")
         .action(ArgAction::SetTrue)
         .conflicts_with_all(["interactive", "onto"])
-        .help("Move the current change and descendants onto trunk, then sync")
+        .help("Move the selected change and descendants onto trunk, then sync")
 }
 
 fn stack_no_sync_arg() -> Arg {
