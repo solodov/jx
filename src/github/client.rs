@@ -1258,6 +1258,7 @@ fragment PullRequestStatusFields on PullRequest {{
     }}
   }}
   author {{
+    __typename
     login
   }}
   isDraft
@@ -1294,8 +1295,10 @@ fragment PullRequestStatusFields on PullRequest {{
       state
       submittedAt
       author {{
+        __typename
         login
       }}
+      authorAssociation
     }}
   }}
   reviews(first: 100) {{
@@ -1303,15 +1306,19 @@ fragment PullRequestStatusFields on PullRequest {{
       state
       submittedAt
       author {{
+        __typename
         login
       }}
+      authorAssociation
     }}
   }}
   comments(last: 100) {{
     nodes {{
       author {{
+        __typename
         login
       }}
+      authorAssociation
       createdAt
       bodyText
     }}
@@ -1323,8 +1330,10 @@ fragment PullRequestStatusFields on PullRequest {{
       comments(first: 100) {{
         nodes {{
           author {{
+            __typename
             login
           }}
+          authorAssociation
           createdAt
           bodyText
         }}
@@ -1921,6 +1930,8 @@ pub(super) struct GraphQlReviewNode {
     #[serde(rename = "submittedAt")]
     pub(super) submitted_at: Option<String>,
     pub(super) author: Option<GraphQlReviewAuthor>,
+    #[serde(rename = "authorAssociation")]
+    pub(super) author_association: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1936,6 +1947,8 @@ pub(super) struct GraphQlIssueComments {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlIssueCommentNode {
     pub(super) author: Option<GraphQlReviewAuthor>,
+    #[serde(rename = "authorAssociation")]
+    pub(super) author_association: String,
     #[serde(rename = "createdAt")]
     pub(super) created_at: String,
     #[serde(rename = "bodyText")]
@@ -1959,6 +1972,8 @@ pub(super) struct GraphQlReviewThreadComments {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlReviewThreadCommentNode {
     pub(super) author: Option<GraphQlReviewAuthor>,
+    #[serde(rename = "authorAssociation")]
+    pub(super) author_association: String,
     #[serde(rename = "createdAt")]
     pub(super) created_at: String,
     #[serde(rename = "bodyText")]
@@ -1967,7 +1982,16 @@ pub(super) struct GraphQlReviewThreadCommentNode {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlReviewAuthor {
+    #[serde(
+        rename = "__typename",
+        default = "default_graphql_review_author_type_name"
+    )]
+    pub(super) type_name: String,
     pub(super) login: String,
+}
+
+fn default_graphql_review_author_type_name() -> String {
+    "User".to_owned()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2378,42 +2402,47 @@ fn review_activity_from_graphql(
 ) -> Vec<PullRequestReviewActivity> {
     let mut reviewed_at_by_reviewer = BTreeMap::<String, String>::new();
     for node in latest_reviews.iter().chain(reviews.iter()) {
-        let Some(author) = &node.author else {
-            continue;
-        };
         let Some(reviewed_at) = node.submitted_at.as_deref() else {
             continue;
         };
-        record_review_activity(
-            &mut reviewed_at_by_reviewer,
-            author.login.as_str(),
-            reviewed_at,
+        let Some(login) = requestable_reviewer_login(
+            node.author.as_ref(),
+            &node.author_association,
             pull_request_author,
-        );
+        ) else {
+            continue;
+        };
+        record_review_activity(&mut reviewed_at_by_reviewer, login, reviewed_at);
     }
     for comment in comments {
-        let Some(author) = &comment.author else {
+        let Some(login) = requestable_reviewer_login(
+            comment.author.as_ref(),
+            &comment.author_association,
+            pull_request_author,
+        ) else {
             continue;
         };
         record_review_activity(
             &mut reviewed_at_by_reviewer,
-            author.login.as_str(),
+            login,
             comment.created_at.as_str(),
-            pull_request_author,
         );
     }
     for comment in review_threads
         .iter()
         .flat_map(|thread| thread.comments.nodes.iter())
     {
-        let Some(author) = &comment.author else {
+        let Some(login) = requestable_reviewer_login(
+            comment.author.as_ref(),
+            &comment.author_association,
+            pull_request_author,
+        ) else {
             continue;
         };
         record_review_activity(
             &mut reviewed_at_by_reviewer,
-            author.login.as_str(),
+            login,
             comment.created_at.as_str(),
-            pull_request_author,
         );
     }
 
@@ -2430,16 +2459,33 @@ fn record_review_activity(
     reviewed_at_by_reviewer: &mut BTreeMap<String, String>,
     login: &str,
     reviewed_at: &str,
-    pull_request_author: Option<&str>,
 ) {
-    let login = login.trim();
-    if login.is_empty() || pull_request_author == Some(login) {
-        return;
-    }
     let current = reviewed_at_by_reviewer.entry(login.to_owned()).or_default();
     if current.as_str() < reviewed_at {
         *current = reviewed_at.to_owned();
     }
+}
+
+/// Returns a login only when GitHub says the PR author can request that account for review.
+fn requestable_reviewer_login<'a>(
+    author: Option<&'a GraphQlReviewAuthor>,
+    author_association: &str,
+    pull_request_author: Option<&str>,
+) -> Option<&'a str> {
+    let author = author?;
+    if author.type_name != "User" {
+        return None;
+    }
+    let login = author.login.trim();
+    if login.is_empty() || pull_request_author == Some(login) {
+        return None;
+    }
+    review_author_association_can_be_requested(author_association).then_some(login)
+}
+
+/// Bot integrations like Linear and Trunk leave PR comments but cannot be requested as reviewers.
+fn review_author_association_can_be_requested(author_association: &str) -> bool {
+    matches!(author_association, "COLLABORATOR" | "MEMBER" | "OWNER")
 }
 
 fn approved_reviewers_from_graphql(
@@ -2472,14 +2518,14 @@ fn review_state_authors_from_graphql(
     let mut seen = BTreeSet::new();
     for node in nodes {
         if node.state == state {
-            let Some(author) = &node.author else {
+            let Some(login) = requestable_reviewer_login(
+                node.author.as_ref(),
+                &node.author_association,
+                pull_request_author,
+            ) else {
                 continue;
             };
-            let login = author.login.trim();
-            if !login.is_empty()
-                && pull_request_author != Some(login)
-                && seen.insert(login.to_owned())
-            {
+            if seen.insert(login.to_owned()) {
                 reviewers.push(login.to_owned());
             }
         }
@@ -2500,15 +2546,14 @@ fn commented_reviewers_from_graphql(
     let mut seen = BTreeSet::new();
     for node in nodes {
         if node.state == "COMMENTED" {
-            let Some(author) = node.author else {
+            let Some(login) = requestable_reviewer_login(
+                node.author.as_ref(),
+                &node.author_association,
+                pull_request_author,
+            ) else {
                 continue;
             };
-            let login = author.login.trim();
-            if !login.is_empty()
-                && pull_request_author != Some(login)
-                && !approved.contains(login)
-                && seen.insert(login.to_owned())
-            {
+            if !approved.contains(login) && seen.insert(login.to_owned()) {
                 reviewers.push(login.to_owned());
             }
         }
@@ -2548,6 +2593,13 @@ fn review_thread_reviewers_from_graphql(
                 );
                 continue;
             }
+            let Some(login) = requestable_reviewer_login(
+                Some(&author),
+                &comment.author_association,
+                pull_request_author,
+            ) else {
+                continue;
+            };
 
             result.seen.insert(login.to_owned());
             if let Some((_, created_at)) = reviewer_comments

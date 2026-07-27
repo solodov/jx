@@ -542,6 +542,23 @@ fn review_request_state_waits_on_viewer(state: ReviewRequestState) -> bool {
     )
 }
 
+/// Returns true when a policy-visible non-viewer approval exists while this row still waits on the viewer.
+fn review_request_waits_on_viewer_with_peer_approval(
+    status: &PullRequestStatusRecord,
+    state: ReviewRequestState,
+    viewer: &str,
+) -> bool {
+    review_request_state_waits_on_viewer(state)
+        && !status
+            .approved_reviewers
+            .iter()
+            .any(|reviewer| reviewer == viewer)
+        && status
+            .approved_reviewers
+            .iter()
+            .any(|reviewer| reviewer != viewer)
+}
+
 fn review_request_state_cell(
     status: &PullRequestStatusRecord,
     state: ReviewRequestState,
@@ -552,6 +569,14 @@ fn review_request_state_cell(
     restore_style: &str,
 ) -> String {
     if viewer_signal == ReviewRequestViewerSignal::DismissedApproval {
+        return styled_pull_request_symbol_with_restore(
+            "✓",
+            PullRequestSymbolStyle::Comment,
+            color,
+            restore_style,
+        );
+    }
+    if review_request_waits_on_viewer_with_peer_approval(status, state, viewer) {
         return styled_pull_request_symbol_with_restore(
             "✓",
             PullRequestSymbolStyle::Comment,

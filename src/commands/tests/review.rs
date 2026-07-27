@@ -107,6 +107,9 @@ fn review_render_uses_viewer_review_state_symbols() {
         review_status_record(16, "I approved with comments", "example-author", false);
     approved_with_comments.approved_reviewers = vec!["example-reviewer".to_owned()];
     approved_with_comments.commented_reviewers = vec!["example-reviewer".to_owned()];
+    let mut partially_approved =
+        review_status_record(18, "A peer approved before me", "example-author", false);
+    partially_approved.approved_reviewers = vec!["peer-reviewer".to_owned()];
     let mut stale_approval =
         review_status_record(17, "My approval was dismissed", "example-author", false);
     stale_approval.dismissed_reviewers = vec!["example-reviewer".to_owned()];
@@ -157,6 +160,13 @@ fn review_render_uses_viewer_review_state_symbols() {
                     dismissal: None,
                 },
                 ReviewRequestRowView {
+                    status: partially_approved,
+                    state: crate::domain::ReviewRequestState::New,
+                    viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
+                    dismissal: None,
+                },
+                ReviewRequestRowView {
                     status: stale_approval,
                     state: crate::domain::ReviewRequestState::New,
                     viewer_signal: ReviewRequestViewerSignal::DismissedApproval,
@@ -176,6 +186,7 @@ fn review_render_uses_viewer_review_state_symbols() {
     assert!(output.contains("\x1b[1m\x1b[31m!\x1b[0m    —     ◯ I requested changes"));
     assert!(output.contains("\x1b[32m✓\x1b[0m    —     ◯ I approved"));
     assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ I approved with comments"));
+    assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ A peer approved before me"));
     assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ My approval was dismissed"));
     assert!(output.contains("\x1b[1mexample-author\x1b[0m"));
     assert!(!output.contains("Legend:"));
@@ -217,7 +228,7 @@ fn review_groups_layout_and_external_repositories() {
     assert!(result.stdout.contains("  PR       Chk  Rev  Lag   Title"));
     assert!(result
         .stdout
-        .contains("✓    ?    —     ◯ Update alpha endpoint"));
+        .contains("✓    ✓    —     ◯ Update alpha endpoint"));
     assert!(result
         .stdout
         .contains("◯ Update alpha endpoint [backend] example-author"));

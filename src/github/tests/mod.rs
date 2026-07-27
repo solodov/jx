@@ -154,6 +154,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
             }),
         }),
         author: Some(GraphQlReviewAuthor {
+            type_name: "User".to_owned(),
             login: "change-author".to_owned(),
         }),
         is_draft: false,
@@ -199,29 +200,46 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                     state: "APPROVED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-approved".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
+                },
+                GraphQlReviewNode {
+                    state: "APPROVED".to_owned(),
+                    submitted_at: Some("2026-01-02T04:04:05Z".to_owned()),
+                    author: Some(GraphQlReviewAuthor {
+                        type_name: "Bot".to_owned(),
+                        login: "approval-bot".to_owned(),
+                    }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "COMMENTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-commented-approved".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "CHANGES_REQUESTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-change-requested".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "DISMISSED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-dismissed".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
             ],
         },
@@ -231,40 +249,60 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                     state: "COMMENTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-commented".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "COMMENTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-approved".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "COMMENTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-addressed".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "COMMENTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "reviewer-obsolete".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
                 GraphQlReviewNode {
                     state: "COMMENTED".to_owned(),
                     submitted_at: Some("2026-01-02T03:04:05Z".to_owned()),
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "change-author".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                 },
             ],
         },
-        comments: GraphQlIssueComments { nodes: Vec::new() },
+        comments: GraphQlIssueComments {
+            nodes: vec![GraphQlIssueCommentNode {
+                author: Some(GraphQlReviewAuthor {
+                    type_name: "User".to_owned(),
+                    login: "linear-code".to_owned(),
+                }),
+                author_association: "NONE".to_owned(),
+                created_at: "2026-01-01T13:00:00Z".to_owned(),
+                body_text: "Automation note".to_owned(),
+            }],
+        },
         review_threads: GraphQlReviewThreads {
             nodes: vec![
                 GraphQlReviewThreadNode {
@@ -273,8 +311,10 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                     comments: GraphQlReviewThreadComments {
                         nodes: vec![GraphQlReviewThreadCommentNode {
                             author: Some(GraphQlReviewAuthor {
+                                type_name: "User".to_owned(),
                                 login: "reviewer-commented".to_owned(),
                             }),
+                            author_association: "MEMBER".to_owned(),
                             created_at: "2026-01-01T12:00:00Z".to_owned(),
                             body_text: String::new(),
                         }],
@@ -287,15 +327,19 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                         nodes: vec![
                             GraphQlReviewThreadCommentNode {
                                 author: Some(GraphQlReviewAuthor {
+                                    type_name: "User".to_owned(),
                                     login: "reviewer-addressed".to_owned(),
                                 }),
+                                author_association: "MEMBER".to_owned(),
                                 created_at: "2026-01-01T12:00:00Z".to_owned(),
                                 body_text: String::new(),
                             },
                             GraphQlReviewThreadCommentNode {
                                 author: Some(GraphQlReviewAuthor {
+                                    type_name: "User".to_owned(),
                                     login: "change-author".to_owned(),
                                 }),
+                                author_association: "MEMBER".to_owned(),
                                 created_at: "2026-01-01T12:30:00Z".to_owned(),
                                 body_text: "Thanks @reviewer-mentioned".to_owned(),
                             },
@@ -308,8 +352,10 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                     comments: GraphQlReviewThreadComments {
                         nodes: vec![GraphQlReviewThreadCommentNode {
                             author: Some(GraphQlReviewAuthor {
+                                type_name: "User".to_owned(),
                                 login: "reviewer-obsolete".to_owned(),
                             }),
+                            author_association: "MEMBER".to_owned(),
                             created_at: "2026-01-01T12:00:00Z".to_owned(),
                             body_text: String::new(),
                         }],
@@ -406,6 +452,10 @@ fn maps_pull_request_status_rollup_and_review_decision() {
         ["reviewer-suggested".to_owned()]
     );
     assert_eq!(status.approved_reviewers, ["reviewer-approved".to_owned()]);
+    assert!(!status
+        .approved_reviewers
+        .iter()
+        .any(|reviewer| reviewer == "approval-bot"));
     assert_eq!(
         status.changes_requested_reviewers,
         ["reviewer-change-requested".to_owned()]
@@ -441,6 +491,15 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     assert!(status.review_activity.iter().any(|activity| {
         activity.reviewer == "reviewer-approved" && activity.reviewed_at == "2026-01-02T03:04:05Z"
     }));
+    // Robot accounts can leave PR signals but cannot be requested as reviewers.
+    assert!(!status
+        .review_activity
+        .iter()
+        .any(|activity| activity.reviewer == "approval-bot"));
+    assert!(!status
+        .review_activity
+        .iter()
+        .any(|activity| activity.reviewer == "linear-code"));
     assert_eq!(status.timeline_events.len(), 4);
     assert!(status.timeline_events.iter().any(|event| {
         event.kind == PullRequestTimelineEventKind::ReadyForReview
@@ -524,6 +583,7 @@ fn maps_top_level_author_comments_as_reviewer_responses() {
             }),
         }),
         author: Some(GraphQlReviewAuthor {
+            type_name: "User".to_owned(),
             login: "change-author".to_owned(),
         }),
         is_draft: false,
@@ -545,23 +605,29 @@ fn maps_top_level_author_comments_as_reviewer_responses() {
                 state: "COMMENTED".to_owned(),
                 submitted_at: Some("2026-01-01T01:00:00Z".to_owned()),
                 author: Some(GraphQlReviewAuthor {
+                    type_name: "User".to_owned(),
                     login: "reviewer-one".to_owned(),
                 }),
+                author_association: "MEMBER".to_owned(),
             }],
         },
         comments: GraphQlIssueComments {
             nodes: vec![
                 GraphQlIssueCommentNode {
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "change-author".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                     created_at: "2026-01-01T00:30:00Z".to_owned(),
                     body_text: String::new(),
                 },
                 GraphQlIssueCommentNode {
                     author: Some(GraphQlReviewAuthor {
+                        type_name: "User".to_owned(),
                         login: "change-author".to_owned(),
                     }),
+                    author_association: "MEMBER".to_owned(),
                     created_at: "2026-01-01T02:00:00Z".to_owned(),
                     body_text: "Ready for another look".to_owned(),
                 },
@@ -645,6 +711,7 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("createdAt"));
     assert!(query.contains("defaultBranchRef"));
     assert!(query.contains("  author {"));
+    assert!(query.contains("__typename"));
     assert!(query.contains("reviewRequests"));
     assert!(query.contains("totalCount"));
     assert!(query.contains("requestedReviewer"));
