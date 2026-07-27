@@ -1004,6 +1004,53 @@ fn pull_request_stack_status_maintenance_attaches_branch_only_statuses() {
 }
 
 #[test]
+fn pull_request_stack_status_maintenance_prunes_unresolved_branch_only_nodes() {
+    // Verifies: stack status cache cleanup keeps only rows backed by a GitHub pull request.
+    let metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![
+            StackMetadataNode {
+                branch: "topic/stale-local".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: None,
+                parent_pull_request: None,
+                title: "Stale local change".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "topic/live-child".to_owned(),
+                base_branch: "topic/stale-local".to_owned(),
+                parent_branch: Some("topic/stale-local".to_owned()),
+                pull_request: Some(452),
+                parent_pull_request: None,
+                title: "Live child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+        ],
+    };
+    let mut status = pull_request_status(452, "Live child", false);
+    status.head_branch = "topic/live-child".to_owned();
+
+    let maintained = maintain_stack_metadata_pull_request_statuses(&[status], &metadata);
+
+    assert_eq!(maintained.nodes.len(), 1);
+    assert_eq!(maintained.nodes[0].branch, "topic/live-child");
+    assert_eq!(maintained.nodes[0].pull_request, Some(452));
+    assert_eq!(maintained.nodes[0].parent_branch, None);
+    assert_eq!(maintained.nodes[0].parent_pull_request, None);
+}
+
+#[test]
 fn pull_request_stack_status_maintenance_retains_recently_merged_components() {
     // Verifies: freshly merged PRs remain as progress markers instead of disappearing immediately.
     let metadata = status_maintenance_metadata();

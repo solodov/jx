@@ -725,7 +725,7 @@ pub fn refresh_stack_metadata_pull_requests(
     stack_metadata_with_nodes(existing_metadata, nodes)
 }
 
-/// Refreshes cached PR status facts and prunes stale completed reminder rows.
+/// Refreshes cached PR status facts and prunes rows that no longer identify a pull request.
 pub fn maintain_stack_metadata_pull_request_statuses(
     statuses: &[PullRequestStatusRecord],
     existing_metadata: &StackMetadata,
@@ -740,8 +740,9 @@ pub fn maintain_stack_metadata_pull_request_statuses_at(
     now: DateTime<Utc>,
 ) -> StackMetadata {
     let refreshed = refresh_stack_metadata_pull_request_statuses(statuses, existing_metadata);
+    let with_pull_requests_only = prune_unresolved_stack_metadata_nodes(&refreshed);
     let without_expired_closed =
-        prune_expired_closed_stack_metadata_nodes(statuses, &refreshed, now);
+        prune_expired_closed_stack_metadata_nodes(statuses, &with_pull_requests_only, now);
     prune_expired_merged_stack_metadata_trees(statuses, &without_expired_closed, now)
 }
 
@@ -775,6 +776,40 @@ pub fn refresh_stack_metadata_pull_request_statuses(
     sort_stack_metadata_nodes(&mut nodes);
 
     stack_metadata_with_nodes(existing_metadata, nodes)
+}
+
+/// Drops branch-only rows after status lookup fails to attach a PR identity.
+fn prune_unresolved_stack_metadata_nodes(metadata: &StackMetadata) -> StackMetadata {
+    let removed_branches = metadata
+        .nodes
+        .iter()
+        .filter(|node| node.pull_request.is_none())
+        .map(|node| node.branch.clone())
+        .collect::<BTreeSet<_>>();
+    if removed_branches.is_empty() {
+        return metadata.clone();
+    }
+
+    let mut nodes = metadata
+        .nodes
+        .iter()
+        .filter(|node| node.pull_request.is_some())
+        .cloned()
+        .map(|mut node| {
+            if node
+                .parent_branch
+                .as_ref()
+                .is_some_and(|parent| removed_branches.contains(parent))
+            {
+                node.parent_branch = None;
+                node.parent_pull_request = None;
+            }
+            node
+        })
+        .collect::<Vec<_>>();
+    sort_stack_metadata_nodes(&mut nodes);
+
+    stack_metadata_with_nodes(metadata, nodes)
 }
 
 /// Drops closed-unmerged PR nodes after the reminder retention window expires.

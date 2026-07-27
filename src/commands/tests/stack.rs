@@ -1746,6 +1746,82 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
 }
 
 #[test]
+fn stack_status_prunes_unresolved_branch_only_stack_nodes() {
+    // Verifies: status output and persistent stack state contain only real pull requests.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/stale-local".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: None,
+                    parent_pull_request: None,
+                    title: "Stale local change".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
+                },
+                stack_status_node(453, "topic/live", "main", "Live pull request", false),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([(
+            453,
+            stack_status_record(
+                453,
+                "Live pull request",
+                "topic/live",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::Approved,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+
+    let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
+        .expect("stack status succeeds");
+
+    assert_eq!(
+        services.pull_request_head_calls.borrow().as_slice(),
+        ["topic/stale-local"]
+    );
+    assert_eq!(
+        services.pull_request_status_calls.borrow().as_slice(),
+        &[vec![453]]
+    );
+    assert!(result.stdout.contains("Live pull request"));
+    assert!(!result.stdout.contains("Stale local change"));
+    assert!(!result.stdout.contains("topic/stale-local"));
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    assert_eq!(
+        metadata
+            .nodes
+            .iter()
+            .map(|node| node.branch.as_str())
+            .collect::<Vec<_>>(),
+        ["topic/live"]
+    );
+}
+
+#[test]
 fn stack_status_resolves_merged_branch_only_stack_nodes() {
     // Verifies: merged PRs can reattach their PR number even when only the local branch was cached.
     let workspace = TestWorkspace::new();
@@ -2537,6 +2613,95 @@ path = "{repo}"
     assert_eq!(
         services.pull_request_status_calls.borrow().as_slice(),
         &[vec![201]]
+    );
+}
+
+#[test]
+fn stack_status_all_prunes_unresolved_branch_only_nodes() {
+    // Verifies: global status cleans stale local bookmark rows instead of rendering pseudo-PRs.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let repo = workspace.create_jj_workspace("projects/api-alpha");
+    TestWorkspace::write_git_config_at(
+        &repo,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/api-alpha.git
+"#,
+    );
+    write_stack_metadata(
+        &repo,
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                StackMetadataNode {
+                    branch: "topic/stale-local".to_owned(),
+                    base_branch: "main".to_owned(),
+                    parent_branch: None,
+                    pull_request: None,
+                    parent_pull_request: None,
+                    title: "Stale local change".to_owned(),
+                    url: None,
+                    draft: false,
+                    merged: false,
+                    work_ids: Vec::new(),
+                    fixes_work_ids: Vec::new(),
+                },
+                stack_status_node(202, "topic/live", "main", "Live pull request", false),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        pull_request_statuses: BTreeMap::from([(
+            202,
+            stack_status_record(
+                202,
+                "Live pull request",
+                "topic/live",
+                "main",
+                PullRequestCheckStatus::Passing,
+                PullRequestReviewStatus::Approved,
+                ReviewerSelection::default(),
+            ),
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "status", "-a", "api-*"],
+        &environment,
+        &services,
+    )
+    .expect("global stack status succeeds");
+
+    assert!(result.stdout.contains("api-alpha"));
+    assert!(result.stdout.contains("Live pull request"));
+    assert!(!result.stdout.contains("Stale local change"));
+    assert!(!result.stdout.contains("topic/stale-local"));
+    assert_eq!(
+        services.pull_request_head_calls.borrow().as_slice(),
+        ["topic/stale-local"]
+    );
+    let metadata = read_stack_metadata(&repo).expect("stack metadata reads");
+    assert_eq!(
+        metadata
+            .nodes
+            .iter()
+            .map(|node| node.branch.as_str())
+            .collect::<Vec<_>>(),
+        ["topic/live"]
     );
 }
 
