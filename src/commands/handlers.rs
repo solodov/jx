@@ -1417,43 +1417,60 @@ fn try_global_sync_for_repository(
         Err(error) => return Err(error.into()),
     };
 
-    match services.origin_can_push(&context) {
-        Ok(true) => {}
-        Ok(false) => {
+    let sync_config = context.config.repo.sync_for(&context.origin.github);
+    match sync_config.push_access() {
+        Some(true) => {}
+        Some(false) => {
             return Ok(GlobalSyncOutcome::Skipped(
                 GlobalSyncSkipReason::ReadOnlyOrigin,
             ));
         }
-        Err(error) => {
-            return Ok(GlobalSyncOutcome::Skipped(
-                GlobalSyncSkipReason::PushAccessUnavailable(error.to_string()),
-            ));
-        }
+        None => match services.origin_can_push(&context) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(GlobalSyncOutcome::Skipped(
+                    GlobalSyncSkipReason::ReadOnlyOrigin,
+                ));
+            }
+            Err(error) => {
+                return Ok(GlobalSyncOutcome::Skipped(
+                    GlobalSyncSkipReason::PushAccessUnavailable(error.to_string()),
+                ));
+            }
+        },
     }
 
     let origin_status = origin_remote_status(&context, services)?;
     let pull = origin_status.comparison.github_ahead_by;
     let push = origin_status.comparison.github_behind_by + origin_status.local_ahead_by;
-    match (pull > 0, push > 0) {
-        (true, true) => {
+    match (pull > 0, push > 0, sync_config.assumes_push_access()) {
+        (true, true, false) => {
             return Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::Diverged {
                 pull,
                 push,
             }));
         }
-        (true, false) => {
-            if !services.global_fetch_ready(&context)? {
-                return Ok(GlobalSyncOutcome::Skipped(
-                    GlobalSyncSkipReason::PullNeeded { commits: pull },
-                ));
-            }
+        (true, false, _) if !services.global_fetch_ready(&context)? => {
+            return Ok(GlobalSyncOutcome::Skipped(
+                GlobalSyncSkipReason::PullNeeded { commits: pull },
+            ));
         }
-        (false, _) => {}
+        _ => {}
     }
 
     run_sync_repo_checks(&context, services, || {
         services.changed_files_for_tracked_push(&context)
     })?;
+
+    if sync_config.assumes_push_access() {
+        return global_sync_existing_origin_push_first(
+            context,
+            sync_push_options,
+            &repository_environment,
+            services,
+            origin_status,
+        );
+    }
 
     global_sync_existing_origin(
         context,
@@ -1512,34 +1529,158 @@ fn global_sync_existing_origin(
         rebase_plan.fetch_options.clone(),
     )?;
     let mut changed = fetch_outcome_changed(&fetch);
-    if context
-        .config
-        .repo
-        .advance_trunk_enabled_for(&context.origin.github)
-    {
-        let advance = services.advance_trunk_for_sync(&context)?;
-        changed |= advance_trunk_changed(&advance);
-    }
+    changed |= maybe_advance_trunk_for_sync(&context, services)?;
     let push = services.push_syncable_tracked(&context, sync_push_options)?;
-    changed |= tracked_push_changed(&push.pushed) || !push.skipped_same_tree_bookmarks.is_empty();
-    let manager =
-        PullRequestStackManager::new(&context, services, PerfLog::disabled(), environment);
-    let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
+    changed |= sync_push_changed(&push);
+
+    finish_global_sync(
+        &context,
+        environment,
+        services,
+        GlobalSyncCompletion {
+            push: &push,
+            protected_branches: &rebase_plan.protected_branches,
+            fetch: Some(&fetch),
+            changed,
+            local_ahead_by,
+        },
+    )
+}
+
+fn global_sync_existing_origin_push_first(
+    context: RepositoryContext,
+    sync_push_options: SyncPushOptions,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    origin_status: RemoteStatusReport,
+) -> Result<GlobalSyncOutcome, CommandError> {
+    let pull = origin_status.comparison.github_ahead_by;
+    let mut changed = false;
+    if pull == 0 {
+        changed |= maybe_advance_trunk_for_sync(&context, services)?;
+    }
+
+    let mut push = match services.push_syncable_tracked(&context, sync_push_options) {
+        Ok(push) => {
+            changed |= sync_push_changed(&push);
+            if pull == 0 {
+                let protected_branches = BTreeSet::new();
+                return finish_global_sync(
+                    &context,
+                    environment,
+                    services,
+                    GlobalSyncCompletion {
+                        push: &push,
+                        protected_branches: &protected_branches,
+                        fetch: None,
+                        changed,
+                        local_ahead_by: origin_status.local_ahead_by,
+                    },
+                );
+            }
+            Some(push)
+        }
+        Err(error) if push_rejection_can_fetch(&error) => None,
+        Err(error) => return Err(error.into()),
+    };
+
+    let rebase_plan = sync_rebase_plan(&context, services)?;
+    let fetch = services.fetch_origin_with_options(&context, rebase_plan.fetch_options.clone())?;
+    changed |= fetch_outcome_changed(&fetch);
+    changed |= maybe_advance_trunk_for_sync(&context, services)?;
+    let retry_push = services.push_syncable_tracked(&context, sync_push_options)?;
+    changed |= sync_push_changed(&retry_push);
+    match &mut push {
+        Some(push) => merge_sync_push_outcome(push, retry_push),
+        None => push = Some(retry_push),
+    }
+    let push = push.expect("push-first sync always has a push outcome after retry");
+
+    finish_global_sync(
+        &context,
+        environment,
+        services,
+        GlobalSyncCompletion {
+            push: &push,
+            protected_branches: &rebase_plan.protected_branches,
+            fetch: Some(&fetch),
+            changed,
+            local_ahead_by: origin_status.local_ahead_by,
+        },
+    )
+}
+
+struct GlobalSyncCompletion<'a> {
+    push: &'a SyncPushOutcome,
+    protected_branches: &'a BTreeSet<String>,
+    fetch: Option<&'a FetchOutcome>,
+    changed: bool,
+    local_ahead_by: i64,
+}
+
+fn finish_global_sync(
+    context: &RepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    completion: GlobalSyncCompletion<'_>,
+) -> Result<GlobalSyncOutcome, CommandError> {
+    let manager = PullRequestStackManager::new(context, services, PerfLog::disabled(), environment);
+    let pull_request_push =
+        pull_request_sync_push(&completion.push.pushed, completion.protected_branches);
     let _ = manager.sync_pull_requests(&pull_request_push)?;
 
-    if let Some(detail) = sync_conflict_detail(&fetch, &push) {
+    if let Some(detail) = global_sync_conflict_detail(completion.fetch, completion.push) {
         Ok(GlobalSyncOutcome::SyncedWithConflicts { detail })
-    } else if changed {
+    } else if completion.changed {
         Ok(GlobalSyncOutcome::Synced)
-    } else if local_ahead_by > 0 {
+    } else if completion.local_ahead_by > 0 {
         Ok(GlobalSyncOutcome::Skipped(
             GlobalSyncSkipReason::LocalWork {
-                changes: local_ahead_by,
+                changes: completion.local_ahead_by,
             },
         ))
     } else {
         Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::UpToDate))
     }
+}
+
+fn maybe_advance_trunk_for_sync(
+    context: &RepositoryContext,
+    services: &dyn CommandServices,
+) -> Result<bool, CommandError> {
+    if !context
+        .config
+        .repo
+        .advance_trunk_enabled_for(&context.origin.github)
+    {
+        return Ok(false);
+    }
+
+    let advance = services.advance_trunk_for_sync(context)?;
+    Ok(advance_trunk_changed(&advance))
+}
+
+fn sync_push_changed(push: &SyncPushOutcome) -> bool {
+    tracked_push_changed(&push.pushed) || !push.skipped_same_tree_bookmarks.is_empty()
+}
+
+fn push_rejection_can_fetch(error: &JjError) -> bool {
+    matches!(error, JjError::PushRejected { .. })
+}
+
+fn merge_sync_push_outcome(target: &mut SyncPushOutcome, source: SyncPushOutcome) {
+    target.pushed.pushed_refs += source.pushed.pushed_refs;
+    target.pushed.bookmarks.extend(source.pushed.bookmarks);
+    target
+        .pushed
+        .pushed_commits
+        .extend(source.pushed.pushed_commits);
+    target
+        .skipped_conflicted_bookmarks
+        .extend(source.skipped_conflicted_bookmarks);
+    target
+        .skipped_same_tree_bookmarks
+        .extend(source.skipped_same_tree_bookmarks);
 }
 
 /// Fetches origin with brief retries for transient git transport failures.
@@ -1621,11 +1762,14 @@ fn global_sync_has_conflicts(entries: &[GlobalSyncEntry]) -> bool {
     })
 }
 
-fn sync_conflict_detail(fetch: &FetchOutcome, push: &SyncPushOutcome) -> Option<String> {
+fn global_sync_conflict_detail(
+    fetch: Option<&FetchOutcome>,
+    push: &SyncPushOutcome,
+) -> Option<String> {
     let mut parts = Vec::new();
     let rebased_conflicts = fetch
-        .rebased_commits
-        .iter()
+        .into_iter()
+        .flat_map(|fetch| fetch.rebased_commits.iter())
         .filter(|commit| commit.has_conflict)
         .map(|commit| commit.short_change_id.as_str())
         .collect::<Vec<_>>();

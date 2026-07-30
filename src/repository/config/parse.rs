@@ -701,7 +701,10 @@ fn parse_sync_config(
     };
 
     for name in table.keys() {
-        if !matches!(name.as_str(), "rebase_strategy" | "rebase_needed_labels") {
+        if !matches!(
+            name.as_str(),
+            "push_access" | "rebase_strategy" | "rebase_needed_labels"
+        ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
                 key: format!("{key}.{name}"),
@@ -709,6 +712,10 @@ fn parse_sync_config(
         }
     }
 
+    let push_access = table
+        .get("push_access")
+        .map(|value| parse_bool_value(file, &format!("{key}.push_access"), value))
+        .transpose()?;
     let rebase_strategy = table
         .get("rebase_strategy")
         .map(|value| parse_sync_rebase_strategy(file, &format!("{key}.rebase_strategy"), value))
@@ -727,6 +734,7 @@ fn parse_sync_config(
         .unwrap_or_default();
 
     Ok(RepoSyncConfig {
+        push_access,
         rebase_strategy,
         rebase_needed_labels,
     })

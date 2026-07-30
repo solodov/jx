@@ -424,6 +424,7 @@ struct FakeServices {
     fetch_origin_failures_before_success: std::cell::Cell<usize>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
+    push_rejections_before_success: std::cell::Cell<usize>,
     sync_push_options: std::cell::RefCell<Vec<SyncPushOptions>>,
     tracked_changed_files: Vec<String>,
     bookmark_changed_files: Vec<String>,
@@ -578,6 +579,7 @@ impl Default for FakeServices {
             fetch_origin_failures_before_success: std::cell::Cell::new(0),
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
+            push_rejections_before_success: std::cell::Cell::new(0),
             sync_push_options: std::cell::RefCell::new(Vec::new()),
             tracked_changed_files: vec!["src/main.rs".to_owned()],
             bookmark_changed_files: vec!["src/main.rs".to_owned()],
@@ -1517,6 +1519,15 @@ impl CommandServices for FakeServices {
             .borrow_mut()
             .push(context.workspace_root.clone());
         self.sync_push_options.borrow_mut().push(options);
+        let remaining_rejections = self.push_rejections_before_success.get();
+        if remaining_rejections > 0 {
+            self.push_rejections_before_success
+                .set(remaining_rejections - 1);
+            return Err(JjError::PushRejected {
+                branch: "tracked bookmarks".to_owned(),
+                message: "lease rejected".to_owned(),
+            });
+        }
         let pushed = if self.up_to_date_sync_roots.contains(&context.workspace_root) {
             TrackedPushOutcome {
                 pushed_refs: 0,

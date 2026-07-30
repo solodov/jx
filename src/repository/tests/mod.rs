@@ -958,6 +958,7 @@ fn sync_rebase_strategy_composes_for_matching_repo() {
         ".jx/config.toml",
         r#"
 [repo.sync]
+push_access = false
 rebase_strategy = "always"
 rebase_needed_labels = ["global-rebase"]
 
@@ -965,6 +966,7 @@ rebase_needed_labels = ["global-rebase"]
 repo = "example-owner/*"
 
 [repo.rules.sync]
+push_access = true
 rebase_strategy = "stack_green_pull_requests"
 rebase_needed_labels = ["rebase-needed", "team/backend"]
 "#,
@@ -978,6 +980,8 @@ rebase_needed_labels = ["rebase-needed", "team/backend"]
         sync.rebase_strategy(),
         RepoSyncRebaseStrategy::StackGreenPullRequests
     );
+    assert_eq!(sync.push_access(), Some(true));
+    assert!(sync.assumes_push_access());
     assert_eq!(
         sync.rebase_needed_labels,
         vec![

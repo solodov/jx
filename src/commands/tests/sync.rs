@@ -305,6 +305,99 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_all_configured_push_access_pushes_before_fetch() {
+    // Verifies: Configured push access skips the live permission probe and avoids fetch-first transport.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.sync]
+push_access = true
+"#,
+    );
+    let trusted = workspace.create_jj_workspace("projects/trusted");
+    TestWorkspace::write_git_config_at(
+        &trusted,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/trusted.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        origin_push_access_roots: Some(BTreeSet::new()),
+        clean_status_repos: vec!["trusted".to_owned()],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync succeeds through configured push access");
+
+    assert!(services.fetch_origin_roots.borrow().is_empty());
+    assert_eq!(services.push_tracked_roots.borrow().as_slice(), [trusted]);
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/trusted\n");
+}
+
+#[test]
+fn sync_all_configured_push_access_fetches_once_after_push_rejection() {
+    // Verifies: Push-first sync recovers stale remote refs with one fetch/rebase pass, not fetch retries.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.sync]
+push_access = true
+"#,
+    );
+    let trusted = workspace.create_jj_workspace("projects/trusted");
+    TestWorkspace::write_git_config_at(
+        &trusted,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/trusted.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        origin_push_access_roots: Some(BTreeSet::new()),
+        clean_status_repos: vec!["trusted".to_owned()],
+        push_rejections_before_success: std::cell::Cell::new(1),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync recovers rejected push");
+
+    assert_eq!(
+        services.fetch_origin_roots.borrow().as_slice(),
+        std::slice::from_ref(&trusted)
+    );
+    assert_eq!(
+        services.push_tracked_roots.borrow().as_slice(),
+        [trusted.clone(), trusted]
+    );
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/trusted\n");
+}
+
+#[test]
 fn sync_all_filter_matches_owner_repo_suffix_in_provider_path() {
     // Verifies: `sync --all` filters match inside provider/owner/repo identities, not just compact keys.
     let workspace = TestWorkspace::new();

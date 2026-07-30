@@ -272,16 +272,30 @@ impl RepoPolicyConfig {
 /// Sync behavior that can vary by repository policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSyncConfig {
+    pub push_access: Option<bool>,
     pub rebase_strategy: Option<RepoSyncRebaseStrategy>,
     pub rebase_needed_labels: Vec<String>,
 }
 
 impl RepoSyncConfig {
     fn apply_layer(&mut self, layer: RepoSyncConfig) {
+        if layer.push_access.is_some() {
+            self.push_access = layer.push_access;
+        }
         if layer.rebase_strategy.is_some() {
             self.rebase_strategy = layer.rebase_strategy;
         }
         merge_string_set(&mut self.rebase_needed_labels, layer.rebase_needed_labels);
+    }
+
+    /// Returns configured origin push access, when repo policy makes the access decision local.
+    pub fn push_access(&self) -> Option<bool> {
+        self.push_access
+    }
+
+    /// Returns whether repo policy says origin push access is available.
+    pub fn assumes_push_access(&self) -> bool {
+        self.push_access == Some(true)
     }
 
     /// Returns the effective strategy for deciding whether sync should rebase local stacks.

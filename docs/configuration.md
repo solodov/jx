@@ -120,6 +120,13 @@ local trunk bookmark to the newest contiguous stack commit with changes, a
 non-empty description, and no conflicts before pushing tracked bookmarks, then
 leaves an empty working-copy change on top when needed.
 
+`repo.sync.push_access` lets global sync trust a local policy decision instead
+of probing GitHub repository permissions. `true` treats matching repositories as
+writable and makes `jx sync --all` try pushing tracked bookmarks before fetching;
+if the push is rejected by stale remote refs, sync fetches/rebases once and
+retries the push. `false` treats matching repositories as read-only without a
+permission probe.
+
 `repo.sync.rebase_strategy` controls whether repository sync rebases local stacks
 after fetching origin. The default `always` preserves historical behavior. The
 opt-in `stack_green_pull_requests` strategy leaves a trunk-child stack in place
@@ -141,6 +148,7 @@ rebase_strategy = "always"
 repo = "example-owner/example-repo"
 
 [repo.rules.sync]
+push_access = true
 rebase_strategy = "stack_green_pull_requests"
 rebase_needed_labels = ["rebase-needed"]
 ```
