@@ -255,3 +255,72 @@ path = "{repo}"
         )
     );
 }
+
+#[test]
+fn clone_locate_prints_existing_layout_checkout_path_for_url() {
+    // Verifies: Locate parses URL inputs like clone but only reports existing layout checkouts.
+    let workspace = TestWorkspace::new();
+    workspace.write_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/work"
+path = "{repo}"
+"#,
+    );
+    let expected_destination = workspace.path().join("work/example-repo");
+    create_jj_workspace_marker(&expected_destination);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "clone",
+            "--locate",
+            "https://github.com/example-owner/example-repo.git",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("clone locate succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("{}\n", expected_destination.display())
+    );
+}
+
+#[test]
+fn clone_locate_fails_when_layout_checkout_is_missing() {
+    // Verifies: Locate is layout-only and does not treat absent destinations as cloned repos.
+    let workspace = TestWorkspace::new();
+    workspace.write_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/work"
+path = "{repo}"
+"#,
+    );
+    let expected_destination = workspace.path().join("work/example-repo");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(
+        ["jx", "clone", "--locate", "example-owner/example-repo"],
+        &environment,
+        &services,
+    )
+    .expect_err("missing checkout is rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::LayoutCloneNotFound { path, .. })
+            if path == expected_destination
+    ));
+}

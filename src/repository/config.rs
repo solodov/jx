@@ -275,6 +275,8 @@ pub enum RepositoryError {
     InvalidRepositoryFilter { pattern: String, message: String },
     #[error("No configured repository matched `{pattern}`")]
     RepositoryFilterNotFound { pattern: String },
+    #[error("No layout clone found for repository `{repository}` at {path}")]
+    LayoutCloneNotFound { repository: String, path: PathBuf },
     #[error("Layout source `{name}` is not configured. Add `[[layout.sources]]` for that source or use an explicit host/URL.")]
     UnknownLayoutSource { name: String },
     #[error("Multiple layout sources use host `{host}`: {sources:?}. Use `source:owner/repo` to disambiguate.")]

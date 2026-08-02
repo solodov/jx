@@ -151,6 +151,23 @@ impl LayoutConfig {
         })
     }
 
+    /// Resolves the layout primary checkout path and requires an existing jj clone.
+    pub fn locate_clone(
+        &self,
+        repository: &str,
+        environment: &RuntimeEnvironment,
+    ) -> Result<ClonePlan, RepositoryError> {
+        let plan = self.clone_plan(repository, None, environment)?;
+        if plan.destination.join(".jj").is_dir() {
+            return Ok(plan);
+        }
+
+        Err(RepositoryError::LayoutCloneNotFound {
+            repository: repository.to_owned(),
+            path: plan.destination,
+        })
+    }
+
     /// Resolves the visible project checkout path for a repository identity.
     pub fn project_destination(
         &self,

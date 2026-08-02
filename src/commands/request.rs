@@ -34,6 +34,7 @@ pub(super) struct DiffRequest {
 pub(super) struct CloneRequest {
     pub(super) repository: String,
     pub(super) destination: Option<PathBuf>,
+    pub(super) locate: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +275,7 @@ impl CommandRequest {
             Some(("clone", matches)) => Ok(Self::Clone(CloneRequest {
                 repository: required_arg(matches, "repository"),
                 destination: matches.get_one::<PathBuf>("destination").cloned(),
+                locate: matches.get_flag("locate"),
             })),
             Some(("work", matches)) => Ok(Self::Work(work_request(matches)?)),
             Some(("stack" | "sk", matches)) => Ok(Self::Stack(stack_request(matches)?)),
@@ -338,9 +340,10 @@ impl CommandRequest {
                 perf_attr("has_tool", request.tool.is_some()),
                 perf_attr("tool_arg_count", request.tool_args.len()),
             ]),
-            Self::Clone(request) => {
-                attrs.extend([perf_attr("has_destination", request.destination.is_some())])
-            }
+            Self::Clone(request) => attrs.extend([
+                perf_attr("has_destination", request.destination.is_some()),
+                perf_attr("locate", request.locate),
+            ]),
             Self::Work(request) => add_work_perf_attrs(&mut attrs, request),
             Self::Stack(request) => add_stack_perf_attrs(&mut attrs, request),
             Self::Shell(ShellRequest::Init(request)) => {
@@ -1258,7 +1261,8 @@ pub(super) fn cli() -> ClapCommand {
         )
         .subcommand(
             ClapCommand::new("clone")
-                .about("Clone a repository into the configured jx layout")
+                .about("Clone or locate a repository in the configured jx layout")
+                .arg(clone_locate_arg())
                 .arg(clone_repository_arg())
                 .arg(clone_destination_arg()),
         )
@@ -1531,7 +1535,15 @@ fn clone_repository_arg() -> Arg {
     Arg::new("repository")
         .value_name("REPOSITORY")
         .required(true)
-        .help("Repository shorthand, repo from a layout prefix, or URL to clone")
+        .help("Repository shorthand, repo from a layout prefix, or URL to clone or locate")
+}
+
+fn clone_locate_arg() -> Arg {
+    Arg::new("locate")
+        .long("locate")
+        .action(ArgAction::SetTrue)
+        .conflicts_with("destination")
+        .help("Print the existing layout checkout path for REPOSITORY without cloning")
 }
 
 fn clone_destination_arg() -> Arg {

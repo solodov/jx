@@ -27,15 +27,22 @@ pub(super) fn handle_request(
         }
         CommandRequest::Clone(request) => {
             let config = WorkflowConfig::discover_for_clone(environment)?;
-            let plan = config.layout.clone_plan(
-                &request.repository,
-                request.destination.as_deref(),
-                environment,
-            )?;
-            progress.status(&format!("Cloning {}", clone_link(&plan)));
-            services.clone_repository(environment.current_dir(), &plan)?;
-            progress.finish();
-            render_clone(&plan, &display_path(&plan.destination, environment))
+            if request.locate {
+                let plan = config
+                    .layout
+                    .locate_clone(&request.repository, environment)?;
+                render_work_root(&plan.destination)
+            } else {
+                let plan = config.layout.clone_plan(
+                    &request.repository,
+                    request.destination.as_deref(),
+                    environment,
+                )?;
+                progress.status(&format!("Cloning {}", clone_link(&plan)));
+                services.clone_repository(environment.current_dir(), &plan)?;
+                progress.finish();
+                render_clone(&plan, &display_path(&plan.destination, environment))
+            }
         }
         CommandRequest::Work(request) => {
             handle_work(request, environment, services, progress, &prompts, output)?
