@@ -219,23 +219,21 @@ that are not discoverable or are not safe for automatic fetch are skipped;
 repositories that fail after selection are rendered as error rows.
 
 `jx sync --all` is narrower because it can push. It does not initialize missing
-repositories, create GitHub repositories, or prompt. A repository is eligible
-only when all of these gates pass:
+repositories, create GitHub repositories, or prompt. A repository is eligible for
+automatic sync when the primary checkout is discoverable, already has a GitHub
+`origin`, and any needed fetch/rebase can run without touching local work.
 
-1. The primary checkout is discoverable and already has a GitHub `origin`.
-2. The GitHub token can push to `origin`.
-3. GitHub `origin` is not ahead of the local cached trunk, and the origin branch
-   is not diverged.
-
-Eligible repositories run the normal repository sync steps: fetch origin,
-optionally advance the local trunk bookmark according to repo policy, then push
-tracked bookmark state whose push ranges have no conflicted commits. Conflicted
-bookmarks are skipped and reported separately. Local jj work does not by itself
-block `sync --all`; if GitHub `origin` has not moved ahead of the cached trunk,
+Writable repositories push tracked bookmark state whose push ranges have no
+conflicted commits. Repositories with configured or detected push access use the
+normal fetch-then-push flow, while `repo.sync.push_access = true` uses the
+push-first flow and fetches/rebases once only if stale remote refs reject the
+push. Read-only repositories fetch/rebase only. Conflicted bookmarks are skipped
+and reported separately. Local jj work does not by itself block push-capable
+`sync --all`; if GitHub `origin` has not moved ahead of the cached trunk,
 pushing tracked bookmark state is still safe. Repos that do not fetch, advance
 trunk, or push anything are grouped as up to date. Other skips are grouped by
-reason so read-only third-party checkouts, pull-needed repos, and setup issues
-remain visible without being treated as failures.
+reason so pull-needed repos and setup issues remain visible without being treated
+as failures.
 
 ## Current repository versus layout repository
 

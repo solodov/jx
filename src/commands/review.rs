@@ -265,29 +265,26 @@ fn load_review_requests_view(
 
     let filter_matchers = review_filter_matchers(&request.repo_filters)?;
     progress.status("Loading review requests…");
-    let inbox = span.measure_with_result_attrs(
+    let inbox = match span.measure_with_result_attrs(
         "review.fetch_candidates",
         Vec::new(),
         || services.review_requests(&token_source),
-        |result| {
-            result
-                .as_ref()
-                .map(|inbox| {
-                    let repo_count = inbox
-                        .requests
-                        .iter()
-                        .map(|request| &request.repository)
-                        .collect::<BTreeSet<_>>()
-                        .len();
-                    vec![
-                        perf_attr("candidate_count", inbox.requests.len()),
-                        perf_attr("repo_count", repo_count),
-                        perf_attr("viewer", &inbox.viewer.login),
-                    ]
-                })
-                .unwrap_or_default()
-        },
-    )?;
+        review_candidate_result_attrs,
+    ) {
+        Ok(inbox) => inbox,
+        Err(error) if review_candidate_search_saml_enforced(&error) => {
+            span.set([perf_attr("candidate_search_saml_enforced", true)]);
+            let fallback_repositories =
+                review_candidate_fallback_repositories(&layout_by_repository, &filter_matchers);
+            span.measure_with_result_attrs(
+                "review.fetch_configured_candidates",
+                [perf_attr("repo_count", fallback_repositories.len())],
+                || services.review_requests_for_repositories(&token_source, &fallback_repositories),
+                review_candidate_result_attrs,
+            )?
+        }
+        Err(error) => return Err(error.into()),
+    };
     let viewer = inbox.viewer.login;
     let mut candidate_keys = BTreeSet::new();
     let mut grouped = BTreeMap::<GitHubRepository, Vec<u64>>::new();
@@ -467,6 +464,48 @@ fn load_review_requests_view(
         view,
         display_names,
     })
+}
+
+fn review_candidate_search_saml_enforced(error: &WorkflowError) -> bool {
+    matches!(
+        error,
+        WorkflowError::GitHub(error)
+            if error.is_graphql_saml_enforcement_for("search review requests")
+    )
+}
+
+fn review_candidate_result_attrs(
+    result: &Result<PullRequestReviewRequests, WorkflowError>,
+) -> Vec<PerfAttr> {
+    result
+        .as_ref()
+        .map(|inbox| {
+            let repo_count = inbox
+                .requests
+                .iter()
+                .map(|request| &request.repository)
+                .collect::<BTreeSet<_>>()
+                .len();
+            vec![
+                perf_attr("candidate_count", inbox.requests.len()),
+                perf_attr("repo_count", repo_count),
+                perf_attr("viewer", &inbox.viewer.login),
+            ]
+        })
+        .unwrap_or_default()
+}
+
+fn review_candidate_fallback_repositories(
+    layout_by_repository: &BTreeMap<GitHubRepository, ReviewRepositoryLayout>,
+    filter_matchers: &[ReviewFilterMatcher],
+) -> Vec<GitHubRepository> {
+    layout_by_repository
+        .iter()
+        .filter(|(repository, layout)| {
+            review_repository_matches(repository, Some(*layout), filter_matchers)
+        })
+        .map(|(repository, _)| repository.clone())
+        .collect()
 }
 
 fn review_request_user_logins(view: &ReviewRequestsView) -> Vec<String> {

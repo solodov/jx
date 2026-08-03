@@ -124,8 +124,8 @@ leaves an empty working-copy change on top when needed.
 of probing GitHub repository permissions. `true` treats matching repositories as
 writable and makes `jx sync --all` try pushing tracked bookmarks before fetching;
 if the push is rejected by stale remote refs, sync fetches/rebases once and
-retries the push. `false` treats matching repositories as read-only without a
-permission probe.
+retries the push. `false` treats matching repositories as read-only and syncs
+with fetch/rebase only, without a permission probe.
 
 `repo.sync.rebase_strategy` controls whether repository sync rebases local stacks
 after fetching origin. The default `always` preserves historical behavior. The

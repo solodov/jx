@@ -81,6 +81,29 @@ fn github_error_message_summarizes_html_body() {
 }
 
 #[test]
+fn github_graphql_error_detects_review_search_saml_enforcement() {
+    // Verifies: only review inbox search treats GitHub's org SAML gate as recoverable.
+    let error = GitHubError::GraphQl {
+        operation: "search review requests",
+        message: "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.".to_owned(),
+    };
+
+    assert!(error.is_graphql_saml_enforcement_for("search review requests"));
+    assert!(!error.is_graphql_saml_enforcement_for("load pull requests by number"));
+}
+
+#[test]
+fn github_graphql_error_keeps_other_review_search_failures_fatal() {
+    // Verifies: the review search fallback does not hide unrelated GitHub failures.
+    let error = GitHubError::GraphQl {
+        operation: "search review requests",
+        message: "rate limit exceeded".to_owned(),
+    };
+
+    assert!(!error.is_graphql_saml_enforcement_for("search review requests"));
+}
+
+#[test]
 fn github_error_message_preserves_concise_errors() {
     // Verifies: normal octocrab diagnostics are preserved after backtrace trimming.
     assert_eq!(

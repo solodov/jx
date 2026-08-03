@@ -65,9 +65,9 @@ fn global_sync_renderer_sorts_each_section_by_directory() {
             outcome: GlobalSyncOutcome::Synced,
         },
         GlobalSyncEntry {
-            root: PathBuf::from("/workspace/src/read-only"),
-            display_root: "read-only".to_owned(),
-            outcome: GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin),
+            root: PathBuf::from("/workspace/src/local-work"),
+            display_root: "src-local-work".to_owned(),
+            outcome: GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::LocalWork { changes: 1 }),
         },
         GlobalSyncEntry {
             root: PathBuf::from("/workspace/projects/alpha"),
@@ -75,9 +75,9 @@ fn global_sync_renderer_sorts_each_section_by_directory() {
             outcome: GlobalSyncOutcome::Synced,
         },
         GlobalSyncEntry {
-            root: PathBuf::from("/workspace/projects/read-only"),
-            display_root: "projects-read-only".to_owned(),
-            outcome: GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin),
+            root: PathBuf::from("/workspace/projects/local-work"),
+            display_root: "projects-local-work".to_owned(),
+            outcome: GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::LocalWork { changes: 2 }),
         },
     ];
 
@@ -86,7 +86,7 @@ fn global_sync_renderer_sorts_each_section_by_directory() {
 
     assert_eq!(
         output,
-        "Synced:\n  alpha\n  zeta\n\nSkipped: read-only origin\n  projects-read-only\n  read-only\n"
+        "Synced:\n  alpha\n  zeta\n\nSkipped: local work\n  projects-local-work  working copy has 2 local changes\n  src-local-work       working copy has 1 local change\n"
     );
 }
 
@@ -183,7 +183,7 @@ path = "{repo}"
     }
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices {
-        global_fetch_ready_roots: Some(BTreeSet::new()),
+        global_fetch_ready_roots: Some(BTreeSet::from([read_only.clone()])),
         origin_push_access_roots: Some(BTreeSet::from([
             local_work.clone(),
             pull_needed.clone(),
@@ -252,7 +252,12 @@ path = "{repo}"
     assert!(progress.finished.get());
     assert_eq!(
         services.fetch_origin_roots.borrow().as_slice(),
-        [local_work.clone(), up_to_date.clone(), writable.clone()]
+        [
+            local_work.clone(),
+            read_only.clone(),
+            up_to_date.clone(),
+            writable.clone(),
+        ]
     );
     assert_eq!(
         services.push_tracked_roots.borrow().as_slice(),
@@ -260,7 +265,7 @@ path = "{repo}"
     );
     assert_eq!(
         result.stdout,
-        "Synced:\n  ~/projects/local-work\n  ~/projects/writable\n\nSkipped: up to date\n  ~/projects/up-to-date\n\nSkipped: pull needed\n  ~/projects/pull-needed  GitHub has 3 new commits\n\nSkipped: read-only origin\n  ~/projects/read-only\n\nSetup needed:\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
+        "Synced:\n  ~/projects/local-work\n  ~/projects/writable\n\nSkipped: up to date\n  ~/projects/read-only\n  ~/projects/up-to-date\n\nSkipped: pull needed\n  ~/projects/pull-needed  GitHub has 3 new commits\n\nSetup needed:\n  ~/projects/missing-origin  The fixed `origin` remote is missing. Add an `origin` GitHub remote before running `jx`.\n"
     );
 }
 
@@ -302,6 +307,49 @@ path = "{repo}"
     );
     assert_eq!(services.push_tracked_roots.borrow().as_slice(), [retrying]);
     assert_eq!(result.stdout, "Synced:\n  ~/projects/retrying\n");
+}
+
+#[test]
+fn sync_all_configured_read_only_access_fetches_without_pushing() {
+    // Verifies: configured read-only repos use the fetch-only sync strategy instead of being skipped.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+
+[[repo.rules]]
+repo = "example-owner/*"
+
+[repo.rules.sync]
+push_access = false
+"#,
+    );
+    let readonly = workspace.create_jj_workspace("projects/readonly");
+    TestWorkspace::write_git_config_at(
+        &readonly,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/readonly.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        global_fetch_ready_roots: Some(BTreeSet::from([readonly.clone()])),
+        clean_status_repos: vec!["readonly".to_owned()],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync fetches configured read-only repositories");
+
+    assert_eq!(services.fetch_origin_roots.borrow().as_slice(), [readonly]);
+    assert!(services.push_tracked_roots.borrow().is_empty());
+    assert_eq!(result.stdout, "Synced:\n  ~/projects/readonly\n");
 }
 
 #[test]

@@ -5,12 +5,12 @@ use crate::{
         PullRequestAction, RepositorySummary, StatusComparison, StatusState,
     },
     github::{
-        AuthenticatedUser, LabelApplyResult, PullRequestAutoMergeStatus, PullRequestCheck,
-        PullRequestCheckStatus, PullRequestHead, PullRequestLabel, PullRequestMergeStatus,
-        PullRequestRecord, PullRequestReviewActivity, PullRequestReviewRequest,
-        PullRequestReviewRequests, PullRequestReviewStatus, PullRequestReviewerResponse,
-        PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
-        ReviewerSelection, ReviewerSyncResult,
+        AuthenticatedUser, GitHubError, LabelApplyResult, PullRequestAutoMergeStatus,
+        PullRequestCheck, PullRequestCheckStatus, PullRequestHead, PullRequestLabel,
+        PullRequestMergeStatus, PullRequestRecord, PullRequestReviewActivity,
+        PullRequestReviewRequest, PullRequestReviewRequests, PullRequestReviewStatus,
+        PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
+        PullRequestTimelineEventKind, ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebasedCommitSummary,
@@ -414,6 +414,7 @@ struct FakeServices {
     pull_requests_with_history: BTreeMap<u64, PullRequestWithHistory>,
     pull_request_status_calls: std::cell::RefCell<Vec<Vec<u64>>>,
     review_requests: Vec<PullRequestReviewRequest>,
+    review_requests_saml_enforced: bool,
     github_user_display_names: BTreeMap<String, String>,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
@@ -569,6 +570,7 @@ impl Default for FakeServices {
             pull_requests_with_history: BTreeMap::new(),
             pull_request_status_calls: std::cell::RefCell::new(Vec::new()),
             review_requests: Vec::new(),
+            review_requests_saml_enforced: false,
             github_user_display_names: BTreeMap::new(),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
@@ -1235,11 +1237,37 @@ impl CommandServices for FakeServices {
         &self,
         _token_source: &TokenSource,
     ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        if self.review_requests_saml_enforced {
+            return Err(WorkflowError::GitHub(GitHubError::GraphQl {
+                operation: "search review requests",
+                message: "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.".to_owned(),
+            }));
+        }
+
         Ok(PullRequestReviewRequests {
             viewer: AuthenticatedUser {
                 login: self.github_login.clone(),
             },
             requests: self.review_requests.clone(),
+        })
+    }
+
+    fn review_requests_for_repositories(
+        &self,
+        _token_source: &TokenSource,
+        repositories: &[GitHubRepository],
+    ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        let repositories = repositories.iter().collect::<BTreeSet<_>>();
+        Ok(PullRequestReviewRequests {
+            viewer: AuthenticatedUser {
+                login: self.github_login.clone(),
+            },
+            requests: self
+                .review_requests
+                .iter()
+                .filter(|request| repositories.contains(&request.repository))
+                .cloned()
+                .collect(),
         })
     }
 

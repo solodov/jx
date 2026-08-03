@@ -120,7 +120,6 @@ pub(in crate::commands) enum GlobalSyncSkipReason {
     PullNeeded { commits: i64 },
     Diverged { pull: i64, push: i64 },
     LocalWork { changes: i64 },
-    ReadOnlyOrigin,
     PushAccessUnavailable(String),
     SetupNeeded(String),
 }
@@ -234,22 +233,6 @@ pub(in crate::commands) fn render_global_sync(
                                 "working copy has {}",
                                 local_change_count_i64(*changes)
                             ),
-                        })
-                    }
-                    _ => None,
-                }),
-        )?;
-        write_global_sync_path_section(
-            formatter,
-            &mut wrote_any,
-            "Skipped: read-only origin",
-            sorted_entries
-                .iter()
-                .filter_map(|entry| match &entry.outcome {
-                    GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::ReadOnlyOrigin) => {
-                        Some(GlobalSyncPathRow {
-                            root: &entry.root,
-                            label: entry.display_root.as_str(),
                         })
                     }
                     _ => None,

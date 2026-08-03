@@ -279,6 +279,20 @@ pub(super) trait CommandServices {
         token_source: &TokenSource,
     ) -> Result<PullRequestReviewRequests, WorkflowError>;
 
+    /// Searches known repositories when global review search is blocked by organization SAML enforcement.
+    fn review_requests_for_repositories(
+        &self,
+        _token_source: &TokenSource,
+        _repositories: &[GitHubRepository],
+    ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        Ok(PullRequestReviewRequests {
+            viewer: AuthenticatedUser {
+                login: String::new(),
+            },
+            requests: Vec::new(),
+        })
+    }
+
     /// Returns cached public display names for GitHub logins, refreshing stale entries best-effort.
     fn github_user_display_names(
         &self,
@@ -1168,6 +1182,20 @@ where
     }
 }
 
+fn review_request_inbox_attrs(inbox: &PullRequestReviewRequests) -> Vec<PerfAttr> {
+    let repository_count = inbox
+        .requests
+        .iter()
+        .map(|request| &request.repository)
+        .collect::<BTreeSet<_>>()
+        .len();
+    vec![
+        perf_attr("request_count", inbox.requests.len()),
+        perf_attr("repository_count", repository_count),
+        perf_attr("viewer", &inbox.viewer.login),
+    ]
+}
+
 fn pull_request_status_chunk_attrs(
     numbers: &[u64],
     chunk_index: usize,
@@ -1708,19 +1736,28 @@ where
         let result = github_request("search review requests", self.inner.review_requests()).await;
         let attrs = result
             .as_ref()
-            .map(|inbox| {
-                let repository_count = inbox
-                    .requests
-                    .iter()
-                    .map(|request| &request.repository)
-                    .collect::<BTreeSet<_>>()
-                    .len();
-                vec![
-                    perf_attr("request_count", inbox.requests.len()),
-                    perf_attr("repository_count", repository_count),
-                    perf_attr("viewer", &inbox.viewer.login),
-                ]
-            })
+            .map(review_request_inbox_attrs)
+            .unwrap_or_default();
+        self.finish(span, result, attrs)
+    }
+
+    async fn review_requests_for_repositories(
+        &self,
+        repositories: &[GitHubRepository],
+    ) -> Result<PullRequestReviewRequests, GitHubError> {
+        let span = self.start_span(
+            "github.review_requests_for_repositories",
+            None,
+            [perf_attr("requested_repository_count", repositories.len())],
+        );
+        let result = github_request(
+            "search review requests",
+            self.inner.review_requests_for_repositories(repositories),
+        )
+        .await;
+        let attrs = result
+            .as_ref()
+            .map(review_request_inbox_attrs)
             .unwrap_or_default();
         self.finish(span, result, attrs)
     }
@@ -2434,6 +2471,29 @@ impl CommandServices for ProductionServices<'_> {
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
             };
             let inbox = github.review_requests().await?;
+            if inbox.viewer.login.is_empty() {
+                return Err(WorkflowError::MissingGitHubLogin);
+            }
+            Ok(inbox)
+        })
+    }
+
+    fn review_requests_for_repositories(
+        &self,
+        token_source: &TokenSource,
+        repositories: &[GitHubRepository],
+    ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let github = TracedGitHubClient {
+                inner: github,
+                perf: PerfLog::from_environment(self.environment),
+                repo: "review".to_owned(),
+                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            };
+            let inbox = github
+                .review_requests_for_repositories(repositories)
+                .await?;
             if inbox.viewer.login.is_empty() {
                 return Err(WorkflowError::MissingGitHubLogin);
             }

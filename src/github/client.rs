@@ -120,6 +120,15 @@ pub trait GitHubClient: Send + Sync {
         })
     }
 
+    /// Searches configured repositories for open pull requests requesting review from the authenticated viewer.
+    async fn review_requests_for_repositories(
+        &self,
+        repositories: &[GitHubRepository],
+    ) -> Result<PullRequestReviewRequests, GitHubError> {
+        let _ = repositories;
+        self.review_requests().await
+    }
+
     /// Loads public profile names for GitHub logins.
     async fn user_profiles(
         &self,
@@ -771,45 +780,44 @@ impl GitHubClient for OctocrabGitHubClient {
         let mut requests = Vec::new();
         let mut seen = BTreeSet::new();
         for &query in REVIEW_REQUEST_SEARCH_QUERIES {
-            let mut cursor = None::<String>;
-            loop {
-                let variables = ReviewRequestsVariables {
-                    query,
-                    cursor: cursor.as_deref(),
-                };
-                let data: ReviewRequestsQueryData = self
-                    .graphql(REVIEW_REQUESTS_QUERY, variables, "search review requests")
-                    .await?;
-                if viewer.is_none() {
-                    viewer = Some(AuthenticatedUser {
-                        login: data.viewer.login,
-                    });
-                }
-                for node in data.search.nodes.into_iter().flatten() {
-                    let request = PullRequestReviewRequest {
-                        repository: GitHubRepository {
-                            owner: node.repository.owner.login,
-                            name: node.repository.name,
-                        },
-                        number: node.number,
-                    };
-                    if seen.insert((request.repository.clone(), request.number)) {
-                        requests.push(request);
-                    }
-                }
-                if !data.search.page_info.has_next_page {
-                    break;
-                }
-                let Some(next_cursor) = data.search.page_info.end_cursor else {
-                    break;
-                };
-                cursor = Some(next_cursor);
-            }
+            append_review_requests_for_query(self, query, &mut viewer, &mut requests, &mut seen)
+                .await?;
         }
         Ok(PullRequestReviewRequests {
             viewer: viewer.unwrap_or(AuthenticatedUser {
                 login: String::new(),
             }),
+            requests,
+        })
+    }
+
+    async fn review_requests_for_repositories(
+        &self,
+        repositories: &[GitHubRepository],
+    ) -> Result<PullRequestReviewRequests, GitHubError> {
+        let mut viewer = None::<AuthenticatedUser>;
+        let mut requests = Vec::new();
+        let mut seen = BTreeSet::new();
+        for repository in unique_review_request_repositories(repositories) {
+            for query in REVIEW_REQUEST_SEARCH_QUERIES {
+                let scoped_query = format!("{query} repo:{}", repository.slug());
+                match append_review_requests_for_query(
+                    self,
+                    &scoped_query,
+                    &mut viewer,
+                    &mut requests,
+                    &mut seen,
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(error) if review_requests_saml_enforced(&error) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(PullRequestReviewRequests {
+            viewer: review_requests_viewer_or_authenticated(viewer, self).await?,
             requests,
         })
     }
@@ -1026,6 +1034,65 @@ impl GitHubClient for OctocrabGitHubClient {
     }
 }
 
+fn review_requests_saml_enforced(error: &GitHubError) -> bool {
+    error.is_graphql_saml_enforcement_for(REVIEW_REQUESTS_OPERATION)
+}
+
+async fn append_review_requests_for_query(
+    github: &OctocrabGitHubClient,
+    query: &str,
+    viewer: &mut Option<AuthenticatedUser>,
+    requests: &mut Vec<PullRequestReviewRequest>,
+    seen: &mut BTreeSet<(GitHubRepository, u64)>,
+) -> Result<(), GitHubError> {
+    let mut cursor = None::<String>;
+    loop {
+        let variables = ReviewRequestsVariables {
+            query,
+            cursor: cursor.as_deref(),
+        };
+        let data: ReviewRequestsQueryData = github
+            .graphql(REVIEW_REQUESTS_QUERY, variables, REVIEW_REQUESTS_OPERATION)
+            .await?;
+        if viewer.is_none() {
+            *viewer = Some(AuthenticatedUser {
+                login: data.viewer.login,
+            });
+        }
+        for node in data.search.nodes.into_iter().flatten() {
+            let request = PullRequestReviewRequest {
+                repository: GitHubRepository {
+                    owner: node.repository.owner.login,
+                    name: node.repository.name,
+                },
+                number: node.number,
+            };
+            if seen.insert((request.repository.clone(), request.number)) {
+                requests.push(request);
+            }
+        }
+        if !data.search.page_info.has_next_page {
+            break;
+        }
+        let Some(next_cursor) = data.search.page_info.end_cursor else {
+            break;
+        };
+        cursor = Some(next_cursor);
+    }
+
+    Ok(())
+}
+
+async fn review_requests_viewer_or_authenticated(
+    viewer: Option<AuthenticatedUser>,
+    github: &OctocrabGitHubClient,
+) -> Result<AuthenticatedUser, GitHubError> {
+    match viewer {
+        Some(viewer) => Ok(viewer),
+        None => github.authenticated_user().await,
+    }
+}
+
 pub(super) const AUTHENTICATED_USER_QUERY: &str = r#"
 query {
   viewer {
@@ -1074,6 +1141,8 @@ pub(super) const REVIEW_REQUEST_SEARCH_QUERIES: &[&str] = &[
     "is:pr is:open review-requested:@me -author:@me",
     "is:pr is:open reviewed-by:@me -author:@me",
 ];
+
+const REVIEW_REQUESTS_OPERATION: &str = "search review requests";
 
 const REVIEW_REQUESTS_QUERY: &str = r#"
 query($query: String!, $cursor: String) {
@@ -1500,6 +1569,15 @@ fn unique_pull_request_numbers(numbers: &[u64]) -> Vec<u64> {
         .iter()
         .copied()
         .filter(|number| seen.insert(*number))
+        .collect()
+}
+
+fn unique_review_request_repositories(repositories: &[GitHubRepository]) -> Vec<GitHubRepository> {
+    let mut seen = BTreeSet::new();
+    repositories
+        .iter()
+        .filter(|repository| seen.insert((*repository).clone()))
+        .cloned()
         .collect()
 }
 

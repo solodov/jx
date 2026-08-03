@@ -24,4 +24,4 @@ install:
     fi
 
 test *paths:
-    cargo test --all-targets
+    cargo nextest run --all-targets --status-level fail --final-status-level fail

@@ -247,6 +247,42 @@ fn review_groups_layout_and_external_repositories() {
 }
 
 #[test]
+fn review_falls_back_to_configured_repositories_when_global_search_is_saml_blocked() {
+    // Verifies: org SAML protection in GitHub's global search does not hide accessible known repos.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests_saml_enforced: true,
+        review_requests: vec![
+            review_request("example-owner", "api-alpha", 12),
+            review_request("outside-owner", "external-tooling", 44),
+        ],
+        pull_request_statuses: BTreeMap::from([
+            (
+                12,
+                review_status_record(12, "Visible after repo fallback", "example-author", false),
+            ),
+            (
+                44,
+                review_status_record(44, "Unknown external repo", "outside-author", false),
+            ),
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("SAML-blocked review search falls back to configured repositories");
+
+    assert!(result.stdout.contains("Visible after repo fallback"));
+    assert!(!result.stdout.contains("Unknown external repo"));
+    assert_eq!(
+        services.pull_request_status_calls.borrow().as_slice(),
+        &[vec![12]]
+    );
+}
+
+#[test]
 fn review_uses_pull_request_creation_age_before_viewer_review() {
     // Verifies: brand-new PRs show how long they have been waiting for review.
     let workspace = review_workspace();

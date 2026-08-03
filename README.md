@@ -80,7 +80,7 @@ jx work                           # lists primary and managed workspaces
 jx work root api@ABC-123-fix-auth # prints the managed workspace path
 jx remote-status --all            # checks every primary checkout
 jx fetch --all                    # fetches safe primary checkouts
-jx sync --all                     # syncs eligible writable primary checkouts
+jx sync --all                     # syncs eligible primary checkouts
 ```
 
 Shell integration makes those layout keys interactive. Add the output of

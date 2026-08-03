@@ -21,6 +21,12 @@ Current areas:
 
 ## Tests
 
+`just test` requires [cargo-nextest](https://nexte.st/). Install it before running the repository test recipe:
+
+```sh
+cargo install cargo-nextest --locked
+```
+
 Keep unit tests under the module they exercise:
 
 ```text

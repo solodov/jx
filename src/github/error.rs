@@ -50,6 +50,24 @@ pub enum GitHubError {
     },
 }
 
+impl GitHubError {
+    /// Returns whether this GraphQL failure is GitHub's organization SAML gate for an operation.
+    pub(crate) fn is_graphql_saml_enforcement_for(&self, operation: &'static str) -> bool {
+        match self {
+            Self::GraphQl {
+                operation: error_operation,
+                message,
+            } => {
+                *error_operation == operation
+                    && message
+                        .to_ascii_lowercase()
+                        .contains("resource protected by organization saml enforcement")
+            }
+            _ => false,
+        }
+    }
+}
+
 pub(super) fn api_error(operation: &'static str, source: octocrab::Error) -> GitHubError {
     if let Some(message) = octocrab_github_error(&source)
         .filter(|error| matches!(error.status_code.as_u16(), 401 | 403))

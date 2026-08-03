@@ -1425,39 +1425,33 @@ fn try_global_sync_for_repository(
     };
 
     let sync_config = context.config.repo.sync_for(&context.origin.github);
-    match sync_config.push_access() {
-        Some(true) => {}
-        Some(false) => {
-            return Ok(GlobalSyncOutcome::Skipped(
-                GlobalSyncSkipReason::ReadOnlyOrigin,
-            ));
-        }
+    let sync_strategy = match sync_config.push_access() {
+        Some(true) => GlobalSyncStrategy::PushFirst,
+        Some(false) => GlobalSyncStrategy::FetchOnly,
         None => match services.origin_can_push(&context) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Ok(GlobalSyncOutcome::Skipped(
-                    GlobalSyncSkipReason::ReadOnlyOrigin,
-                ));
-            }
+            Ok(true) => GlobalSyncStrategy::FetchThenPush,
+            Ok(false) => GlobalSyncStrategy::FetchOnly,
             Err(error) => {
                 return Ok(GlobalSyncOutcome::Skipped(
                     GlobalSyncSkipReason::PushAccessUnavailable(error.to_string()),
                 ));
             }
         },
-    }
+    };
 
     let origin_status = origin_remote_status(&context, services)?;
     let pull = origin_status.comparison.github_ahead_by;
     let push = origin_status.comparison.github_behind_by + origin_status.local_ahead_by;
-    match (pull > 0, push > 0, sync_config.assumes_push_access()) {
-        (true, true, false) => {
+    match (sync_strategy, pull > 0, push > 0) {
+        (GlobalSyncStrategy::FetchThenPush, true, true) => {
             return Ok(GlobalSyncOutcome::Skipped(GlobalSyncSkipReason::Diverged {
                 pull,
                 push,
             }));
         }
-        (true, false, _) if !services.global_fetch_ready(&context)? => {
+        (GlobalSyncStrategy::FetchThenPush | GlobalSyncStrategy::FetchOnly, true, _)
+            if !services.global_fetch_ready(&context)? =>
+        {
             return Ok(GlobalSyncOutcome::Skipped(
                 GlobalSyncSkipReason::PullNeeded { commits: pull },
             ));
@@ -1465,27 +1459,47 @@ fn try_global_sync_for_repository(
         _ => {}
     }
 
-    run_sync_repo_checks(&context, services, || {
-        services.changed_files_for_tracked_push(&context)
-    })?;
+    if sync_strategy.can_push() {
+        run_sync_repo_checks(&context, services, || {
+            services.changed_files_for_tracked_push(&context)
+        })?;
+    }
 
-    if sync_config.assumes_push_access() {
-        return global_sync_existing_origin_push_first(
+    match sync_strategy {
+        GlobalSyncStrategy::PushFirst => global_sync_existing_origin_push_first(
             context,
             sync_push_options,
             &repository_environment,
             services,
             origin_status,
-        );
+        ),
+        GlobalSyncStrategy::FetchThenPush => global_sync_existing_origin(
+            context,
+            sync_push_options,
+            &repository_environment,
+            services,
+            origin_status.local_ahead_by,
+        ),
+        GlobalSyncStrategy::FetchOnly => global_sync_existing_origin_fetch_only(
+            context,
+            &repository_environment,
+            services,
+            origin_status.local_ahead_by,
+        ),
     }
+}
 
-    global_sync_existing_origin(
-        context,
-        sync_push_options,
-        &repository_environment,
-        services,
-        origin_status.local_ahead_by,
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalSyncStrategy {
+    PushFirst,
+    FetchThenPush,
+    FetchOnly,
+}
+
+impl GlobalSyncStrategy {
+    fn can_push(self) -> bool {
+        matches!(self, Self::PushFirst | Self::FetchThenPush)
+    }
 }
 
 fn origin_remote_status(
@@ -1539,6 +1553,36 @@ fn global_sync_existing_origin(
     changed |= maybe_advance_trunk_for_sync(&context, services)?;
     let push = services.push_syncable_tracked(&context, sync_push_options)?;
     changed |= sync_push_changed(&push);
+
+    finish_global_sync(
+        &context,
+        environment,
+        services,
+        GlobalSyncCompletion {
+            push: &push,
+            protected_branches: &rebase_plan.protected_branches,
+            fetch: Some(&fetch),
+            changed,
+            local_ahead_by,
+        },
+    )
+}
+
+fn global_sync_existing_origin_fetch_only(
+    context: RepositoryContext,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    local_ahead_by: i64,
+) -> Result<GlobalSyncOutcome, CommandError> {
+    let rebase_plan = sync_rebase_plan(&context, services)?;
+    let fetch = fetch_origin_with_options_and_retries(
+        &context,
+        services,
+        rebase_plan.fetch_options.clone(),
+    )?;
+    let mut changed = fetch_outcome_changed(&fetch);
+    changed |= maybe_advance_trunk_for_sync(&context, services)?;
+    let push = empty_sync_push_outcome();
 
     finish_global_sync(
         &context,
@@ -1669,6 +1713,18 @@ fn maybe_advance_trunk_for_sync(
 
 fn sync_push_changed(push: &SyncPushOutcome) -> bool {
     tracked_push_changed(&push.pushed) || !push.skipped_same_tree_bookmarks.is_empty()
+}
+
+fn empty_sync_push_outcome() -> SyncPushOutcome {
+    SyncPushOutcome {
+        pushed: TrackedPushOutcome {
+            pushed_refs: 0,
+            bookmarks: Vec::new(),
+            pushed_commits: Vec::new(),
+        },
+        skipped_conflicted_bookmarks: Vec::new(),
+        skipped_same_tree_bookmarks: Vec::new(),
+    }
 }
 
 fn push_rejection_can_fetch(error: &JjError) -> bool {
