@@ -212,10 +212,27 @@ pub(super) struct ReviewRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ReviewAction {
     Show,
-    Dismiss { selector: String },
+    Dismiss {
+        selector: String,
+        until: ReviewDismissUntil,
+    },
     Dismissed,
-    History { selector: String },
-    Undismiss { selector: String },
+    History {
+        selector: String,
+    },
+    Undismiss {
+        selector: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) enum ReviewDismissUntil {
+    #[default]
+    Attention,
+    PeerApproval,
+    UserApproval {
+        login: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -731,6 +748,7 @@ fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
     let action = match matches.subcommand() {
         Some(("dismiss", matches)) => ReviewAction::Dismiss {
             selector: required_arg(matches, "pull-request"),
+            until: review_dismiss_until(matches)?,
         },
         Some(("dismissed", _)) => ReviewAction::Dismissed,
         Some(("history", matches)) => ReviewAction::History {
@@ -1068,6 +1086,35 @@ fn review_format(matches: &ArgMatches) -> ReviewFormat {
     }
 }
 
+fn review_dismiss_until(matches: &ArgMatches) -> Result<ReviewDismissUntil, clap::Error> {
+    let Some(until) = matches.get_one::<String>("until") else {
+        return Ok(ReviewDismissUntil::Attention);
+    };
+    let until = until.trim();
+    if until == "peer-approval" {
+        return Ok(ReviewDismissUntil::PeerApproval);
+    }
+    if let Some(login) = until.strip_prefix("approval:") {
+        let login = login.trim();
+        if login.is_empty() {
+            return Err(clap::Error::raw(
+                ErrorKind::InvalidValue,
+                "review dismissal approval target cannot be empty",
+            ));
+        }
+        return Ok(ReviewDismissUntil::UserApproval {
+            login: login.to_owned(),
+        });
+    }
+
+    Err(clap::Error::raw(
+        ErrorKind::InvalidValue,
+        format!(
+            "unsupported review dismissal condition `{until}`; expected `peer-approval` or `approval:USER`"
+        ),
+    ))
+}
+
 fn revision(matches: &ArgMatches) -> Option<String> {
     matches.get_one::<String>("revision").cloned()
 }
@@ -1378,7 +1425,8 @@ pub(super) fn cli() -> ClapCommand {
                 .subcommand(
                     ClapCommand::new("dismiss")
                         .about("Hide a reviewed pull request until it needs your attention again")
-                        .arg(review_dismiss_pull_request_arg()),
+                        .arg(review_dismiss_pull_request_arg())
+                        .arg(review_dismiss_until_arg()),
                 )
                 .subcommand(
                     ClapCommand::new("dismissed")
@@ -1848,6 +1896,13 @@ fn review_dismiss_pull_request_arg() -> Arg {
         .help(
         "Pull request number, repo#number suffix, owner/repo#number, or URL to dismiss from review",
     )
+}
+
+fn review_dismiss_until_arg() -> Arg {
+    Arg::new("until")
+        .long("until")
+        .value_name("CONDITION")
+        .help("Dismiss until a condition is met: peer-approval or approval:USER")
 }
 
 fn review_history_pull_request_arg() -> Arg {

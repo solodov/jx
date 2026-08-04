@@ -34,6 +34,50 @@ fn review_dismiss_flag_parses_target_selector() {
         request.action,
         ReviewAction::Dismiss {
             selector: "example-owner/api-alpha#12".to_owned(),
+            until: ReviewDismissUntil::Attention,
+        }
+    );
+}
+
+#[test]
+fn review_dismiss_until_approval_conditions_parse() {
+    // Verifies: review dismissal can wait for peer or selected reviewer approval.
+    let matches = cli()
+        .try_get_matches_from(["jx", "review", "dismiss", "12", "--until", "peer-approval"])
+        .expect("peer approval dismissal args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+    let CommandRequest::Review(request) = request else {
+        panic!("expected review request");
+    };
+    assert_eq!(
+        request.action,
+        ReviewAction::Dismiss {
+            selector: "12".to_owned(),
+            until: ReviewDismissUntil::PeerApproval,
+        }
+    );
+
+    let matches = cli()
+        .try_get_matches_from([
+            "jx",
+            "review",
+            "dismiss",
+            "api-alpha#12",
+            "--until",
+            "approval:peer-reviewer",
+        ])
+        .expect("specific approval dismissal args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+    let CommandRequest::Review(request) = request else {
+        panic!("expected review request");
+    };
+    assert_eq!(
+        request.action,
+        ReviewAction::Dismiss {
+            selector: "api-alpha#12".to_owned(),
+            until: ReviewDismissUntil::UserApproval {
+                login: "peer-reviewer".to_owned(),
+            },
         }
     );
 }
@@ -848,6 +892,153 @@ fn review_dismiss_records_current_head_oid() {
         .expect("dismiss action records");
     assert_eq!(action, "dismiss");
     assert!(details.contains("\"dismissedHeadOid\":\"commit-12\""));
+}
+
+#[test]
+fn review_dismiss_until_peer_approval_hides_until_another_reviewer_approves() {
+    // Verifies: peer-approval dismissal waits for the requested review state instead of fresh activity.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut waiting = review_status_record(12, "Wait for peer approval", "example-author", false);
+    waiting.requested_reviewers =
+        ReviewerSelection::new(["example-reviewer"], Vec::<String>::new());
+    let hidden = review_pull_request_with_actions(
+        waiting.clone(),
+        vec![review_dismiss_action(
+            "peer_approval",
+            serde_json::json!({
+                "dismissedHeadOid": "old-commit",
+            }),
+        )],
+    );
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(12, hidden)]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders");
+
+    assert!(!result.stdout.contains("Wait for peer approval"));
+
+    waiting.approved_reviewers = vec!["peer-reviewer".to_owned()];
+    let visible = review_pull_request_with_actions(
+        waiting,
+        vec![review_dismiss_action(
+            "peer_approval",
+            serde_json::json!({
+                "dismissedHeadOid": "old-commit",
+            }),
+        )],
+    );
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(12, visible)]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders after peer approval");
+
+    assert!(result.stdout.contains("Wait for peer approval"));
+}
+
+#[test]
+fn review_dismiss_until_specific_approval_waits_for_selected_reviewer() {
+    // Verifies: specific approval dismissal ignores other approvers until the selected reviewer approves.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status =
+        review_status_record(12, "Wait for selected approval", "example-author", false);
+    status.requested_reviewers = ReviewerSelection::new(["example-reviewer"], Vec::<String>::new());
+    status.approved_reviewers = vec!["other-reviewer".to_owned()];
+    let action = review_dismiss_action(
+        "user_approval",
+        serde_json::json!({
+            "approvalReviewer": "target-reviewer",
+            "dismissedHeadOid": "old-commit",
+        }),
+    );
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(status.clone(), vec![action.clone()]),
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders");
+
+    assert!(!result.stdout.contains("Wait for selected approval"));
+
+    status.approved_reviewers.push("target-reviewer".to_owned());
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_requests_with_history: BTreeMap::from([(
+            12,
+            review_pull_request_with_actions(status, vec![action]),
+        )]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders after selected approval");
+
+    assert!(result.stdout.contains("Wait for selected approval"));
+}
+
+#[test]
+fn review_dismiss_until_approval_records_condition() {
+    // Verifies: approval-based dismissals persist their condition in local review state.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let status = review_status_record(12, "Wait for selected reviewer", "example-author", false);
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_request_statuses: BTreeMap::from([(12, status)]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "review",
+            "dismiss",
+            "12",
+            "--until",
+            "approval:selected-reviewer",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("approval dismissal succeeds");
+
+    assert!(result.stdout.contains("until selected-reviewer approves"));
+    let log = fs::read_to_string(workspace.home.join(".local/state/jx/review-dismissals.log"))
+        .expect("dismissal log writes");
+    assert!(log.contains("\"reason\":\"user_approval\""));
+    assert!(log.contains("\"approval_reviewer\":\"selected-reviewer\""));
+    let store = rusqlite::Connection::open(
+        workspace
+            .home
+            .join(".local/state/jx/pull-request-store.sqlite"),
+    )
+    .expect("pull-request store opens");
+    let details: String = store
+        .query_row("SELECT details_json FROM pull_request_actions", [], |row| {
+            row.get(0)
+        })
+        .expect("dismiss action records");
+    assert!(details.contains("\"dismissedReason\":\"user_approval\""));
+    assert!(details.contains("\"approvalReviewer\":\"selected-reviewer\""));
 }
 
 #[test]

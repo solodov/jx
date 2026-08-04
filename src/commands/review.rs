@@ -31,6 +31,7 @@ struct ReviewDismissal {
     reason: String,
     latest_commit_oid: String,
     viewer_response_at: Option<String>,
+    approval_reviewer: Option<String>,
     dismissed_at: String,
 }
 
@@ -64,6 +65,8 @@ struct ReviewDismissalLogEvent {
     dismissed_viewer_response_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     current_viewer_response_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval_reviewer: Option<String>,
 }
 
 fn run_review_dashboard(
@@ -124,8 +127,8 @@ pub(super) fn handle_review(
     output: OutputMode,
 ) -> Result<String, CommandError> {
     match &request.action {
-        ReviewAction::Dismiss { selector } => {
-            return handle_review_dismiss(selector, environment, services, progress);
+        ReviewAction::Dismiss { selector, until } => {
+            return handle_review_dismiss(selector, until, environment, services, progress);
         }
         ReviewAction::Undismiss { selector } => {
             return handle_review_undismiss(selector, environment, services, progress);
@@ -604,13 +607,15 @@ fn has_glob_meta(value: &str) -> bool {
 
 fn handle_review_dismiss(
     selector: &str,
+    until: &ReviewDismissUntil,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
 ) -> Result<String, CommandError> {
     let mut span = PerfLog::from_environment(environment)
         .start("review.dismiss", [perf_attr("selector", selector)]);
-    let result = handle_review_dismiss_traced(selector, environment, services, progress, &mut span);
+    let result =
+        handle_review_dismiss_traced(selector, until, environment, services, progress, &mut span);
     if let Err(error) = &result {
         span.record_error(error);
     }
@@ -620,6 +625,7 @@ fn handle_review_dismiss(
 
 fn handle_review_dismiss_traced(
     selector: &str,
+    until: &ReviewDismissUntil,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -672,7 +678,8 @@ fn handle_review_dismiss_traced(
         )));
     };
 
-    let reason = review_manual_dismissal_reason(status);
+    let reason = review_manual_dismissal_reason(status, until);
+    let approval_reviewer = review_dismissal_approval_reviewer(until);
     let dismissal = ReviewDismissal {
         repository: repository.slug(),
         number: status.number,
@@ -681,6 +688,7 @@ fn handle_review_dismiss_traced(
         latest_commit_oid,
         viewer_response_at: review_viewer_response_at(status, &loaded.view.viewer)
             .map(str::to_owned),
+        approval_reviewer,
         dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     };
     append_review_dismissal_log(
@@ -708,7 +716,7 @@ fn handle_review_dismiss_traced(
     Ok(format!(
         "{prefix} {} {}\n",
         review_dismiss_pull_request_link(repository, status),
-        review_dismissal_until_message(reason),
+        review_dismissal_until_message(&dismissal),
     ))
 }
 
@@ -1019,7 +1027,9 @@ fn review_dismissal_from_row(
         .dismissal
         .as_ref()
         .map(|dismissal| dismissal.reason.clone())
-        .unwrap_or_else(|| review_manual_dismissal_reason(status).to_owned());
+        .unwrap_or_else(|| {
+            review_manual_dismissal_reason(status, &ReviewDismissUntil::Attention).to_owned()
+        });
     ReviewDismissal {
         repository: repository.slug(),
         number: status.number,
@@ -1027,23 +1037,40 @@ fn review_dismissal_from_row(
         reason,
         latest_commit_oid: status.latest_commit_oid.clone().unwrap_or_default(),
         viewer_response_at: review_viewer_response_at(status, viewer).map(str::to_owned),
+        approval_reviewer: None,
         dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     }
 }
 
-fn review_manual_dismissal_reason(status: &PullRequestStatusRecord) -> &'static str {
-    if status.draft {
-        "draft"
-    } else {
-        "manual"
+fn review_manual_dismissal_reason(
+    status: &PullRequestStatusRecord,
+    until: &ReviewDismissUntil,
+) -> &'static str {
+    match until {
+        ReviewDismissUntil::Attention if status.draft => "draft",
+        ReviewDismissUntil::Attention => "manual",
+        ReviewDismissUntil::PeerApproval => "peer_approval",
+        ReviewDismissUntil::UserApproval { .. } => "user_approval",
     }
 }
 
-fn review_dismissal_until_message(reason: &str) -> &'static str {
-    if reason == "draft" {
-        "until it is ready for review, a fresh review request, a mention, or a new author response"
-    } else {
-        "until new commits, a fresh review request, or a new author response"
+fn review_dismissal_approval_reviewer(until: &ReviewDismissUntil) -> Option<String> {
+    match until {
+        ReviewDismissUntil::UserApproval { login } => Some(login.clone()),
+        ReviewDismissUntil::Attention | ReviewDismissUntil::PeerApproval => None,
+    }
+}
+
+fn review_dismissal_until_message(dismissal: &ReviewDismissal) -> String {
+    match dismissal.reason.as_str() {
+        "draft" => "until it is ready for review, a fresh review request, a mention, or a new author response".to_owned(),
+        "peer_approval" => "until another reviewer approves".to_owned(),
+        "user_approval" => dismissal
+            .approval_reviewer
+            .as_ref()
+            .map(|reviewer| format!("until {reviewer} approves"))
+            .unwrap_or_else(|| "until the selected reviewer approves".to_owned()),
+        _ => "until new commits, a fresh review request, or a new author response".to_owned(),
     }
 }
 
@@ -1423,7 +1450,9 @@ fn review_dismissal_allows_auto_redismiss(reason: &str) -> bool {
             | "fresh_review_request"
             | "mentioned"
             | "not_dismissed"
+            | "peer_approval"
             | "ready_for_review"
+            | "user_approval"
     )
 }
 
@@ -1560,6 +1589,25 @@ fn review_action_dismissal_resurface_reason(
     if action.reason.as_deref() == Some("draft") {
         return draft_action_dismissal_resurface_reason(action, history, status, viewer);
     }
+    if action.reason.as_deref() == Some("peer_approval") {
+        return if review_has_peer_approval(status, viewer) {
+            "peer_approval"
+        } else {
+            "no_longer_hidden"
+        };
+    }
+    if action.reason.as_deref() == Some("user_approval") {
+        return if review_action_json_str(action, "approvalReviewer").is_some_and(|reviewer| {
+            status
+                .approved_reviewers
+                .iter()
+                .any(|user| user == reviewer)
+        }) {
+            "user_approval"
+        } else {
+            "no_longer_hidden"
+        };
+    }
     if review_history_has_reviewer_requested_after_unix(history, viewer, action.changed_at_unix) {
         return "fresh_review_request";
     }
@@ -1585,6 +1633,13 @@ fn review_action_dismissal_resurface_reason(
         return "viewer_review_state_changed";
     }
     "no_longer_hidden"
+}
+
+fn review_has_peer_approval(status: &PullRequestStatusRecord, viewer: &str) -> bool {
+    status
+        .approved_reviewers
+        .iter()
+        .any(|reviewer| reviewer != viewer)
 }
 
 fn draft_action_dismissal_resurface_reason(
@@ -1745,6 +1800,7 @@ fn record_review_action_cleanup(
         viewer_response_at: review_action_json_str(action, "dismissedViewerResponseAt")
             .map(str::to_owned)
             .or_else(|| review_viewer_response_at(status, viewer).map(str::to_owned)),
+        approval_reviewer: review_action_json_str(action, "approvalReviewer").map(str::to_owned),
         dismissed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     };
     append_review_dismissal_log(
@@ -1788,6 +1844,7 @@ fn record_review_dismissal_action(
             "currentHeadOid": status.and_then(|status| status.latest_commit_oid.as_deref()),
             "dismissedViewerResponseAt": dismissal.viewer_response_at,
             "currentViewerResponseAt": status.and_then(|status| review_viewer_response_at(status, viewer)),
+            "approvalReviewer": dismissal.approval_reviewer.clone(),
         }),
     )?;
     Ok(())
@@ -1826,6 +1883,7 @@ fn review_dismissal_log_event(
         current_viewer_response_at: status
             .and_then(|status| review_viewer_response_at(status, viewer))
             .map(str::to_owned),
+        approval_reviewer: dismissal.approval_reviewer.clone(),
     }
 }
 
