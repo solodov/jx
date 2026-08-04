@@ -16,6 +16,65 @@ impl JjWorkspace {
             .map(|result| result.facts)
     }
 
+    pub fn stack_trunk_status_facts<'a>(
+        &self,
+        remote_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<StatusWorkspaceFacts, JjError> {
+        self.stack_trunk_status_facts_with_metrics(remote_names)
+            .map(|result| result.facts)
+    }
+
+    /// Returns trunk-status facts for stack status without treating PR refs as trunk.
+    pub fn stack_trunk_status_facts_with_metrics<'a>(
+        &self,
+        remote_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<StatusWorkspaceFactsWithMetrics, JjError> {
+        self.ensure_git_backed()?;
+        let current_commit_started = Instant::now();
+        let target = self.current_commit()?;
+        let mut metrics = StatusWorkspaceMetrics {
+            current_commit_us: duration_us(current_commit_started.elapsed()),
+            remotes: Vec::new(),
+        };
+        let mut remotes = Vec::new();
+
+        for remote in remote_names {
+            let resolve_trunk_started = Instant::now();
+            let (branch, trunk, trunk_metrics) = self.unanchored_trunk_for_remote(remote)?;
+            let resolve_trunk_us = duration_us(resolve_trunk_started.elapsed());
+
+            let linear_stack_path_started = Instant::now();
+            let stack_path = self.stack_status_path_from_trunk(&trunk, &target)?;
+            let linear_stack_path_us = duration_us(linear_stack_path_started.elapsed());
+
+            let count_non_empty_commits_started = Instant::now();
+            let local_ahead_by = self.non_empty_commit_count(&stack_path)?;
+            let count_non_empty_commits_us = duration_us(count_non_empty_commits_started.elapsed());
+            metrics.remotes.push(StatusRemoteMetrics {
+                remote: remote.to_owned(),
+                branch: branch.clone(),
+                stack_path_len: stack_path.len(),
+                non_empty_count: local_ahead_by,
+                resolve_trunk_us,
+                trunk: trunk_metrics,
+                linear_stack_path_us,
+                count_non_empty_commits_us,
+            });
+            remotes.push(StatusRemoteFacts {
+                remote: remote.to_owned(),
+                branch,
+                trunk_git_commit_sha: trunk.id().hex(),
+                trunk_short_commit_id: short_commit_id(trunk.id()),
+                local_ahead_by,
+            });
+        }
+
+        Ok(StatusWorkspaceFactsWithMetrics {
+            facts: StatusWorkspaceFacts { remotes },
+            metrics,
+        })
+    }
+
     /// Returns local cached trunk facts and timing detail for performance tracing.
     pub fn status_facts_with_metrics<'a>(
         &self,
@@ -66,6 +125,60 @@ impl JjWorkspace {
             facts: StatusWorkspaceFacts { remotes },
             metrics,
         })
+    }
+
+    fn unanchored_trunk_for_remote(
+        &self,
+        remote: &str,
+    ) -> Result<(String, Commit, TrunkResolveMetrics), JjError> {
+        let mut metrics = TrunkResolveMetrics::default();
+        let mut candidates = Vec::new();
+        let mut conflicted = Vec::new();
+
+        let scan_started = Instant::now();
+        for (branch, remote_ref) in self.repo.view().remote_bookmarks(RemoteName::new(remote)) {
+            metrics.remote_bookmark_count += 1;
+            let branch_name = branch.as_str().to_owned();
+            let ref_target = &remote_ref.target;
+
+            if ref_target.has_conflict() {
+                metrics.conflicted_bookmark_count += 1;
+                conflicted.push(branch_name);
+                continue;
+            }
+
+            if let Some(commit_id) = ref_target.as_normal() {
+                metrics.normal_bookmark_count += 1;
+                candidates.push(TrunkCandidate {
+                    branch: branch_name,
+                    commit_id: commit_id.clone(),
+                });
+            }
+        }
+        metrics.scan_remote_bookmarks_us = duration_us(scan_started.elapsed());
+        metrics.candidate_count = candidates.len();
+
+        let select_started = Instant::now();
+        let candidate = select_trunk_candidate_with_hint(remote, candidates, conflicted, None)?;
+        metrics.select_candidate_us = duration_us(select_started.elapsed());
+
+        let load_started = Instant::now();
+        let trunk = self.load_commit(&candidate.commit_id)?;
+        metrics.load_trunk_commit_us = duration_us(load_started.elapsed());
+
+        Ok((candidate.branch, trunk, metrics))
+    }
+
+    fn stack_status_path_from_trunk(
+        &self,
+        trunk: &Commit,
+        target: &Commit,
+    ) -> Result<Vec<Commit>, JjError> {
+        if self.is_ancestor_or_equal(trunk.id(), target.id())? {
+            self.linear_stack_path(trunk, target)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn non_empty_commit_count(&self, commits: &[Commit]) -> Result<i64, JjError> {

@@ -55,6 +55,53 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
 }
 
 #[test]
+fn fetch_trunk_uses_origin_trunk_when_protecting_historical_stack() {
+    // Verifies: protected sync fetches semantic trunk even when PR refs are the only ancestors.
+    let fixture = TestWorkspace::new("fetch-protected-default-not-ancestor");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, main_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let stale_pr = write_child(tx.repo_mut(), &root, "stale landed PR").await;
+        let historical_base = write_child(tx.repo_mut(), &stale_pr, "historical trunk base").await;
+        let current = write_child(tx.repo_mut(), &historical_base, "protected PR head").await;
+        let main = write_child(tx.repo_mut(), &historical_base, "current main trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", main.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/current", current.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/stale", stale_pr.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let main_id = main.id().clone();
+        let repo = tx
+            .commit("arrange protected fetch default non-ancestor workspace")
+            .await
+            .expect("commit");
+        (workspace, repo, main_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+    let target = subject.current_commit().expect("current commit loads");
+
+    let selection = subject
+        .resolve_fetch_trunk(
+            &target,
+            &FetchOptions {
+                protected_rebase_roots: vec!["topic/current".to_owned()],
+            },
+        )
+        .expect("protected fetch chooses semantic trunk");
+
+    assert_eq!(selection.branch, "main");
+    assert_eq!(selection.commit.id(), &main_id);
+    assert!(selection.refresh_bookmarks.is_empty());
+}
+
+#[test]
 fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
     // Verifies: fetch lets jj apply remote rewrite mappings, then resolves trunk children by change id.
     let fixture = TestWorkspace::new("fetch-change-id-trunk-child");

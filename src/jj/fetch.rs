@@ -59,7 +59,7 @@ impl JjWorkspace {
                 "current_commit",
                 current_before.id().hex(),
             )],
-            || self.resolve_fetch_trunk(&current_before),
+            || self.resolve_fetch_trunk(&current_before, &options),
             |result| match result {
                 Ok(selection) => vec![
                     fetch_trace_attr("branch", &selection.branch),
@@ -347,7 +347,17 @@ impl JjWorkspace {
     pub(super) fn resolve_fetch_trunk(
         &self,
         target: &Commit,
+        options: &FetchOptions,
     ) -> Result<FetchTrunkSelection, JjError> {
+        if !options.protected_rebase_roots.is_empty() {
+            let (branch, commit) = self.resolve_unanchored_origin_trunk()?;
+            return Ok(FetchTrunkSelection {
+                branch,
+                commit,
+                refresh_bookmarks: Vec::new(),
+            });
+        }
+
         self.resolve_fetch_trunk_with_default_branch(target, |remote| {
             live_remote_default_branch(&self.workspace_root(), remote)
         })

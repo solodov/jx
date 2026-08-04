@@ -6,10 +6,7 @@ impl JjWorkspace {
         self.ensure_git_backed()?;
 
         let current_before = self.current_commit()?;
-        let current_before_tree = current_before.tree();
-        let (branch, trunk) = self.resolve_trunk(&current_before)?;
-        let (target, should_create_empty_child) =
-            self.sync_advance_target(&trunk, &current_before)?;
+        let (branch, trunk) = self.resolve_unanchored_origin_trunk()?;
         let bookmark = RefName::new(&branch);
         let remote_ref = self
             .repo
@@ -33,6 +30,19 @@ impl JjWorkspace {
                 branch: branch.clone(),
             });
         };
+        if !self.is_ancestor_or_equal(trunk.id(), current_before.id())? {
+            return Ok(AdvanceTrunkOutcome {
+                branch,
+                old_short_commit_id: short_commit_id(&old_id),
+                new_short_commit_id: short_commit_id(&old_id),
+                trunk: None,
+                current_updated: false,
+            });
+        }
+
+        let current_before_tree = current_before.tree();
+        let (target, should_create_empty_child) =
+            self.sync_advance_target(&trunk, &current_before)?;
         if !self.is_ancestor_or_equal(&old_id, target.id())? {
             return Err(JjError::TrunkBookmarkOutsideStack {
                 branch: branch.clone(),

@@ -148,6 +148,14 @@ pub(super) trait CommandServices {
         context: &RepositoryContext,
     ) -> Result<StatusWorkspaceFacts, JjError>;
 
+    /// Loads trunk facts for stack-status freshness checks.
+    fn stack_trunk_status_workspace_facts(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<StatusWorkspaceFacts, JjError> {
+        self.status_workspace_facts(context)
+    }
+
     /// Compares local cached remote-trunk state with live GitHub remotes.
     fn status_report(
         &self,
@@ -255,7 +263,7 @@ pub(super) trait CommandServices {
 
         let (trunk, fetch_trunk_status_us) = if fetch_trunk {
             let fetch_trunk_status_started = Instant::now();
-            let workspace = self.status_workspace_facts(context)?;
+            let workspace = self.stack_trunk_status_workspace_facts(context)?;
             let trunk = self.stack_trunk_status_report(context, workspace)?;
             (
                 Some(trunk),
@@ -359,14 +367,13 @@ pub(super) trait CommandServices {
                 },
                 |context| {
                     let workspace = self
-                        .status_workspace_facts(context)
+                        .stack_trunk_status_workspace_facts(context)
                         .map_err(CommandError::from)
                         .map_err(|error| error.to_string())?;
-                    let report = self
-                        .status_report(context, workspace)
+                    self.stack_trunk_status_report(context, workspace)
+                        .map(Some)
                         .map_err(CommandError::from)
-                        .map_err(|error| error.to_string())?;
-                    Ok(domain::origin_status_report(context, report))
+                        .map_err(|error| error.to_string())
                 },
             );
             if let Some(entry) = entry {
@@ -2073,6 +2080,17 @@ fn load_status_workspace_facts(
     )
 }
 
+fn load_stack_trunk_status_workspace_facts(
+    context: &RepositoryContext,
+) -> Result<StatusWorkspaceFacts, JjError> {
+    load_current_jj_workspace(context)?.stack_trunk_status_facts(
+        context
+            .github_remotes
+            .iter()
+            .map(|remote| remote.name.as_str()),
+    )
+}
+
 impl CommandServices for ProductionServices<'_> {
     fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
         JjWorkspace::current_workspace_log(self.environment.current_dir(), annotations)
@@ -2243,6 +2261,13 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
     ) -> Result<StatusWorkspaceFacts, JjError> {
         load_status_workspace_facts(context)
+    }
+
+    fn stack_trunk_status_workspace_facts(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<StatusWorkspaceFacts, JjError> {
+        load_stack_trunk_status_workspace_facts(context)
     }
 
     fn status_report(
@@ -2442,7 +2467,7 @@ impl CommandServices for ProductionServices<'_> {
                 }
 
                 let started = Instant::now();
-                let workspace = load_status_workspace_facts(context)?;
+                let workspace = load_stack_trunk_status_workspace_facts(context)?;
                 let trunk = domain::stack_trunk_status_report(context, workspace, &github).await?;
                 Ok((Some(trunk), Some(duration_us(started.elapsed()))))
             };
@@ -3377,7 +3402,7 @@ fn spawn_global_stack_status_facts_load(
             &mut metrics.load_status_facts_us,
             || {
                 workspace
-                    .status_facts_with_metrics(remote_names.iter().map(String::as_str))
+                    .stack_trunk_status_facts_with_metrics(remote_names.iter().map(String::as_str))
                     .map_err(CommandError::from)
                     .map_err(|error| error.to_string())
             },

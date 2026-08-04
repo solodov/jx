@@ -494,6 +494,47 @@ fn status_facts_ignore_empty_working_copy_commit() {
 }
 
 #[test]
+fn stack_trunk_status_facts_use_semantic_trunk_for_historical_pr_stack() {
+    // Verifies: stack status reports main freshness without treating PR refs as trunk.
+    let fixture = TestWorkspace::new("stack-status-historical-pr-trunk");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, main_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let stale_pr = write_child(tx.repo_mut(), &root, "stale landed PR").await;
+        let historical_base = write_child(tx.repo_mut(), &stale_pr, "historical trunk base").await;
+        let current = write_child(tx.repo_mut(), &historical_base, "protected PR head").await;
+        let main = write_child(tx.repo_mut(), &historical_base, "current main trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", main.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/current", current.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/stale", stale_pr.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let main_id = main.id().hex();
+        let repo = tx
+            .commit("arrange historical stack status workspace")
+            .await
+            .expect("commit");
+        (workspace, repo, main_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let facts = subject
+        .stack_trunk_status_facts(["origin"])
+        .expect("stack trunk status facts load");
+
+    assert_eq!(facts.remotes[0].branch, "main");
+    assert_eq!(facts.remotes[0].trunk_git_commit_sha, main_id);
+    assert_eq!(facts.remotes[0].local_ahead_by, 0);
+}
+
+#[test]
 fn facts_reject_ambiguous_origin_trunk_candidates() {
     // Verifies: Facts reject ambiguous origin trunk candidates.
     let fixture = TestWorkspace::new("ambiguous-trunk");
