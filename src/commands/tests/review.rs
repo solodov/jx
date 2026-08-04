@@ -237,13 +237,52 @@ fn review_groups_layout_and_external_repositories() {
     assert!(!result.stdout.contains("commenting-reviewer"));
     assert!(!result.stdout.contains("approving-reviewer"));
     assert!(!result.stdout.contains("addressed-reviewer"));
-    assert!(result.stdout.contains("outside-owner/tooling-lib"));
+    assert!(result.stdout.contains("outside-owner/tooling-lib\n  PR"));
+    assert!(!result
+        .stdout
+        .contains("outside-owner/tooling-lib  outside-owner/tooling-lib"));
     assert!(result.stdout.contains("Tighten parser behavior"));
     assert!(!result.stdout.contains("Legend:"));
     assert_eq!(
         services.pull_request_status_calls.borrow().as_slice(),
         &[vec![12], vec![44]]
     );
+}
+
+#[test]
+fn review_links_external_repository_pull_request_rows() {
+    // Verifies: external only means no local checkout; review rows remain fully actionable.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = review_status_record(44, "External review", "outside-author", false);
+    status.url = Some("https://github.com/outside-owner/tooling-lib/pull/44".to_owned());
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("outside-owner", "tooling-lib", 44)],
+        pull_request_statuses: BTreeMap::from([(44, status)]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_progress(
+        ["jx", "review"],
+        &environment,
+        &services,
+        &NoProgress,
+        test_prompt_handlers(),
+        OutputMode {
+            color: true,
+            terminal_width: None,
+        },
+    )
+    .expect("colored external review inbox renders");
+
+    assert!(result
+        .stdout
+        .contains("\x1b[1m\x1b]8;;https://github.com/outside-owner/tooling-lib"));
+    assert!(result
+        .stdout
+        .contains("\x1b]8;;https://github.com/outside-owner/tooling-lib/pull/44\x1b\\#44"));
+    assert!(result.stdout.contains("\x1b[32m✓\x1b[0m"));
 }
 
 #[test]

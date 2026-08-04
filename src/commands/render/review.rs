@@ -421,10 +421,8 @@ fn review_repository_header(repository: &ReviewRequestRepositoryView, color: boo
         .display_root
         .as_ref()
         .map(|root| format!("  {root}"))
-        .unwrap_or_else(|| format!("  {slug}"));
-    if repository.external && color {
-        format!("{DIM_STYLE}{link}{suffix}{RESET_STYLE}")
-    } else if color {
+        .unwrap_or_default();
+    if color {
         format!("\x1b[1m{link}{RESET_STYLE}{suffix}")
     } else {
         format!("{label}{suffix}")
@@ -439,10 +437,10 @@ fn review_request_row(
     terminal_width: Option<usize>,
     display_names: &BTreeMap<String, String>,
 ) -> String {
-    let row_color = color && !repository.external;
+    let row_color = color;
     let on_ice = review_request_is_on_ice(&row.status);
     let active_cell_color = row_color && !row.status.draft && !on_ice;
-    let row_style = review_request_row_style(repository, row, color);
+    let row_style = review_request_row_style(row, color);
     let pr = review_request_pr_cell(&repository.repository, &row.status, row_color);
     let check = pull_request_check_symbol_with_restore(
         Some(&row.status),
@@ -497,19 +495,13 @@ fn review_request_row(
     }
 }
 
-fn review_request_row_style(
-    repository: &ReviewRequestRepositoryView,
-    row: &ReviewRequestRowView,
-    color: bool,
-) -> &'static str {
+fn review_request_row_style(row: &ReviewRequestRowView, color: bool) -> &'static str {
     if !color {
         ""
     } else if pull_request_has_merge_conflict(&row.status) {
         CONFLICT_STYLE
     } else if review_request_is_on_ice(&row.status) {
         PASTEL_BLUE_STYLE
-    } else if repository.external {
-        DIM_STYLE
     } else if row.status.draft {
         DRAFT_ROW_STYLE
     } else {
