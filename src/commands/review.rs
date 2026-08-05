@@ -209,6 +209,12 @@ enum ReviewDismissalMode {
     Only,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewCleanupMode {
+    Record,
+    ReadOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewDecision {
     state: ReviewRequestState,
@@ -225,6 +231,13 @@ struct ReviewDecisionInput<'a> {
     history: &'a [PullRequestHistoryRecord],
     actions: &'a [PullRequestActionRecord],
     viewer: &'a str,
+    dismissal_mode: ReviewDismissalMode,
+}
+
+struct ReviewViewContext<'a> {
+    environment: &'a RuntimeEnvironment,
+    config: &'a WorkflowConfig,
+    layout_by_repository: &'a BTreeMap<GitHubRepository, ReviewRepositoryLayout>,
     dismissal_mode: ReviewDismissalMode,
 }
 
@@ -267,6 +280,22 @@ fn load_review_requests_view(
         .collect::<BTreeMap<_, _>>();
 
     let filter_matchers = review_filter_matchers(&request.repo_filters)?;
+    let view_context = ReviewViewContext {
+        environment,
+        config: &config,
+        layout_by_repository: &layout_by_repository,
+        dismissal_mode,
+    };
+    if request.cached {
+        return load_cached_review_requests_view(
+            &view_context,
+            services,
+            progress,
+            span,
+            &filter_matchers,
+        );
+    }
+
     progress.status("Loading review requests…");
     let inbox = match span.measure_with_result_attrs(
         "review.fetch_candidates",
@@ -288,19 +317,10 @@ fn load_review_requests_view(
         }
         Err(error) => return Err(error.into()),
     };
+    let inbox_for_cache = inbox.clone();
     let viewer = inbox.viewer.login;
-    let mut candidate_keys = BTreeSet::new();
-    let mut grouped = BTreeMap::<GitHubRepository, Vec<u64>>::new();
-    for candidate in inbox.requests {
-        let layout = layout_by_repository.get(&candidate.repository);
-        if review_repository_matches(&candidate.repository, layout, &filter_matchers) {
-            candidate_keys.insert(review_key(&candidate.repository, candidate.number));
-            grouped
-                .entry(candidate.repository)
-                .or_default()
-                .push(candidate.number);
-        }
-    }
+    let (candidate_keys, mut grouped) =
+        group_review_candidates(inbox.requests, &layout_by_repository, &filter_matchers);
 
     if dismissal_mode != ReviewDismissalMode::Ignore {
         add_action_dismissed_pull_requests_to_review_fetch(
@@ -331,89 +351,264 @@ fn load_review_requests_view(
             &repository,
             &numbers,
         )?;
-        let stack_status_policy = config.repo.stack_status_for(&repository);
-        let review_policy = config.repo.review_for(&repository);
-        let mut rows = Vec::new();
-        for pull_request in pull_requests.into_iter().map(|mut pull_request| {
-            pull_request.status = apply_review_request_status_policy(
-                pull_request.status,
-                &stack_status_policy,
-                &review_policy,
+        if let Some(repository_view) = build_review_repository_view(
+            &view_context,
+            &repository,
+            pull_requests,
+            &candidate_keys,
+            &viewer,
+            ReviewCleanupMode::Record,
+        )? {
+            repositories.push(repository_view);
+            progress.percentage(
+                "Loading pull request details",
+                index + 1,
+                grouped_repo_count,
             );
-            pull_request
-        }) {
-            let status = pull_request.status;
-            let key = review_key(&repository, status.number);
-            if status.author.as_deref() == Some(viewer.as_str()) || !candidate_keys.contains(&key) {
-                let reason = if status.author.as_deref() == Some(viewer.as_str()) {
-                    "authored_by_viewer"
-                } else {
-                    "left_review_inbox"
-                };
-                record_review_action_cleanup(
-                    environment,
-                    &repository,
-                    &status,
-                    &pull_request.actions,
-                    &viewer,
-                    reason,
-                )?;
-                continue;
-            }
-            let decision = decide_review_request(ReviewDecisionInput {
-                status: &status,
-                history: &pull_request.history,
-                actions: &pull_request.actions,
-                viewer: &viewer,
-                dismissal_mode,
-            });
-            if let Some(reason) = decision.action_resurface_reason {
-                record_review_action_cleanup(
-                    environment,
-                    &repository,
-                    &status,
-                    &pull_request.actions,
-                    &viewer,
-                    reason,
-                )?;
-            }
-            if !decision.visible {
-                continue;
-            }
-            rows.push(ReviewRequestRowView {
-                state: decision.state,
-                status,
-                viewer_signal: decision.viewer_signal,
-                lag_since_unix: decision.visible_since_unix,
-                dismissal: decision.dismissal,
-            });
         }
-        rows.sort_by_key(|row| std::cmp::Reverse(row.status.number));
-        if rows.is_empty() {
-            continue;
-        }
-        let layout = layout_by_repository.get(&repository);
-        repositories.push(ReviewRequestRepositoryView {
-            repository: repository.clone(),
-            layout_key: layout.map(|layout| layout.key.clone()),
-            root: layout.map(|layout| layout.root.clone()),
-            display_root: layout.map(|layout| display_path(&layout.root, environment)),
-            external: layout.is_none(),
-            review_wait_threshold_seconds: stack_status_policy.review_wait_threshold_seconds,
-            rows,
-        });
-        progress.percentage(
-            "Loading pull request details",
-            index + 1,
-            grouped_repo_count,
-        );
     }
     span.finish_step(
         fetch_details,
         [perf_attr("detail_pr_count", detail_pr_count)],
         Option::<&WorkflowError>::None,
     );
+    span.measure(
+        "review.record_candidates",
+        [
+            perf_attr("candidate_count", inbox_for_cache.requests.len()),
+            perf_attr("viewer", &inbox_for_cache.viewer.login),
+        ],
+        || {
+            PullRequestStore::open(environment)?.record_review_inbox_snapshot(&inbox_for_cache)?;
+            Ok::<(), CommandError>(())
+        },
+    )?;
 
+    let view = review_requests_view(viewer, repositories, span)?;
+    let display_names = load_review_display_names(
+        &view,
+        environment,
+        services,
+        Some(&token_source),
+        progress,
+        span,
+        false,
+    )?;
+
+    Ok(LoadedReviewRequestsView {
+        view,
+        display_names,
+    })
+}
+
+fn load_cached_review_requests_view(
+    context: &ReviewViewContext<'_>,
+    services: &dyn CommandServices,
+    progress: &dyn ProgressSink,
+    span: &mut PerfSpan,
+    filter_matchers: &[ReviewFilterMatcher],
+) -> Result<LoadedReviewRequestsView, CommandError> {
+    progress.status("Loading cached review requests…");
+    let store = span.measure("review.open_store", Vec::new(), || {
+        PullRequestStore::open(context.environment)
+    })?;
+    let inbox = span.measure("review.load_cached_candidates", Vec::new(), || {
+        store.latest_review_inbox_snapshot()
+    })?;
+    let inbox = inbox.ok_or_else(|| CommandError::Check {
+        message: "no cached review inbox is available; run `jx review` without --cached first"
+            .to_owned(),
+    })?;
+    span.set([
+        perf_attr("cached", true),
+        perf_attr("cached_candidate_count", inbox.requests.len()),
+        perf_attr("cached_observed_at_unix", inbox.observed_at_unix),
+        perf_attr("viewer", &inbox.viewer),
+    ]);
+
+    let viewer = inbox.viewer;
+    let (candidate_keys, mut grouped) = group_review_candidates(
+        inbox.requests,
+        context.layout_by_repository,
+        filter_matchers,
+    );
+    if context.dismissal_mode != ReviewDismissalMode::Ignore {
+        add_action_dismissed_pull_requests_to_review_fetch(
+            context.environment,
+            &mut grouped,
+            context.layout_by_repository,
+            filter_matchers,
+        )?;
+    }
+    span.set([perf_attr("filtered_repo_count", grouped.len())]);
+
+    let grouped_repo_count = grouped.len();
+    if grouped_repo_count > 0 {
+        progress.percentage("Loading cached pull request details", 0, grouped_repo_count);
+    }
+    let mut repositories = Vec::new();
+    let mut detail_pr_count = 0usize;
+    let load_details = span.start_step(
+        "review.load_cached_pull_request_details",
+        [perf_attr("repo_count", grouped_repo_count)],
+    );
+    for (index, (repository, mut numbers)) in grouped.into_iter().enumerate() {
+        numbers.sort_unstable();
+        numbers.dedup();
+        detail_pr_count += numbers.len();
+        let pull_requests = store.latest_pull_requests_with_history(&repository, &numbers)?;
+        if let Some(repository_view) = build_review_repository_view(
+            context,
+            &repository,
+            pull_requests,
+            &candidate_keys,
+            &viewer,
+            ReviewCleanupMode::ReadOnly,
+        )? {
+            repositories.push(repository_view);
+            progress.percentage(
+                "Loading cached pull request details",
+                index + 1,
+                grouped_repo_count,
+            );
+        }
+    }
+    span.finish_step(
+        load_details,
+        [perf_attr("detail_pr_count", detail_pr_count)],
+        Option::<&WorkflowError>::None,
+    );
+
+    let view = review_requests_view(viewer, repositories, span)?;
+    let display_names = load_review_display_names(
+        &view,
+        context.environment,
+        services,
+        None,
+        progress,
+        span,
+        true,
+    )?;
+
+    Ok(LoadedReviewRequestsView {
+        view,
+        display_names,
+    })
+}
+
+fn group_review_candidates(
+    candidates: Vec<PullRequestReviewRequest>,
+    layout_by_repository: &BTreeMap<GitHubRepository, ReviewRepositoryLayout>,
+    filter_matchers: &[ReviewFilterMatcher],
+) -> (
+    BTreeSet<ReviewPullRequestKey>,
+    BTreeMap<GitHubRepository, Vec<u64>>,
+) {
+    let mut candidate_keys = BTreeSet::new();
+    let mut grouped = BTreeMap::<GitHubRepository, Vec<u64>>::new();
+    for candidate in candidates {
+        let layout = layout_by_repository.get(&candidate.repository);
+        if review_repository_matches(&candidate.repository, layout, filter_matchers) {
+            candidate_keys.insert(review_key(&candidate.repository, candidate.number));
+            grouped
+                .entry(candidate.repository)
+                .or_default()
+                .push(candidate.number);
+        }
+    }
+    (candidate_keys, grouped)
+}
+
+fn build_review_repository_view(
+    context: &ReviewViewContext<'_>,
+    repository: &GitHubRepository,
+    pull_requests: Vec<PullRequestWithHistory>,
+    candidate_keys: &BTreeSet<ReviewPullRequestKey>,
+    viewer: &str,
+    cleanup_mode: ReviewCleanupMode,
+) -> Result<Option<ReviewRequestRepositoryView>, CommandError> {
+    let stack_status_policy = context.config.repo.stack_status_for(repository);
+    let review_policy = context.config.repo.review_for(repository);
+    let mut rows = Vec::new();
+    for pull_request in pull_requests.into_iter().map(|mut pull_request| {
+        pull_request.status = apply_review_request_status_policy(
+            pull_request.status,
+            &stack_status_policy,
+            &review_policy,
+        );
+        pull_request
+    }) {
+        let status = pull_request.status;
+        let key = review_key(repository, status.number);
+        if status.author.as_deref() == Some(viewer) || !candidate_keys.contains(&key) {
+            if cleanup_mode == ReviewCleanupMode::Record {
+                let reason = if status.author.as_deref() == Some(viewer) {
+                    "authored_by_viewer"
+                } else {
+                    "left_review_inbox"
+                };
+                record_review_action_cleanup(
+                    context.environment,
+                    repository,
+                    &status,
+                    &pull_request.actions,
+                    viewer,
+                    reason,
+                )?;
+            }
+            continue;
+        }
+        let decision = decide_review_request(ReviewDecisionInput {
+            status: &status,
+            history: &pull_request.history,
+            actions: &pull_request.actions,
+            viewer,
+            dismissal_mode: context.dismissal_mode,
+        });
+        if let Some(reason) = decision.action_resurface_reason {
+            if cleanup_mode == ReviewCleanupMode::Record {
+                record_review_action_cleanup(
+                    context.environment,
+                    repository,
+                    &status,
+                    &pull_request.actions,
+                    viewer,
+                    reason,
+                )?;
+            }
+        }
+        if !decision.visible {
+            continue;
+        }
+        rows.push(ReviewRequestRowView {
+            state: decision.state,
+            status,
+            viewer_signal: decision.viewer_signal,
+            lag_since_unix: decision.visible_since_unix,
+            dismissal: decision.dismissal,
+        });
+    }
+    rows.sort_by_key(|row| std::cmp::Reverse(row.status.number));
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let layout = context.layout_by_repository.get(repository);
+    Ok(Some(ReviewRequestRepositoryView {
+        repository: repository.clone(),
+        layout_key: layout.map(|layout| layout.key.clone()),
+        root: layout.map(|layout| layout.root.clone()),
+        display_root: layout.map(|layout| display_path(&layout.root, context.environment)),
+        external: layout.is_none(),
+        review_wait_threshold_seconds: stack_status_policy.review_wait_threshold_seconds,
+        rows,
+    }))
+}
+
+fn review_requests_view(
+    viewer: String,
+    mut repositories: Vec<ReviewRequestRepositoryView>,
+    span: &mut PerfSpan,
+) -> Result<ReviewRequestsView, CommandError> {
     span.measure("review.group_repositories", Vec::new(), || {
         sort_review_repositories(&mut repositories);
         Ok::<(), CommandError>(())
@@ -436,23 +631,42 @@ fn load_review_requests_view(
         ),
     ]);
 
-    let view = ReviewRequestsView {
+    Ok(ReviewRequestsView {
         viewer,
         repositories,
-    };
-    let mut display_name_logins = review_request_user_logins(&view);
+    })
+}
+
+fn load_review_display_names(
+    view: &ReviewRequestsView,
+    environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
+    token_source: Option<&TokenSource>,
+    progress: &dyn ProgressSink,
+    span: &mut PerfSpan,
+    cached: bool,
+) -> Result<BTreeMap<String, String>, CommandError> {
+    let mut display_name_logins = review_request_user_logins(view);
     if !view.repositories.is_empty() {
         display_name_logins.push(view.viewer.clone());
     }
-    let display_names = span.measure_with_result_attrs(
+    span.measure_with_result_attrs(
         "review.load_display_names",
-        [perf_attr("login_count", display_name_logins.len())],
+        [
+            perf_attr("login_count", display_name_logins.len()),
+            perf_attr("cached", cached),
+        ],
         || {
             Ok::<_, CommandError>(if display_name_logins.is_empty() {
                 BTreeMap::new()
+            } else if cached {
+                cached_review_display_names(environment, &display_name_logins)?
             } else {
                 progress.status("Loading reviewer names…");
-                services.github_user_display_names(&token_source, &display_name_logins)
+                services.github_user_display_names(
+                    token_source.expect("live review display names have a token source"),
+                    &display_name_logins,
+                )
             })
         },
         |result| {
@@ -461,12 +675,23 @@ fn load_review_requests_view(
                 .map(|display_names| vec![perf_attr("display_name_count", display_names.len())])
                 .unwrap_or_default()
         },
-    )?;
+    )
+}
 
-    Ok(LoadedReviewRequestsView {
-        view,
-        display_names,
-    })
+fn cached_review_display_names(
+    environment: &RuntimeEnvironment,
+    logins: &[String],
+) -> Result<BTreeMap<String, String>, CommandError> {
+    let cache = read_github_user_name_cache(environment)?;
+    Ok(logins
+        .iter()
+        .filter_map(|login| {
+            cache
+                .cached_name(login)
+                .flatten()
+                .map(|name| (login.clone(), name))
+        })
+        .collect())
 }
 
 fn review_candidate_search_saml_enforced(error: &WorkflowError) -> bool {
@@ -637,6 +862,7 @@ fn handle_review_dismiss_traced(
         interactive: false,
         refresh_seconds: 300,
         format: ReviewFormat::Human,
+        cached: false,
     };
     let loaded = load_review_requests_view(
         &request,
@@ -750,6 +976,7 @@ fn handle_review_undismiss_traced(
         interactive: false,
         refresh_seconds: 300,
         format: ReviewFormat::Human,
+        cached: false,
     };
     let loaded = load_review_requests_view(
         &request,
@@ -1319,11 +1546,18 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
     let auto_redismiss_allowed = resurface_reason
         .map(review_dismissal_allows_auto_redismiss)
         .unwrap_or(true);
-    let automatic_hide_reason = (input.dismissal_mode != ReviewDismissalMode::Ignore
-        && !hidden_by_dismissal
-        && auto_redismiss_allowed)
-        .then(|| review_request_auto_dismiss_reason(input.status, input.viewer, state))
-        .flatten();
+    let automatic_hide_reason =
+        if input.dismissal_mode == ReviewDismissalMode::Ignore || hidden_by_dismissal {
+            None
+        } else if action_resurface_reason != Some("not_dismissed")
+            && review_request_targets_non_default_branch(input.status)
+        {
+            Some("non_default_branch")
+        } else if auto_redismiss_allowed {
+            review_request_auto_dismiss_reason(input.status, input.viewer, state)
+        } else {
+            None
+        };
     let visible = match input.dismissal_mode {
         ReviewDismissalMode::Apply => !hidden_by_dismissal && automatic_hide_reason.is_none(),
         ReviewDismissalMode::Only => hidden_by_dismissal || automatic_hide_reason.is_some(),
@@ -1410,6 +1644,16 @@ fn review_request_auto_dismiss_reason(
     state: ReviewRequestState,
 ) -> Option<&'static str> {
     review_request_auto_dismiss_reason_after(status, viewer, state, None)
+}
+
+/// Returns whether a PR is stacked behind a non-trunk base and should wait off-inbox.
+fn review_request_targets_non_default_branch(status: &PullRequestStatusRecord) -> bool {
+    status
+        .default_branch
+        .as_deref()
+        .is_some_and(|default_branch| {
+            !default_branch.is_empty() && status.base_branch != default_branch
+        })
 }
 
 fn review_request_auto_dismiss_reason_after(

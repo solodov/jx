@@ -1,9 +1,12 @@
 use super::*;
-use crate::github::{PullRequestStatusRecord, PullRequestTimelineEventKind};
+use crate::github::{
+    PullRequestReviewRequest, PullRequestReviewRequests, PullRequestStatusRecord,
+    PullRequestTimelineEventKind,
+};
 use rusqlite::{params, OptionalExtension as _};
 
 pub const PULL_REQUEST_STORE_FILE: &str = "pull-request-store.sqlite";
-pub const PULL_REQUEST_STORE_SCHEMA_VERSION: i64 = 1;
+pub const PULL_REQUEST_STORE_SCHEMA_VERSION: i64 = 2;
 pub const PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION: i64 = 2;
 
 const CREATE_PULL_REQUEST_STORE_SCHEMA: &str = r#"
@@ -158,6 +161,36 @@ CREATE INDEX IF NOT EXISTS idx_history_snapshot
 
 CREATE INDEX IF NOT EXISTS idx_actions_pr_time
   ON pull_request_actions(pr_id, changed_at_unix DESC);
+
+-- One captured review-inbox candidate set for the authenticated viewer.
+-- Cached review output reads the latest row to avoid GitHub review-search calls.
+CREATE TABLE IF NOT EXISTS review_inbox_snapshots (
+  -- Local review inbox snapshot id.
+  id INTEGER PRIMARY KEY,
+
+  -- When jx observed this review inbox, as a UTC Unix timestamp in seconds.
+  observed_at_unix INTEGER NOT NULL,
+
+  -- Authenticated GitHub login whose review inbox produced this snapshot.
+  viewer_login TEXT NOT NULL
+);
+
+-- Pull requests that were in one captured review-inbox candidate set.
+CREATE TABLE IF NOT EXISTS review_inbox_pull_requests (
+  -- Review inbox snapshot this candidate belongs to.
+  snapshot_id INTEGER NOT NULL REFERENCES review_inbox_snapshots(id) ON DELETE CASCADE,
+
+  -- Candidate pull request repository.
+  repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+
+  -- Pull request number within the repository.
+  number INTEGER NOT NULL,
+
+  PRIMARY KEY(snapshot_id, repository_id, number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_inbox_pull_requests_snapshot
+  ON review_inbox_pull_requests(snapshot_id);
 "#;
 
 pub struct PullRequestStore {
@@ -191,6 +224,13 @@ pub struct StoredPullRequestTimeline {
     pub status: Option<PullRequestStatusRecord>,
     pub history: Vec<PullRequestHistoryRecord>,
     pub actions: Vec<PullRequestActionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredReviewInboxSnapshot {
+    pub viewer: String,
+    pub observed_at_unix: i64,
+    pub requests: Vec<PullRequestReviewRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,6 +397,87 @@ impl PullRequestStore {
         Ok(pull_requests)
     }
 
+    /// Records the latest review-inbox candidate set for fast cached review reads.
+    pub fn record_review_inbox_snapshot(
+        &self,
+        inbox: &PullRequestReviewRequests,
+    ) -> Result<(), RepositoryError> {
+        self.connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|source| self.query_error(source))?;
+        let result = self.record_review_inbox_snapshot_in_transaction(inbox);
+        match result {
+            Ok(()) => self
+                .connection
+                .execute_batch("COMMIT")
+                .map_err(|source| self.query_error(source)),
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Loads the latest captured review-inbox candidate set, if one has been recorded.
+    pub fn latest_review_inbox_snapshot(
+        &self,
+    ) -> Result<Option<StoredReviewInboxSnapshot>, RepositoryError> {
+        let Some((snapshot_id, observed_at_unix, viewer)) = self
+            .connection
+            .query_row(
+                "SELECT id, observed_at_unix, viewer_login
+                 FROM review_inbox_snapshots
+                 ORDER BY id DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|source| self.query_error(source))?
+        else {
+            return Ok(None);
+        };
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT repositories.owner, repositories.name, candidates.number
+                 FROM review_inbox_pull_requests candidates
+                 JOIN repositories ON repositories.id = candidates.repository_id
+                 WHERE candidates.snapshot_id = ?1
+                   AND repositories.host = 'github.com'
+                 ORDER BY repositories.owner, repositories.name, candidates.number",
+            )
+            .map_err(|source| self.query_error(source))?;
+        let rows = statement
+            .query_map(params![snapshot_id], |row| {
+                Ok(PullRequestReviewRequest {
+                    repository: GitHubRepository {
+                        owner: row.get(0)?,
+                        name: row.get(1)?,
+                    },
+                    number: row.get::<_, i64>(2)? as u64,
+                })
+            })
+            .map_err(|source| self.query_error(source))?;
+        let mut requests = Vec::new();
+        for row in rows {
+            requests.push(row.map_err(|source| self.query_error(source))?);
+        }
+
+        Ok(Some(StoredReviewInboxSnapshot {
+            viewer,
+            observed_at_unix,
+            requests,
+        }))
+    }
+
     /// Lists pull requests known to the local store.
     pub fn stored_pull_request_identities(
         &self,
@@ -504,6 +625,37 @@ impl PullRequestStore {
                 params![pr_id, action, source, reason, changed_at_unix, details_json],
             )
             .map_err(|source| self.query_error(source))?;
+        Ok(())
+    }
+
+    fn record_review_inbox_snapshot_in_transaction(
+        &self,
+        inbox: &PullRequestReviewRequests,
+    ) -> Result<(), RepositoryError> {
+        let observed_at_unix = chrono::Utc::now().timestamp();
+        self.connection
+            .execute(
+                "INSERT INTO review_inbox_snapshots (observed_at_unix, viewer_login)
+                 VALUES (?1, ?2)",
+                params![observed_at_unix, inbox.viewer.login.trim()],
+            )
+            .map_err(|source| self.query_error(source))?;
+        let snapshot_id = self.connection.last_insert_rowid();
+        let mut requests = inbox.requests.clone();
+        requests.sort();
+        requests.dedup();
+        for request in requests {
+            let repository_id = self.upsert_repository(&request.repository)?;
+            self.upsert_pull_request(repository_id, request.number, observed_at_unix)?;
+            self.connection
+                .execute(
+                    "INSERT OR IGNORE INTO review_inbox_pull_requests
+                     (snapshot_id, repository_id, number)
+                     VALUES (?1, ?2, ?3)",
+                    params![snapshot_id, repository_id, request.number as i64],
+                )
+                .map_err(|source| self.query_error(source))?;
+        }
         Ok(())
     }
 

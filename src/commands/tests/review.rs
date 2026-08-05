@@ -17,6 +17,7 @@ fn review_interactive_flags_parse_without_loading_dashboard() {
     assert!(request.interactive);
     assert_eq!(request.refresh_seconds, 15);
     assert_eq!(request.format, ReviewFormat::Human);
+    assert!(!request.cached);
 }
 
 #[test]
@@ -128,6 +129,34 @@ fn review_interactive_rejects_json_format() {
     // Verifies: machine-readable provider output stays non-interactive for external wrappers.
     let matches = cli()
         .try_get_matches_from(["jx", "review", "-i", "--format", "json"])
+        .expect("CLI shape parses before request validation");
+    let result = CommandRequest::from_matches(&matches);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn review_cached_flag_parses_for_non_interactive_output() {
+    // Verifies: cached review output is an explicit non-interactive read mode.
+    let matches = cli()
+        .try_get_matches_from(["jx", "review", "--cached", "--format", "json", "api-*"])
+        .expect("cached review args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+
+    let CommandRequest::Review(request) = request else {
+        panic!("expected review request");
+    };
+    assert_eq!(request.action, ReviewAction::Show);
+    assert_eq!(request.repo_filters, vec!["api-*".to_owned()]);
+    assert_eq!(request.format, ReviewFormat::Json);
+    assert!(request.cached);
+}
+
+#[test]
+fn review_cached_rejects_interactive_dashboard() {
+    // Verifies: cached review reads remain single-shot so stale data is explicit.
+    let matches = cli()
+        .try_get_matches_from(["jx", "review", "--cached", "-i"])
         .expect("CLI shape parses before request validation");
     let result = CommandRequest::from_matches(&matches);
 
@@ -746,6 +775,76 @@ fn review_renders_json_provider_output() {
 }
 
 #[test]
+fn review_live_run_records_cached_candidate_seed() {
+    // Verifies: live review refreshes the local candidate set used by cached review output.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_request_statuses: BTreeMap::from([(
+            12,
+            review_status_record(12, "Update alpha endpoint", "example-author", false),
+        )]),
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox renders");
+    let cached = PullRequestStore::open(&environment)
+        .expect("pull-request store opens")
+        .latest_review_inbox_snapshot()
+        .expect("cached seed loads")
+        .expect("cached seed exists");
+
+    assert_eq!(cached.viewer, "example-reviewer");
+    assert_eq!(
+        cached.requests,
+        vec![review_request("example-owner", "api-alpha", 12)]
+    );
+}
+
+#[test]
+fn review_cached_json_uses_local_store_without_fetching_details() {
+    // Verifies: completion-style JSON can be rendered from local review and PR snapshots only.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let repository = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    let mut status = review_status_record(12, "Cached review", "example-author", false);
+    status.created_at = Some("2099-01-01T00:00:00Z".to_owned());
+    let store = PullRequestStore::open(&environment).expect("pull-request store opens");
+    store
+        .record_review_inbox_snapshot(&PullRequestReviewRequests {
+            viewer: crate::github::AuthenticatedUser {
+                login: "example-reviewer".to_owned(),
+            },
+            requests: vec![review_request("example-owner", "api-alpha", 12)],
+        })
+        .expect("review inbox seed records");
+    store
+        .record_pull_request_snapshots(&repository, &[status])
+        .expect("cached PR snapshot records");
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "review", "--cached", "--format", "json"],
+        &environment,
+        &services,
+    )
+    .expect("cached review json renders");
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).expect("valid json");
+    let pull_requests = value["pullRequests"].as_array().expect("pull requests");
+
+    assert_eq!(value["viewer"]["login"], "example-reviewer");
+    assert_eq!(pull_requests.len(), 1);
+    assert_eq!(pull_requests[0]["title"], "Cached review");
+    assert!(services.pull_request_status_calls.borrow().is_empty());
+}
+
+#[test]
 fn review_rewrites_titles_before_rendering() {
     // Verifies: review inbox uses the same repo-scoped title normalization as stack status.
     let workspace = review_workspace();
@@ -1146,12 +1245,13 @@ fn review_history_json_renders_actions_for_wrappers() {
 
 #[test]
 fn review_manual_undismiss_overrides_computed_auto_hide() {
-    // Verifies: explicit local undismiss keeps a handled PR visible without GitHub mutation.
+    // Verifies: explicit local undismiss keeps a handled or stacked PR visible without GitHub mutation.
     let workspace = review_workspace();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Approved review", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
     status.approved_reviewers = vec!["example-reviewer".to_owned()];
+    status.base_branch = "topic/parent".to_owned();
     let services = FakeServices {
         github_login: "example-reviewer".to_owned(),
         review_requests: vec![review_request("example-owner", "api-alpha", 12)],
@@ -1348,6 +1448,45 @@ fn review_does_not_auto_dismiss_after_active_author_response() {
         .home
         .join(".local/state/jx/review-dismissals.toml")
         .exists());
+}
+
+#[test]
+fn review_auto_dismisses_non_default_branch_after_author_response() {
+    // Verifies: stacked PRs stay off the normal inbox even when an author reply would otherwise resurface them.
+    let workspace = review_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let mut status = review_status_record(12, "Stacked author reply", "example-author", false);
+    status.requested_reviewers = ReviewerSelection::default();
+    status.approved_reviewers = vec!["example-reviewer".to_owned()];
+    status.base_branch = "topic/parent".to_owned();
+    status.review_activity = vec![PullRequestReviewActivity {
+        reviewer: "example-reviewer".to_owned(),
+        reviewed_at: "2026-01-01T12:00:00Z".to_owned(),
+    }];
+    status.reviewer_responses = vec![PullRequestReviewerResponse {
+        reviewer: "example-reviewer".to_owned(),
+        responded_at: "2026-01-01T12:45:00Z".to_owned(),
+        body_text: "Could you take another look?".to_owned(),
+    }];
+    let services = FakeServices {
+        github_login: "example-reviewer".to_owned(),
+        review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+        pull_request_statuses: BTreeMap::from([(12, status)]),
+        ..FakeServices::default()
+    };
+
+    let inbox = run_with_args_and_services(["jx", "review"], &environment, &services)
+        .expect("review inbox hides stacked PR");
+    let dismissed =
+        run_with_args_and_services(["jx", "review", "dismissed"], &environment, &services)
+            .expect("dismissed review inbox renders stacked PR");
+
+    assert!(!inbox.stdout.contains("Stacked author reply"));
+    assert!(dismissed.stdout.contains("Stacked author reply"));
+    assert!(dismissed
+        .stdout
+        .contains("[jx:dismissed:non_default_branch]"));
+    assert_no_review_dismissal_state_or_log(&workspace);
 }
 
 #[test]

@@ -8,10 +8,11 @@ Use repository filters to narrow the inbox by configured layout key or provider/
 jx review api-*
 jx review example-owner/example-repo
 jx review --format json
+jx review --cached --format json
 jx review -i --refresh-seconds 60
 ```
 
-The interactive dashboard is for the normal inbox only. JSON output is non-interactive so external selectors can consume stable provider data.
+The interactive dashboard is for the normal live inbox only. JSON output is non-interactive so external selectors can consume stable provider data. `jx review --cached` renders the latest locally stored review inbox and PR snapshots without contacting GitHub, so it is fast but can be stale.
 
 ## Local dismissal
 
@@ -45,11 +46,12 @@ Manual dismissal hides a PR until it needs attention again. New commits, a fresh
 
 `jx review` computes some hidden states from the current PR snapshot instead of storing them as local dismissals:
 
+- `non_default_branch`: the PR targets a branch other than the base repository's default branch.
 - `approved`: the viewer already approved the PR.
 - `commented`: the viewer commented or requested changes and there is no newer author response requiring attention.
 - `draft`: the PR is still draft and has no explicit attention signal.
 
-`jx review dismissed` shows both manual/action-backed dismissals and these computed hidden rows with synthetic labels such as `jx:dismissed:manual`, `jx:dismissed:approved`, `jx:dismissed:commented`, or `jx:dismissed:draft`.
+`jx review dismissed` shows both manual/action-backed dismissals and these computed hidden rows with synthetic labels such as `jx:dismissed:manual`, `jx:dismissed:non_default_branch`, `jx:dismissed:approved`, `jx:dismissed:commented`, or `jx:dismissed:draft`.
 
 Author comments matching `repo.review.ignored_author_response_comments` do not count as meaningful responses for resurfacing. This is intended for command-only comments such as automation merge commands.
 
@@ -60,7 +62,7 @@ Review visibility decisions use the shared pull-request store plus current GitHu
 - `$XDG_STATE_HOME/jx/pull-request-store.sqlite`
 - fallback: `~/.local/state/jx/pull-request-store.sqlite`
 
-The store is personal, single-operator state. It keeps normalized PR snapshots, derived PR history, and local review actions such as `dismiss` and `undismiss`. Timestamp columns ending in `_at_unix` store UTC Unix seconds.
+The store is personal, single-operator state. It keeps normalized PR snapshots, derived PR history, local review actions such as `dismiss` and `undismiss`, and the latest viewer-scoped review inbox candidate set used by `jx review --cached`. Timestamp columns ending in `_at_unix` store UTC Unix seconds.
 
 Dismissal audit events append to:
 

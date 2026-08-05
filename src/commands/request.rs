@@ -207,6 +207,7 @@ pub(super) struct ReviewRequest {
     pub(super) interactive: bool,
     pub(super) refresh_seconds: u64,
     pub(super) format: ReviewFormat,
+    pub(super) cached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +374,7 @@ impl CommandRequest {
                 perf_attr("format", review_format_name(request.format)),
                 perf_attr("interactive", request.interactive),
                 perf_attr("refresh_seconds", request.refresh_seconds),
+                perf_attr("cached", request.cached),
             ]),
             Self::RemoteStatus(request) => attrs.extend([
                 perf_attr("all", request.all),
@@ -761,6 +763,7 @@ fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
     };
     let format = review_format(matches);
     let interactive = matches.get_flag("interactive");
+    let cached = matches.get_flag("cached");
     if interactive && format == ReviewFormat::Json {
         return Err(clap::Error::raw(
             ErrorKind::ArgumentConflict,
@@ -773,12 +776,25 @@ fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
             "jx review --interactive cannot be used with review subcommands",
         ));
     }
+    if cached && interactive {
+        return Err(clap::Error::raw(
+            ErrorKind::ArgumentConflict,
+            "jx review --cached cannot be used with --interactive",
+        ));
+    }
+    if cached && action != ReviewAction::Show {
+        return Err(clap::Error::raw(
+            ErrorKind::ArgumentConflict,
+            "jx review --cached cannot be used with review subcommands",
+        ));
+    }
     Ok(ReviewRequest {
         action,
         repo_filters: review_repo_filters(matches),
         interactive,
         refresh_seconds: dashboard_refresh_seconds(matches)?,
         format,
+        cached,
     })
 }
 
@@ -1416,10 +1432,11 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("review")
                 .about("Show pull requests requesting your review")
                 .long_about(
-                    "Show open GitHub pull requests requesting review from the authenticated user.\n\nThe command fetches live GitHub review requests, groups them by repository, applies repo-specific status policy such as review-gate checks, and renders check status, review-request state, labels, and reviewer state using the same compact conventions as stack status.",
+                    "Show open GitHub pull requests requesting review from the authenticated user.\n\nBy default the command fetches live GitHub review requests, refreshes local PR snapshots, groups them by repository, applies repo-specific status policy such as review-gate checks, and renders check status, review-request state, labels, and reviewer state using the same compact conventions as stack status. Use --cached to render the latest locally stored review inbox without contacting GitHub.",
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())
+                .arg(review_cached_arg())
                 .arg(review_format_arg())
                 .arg(review_repo_filter_arg())
                 .subcommand(
@@ -1848,6 +1865,13 @@ fn review_format_arg() -> Arg {
         .default_value("human")
         .value_parser(["human", "json"])
         .help("Select review output format")
+}
+
+fn review_cached_arg() -> Arg {
+    Arg::new("cached")
+        .long("cached")
+        .action(ArgAction::SetTrue)
+        .help("Render the latest locally stored review inbox without contacting GitHub")
 }
 
 fn stack_status_repo_filter_arg() -> Arg {

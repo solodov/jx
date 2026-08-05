@@ -1,9 +1,10 @@
 use super::*;
 use crate::github::{
-    PullRequestAutoMergeStatus, PullRequestCheckStatus, PullRequestMergeStatus,
-    PullRequestReviewActivity, PullRequestReviewStatus, PullRequestReviewerMention,
-    PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
-    PullRequestTimelineEventKind, ReviewerSelection,
+    AuthenticatedUser, PullRequestAutoMergeStatus, PullRequestCheckStatus, PullRequestMergeStatus,
+    PullRequestReviewActivity, PullRequestReviewRequest, PullRequestReviewRequests,
+    PullRequestReviewStatus, PullRequestReviewerMention, PullRequestReviewerResponse,
+    PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
+    ReviewerSelection,
 };
 use jj_lib::{
     config::StackedConfig,
@@ -55,11 +56,11 @@ fn pull_request_store_migrates_documented_history_schema() {
         "snapshot_id INTEGER NOT NULL REFERENCES pull_request_snapshots(id) ON DELETE CASCADE"
     ));
     assert!(history_schema.contains("changed_at_unix INTEGER NOT NULL"));
-    assert_eq!(store.schema_version().expect("schema version loads"), 1);
+    assert_eq!(store.schema_version().expect("schema version loads"), 2);
     assert_eq!(
         scalar_i64(
             store.connection(),
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 1",
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 2",
         ),
         1
     );
@@ -67,6 +68,85 @@ fn pull_request_store_migrates_documented_history_schema() {
         .contains("-- Local operator or automation actions tied to a PR."));
     assert!(pull_request_store_schema_sql()
         .contains("-- Refresh/dedup guard from GitHub's updatedAt timestamp."));
+    assert!(pull_request_store_schema_sql()
+        .contains("-- One captured review-inbox candidate set for the authenticated viewer."));
+}
+
+#[test]
+fn pull_request_store_records_and_loads_review_inbox_snapshots() {
+    // Verifies: cached review commands can recover the last viewer-scoped PR candidate set.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let store = PullRequestStore::open(&environment).expect("store opens");
+    let alpha = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-alpha".to_owned(),
+    };
+    let beta = GitHubRepository {
+        owner: "example-owner".to_owned(),
+        name: "api-beta".to_owned(),
+    };
+
+    store
+        .record_review_inbox_snapshot(&PullRequestReviewRequests {
+            viewer: AuthenticatedUser {
+                login: "example-reviewer".to_owned(),
+            },
+            requests: vec![PullRequestReviewRequest {
+                repository: alpha.clone(),
+                number: 12,
+            }],
+        })
+        .expect("first review inbox records");
+    store
+        .record_review_inbox_snapshot(&PullRequestReviewRequests {
+            viewer: AuthenticatedUser {
+                login: "example-reviewer".to_owned(),
+            },
+            requests: vec![
+                PullRequestReviewRequest {
+                    repository: beta.clone(),
+                    number: 44,
+                },
+                PullRequestReviewRequest {
+                    repository: alpha.clone(),
+                    number: 12,
+                },
+                PullRequestReviewRequest {
+                    repository: alpha.clone(),
+                    number: 12,
+                },
+            ],
+        })
+        .expect("latest review inbox records");
+
+    let cached = store
+        .latest_review_inbox_snapshot()
+        .expect("review inbox loads")
+        .expect("cached inbox exists");
+
+    assert_eq!(cached.viewer, "example-reviewer");
+    assert!(cached.observed_at_unix > 0);
+    assert_eq!(
+        cached.requests,
+        vec![
+            PullRequestReviewRequest {
+                repository: alpha,
+                number: 12,
+            },
+            PullRequestReviewRequest {
+                repository: beta,
+                number: 44,
+            },
+        ]
+    );
+    assert_eq!(
+        scalar_i64(
+            store.connection(),
+            "SELECT COUNT(*) FROM review_inbox_snapshots"
+        ),
+        2
+    );
 }
 
 #[test]

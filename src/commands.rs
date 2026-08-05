@@ -43,9 +43,10 @@ use crate::{
     github::{
         GitHubClient, GitHubUserProfile, OctocrabGitHubClient, PullRequestCheckStatus,
         PullRequestHead, PullRequestLabel, PullRequestRecord, PullRequestReviewActivity,
-        PullRequestReviewRequests, PullRequestReviewStatus, PullRequestReviewerResponse,
-        PullRequestStatusRecord, PullRequestTimelineEvent, PullRequestTimelineEventKind,
-        RepositoryCreation, ReviewerCandidate, ReviewerSelection, ReviewerTarget,
+        PullRequestReviewRequest, PullRequestReviewRequests, PullRequestReviewStatus,
+        PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
+        PullRequestTimelineEventKind, RepositoryCreation, ReviewerCandidate, ReviewerSelection,
+        ReviewerTarget,
     },
     jj::{
         current_workspace_entry, jj_workspace_entries, remove_jj_workspace, run_current_diff,
