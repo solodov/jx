@@ -1046,6 +1046,9 @@ fn stack_metadata_node_from_pull_request(
         live_parent
             .map(|parent| parent.head_branch.clone())
             .or_else(|| existing_parent.map(|parent| parent.branch.clone()))
+            // A completed parent may have been rebased out of GitHub's live base branch;
+            // keep that historical edge so open descendants stay in the same stack.
+            .or_else(|| existing_completed_parent_branch(existing_node, existing_nodes_by_branch))
             .or_else(|| {
                 existing_node.and_then(|node| {
                     preserve_existing_parent

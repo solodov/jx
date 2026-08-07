@@ -251,6 +251,66 @@ fn local_stack_refresh_preserves_completed_parent_context() {
 }
 
 #[test]
+fn pull_request_upsert_preserves_completed_parent_context() {
+    // Verifies: live PR refreshes that retarget an open child to trunk do not split it from a cached completed parent.
+    let metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![
+            StackMetadataNode {
+                branch: "topic/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(10),
+                parent_pull_request: None,
+                title: "Completed root".to_owned(),
+                url: None,
+                draft: false,
+                merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "topic/child".to_owned(),
+                base_branch: "topic/root".to_owned(),
+                parent_branch: Some("topic/root".to_owned()),
+                pull_request: Some(11),
+                parent_pull_request: Some(10),
+                title: "Stored child".to_owned(),
+                url: None,
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+        ],
+    };
+    let live_child = PullRequestRecord {
+        number: 11,
+        title: "Updated child".to_owned(),
+        body: None,
+        head_branch: "topic/child".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: None,
+        draft: false,
+        merged: false,
+        reviewers: ReviewerSelection::default(),
+    };
+
+    let refreshed = upsert_stack_metadata_pull_requests(&[live_child], &metadata);
+    let child = refreshed
+        .nodes
+        .iter()
+        .find(|node| node.branch == "topic/child")
+        .expect("child remains tracked");
+
+    assert_eq!(child.base_branch, "main");
+    assert_eq!(child.parent_branch.as_deref(), Some("topic/root"));
+    assert_eq!(child.parent_pull_request, Some(10));
+    assert_eq!(child.title, "Updated child");
+}
+
+#[test]
 fn pull_request_record_refresh_preserves_fix_merge_transition() {
     // Verifies: sync/refresh cannot consume the status-observed transition that runs work-item handlers.
     let mut metadata = StackMetadata {
