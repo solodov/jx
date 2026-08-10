@@ -152,6 +152,44 @@ pub fn pull_request_body_with_stack_context(
     }
 }
 
+/// One authored or generated section of a pull-request description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestDescriptionSection<'a> {
+    /// Operator-authored Markdown outside generated stack-context markers.
+    Authored(&'a str),
+    /// Generated stack-context Markdown between jx marker comments.
+    GeneratedStackContext(&'a str),
+}
+
+/// Splits a PR description so renderers can handle generated stack context separately.
+pub fn pull_request_description_sections(
+    description: &str,
+) -> Vec<PullRequestDescriptionSection<'_>> {
+    let mut sections = Vec::new();
+    let mut cursor = 0;
+    while let Some((outer, inner)) = generated_stack_context_ranges_from(description, cursor) {
+        if outer.start > cursor {
+            sections.push(PullRequestDescriptionSection::Authored(
+                &description[cursor..outer.start],
+            ));
+        }
+        sections.push(PullRequestDescriptionSection::GeneratedStackContext(
+            &description[inner],
+        ));
+        cursor = outer.end;
+    }
+
+    if cursor < description.len() {
+        sections.push(PullRequestDescriptionSection::Authored(
+            &description[cursor..],
+        ));
+    }
+    if sections.is_empty() {
+        sections.push(PullRequestDescriptionSection::Authored(description));
+    }
+    sections
+}
+
 fn render_pull_request_stack_context(
     metadata: &StackMetadata,
     current: &PullRequestRecord,
@@ -274,10 +312,21 @@ fn replace_generated_stack_context(body: &str, block: Option<&str>) -> String {
 }
 
 fn generated_stack_context_range(body: &str) -> Option<std::ops::Range<usize>> {
-    let start = body.find(STACK_CONTEXT_START)?;
+    generated_stack_context_ranges_from(body, 0).map(|(outer, _)| outer)
+}
+
+fn generated_stack_context_ranges_from(
+    body: &str,
+    offset: usize,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let start = body[offset..].find(STACK_CONTEXT_START)? + offset;
     let after_start = start + STACK_CONTEXT_START.len();
-    let end = body[after_start..].find(STACK_CONTEXT_END)? + after_start + STACK_CONTEXT_END.len();
-    Some(start..line_end_after(body, end))
+    let end_start = body[after_start..].find(STACK_CONTEXT_END)? + after_start;
+    let after_end = end_start + STACK_CONTEXT_END.len();
+    Some((
+        start..line_end_after(body, after_end),
+        after_start..end_start,
+    ))
 }
 
 fn line_end_after(value: &str, offset: usize) -> usize {

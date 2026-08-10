@@ -191,6 +191,35 @@ fn workspace_status_renderer_hides_stack_context_comment_markers() {
 }
 
 #[test]
+fn pull_request_preview_renders_generated_stack_context_as_terminal_links() {
+    // Verifies: stack publish previews project generated GitHub Markdown into terminal links.
+    let mut plan = preview_plan();
+    plan.title = "Child change".to_owned();
+    plan.body = "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->".to_owned();
+
+    let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 160);
+
+    assert!(!preview.contains("jx-stack"), "{preview:?}");
+    assert!(!preview.contains("]("), "{preview:?}");
+    assert!(!preview.contains("&nbsp;"), "{preview:?}");
+    assert!(
+        preview.contains(&osc8_link(
+            "https://github.com/example-owner/example-repo/pull/6",
+            "#6 Root",
+        )),
+        "{preview:?}"
+    );
+    assert!(
+        preview.contains(&osc8_link(
+            "https://github.com/example-owner/example-repo/pull/7",
+            "#7 Child",
+        )),
+        "{preview:?}"
+    );
+    assert!(preview.contains("    └ ◌ "), "{preview:?}");
+}
+
+#[test]
 fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     // Verifies: PR preview omits commit headers while keeping description, planned changed files, and metadata.
     let mut plan = preview_plan();
