@@ -1341,6 +1341,82 @@ path = "{repo}"
 }
 
 #[test]
+fn work_root_navigation_resolves_token_prefix_fragments() {
+    // Verifies: `u ext-kit` can select a separator-delimited shorthand inside a longer repo key.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let expected_root = workspace.home.join("projects/pi-extension-kit");
+    create_jj_workspace_marker(&expected_root);
+    create_jj_workspace_marker(&workspace.home.join("projects/pi-coding-agent"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let root = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "ext-kit"],
+        &environment,
+        &services,
+    )
+    .expect("navigation root succeeds");
+    let completion = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--prefix",
+            "ext-kit",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("navigation completion succeeds");
+
+    assert_eq!(root.stdout, format!("{}\n", expected_root.display()));
+    assert_eq!(completion.stdout, "pi-extension-kit\n");
+}
+
+#[test]
+fn work_root_navigation_rejects_ambiguous_token_prefix_fragments() {
+    // Verifies: segmented shorthand still requires one best navigation target.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    create_jj_workspace_marker(&workspace.home.join("projects/pi-extension-kit"));
+    create_jj_workspace_marker(&workspace.home.join("projects/rust-extension-kit"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let error = run_with_args_and_services(
+        ["jx", "work", "root", "--navigation", "ext-kit"],
+        &environment,
+        &services,
+    )
+    .expect_err("ambiguous navigation roots are rejected");
+
+    assert!(matches!(
+        error,
+        CommandError::Repository(RepositoryError::WorkLocationAmbiguous { .. })
+    ));
+}
+
+#[test]
 fn work_root_navigation_resolves_fragment_subpaths() {
     // Verifies: Slash-separated `u` fragments can pick a repo and nested directory by partial names.
     let workspace = TestWorkspace::new();

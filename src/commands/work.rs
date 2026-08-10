@@ -998,6 +998,7 @@ struct NavigationScore {
 enum NavigationMatchRank {
     Exact,
     Prefix,
+    TokenPrefix,
     Contains,
 }
 
@@ -1070,11 +1071,66 @@ fn navigation_match_rank(candidate: &str, query: &str) -> Option<NavigationMatch
         Some(NavigationMatchRank::Exact)
     } else if candidate.starts_with(query) {
         Some(NavigationMatchRank::Prefix)
+    } else if navigation_token_prefix_match(candidate, query) {
+        Some(NavigationMatchRank::TokenPrefix)
     } else if candidate.contains(query) {
         Some(NavigationMatchRank::Contains)
     } else {
         None
     }
+}
+
+/// Returns whether a separator-delimited shorthand matches consecutive candidate token prefixes.
+fn navigation_token_prefix_match(candidate: &str, query: &str) -> bool {
+    if query.is_empty() || !query.chars().any(is_navigation_token_separator) {
+        return false;
+    }
+
+    let candidate_tokens = navigation_match_tokens(candidate);
+    let query_tokens = navigation_match_tokens(query);
+    if query_tokens.is_empty() || query_tokens.len() > candidate_tokens.len() {
+        return false;
+    }
+
+    // Boundary separators are intentional: `sample@` should target workspace keys, not bare `sample`.
+    let requires_leading_token = query
+        .chars()
+        .next()
+        .map(is_navigation_token_separator)
+        .unwrap_or(false);
+    let requires_trailing_token = query
+        .chars()
+        .next_back()
+        .map(is_navigation_token_separator)
+        .unwrap_or(false);
+
+    candidate_tokens
+        .windows(query_tokens.len())
+        .enumerate()
+        .any(|(start, tokens)| {
+            let end = start + query_tokens.len();
+            if (requires_leading_token && start == 0)
+                || (requires_trailing_token && end == candidate_tokens.len())
+            {
+                return false;
+            }
+
+            tokens
+                .iter()
+                .zip(query_tokens.iter())
+                .all(|(candidate, query)| candidate.starts_with(query))
+        })
+}
+
+fn navigation_match_tokens(value: &str) -> Vec<&str> {
+    value
+        .split(is_navigation_token_separator)
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn is_navigation_token_separator(character: char) -> bool {
+    !character.is_ascii_alphanumeric()
 }
 
 fn current_workspace_name_locations(current_workspaces: &[WorkspaceEntry]) -> Vec<WorkLocation> {

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn shell_init_bash_emits_configured_navigation_with_completion() {
-    // Verifies: Shell init includes work navigation, cached completion, and auto zoxide fallback.
+    // Verifies: Shell init includes work navigation, query-aware completion, and auto zoxide fallback.
     let workspace = TestWorkspace::new();
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -64,25 +64,24 @@ zoxide = "auto"
         .contains("if (( status == 0 )) && [[ -n \"$cd_target\" ]]"));
     assert!(result
         .stdout
-        .contains("command jx work complete --navigation --prefix \"\""));
+        .contains("local query=\"${1:-}\" now cache_key"));
+    assert!(result.stdout.contains("cache_key=\"$PWD\"$'\\t'\"$query\""));
     assert!(result
         .stdout
-        .contains("command jx work complete --navigation --format picker --prefix \"\""));
+        .contains("command jx work complete --navigation --prefix \"$query\""));
+    assert!(result
+        .stdout
+        .contains("command jx work complete --navigation --format picker --prefix \"$query\""));
     assert!(result.stdout.contains("__jx_u_fzf_completion"));
     assert!(result.stdout.contains("fzf --height=~60%"));
     assert!(result.stdout.contains("local key_width=0 max_key_width=64"));
-    assert!(result.stdout.contains("local prefix_candidates=()"));
-    assert!(result.stdout.contains("local fragment_candidates=()"));
     assert!(result.stdout.contains("local display_candidates=()"));
     assert!(result
         .stdout
-        .contains("if [[ -z \"$cur\" || \"$key\" == \"$cur\"* ]]; then"));
+        .contains("done < <(__jx_u_jx_completion_picker_candidates \"$cur\")"));
     assert!(result
         .stdout
-        .contains("elif [[ \"$key\" == *\"$cur\"* ]]; then"));
-    assert!(result
-        .stdout
-        .contains("picker_candidates=(\"${prefix_candidates[@]}\" \"${fragment_candidates[@]}\")"));
+        .contains("done < <(__jx_u_jx_completion_candidates \"$cur\")"));
     assert!(result
         .stdout
         .contains("__jx_u_remove_shadowed_picker_candidates"));

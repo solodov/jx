@@ -498,22 +498,24 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
 {helper_prefix}_completion_picker_cache=
 
 {helper_prefix}_jx_completion_candidates() {{
-  local now
+  local query="${{1:-}}" now cache_key
   now="$(date +%s 2>/dev/null)" || now=0
-  if [[ "${{{helper_prefix}_completion_cache_key}}" != "$PWD" || $(( now - {helper_prefix}_completion_cache_time )) -ge 30 ]]; then
-    {helper_prefix}_completion_cache="$(command jx work complete --navigation --prefix "" 2>/dev/null)"
-    {helper_prefix}_completion_cache_key="$PWD"
+  cache_key="$PWD"$'\t'"$query"
+  if [[ "${{{helper_prefix}_completion_cache_key}}" != "$cache_key" || $(( now - {helper_prefix}_completion_cache_time )) -ge 30 ]]; then
+    {helper_prefix}_completion_cache="$(command jx work complete --navigation --prefix "$query" 2>/dev/null)"
+    {helper_prefix}_completion_cache_key="$cache_key"
     {helper_prefix}_completion_cache_time="$now"
   fi
   printf '%s\n' "${{{helper_prefix}_completion_cache}}"
 }}
 
 {helper_prefix}_jx_completion_picker_candidates() {{
-  local now
+  local query="${{1:-}}" now cache_key
   now="$(date +%s 2>/dev/null)" || now=0
-  if [[ "${{{helper_prefix}_completion_picker_cache_key}}" != "$PWD" || $(( now - {helper_prefix}_completion_picker_cache_time )) -ge 30 ]]; then
-    {helper_prefix}_completion_picker_cache="$(command jx work complete --navigation --format picker --prefix "" 2>/dev/null)"
-    {helper_prefix}_completion_picker_cache_key="$PWD"
+  cache_key="$PWD"$'\t'"$query"
+  if [[ "${{{helper_prefix}_completion_picker_cache_key}}" != "$cache_key" || $(( now - {helper_prefix}_completion_picker_cache_time )) -ge 30 ]]; then
+    {helper_prefix}_completion_picker_cache="$(command jx work complete --navigation --format picker --prefix "$query" 2>/dev/null)"
+    {helper_prefix}_completion_picker_cache_key="$cache_key"
     {helper_prefix}_completion_picker_cache_time="$now"
   fi
   printf '%s\n' "${{{helper_prefix}_completion_picker_cache}}"
@@ -568,25 +570,12 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   local IFS=$'\n'
   local key_width=0 max_key_width=64
   local picker_candidates=()
-  local prefix_candidates=()
-  local fragment_candidates=()
   local display_candidates=()
 
   while IFS=$'\t' read -r key path; do
     [[ -n "$key" ]] && {helper_prefix}_add_picker_candidate "$key" "$path"
-  done < <({helper_prefix}_jx_completion_picker_candidates)
+  done < <({helper_prefix}_jx_completion_picker_candidates "$cur")
 {zoxide_picker_completion}  (( ${{#picker_candidates[@]}} > 0 )) || return 0
-
-  for row in "${{picker_candidates[@]}}"; do
-    key="${{row%%$'\t'*}}"
-    if [[ -z "$cur" || "$key" == "$cur"* ]]; then
-      prefix_candidates+=("$row")
-    elif [[ "$key" == *"$cur"* ]]; then
-      fragment_candidates+=("$row")
-    fi
-  done
-  picker_candidates=("${{prefix_candidates[@]}}" "${{fragment_candidates[@]}}")
-  (( ${{#picker_candidates[@]}} > 0 )) || return 0
   {helper_prefix}_remove_shadowed_picker_candidates
 
   for row in "${{picker_candidates[@]}}"; do
@@ -643,8 +632,8 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   fi
 {prefer_completion}
   while IFS= read -r candidate; do
-    [[ -n "$candidate" && "$candidate" == *"$cur"* ]] && {helper_prefix}_add_candidate "$candidate"
-  done < <({helper_prefix}_jx_completion_candidates)
+    {helper_prefix}_add_candidate "$candidate"
+  done < <({helper_prefix}_jx_completion_candidates "$cur")
 {auto_zoxide_completion}
   COMPREPLY=("${{candidates[@]}}")
 }}
