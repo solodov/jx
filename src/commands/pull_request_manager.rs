@@ -463,6 +463,12 @@ impl<'a> PullRequestStackManager<'a> {
             || self.read_metadata(),
             metadata_result_attrs,
         )?;
+        let metadata = span.measure_with_result_attrs(
+            "stack_metadata.refresh_metadata_by_number",
+            [perf_attr("metadata_node_count", metadata.nodes.len())],
+            || self.refresh_metadata_by_number(metadata),
+            metadata_result_attrs,
+        )?;
         let metadata = self.apply_local_stack_metadata_snapshot_traced(
             metadata,
             local_branches,

@@ -564,15 +564,6 @@ pub(in crate::commands) fn write_sync(
         }
     }
 
-    if !report.skipped_same_tree_bookmarks.is_empty() {
-        write_sync_section_separator(formatter)?;
-        write_skipped_same_tree_bookmarks(
-            formatter,
-            &report.skipped_same_tree_bookmarks,
-            &report.repository.github_url,
-        )?;
-    }
-
     if !deleted_bookmarks.is_empty() {
         write_sync_section_separator(formatter)?;
         writeln!(formatter, "Deleted bookmarks:")?;
@@ -780,36 +771,6 @@ pub(in crate::commands) fn write_rebased_commit(
         write_labeled_text(formatter, &["conflict"], " (conflicted)")?;
     }
     writeln!(formatter)
-}
-
-pub(in crate::commands) fn write_skipped_same_tree_bookmarks(
-    formatter: &mut dyn Formatter,
-    bookmarks: &[crate::jj::SkippedSameTreeBookmarkSummary],
-    repository_url: &str,
-) -> io::Result<()> {
-    writeln!(formatter, "Skipped same-code pushes:")?;
-    let bookmark_width = bookmarks
-        .iter()
-        .map(|bookmark| bookmark.branch.chars().count())
-        .max()
-        .unwrap_or(0);
-
-    for bookmark in bookmarks {
-        write!(formatter, "  ")?;
-        write_bookmark_target(formatter, repository_url, &bookmark.branch, bookmark_width)?;
-        write!(formatter, "  ")?;
-        write_commit_id(formatter, &bookmark.local_short_commit_id)?;
-        write!(formatter, " same tree as GitHub ")?;
-        write_commit_id(formatter, &bookmark.remote_short_commit_id)?;
-        if bookmark.adopted_remote_head {
-            write!(formatter, "; adopted remote head locally")?;
-        } else {
-            write!(formatter, "; kept local bookmark")?;
-        }
-        writeln!(formatter)?;
-    }
-
-    Ok(())
 }
 
 pub(in crate::commands) fn write_skipped_conflicted_bookmarks(

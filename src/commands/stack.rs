@@ -622,12 +622,7 @@ impl StackMoveExecution<'_> {
         };
         let branches = affected_stack_branches(old_selection.as_ref(), &new_selection);
         self.progress.status("Pushing stack bookmarks…");
-        let push = push_syncable_stack_branches(
-            self.context,
-            self.services,
-            &branches,
-            SyncPushOptions::default(),
-        )?;
+        let push = push_syncable_stack_branches(self.context, self.services, &branches)?;
         self.progress.status("Syncing pull request descriptions…");
         let pull_requests = self
             .manager

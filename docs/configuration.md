@@ -138,7 +138,8 @@ treat the PR base branch as trunk while allowing the local stack to start at the
 older trunk commit that current trunk descends from. Once trunk contains the
 protected root, sync moves any remaining local descendants onto current trunk.
 Descendant PRs in a protected stack are only metadata-synced when their bookmark
-was actually pushed.
+was actually pushed. Use `jx sync -R` or `jx sync --rebase` to ignore
+`stack_green_pull_requests` for one run and rebase normally.
 
 ```toml
 [repo.sync]

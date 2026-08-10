@@ -495,6 +495,55 @@ path = "{repo}"
 }
 
 #[test]
+fn remote_status_all_filter_matches_owner_repo_suffix() {
+    // Verifies: -a positional patterns match configured repository identities like jx sync -a.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[layout]
+default_root = "~/projects"
+
+[layout.default]
+path = "{owner}/{repo}"
+"#,
+    );
+    let selected = workspace.create_jj_workspace("projects/example-owner/foo");
+    let skipped = workspace.create_jj_workspace("projects/other-owner/bar");
+    for (root, owner, name) in [
+        (&selected, "example-owner", "foo"),
+        (&skipped, "other-owner", "bar"),
+    ] {
+        TestWorkspace::write_git_config_at(
+            root,
+            &format!(
+                r#"
+[remote "origin"]
+    url = https://github.com/{owner}/{name}.git
+"#,
+            ),
+        );
+    }
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_uses_context_remotes: true,
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "remote-status", "-a", "example-owner/"],
+        &environment,
+        &services,
+    )
+    .expect("filtered global remote-status succeeds");
+
+    assert_eq!(
+        result.stdout,
+        "Remote status: 1 repository checked, 1 needs attention\n\nPull needed: GitHub has new commits\n  ~/projects/example-owner/foo  3 commits to pull\n"
+    );
+}
+
+#[test]
 fn remote_status_repo_filter_accepts_globs() {
     // Verifies: --repo selects configured repository keys with glob matching.
     let workspace = TestWorkspace::new();

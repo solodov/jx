@@ -426,7 +426,6 @@ struct FakeServices {
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
     push_rejections_before_success: std::cell::Cell<usize>,
-    sync_push_options: std::cell::RefCell<Vec<SyncPushOptions>>,
     tracked_changed_files: Vec<String>,
     bookmark_changed_files: Vec<String>,
     changed_file_bookmark_requests: std::cell::RefCell<Vec<Vec<String>>>,
@@ -582,7 +581,6 @@ impl Default for FakeServices {
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
             push_rejections_before_success: std::cell::Cell::new(0),
-            sync_push_options: std::cell::RefCell::new(Vec::new()),
             tracked_changed_files: vec!["src/main.rs".to_owned()],
             bookmark_changed_files: vec!["src/main.rs".to_owned()],
             changed_file_bookmark_requests: std::cell::RefCell::new(Vec::new()),
@@ -1522,7 +1520,6 @@ impl CommandServices for FakeServices {
         &self,
         context: &RepositoryContext,
         revision: Option<&str>,
-        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
         self.push_tracked_roots
             .borrow_mut()
@@ -1530,23 +1527,19 @@ impl CommandServices for FakeServices {
         self.push_syncable_revision_requests
             .borrow_mut()
             .push(revision.map(str::to_owned));
-        self.sync_push_options.borrow_mut().push(options);
         Ok(SyncPushOutcome {
             pushed: self.tracked_push.clone(),
             skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
-            skipped_same_tree_bookmarks: Vec::new(),
         })
     }
 
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
-        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
         self.push_tracked_roots
             .borrow_mut()
             .push(context.workspace_root.clone());
-        self.sync_push_options.borrow_mut().push(options);
         let remaining_rejections = self.push_rejections_before_success.get();
         if remaining_rejections > 0 {
             self.push_rejections_before_success
@@ -1568,7 +1561,6 @@ impl CommandServices for FakeServices {
         Ok(SyncPushOutcome {
             pushed,
             skipped_conflicted_bookmarks: self.sync_conflicted_bookmarks.clone(),
-            skipped_same_tree_bookmarks: Vec::new(),
         })
     }
 

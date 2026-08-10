@@ -26,7 +26,6 @@ pub fn sync_report(
         trunk,
         push: push.pushed,
         skipped_conflicted_bookmarks: push.skipped_conflicted_bookmarks,
-        skipped_same_tree_bookmarks: push.skipped_same_tree_bookmarks,
         pull_requests,
     }
 }

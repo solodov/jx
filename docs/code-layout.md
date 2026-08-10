@@ -124,6 +124,7 @@ for navigation and workspace management.
   remove` refuses paths outside that managed tree.
 - `jx remote-status` uses the current repository by default, can target one
   primary repository key, and can scan all configured primary repositories.
+  With `--all`, positional patterns filter provider/owner/repo identities;
   `--repo` remains a glob filter for global scans.
 - `jx open` uses the current repository by default, can target one primary
   repository key, and can use `--repo` globs to open matching GitHub repository

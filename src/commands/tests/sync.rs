@@ -56,6 +56,24 @@ fn sync_pull_request_status(
 }
 
 #[test]
+fn sync_all_force_rebase_flag_parses() {
+    // Verifies: -R can be combined with global sync as a per-run rebase-strategy override.
+    let matches = cli()
+        .try_get_matches_from(["jx", "sync", "-a", "-R"])
+        .expect("sync -a -R args parse");
+    let request = CommandRequest::from_matches(&matches).expect("request builds");
+
+    let CommandRequest::Sync(request) = request else {
+        panic!("expected sync request");
+    };
+    assert!(request.all);
+    assert_eq!(
+        request.rebase_strategy_override,
+        Some(RepoSyncRebaseStrategy::Always)
+    );
+}
+
+#[test]
 fn global_sync_renderer_sorts_each_section_by_directory() {
     // Verifies: Global sync output keeps each status section in stable filesystem order.
     let entries = vec![
@@ -103,45 +121,6 @@ fn global_sync_renderer_does_not_require_current_workspace_for_color_output() {
         .expect("global sync renders without current workspace");
 
     assert_eq!(output, "Synced:\n  alpha\n");
-}
-
-#[test]
-fn sync_pushes_same_tree_heads_by_default_unless_experimental_flag_is_set() {
-    // Verifies: the same-tree push shortcut is opt-in so normal sync updates GitHub heads.
-    let workspace = TestWorkspace::new();
-    workspace.write_git_config(
-        r#"
-[remote "origin"]
-    url = https://github.com/example-owner/example-repo.git
-"#,
-    );
-    let environment = RuntimeEnvironment::new(workspace.path(), []);
-    let services = FakeServices::default();
-
-    run_with_args_and_services(["jx", "sync"], &environment, &services)
-        .expect("default sync succeeds");
-
-    assert_eq!(
-        services.sync_push_options.borrow().as_slice(),
-        &[SyncPushOptions {
-            skip_same_tree_pushes: false,
-        }]
-    );
-
-    let services = FakeServices::default();
-    run_with_args_and_services(
-        ["jx", "sync", "--experimental-skip-same-tree-push"],
-        &environment,
-        &services,
-    )
-    .expect("experimental sync succeeds");
-
-    assert_eq!(
-        services.sync_push_options.borrow().as_slice(),
-        &[SyncPushOptions {
-            skip_same_tree_pushes: true,
-        }]
-    );
 }
 
 #[test]
@@ -788,6 +767,93 @@ review_gate_checks = ["^review gate$"]
             .map(|bookmark| bookmark.branch.as_str())
             .collect::<Vec<_>>(),
         ["topic/child"]
+    );
+}
+
+#[test]
+fn sync_rebase_flag_bypasses_green_root_protection() {
+    // Verifies: -R makes the configured green-PR strategy behave like `always` for one sync run.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    workspace.write_file(
+        ".jx/config.toml",
+        r#"
+[repo.sync]
+rebase_strategy = "stack_green_pull_requests"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let root_commit = "1111222233334444555566667777888899990000";
+    let services = FakeServices {
+        fetch: FetchOutcome {
+            rebased_commits: Vec::new(),
+            ..FakeServices::default().fetch
+        },
+        local_stack_branches: std::cell::RefCell::new(vec![vec![LocalStackBranch {
+            branch: "topic/root".to_owned(),
+            base_branch: "main".to_owned(),
+            parent_branch: None,
+            title: "Root".to_owned(),
+            commit_id: root_commit.to_owned(),
+        }]]),
+        tracked_push: TrackedPushOutcome {
+            pushed_refs: 1,
+            bookmarks: vec![
+                PushedBookmarkSummary {
+                    branch: "topic/root".to_owned(),
+                    old_short_commit_id: Some("11112222".to_owned()),
+                    new_short_commit_id: Some("11112222".to_owned()),
+                    old_short_change_id: Some("rootold".to_owned()),
+                    new_short_change_id: Some("rootold".to_owned()),
+                    old_description: Some("Root".to_owned()),
+                    new_description: Some("Root".to_owned()),
+                    pull_request_description: Some("Root".to_owned()),
+                    pull_request_base: Some("main".to_owned()),
+                    new_workspace_visibility: current_workspace_visibility(),
+                },
+                PushedBookmarkSummary {
+                    branch: "topic/child".to_owned(),
+                    old_short_commit_id: Some("22223333".to_owned()),
+                    new_short_commit_id: Some("33334444".to_owned()),
+                    old_short_change_id: Some("childld".to_owned()),
+                    new_short_change_id: Some("childnw".to_owned()),
+                    old_description: Some("Old child".to_owned()),
+                    new_description: Some("Child".to_owned()),
+                    pull_request_description: Some("Child".to_owned()),
+                    pull_request_base: Some("topic/root".to_owned()),
+                    new_workspace_visibility: current_workspace_visibility(),
+                },
+            ],
+            pushed_commits: vec![PushedCommitSummary {
+                short_commit_id: "33334444".to_owned(),
+                description: "Child".to_owned(),
+            }],
+        },
+        ..FakeServices::default()
+    };
+
+    run_with_args_and_services(["jx", "sync", "-R"], &environment, &services)
+        .expect("sync succeeds");
+
+    assert_eq!(
+        services.fetch_options.borrow().as_slice(),
+        &[FetchOptions::default()]
+    );
+    assert_eq!(services.local_stack_branches.borrow().len(), 1);
+    let pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(
+        pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.branch.as_str())
+            .collect::<Vec<_>>(),
+        ["topic/root", "topic/child"]
     );
 }
 

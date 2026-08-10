@@ -181,11 +181,7 @@ known PR URL or number are selectable.
 
 Stack sync updates GitHub from local stack state:
 
-- pushes selected stack bookmarks when the command includes a push phase and
-  local file-tree content differs from the GitHub head;
-- skips redundant same-tree bookmark pushes so already-green PR heads keep their
-  existing CI and review state, adopting the remote head locally when no
-  workspace is checked out at the redundant local commit;
+- pushes selected stack bookmarks when the command includes a push phase;
 - updates PR base branches to match local parent relationships;
 - updates generated stack context in PR descriptions;
 - preserves labels, reviewers, and other PR fields outside the specific publish

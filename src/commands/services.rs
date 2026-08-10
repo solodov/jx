@@ -547,23 +547,20 @@ pub(super) trait CommandServices {
         &self,
         context: &RepositoryContext,
         revision: Option<&str>,
-        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError>;
 
     /// Pushes tracked bookmarks whose updates do not contain conflicted commits.
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
-        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError>;
 
     /// Pushes syncable tracked bookmarks and returns jj-internal timing metrics.
     fn push_syncable_tracked_with_metrics(
         &self,
         context: &RepositoryContext,
-        options: SyncPushOptions,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
-        self.push_syncable_tracked(context, options)
+        self.push_syncable_tracked(context)
             .map(SyncPushMetricsOutcome::from_outcome)
     }
 
@@ -2961,25 +2958,22 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         context: &RepositoryContext,
         revision: Option<&str>,
-        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
-        load_current_jj_workspace(context)?.push_syncable_revision(revision, options)
+        load_current_jj_workspace(context)?.push_syncable_revision(revision)
     }
 
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
-        options: SyncPushOptions,
     ) -> Result<SyncPushOutcome, JjError> {
-        load_current_jj_workspace(context)?.push_syncable_tracked(options)
+        load_current_jj_workspace(context)?.push_syncable_tracked()
     }
 
     fn push_syncable_tracked_with_metrics(
         &self,
         context: &RepositoryContext,
-        options: SyncPushOptions,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
-        load_current_jj_workspace(context)?.push_syncable_tracked_with_metrics(options)
+        load_current_jj_workspace(context)?.push_syncable_tracked_with_metrics()
     }
 
     fn sync_pull_requests(

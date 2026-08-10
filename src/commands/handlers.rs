@@ -1324,7 +1324,7 @@ fn handle_sync(
     if request.all {
         return handle_global_sync(
             &request.repo_filters,
-            request.sync_push_options,
+            request.rebase_strategy_override,
             environment,
             services,
             progress,
@@ -1334,7 +1334,7 @@ fn handle_sync(
 
     if request.stack {
         return sync_current_stack(
-            request.sync_push_options,
+            request.rebase_strategy_override,
             environment,
             services,
             progress,
@@ -1344,7 +1344,7 @@ fn handle_sync(
 
     if request.repo || request.revision.is_none() {
         return sync_current_repository(
-            request.sync_push_options,
+            request.rebase_strategy_override,
             environment,
             services,
             progress,
@@ -1355,7 +1355,7 @@ fn handle_sync(
 
     sync_selected_revision(
         request.revision.as_deref(),
-        request.sync_push_options,
+        request.rebase_strategy_override,
         environment,
         services,
         progress,
@@ -1366,7 +1366,7 @@ fn handle_sync(
 
 fn handle_global_sync(
     repo_filters: &[String],
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -1385,7 +1385,7 @@ fn handle_global_sync(
             display_root: display_path(&repository.root, environment),
             outcome: global_sync_for_repository(
                 &repository.root,
-                sync_push_options,
+                rebase_strategy_override,
                 environment,
                 services,
             ),
@@ -1405,11 +1405,11 @@ fn handle_global_sync(
 
 fn global_sync_for_repository(
     root: &Path,
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
 ) -> GlobalSyncOutcome {
-    match try_global_sync_for_repository(root, sync_push_options, environment, services) {
+    match try_global_sync_for_repository(root, rebase_strategy_override, environment, services) {
         Ok(outcome) => outcome,
         Err(error) => GlobalSyncOutcome::Error(error.to_string()),
     }
@@ -1417,7 +1417,7 @@ fn global_sync_for_repository(
 
 fn try_global_sync_for_repository(
     root: &Path,
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
 ) -> Result<GlobalSyncOutcome, CommandError> {
@@ -1431,6 +1431,7 @@ fn try_global_sync_for_repository(
         }
         Err(error) => return Err(error.into()),
     };
+    let context = context_with_sync_rebase_strategy_override(context, rebase_strategy_override);
 
     let sync_config = context.config.repo.sync_for(&context.origin.github);
     let sync_strategy = match sync_config.push_access() {
@@ -1476,14 +1477,12 @@ fn try_global_sync_for_repository(
     match sync_strategy {
         GlobalSyncStrategy::PushFirst => global_sync_existing_origin_push_first(
             context,
-            sync_push_options,
             &repository_environment,
             services,
             origin_status,
         ),
         GlobalSyncStrategy::FetchThenPush => global_sync_existing_origin(
             context,
-            sync_push_options,
             &repository_environment,
             services,
             origin_status.local_ahead_by,
@@ -1544,9 +1543,29 @@ fn origin_only_status_context(context: &RepositoryContext) -> RepositoryContext 
     context
 }
 
+fn context_with_sync_rebase_strategy_override(
+    mut context: RepositoryContext,
+    strategy: Option<RepoSyncRebaseStrategy>,
+) -> RepositoryContext {
+    let Some(strategy) = strategy else {
+        return context;
+    };
+
+    context.config.repo.rules.push(RepoRuleConfig {
+        repo: context.origin.github.slug(),
+        policy: RepoPolicyConfig {
+            sync: RepoSyncConfig {
+                rebase_strategy: Some(strategy),
+                ..RepoSyncConfig::default()
+            },
+            ..RepoPolicyConfig::default()
+        },
+    });
+    context
+}
+
 fn global_sync_existing_origin(
     context: RepositoryContext,
-    sync_push_options: SyncPushOptions,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     local_ahead_by: i64,
@@ -1559,7 +1578,7 @@ fn global_sync_existing_origin(
     )?;
     let mut changed = fetch_outcome_changed(&fetch);
     changed |= maybe_advance_trunk_for_sync(&context, services)?;
-    let push = services.push_syncable_tracked(&context, sync_push_options)?;
+    let push = services.push_syncable_tracked(&context)?;
     changed |= sync_push_changed(&push);
 
     finish_global_sync(
@@ -1608,7 +1627,6 @@ fn global_sync_existing_origin_fetch_only(
 
 fn global_sync_existing_origin_push_first(
     context: RepositoryContext,
-    sync_push_options: SyncPushOptions,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     origin_status: RemoteStatusReport,
@@ -1619,7 +1637,7 @@ fn global_sync_existing_origin_push_first(
         changed |= maybe_advance_trunk_for_sync(&context, services)?;
     }
 
-    let mut push = match services.push_syncable_tracked(&context, sync_push_options) {
+    let mut push = match services.push_syncable_tracked(&context) {
         Ok(push) => {
             changed |= sync_push_changed(&push);
             if pull == 0 {
@@ -1647,7 +1665,7 @@ fn global_sync_existing_origin_push_first(
     let fetch = services.fetch_origin_with_options(&context, rebase_plan.fetch_options.clone())?;
     changed |= fetch_outcome_changed(&fetch);
     changed |= maybe_advance_trunk_for_sync(&context, services)?;
-    let retry_push = services.push_syncable_tracked(&context, sync_push_options)?;
+    let retry_push = services.push_syncable_tracked(&context)?;
     changed |= sync_push_changed(&retry_push);
     match &mut push {
         Some(push) => merge_sync_push_outcome(push, retry_push),
@@ -1720,7 +1738,7 @@ fn maybe_advance_trunk_for_sync(
 }
 
 fn sync_push_changed(push: &SyncPushOutcome) -> bool {
-    tracked_push_changed(&push.pushed) || !push.skipped_same_tree_bookmarks.is_empty()
+    tracked_push_changed(&push.pushed)
 }
 
 fn empty_sync_push_outcome() -> SyncPushOutcome {
@@ -1731,7 +1749,6 @@ fn empty_sync_push_outcome() -> SyncPushOutcome {
             pushed_commits: Vec::new(),
         },
         skipped_conflicted_bookmarks: Vec::new(),
-        skipped_same_tree_bookmarks: Vec::new(),
     }
 }
 
@@ -1749,9 +1766,6 @@ fn merge_sync_push_outcome(target: &mut SyncPushOutcome, source: SyncPushOutcome
     target
         .skipped_conflicted_bookmarks
         .extend(source.skipped_conflicted_bookmarks);
-    target
-        .skipped_same_tree_bookmarks
-        .extend(source.skipped_same_tree_bookmarks);
 }
 
 /// Fetches origin with brief retries for transient git transport failures.
@@ -1961,10 +1975,6 @@ fn sync_push_outcome_result_attrs<E>(result: &Result<SyncPushOutcome, E>) -> Vec
                 "skipped_conflicted_count",
                 push.skipped_conflicted_bookmarks.len(),
             ),
-            perf_attr(
-                "skipped_same_tree_count",
-                push.skipped_same_tree_bookmarks.len(),
-            ),
         ],
         Err(_) => Vec::new(),
     }
@@ -2052,11 +2062,6 @@ fn sync_push_metric_attrs(metrics: &SyncPushMetrics) -> Vec<PerfAttr> {
         perf_attr("tracked_update_count", metrics.tracked_update_count),
         perf_attr("pushable_update_count", metrics.pushable_update_count),
         perf_attr("skipped_conflicted_count", metrics.skipped_conflicted_count),
-        perf_attr("skipped_same_tree_count", metrics.skipped_same_tree_count),
-        perf_attr(
-            "adopted_remote_head_count",
-            metrics.adopted_remote_head_count,
-        ),
         perf_attr("pushed_ref_count", metrics.pushed_ref_count),
         perf_attr("pushed_bookmark_count", metrics.pushed_bookmark_count),
         perf_attr("unchanged_bookmark_count", metrics.unchanged_bookmark_count),
@@ -2219,33 +2224,26 @@ fn pushed_bookmark_changed(bookmark: &PushedBookmarkSummary) -> bool {
 }
 
 fn sync_current_stack(
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
     let context = RepositoryContext::discover(environment)?;
+    let context = context_with_sync_rebase_strategy_override(context, rebase_strategy_override);
     let mut span = PerfLog::from_environment(environment).start(
         "sync.current_stack",
         [perf_attr("repo", context.origin.github.slug())],
     );
-    let result = sync_current_stack_traced(
-        sync_push_options,
-        context,
-        environment,
-        services,
-        progress,
-        output,
-        &mut span,
-    );
+    let result =
+        sync_current_stack_traced(context, environment, services, progress, output, &mut span);
     record_sync_result(&mut span, &result);
     span.end();
     result
 }
 
 fn sync_current_stack_traced(
-    sync_push_options: SyncPushOptions,
     context: RepositoryContext,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
@@ -2295,7 +2293,7 @@ fn sync_current_stack_traced(
     let push = span.measure_with_result_attrs(
         "push_stack_bookmarks",
         [perf_attr("branch_count", selection.branches.len())],
-        || push_syncable_stack_branches(&context, services, &selection.branches, sync_push_options),
+        || push_syncable_stack_branches(&context, services, &selection.branches),
         sync_push_outcome_result_attrs,
     )?;
     progress.status("Syncing pull request descriptions…");
@@ -2336,7 +2334,6 @@ pub(super) fn push_syncable_stack_branches(
     context: &RepositoryContext,
     services: &dyn CommandServices,
     branches: &[String],
-    sync_push_options: SyncPushOptions,
 ) -> Result<SyncPushOutcome, CommandError> {
     let mut pushed = TrackedPushOutcome {
         pushed_refs: 0,
@@ -2344,12 +2341,11 @@ pub(super) fn push_syncable_stack_branches(
         pushed_commits: Vec::new(),
     };
     let mut skipped_conflicted_bookmarks = Vec::new();
-    let mut skipped_same_tree_bookmarks = Vec::new();
     let mut seen_bookmarks = BTreeSet::new();
     let mut seen_commits = BTreeSet::new();
 
     for branch in branches {
-        let next = services.push_syncable_revision(context, Some(branch), sync_push_options)?;
+        let next = services.push_syncable_revision(context, Some(branch))?;
         pushed.pushed_refs += next.pushed.pushed_refs;
         pushed.bookmarks.extend(
             next.pushed
@@ -2364,19 +2360,17 @@ pub(super) fn push_syncable_stack_branches(
                 .filter(|commit| seen_commits.insert(commit.short_commit_id.clone())),
         );
         skipped_conflicted_bookmarks.extend(next.skipped_conflicted_bookmarks);
-        skipped_same_tree_bookmarks.extend(next.skipped_same_tree_bookmarks);
     }
 
     Ok(SyncPushOutcome {
         pushed,
         skipped_conflicted_bookmarks,
-        skipped_same_tree_bookmarks,
     })
 }
 
 fn sync_selected_revision(
     revision: Option<&str>,
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -2387,7 +2381,7 @@ fn sync_selected_revision(
         Ok(context) => context,
         Err(RepositoryError::WorkspaceNotFound) if revision.is_none() => {
             return sync_current_repository(
-                sync_push_options,
+                rebase_strategy_override,
                 environment,
                 services,
                 progress,
@@ -2397,6 +2391,7 @@ fn sync_selected_revision(
         }
         Err(error) => return Err(error.into()),
     };
+    let context = context_with_sync_rebase_strategy_override(context, rebase_strategy_override);
     let mut span = PerfLog::from_environment(environment).start(
         "sync.selected_revision",
         [
@@ -2404,10 +2399,7 @@ fn sync_selected_revision(
             perf_attr("has_revision", revision.is_some()),
         ],
     );
-    let selection = SelectedSyncPush {
-        revision,
-        options: sync_push_options,
-    };
+    let selection = SelectedSyncPush { revision };
     let result = sync_selected_revision_traced(
         selection,
         context,
@@ -2425,7 +2417,6 @@ fn sync_selected_revision(
 #[derive(Debug, Clone, Copy)]
 struct SelectedSyncPush<'a> {
     revision: Option<&'a str>,
-    options: SyncPushOptions,
 }
 
 fn sync_selected_revision_traced(
@@ -2465,7 +2456,7 @@ fn sync_selected_revision_traced(
     let push = span.measure_with_result_attrs(
         "push_syncable_revision",
         Vec::new(),
-        || services.push_syncable_revision(&context, selection.revision, selection.options),
+        || services.push_syncable_revision(&context, selection.revision),
         sync_push_outcome_result_attrs,
     )?;
     progress.status("Syncing pull request description…");
@@ -2497,7 +2488,7 @@ fn sync_selected_revision_traced(
 }
 
 fn sync_current_repository(
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -2519,7 +2510,7 @@ fn sync_current_repository(
 
     sync_local_context(
         local_context,
-        sync_push_options,
+        rebase_strategy_override,
         environment,
         services,
         progress,
@@ -2570,7 +2561,7 @@ fn uninitialized_layout_workspace_root(
 
 fn sync_local_context(
     local_context: LocalRepositoryContext,
-    sync_push_options: SyncPushOptions,
+    rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -2582,14 +2573,11 @@ fn sync_local_context(
         .iter()
         .any(|remote| remote.name == crate::repository::ORIGIN_REMOTE_NAME)
     {
-        return sync_existing_origin(
+        let context = context_with_sync_rebase_strategy_override(
             local_context.into_origin_context()?,
-            sync_push_options,
-            environment,
-            services,
-            progress,
-            output,
+            rebase_strategy_override,
         );
+        return sync_existing_origin(context, environment, services, progress, output);
     }
     if local_context.has_remotes() {
         return Err(RepositoryError::MissingOrigin.into());
@@ -2666,7 +2654,6 @@ fn sync_missing_origin(
 
 fn sync_existing_origin(
     context: RepositoryContext,
-    sync_push_options: SyncPushOptions,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -2676,15 +2663,8 @@ fn sync_existing_origin(
         "sync.current_repository",
         [perf_attr("repo", context.origin.github.slug())],
     );
-    let result = sync_existing_origin_traced(
-        context,
-        sync_push_options,
-        environment,
-        services,
-        progress,
-        output,
-        &mut span,
-    );
+    let result =
+        sync_existing_origin_traced(context, environment, services, progress, output, &mut span);
     record_sync_result(&mut span, &result);
     span.end();
     result
@@ -2692,7 +2672,6 @@ fn sync_existing_origin(
 
 fn sync_existing_origin_traced(
     context: RepositoryContext,
-    sync_push_options: SyncPushOptions,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -2743,7 +2722,7 @@ fn sync_existing_origin_traced(
     };
     progress.status("Pushing tracked bookmarks…");
     let push_step = span.start_step("push_syncable_tracked", Vec::new());
-    let push_result = services.push_syncable_tracked_with_metrics(&context, sync_push_options);
+    let push_result = services.push_syncable_tracked_with_metrics(&context);
     if let Ok(outcome) = &push_result {
         record_sync_push_metrics(span, &outcome.metrics);
     }

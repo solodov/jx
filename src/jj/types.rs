@@ -536,19 +536,11 @@ pub struct TrackedPushOutcome {
     pub pushed_commits: Vec<PushedCommitSummary>,
 }
 
-/// Options that control experimental sync push behavior.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SyncPushOptions {
-    /// Skips pushing local heads whose file tree already matches GitHub.
-    pub skip_same_tree_pushes: bool,
-}
-
 /// Result of pushing only the tracked bookmarks that can be safely synced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPushOutcome {
     pub pushed: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
-    pub skipped_same_tree_bookmarks: Vec<SkippedSameTreeBookmarkSummary>,
 }
 
 /// Sync push outcome plus jj-internal phase timings for performance tracing.
@@ -565,12 +557,6 @@ impl SyncPushMetricsOutcome {
             pushed_bookmark_count: outcome.pushed.bookmarks.len(),
             pushed_commit_count: outcome.pushed.pushed_commits.len(),
             skipped_conflicted_count: outcome.skipped_conflicted_bookmarks.len(),
-            skipped_same_tree_count: outcome.skipped_same_tree_bookmarks.len(),
-            adopted_remote_head_count: outcome
-                .skipped_same_tree_bookmarks
-                .iter()
-                .filter(|bookmark| bookmark.adopted_remote_head)
-                .count(),
             ..SyncPushMetrics::default()
         };
         Self { outcome, metrics }
@@ -583,8 +569,6 @@ pub struct SyncPushMetrics {
     pub tracked_update_count: usize,
     pub pushable_update_count: usize,
     pub skipped_conflicted_count: usize,
-    pub skipped_same_tree_count: usize,
-    pub adopted_remote_head_count: usize,
     pub pushed_ref_count: usize,
     pub pushed_bookmark_count: usize,
     pub unchanged_bookmark_count: usize,
@@ -606,15 +590,6 @@ pub struct SyncPushMetrics {
 pub struct SkippedPushBookmarkSummary {
     pub branch: String,
     pub conflicted_commits: Vec<ConflictedCommitSummary>,
-}
-
-/// One tracked bookmark whose local and remote heads have identical file trees.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkippedSameTreeBookmarkSummary {
-    pub branch: String,
-    pub local_short_commit_id: String,
-    pub remote_short_commit_id: String,
-    pub adopted_remote_head: bool,
 }
 
 /// One conflicted commit that prevents a bookmark from being synced.

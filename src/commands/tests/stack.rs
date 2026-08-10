@@ -4080,6 +4080,79 @@ fn stack_publish_declined_existing_pr_refreshes_context_only() {
 }
 
 #[test]
+fn stack_context_refresh_marks_completed_parent_before_local_repair() {
+    // Verifies: stale cached merge state is refreshed before local ancestry can split open descendants from completed parents.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let parent_branch = "example-user/00-root";
+    let child_branch = "example-user/01-child";
+    let mut child_node = stack_node(
+        child_branch,
+        parent_branch,
+        Some(parent_branch),
+        11,
+        "Child",
+    );
+    child_node.parent_pull_request = Some(10);
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                stack_node(parent_branch, "main", None, 10, "Parent"),
+                child_node,
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut live_parent = pull_request_choice_record(10, "Parent", parent_branch, "main", false);
+    live_parent.merged = true;
+    let live_child = pull_request_choice_record(11, "Child", child_branch, "main", false);
+    let services = FakeServices {
+        local_stack_branches: std::cell::RefCell::new(vec![vec![local_stack_branch(
+            child_branch,
+            "main",
+            None,
+        )]]),
+        pull_requests_by_number: BTreeMap::from([(10, live_parent)]),
+        ..FakeServices::default()
+    };
+    let context = RepositoryContext::discover(&environment).expect("context discovers");
+    let manager =
+        PullRequestStackManager::new(&context, &services, PerfLog::disabled(), &environment);
+
+    manager
+        .update_after_stack_publish_with_context_only(&[], std::slice::from_ref(&live_child))
+        .expect("stack context refresh succeeds");
+
+    let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
+    let child = metadata
+        .nodes
+        .iter()
+        .find(|node| node.branch == child_branch)
+        .expect("child remains tracked");
+    assert_eq!(child.base_branch, "main");
+    assert_eq!(child.parent_branch.as_deref(), Some(parent_branch));
+    assert_eq!(child.parent_pull_request, Some(10));
+    assert!(metadata
+        .nodes
+        .iter()
+        .find(|node| node.branch == parent_branch)
+        .is_some_and(|node| node.merged));
+}
+
+#[test]
 fn stack_publish_declined_unpublished_parent_skips_descendants() {
     // Verifies: descendants are not published when their unpublished stack base was declined.
     let workspace = TestWorkspace::new();

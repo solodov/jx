@@ -271,7 +271,7 @@ pub(super) struct SyncRequest {
     pub(super) stack: bool,
     pub(super) revision: Option<String>,
     pub(super) repo_filters: Vec<String>,
-    pub(super) sync_push_options: SyncPushOptions,
+    pub(super) rebase_strategy_override: Option<RepoSyncRebaseStrategy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,14 +306,7 @@ impl CommandRequest {
             Some(("next-commit" | "next", _)) => Ok(Self::NextCommit),
             Some(("check", _)) => Ok(Self::Check),
             Some(("remote-status" | "rs", matches)) => {
-                Ok(Self::RemoteStatus(RemoteStatusRequest {
-                    all: matches.get_flag("all"),
-                    repository: repository_arg(matches),
-                    repo_filters: repo_filters(matches),
-                    changed: matches.get_flag("changed"),
-                    parallelism: remote_status_parallelism(matches)?,
-                    format: remote_status_format(matches),
-                }))
+                Ok(Self::RemoteStatus(remote_status_request(matches)?))
             }
             Some(("fetch" | "f", matches)) => Ok(Self::Fetch(FetchRequest {
                 all: matches.get_flag("all"),
@@ -399,10 +392,7 @@ impl CommandRequest {
                 perf_attr("stack", request.stack),
                 perf_attr("has_revision", request.revision.is_some()),
                 perf_attr("repo_filter_count", request.repo_filters.len()),
-                perf_attr(
-                    "skip_same_tree_pushes",
-                    request.sync_push_options.skip_same_tree_pushes,
-                ),
+                perf_attr("force_rebase", request.rebase_strategy_override.is_some()),
             ]),
         }
         attrs
@@ -962,6 +952,35 @@ fn open_pr_selector(matches: &ArgMatches) -> Option<String> {
         .cloned()
 }
 
+fn remote_status_request(matches: &ArgMatches) -> Result<RemoteStatusRequest, clap::Error> {
+    let all = matches.get_flag("all");
+    let targets = remote_status_targets(matches);
+    let repository = if all {
+        None
+    } else {
+        if targets.len() > 1 {
+            return Err(clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "jx remote-status accepts only one repository unless --all is set",
+            ));
+        }
+        targets.first().cloned()
+    };
+    let mut repo_filters = repo_filters(matches);
+    if all {
+        repo_filters.extend(targets);
+    }
+
+    Ok(RemoteStatusRequest {
+        all,
+        repository,
+        repo_filters,
+        changed: matches.get_flag("changed"),
+        parallelism: remote_status_parallelism(matches)?,
+        format: remote_status_format(matches),
+    })
+}
+
 fn sync_request(matches: &ArgMatches) -> Result<SyncRequest, clap::Error> {
     let all = matches.get_flag("all");
     let targets = sync_targets(matches);
@@ -984,21 +1003,18 @@ fn sync_request(matches: &ArgMatches) -> Result<SyncRequest, clap::Error> {
         stack: matches.get_flag("stack"),
         revision,
         repo_filters,
-        sync_push_options: SyncPushOptions {
-            skip_same_tree_pushes: matches.get_flag("experimental-skip-same-tree-push"),
-        },
+        rebase_strategy_override: matches
+            .get_flag("rebase")
+            .then_some(RepoSyncRebaseStrategy::Always),
     })
 }
 
+fn remote_status_targets(matches: &ArgMatches) -> Vec<String> {
+    repo_filter_values(matches, "target")
+}
+
 fn sync_targets(matches: &ArgMatches) -> Vec<String> {
-    matches
-        .get_many::<String>("target")
-        .into_iter()
-        .flatten()
-        .map(|target| target.trim())
-        .filter(|target| !target.is_empty())
-        .map(str::to_owned)
-        .collect()
+    repo_filter_values(matches, "target")
 }
 
 fn repository_arg(matches: &ArgMatches) -> Option<String> {
@@ -1476,12 +1492,15 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("remote-status")
                 .visible_alias("rs")
                 .about("Compare local remote trunks with GitHub")
+                .long_about(
+                    "Compare local remote trunks with GitHub.\n\nBy default, remote-status checks the current repository. Pass a configured primary repository key to check that repository instead. Use -a/--all to scan configured primary repositories; optional positional filters match provider/owner/repo identities, so `solodov/` matches repositories owned by solodov. `--repo` remains a repeatable global-scan filter.",
+                )
                 .arg(remote_status_all_arg())
                 .arg(remote_status_repo_arg())
                 .arg(remote_status_changed_arg())
                 .arg(remote_status_jobs_arg())
                 .arg(remote_status_format_arg())
-                .arg(repository_arg_definition().conflicts_with("repo")),
+                .arg(remote_status_target_arg()),
         )
         .subcommand(
             ClapCommand::new("fetch")
@@ -1505,7 +1524,7 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(sync_all_arg())
                 .arg(sync_repo_arg())
                 .arg(sync_stack_arg())
-                .arg(sync_experimental_skip_same_tree_push_arg())
+                .arg(sync_rebase_arg())
                 .arg(sync_revision_arg()),
         )
 }
@@ -1949,8 +1968,7 @@ fn remote_status_all_arg() -> Arg {
         .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
-        .conflicts_with("repository")
-        .help("Check every primary repository in configured layout roots")
+        .help("Check every primary repository in configured layout roots, optionally filtered by provider/owner/repo patterns")
 }
 
 fn fetch_all_arg() -> Arg {
@@ -1989,13 +2007,12 @@ fn sync_stack_arg() -> Arg {
         .help("Sync every bookmark in the current pull-request stack")
 }
 
-fn sync_experimental_skip_same_tree_push_arg() -> Arg {
-    Arg::new("experimental-skip-same-tree-push")
-        .long("experimental-skip-same-tree-push")
+fn sync_rebase_arg() -> Arg {
+    Arg::new("rebase")
+        .short('R')
+        .long("rebase")
         .action(ArgAction::SetTrue)
-        .help(
-            "Experimentally preserve same-code GitHub PR heads instead of pushing local commit ids",
-        )
+        .help("Rebase local stacks even when config would preserve green PR heads")
 }
 
 fn sync_revision_arg() -> Arg {
@@ -2010,6 +2027,14 @@ fn repository_arg_definition() -> Arg {
     Arg::new("repository")
         .value_name("REPOSITORY")
         .help("Run against a configured primary repository key")
+}
+
+fn remote_status_target_arg() -> Arg {
+    Arg::new("target")
+        .value_name("REPOSITORY_OR_REPO_GLOB")
+        .num_args(0..)
+        .conflicts_with("repo")
+        .help("Run one configured repository by key, or filter provider/owner/repo identities when --all is set")
 }
 
 fn remote_status_repo_arg() -> Arg {

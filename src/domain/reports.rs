@@ -199,7 +199,6 @@ pub struct SyncReport {
     pub trunk: Option<TrunkStateSummary>,
     pub push: TrackedPushOutcome,
     pub skipped_conflicted_bookmarks: Vec<SkippedPushBookmarkSummary>,
-    pub skipped_same_tree_bookmarks: Vec<SkippedSameTreeBookmarkSummary>,
     pub pull_requests: Vec<PullRequestRecord>,
 }
 
