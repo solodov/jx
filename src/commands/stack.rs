@@ -1602,12 +1602,6 @@ fn record_push_bookmarks_metrics(span: &mut PerfSpan, metrics: &PushBookmarksMet
     );
     record_push_bookmarks_metric_step(
         span,
-        "export_git_refs",
-        metrics.export_git_refs_us,
-        attrs.clone(),
-    );
-    record_push_bookmarks_metric_step(
-        span,
         "commit_transaction",
         metrics.commit_transaction_us,
         attrs.clone(),

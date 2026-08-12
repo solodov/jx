@@ -524,7 +524,6 @@ pub struct PushBookmarksMetrics {
     pub classify_updates_us: u64,
     pub pushed_commits_for_updates_us: u64,
     pub git_push_refs_us: u64,
-    pub export_git_refs_us: u64,
     pub commit_transaction_us: u64,
     pub total_us: u64,
 }
@@ -597,7 +596,6 @@ pub struct SyncPushMetrics {
     pub pushed_bookmark_summaries_us: u64,
     pub pushed_commits_for_updates_us: u64,
     pub git_push_refs_us: u64,
-    pub export_git_refs_us: u64,
     pub commit_transaction_us: u64,
     pub unchanged_tracked_bookmark_summaries_us: u64,
     pub total_us: u64,

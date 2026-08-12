@@ -2026,12 +2026,6 @@ fn record_sync_push_metrics(span: &mut PerfSpan, metrics: &SyncPushMetrics) {
     );
     record_sync_push_metric_step(
         span,
-        "export_git_refs",
-        metrics.export_git_refs_us,
-        attrs.clone(),
-    );
-    record_sync_push_metric_step(
-        span,
         "commit_transaction",
         metrics.commit_transaction_us,
         attrs.clone(),

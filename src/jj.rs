@@ -25,20 +25,24 @@ use jj_cli::{
         load_template_aliases, LogContentFormat,
     },
     command_error::print_parse_diagnostics,
-    commit_templater::{CommitTemplateLanguage, CommitTemplateLanguageExtension},
+    commit_templater::{
+        CommitRef, CommitTemplateBuildFnTable, CommitTemplateLanguage,
+        CommitTemplateLanguageExtension,
+    },
     config::{config_from_environment, default_config_layers, default_config_migrations},
     formatter::{Formatter, FormatterExt as _},
     graphlog::{get_graphlog, GraphStyle},
     revset_util::{parse_immutable_heads_expression, RevsetExpressionEvaluator},
     template_builder,
     template_parser::TemplateDiagnostics,
-    templater::TemplateRenderer,
+    templater::{TemplatePropertyExt as _, TemplateRenderer},
     ui::Ui,
 };
 use jj_lib::{
     backend::{BackendError, ChangeId, CommitId},
     commit::Commit,
     config::{ConfigGetResultExt as _, ConfigLayer, ConfigSource, StackedConfig},
+    extensions_map::ExtensionsMap,
     git::{
         self, FetchTagsOverride, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress,
         GitPushOptions, GitPushRefTargets, GitSettings, GitSidebandLineTerminator,

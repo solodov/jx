@@ -188,12 +188,15 @@ separate(" ",
 '''
 'format_jx_local_bookmark(bookmark)' = '''
 label(
-  if(bookmark.synced(), "bookmark_synced", "bookmark_unsynced"),
+  if(jx_bookmark_synced(bookmark), "bookmark_synced", "bookmark_unsynced"),
   stringify(bookmark.name()),
 )
 '''
 'format_jx_local_bookmarks(bookmarks)' = '''
 bookmarks.map(|bookmark| format_jx_local_bookmark(bookmark)).join(" ")
+'''
+'jx_bookmark_synced(bookmark)' = '''
+bookmark.jx_synced_without_git()
 '''
 'format_jx_root_commit(commit)' = '''
 label("root", "root()") ++ "\n"
@@ -273,7 +276,7 @@ pub(super) fn render_current_workspace_log(
         &id_prefix_context,
         immutable_expression,
         conflict_marker_style,
-        &[] as &[Box<dyn CommitTemplateLanguageExtension>],
+        &[JxLogTemplateExtension],
     );
     let template = parse_log_template(
         &ui,
@@ -362,7 +365,7 @@ pub(super) fn render_commit_ids_log(
         &id_prefix_context,
         immutable_expression,
         conflict_marker_style,
-        &[] as &[Box<dyn CommitTemplateLanguageExtension>],
+        &[JxLogTemplateExtension],
     );
     let template = parse_log_template(
         &ui,
@@ -393,6 +396,44 @@ pub(super) fn render_commit_ids_log(
         },
         &[],
     )
+}
+
+struct JxLogTemplateExtension;
+
+impl AsRef<dyn CommitTemplateLanguageExtension> for JxLogTemplateExtension {
+    fn as_ref(&self) -> &(dyn CommitTemplateLanguageExtension + 'static) {
+        self
+    }
+}
+
+impl CommitTemplateLanguageExtension for JxLogTemplateExtension {
+    fn build_fn_table<'repo>(&self) -> CommitTemplateBuildFnTable<'repo> {
+        let mut table = CommitTemplateBuildFnTable::empty();
+        table.commit_ref_methods.insert(
+            "jx_synced_without_git",
+            |language, _diagnostics, _build_ctx, self_property, function| {
+                function.expect_no_arguments()?;
+                let repo = language.repo();
+                let out_property = self_property
+                    .map(move |bookmark| jx_bookmark_synced_without_git(repo, bookmark.as_ref()));
+                Ok(out_property.into_dyn_wrapped())
+            },
+        );
+        table
+    }
+
+    fn build_cache_extensions(&self, _extensions: &mut ExtensionsMap) {}
+}
+
+fn jx_bookmark_synced_without_git(repo: &dyn jj_lib::repo::Repo, bookmark: &CommitRef) -> bool {
+    repo.view()
+        .all_remote_bookmarks()
+        .filter(|(symbol, remote_ref)| {
+            symbol.name.as_str() == bookmark.name()
+                && symbol.remote != git::REMOTE_NAME_FOR_LOCAL_GIT_REPO
+                && remote_ref.is_tracked()
+        })
+        .all(|(_, remote_ref)| remote_ref.target == *bookmark.target())
 }
 
 pub(super) fn revset_parse_context<'a>(

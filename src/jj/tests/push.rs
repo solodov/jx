@@ -490,6 +490,79 @@ fn bookmark_pull_request_base_uses_trunk_for_stack_root() {
 }
 
 #[test]
+fn push_bookmark_leaves_backing_git_bookmark_state_unchanged() {
+    // Verifies: jx push follows `jj git push -b` by updating origin without exporting local bookmarks to @git.
+    let fixture = TestWorkspace::new("push-bookmark-no-git-export");
+    let remote_path = fixture.path().join("origin.git");
+    let git_init = std::process::Command::new("git")
+        .arg("init")
+        .arg("--bare")
+        .arg(&remote_path)
+        .output();
+    if !git_init.is_ok_and(|output| output.status.success()) {
+        eprintln!("skipping push export test because git CLI is unavailable");
+        return;
+    }
+
+    let settings = user_settings().expect("settings");
+    let (trunk_id, current_id) = pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        git::add_remote(
+            tx.repo_mut(),
+            RemoteName::new(ORIGIN_REMOTE_NAME),
+            &remote_path.to_string_lossy(),
+            None,
+            gix::remote::fetch::Tags::None,
+        )
+        .expect("add origin remote");
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let current = write_child(tx.repo_mut(), &trunk, "current change").await;
+
+        set_local_bookmark(tx.repo_mut(), "topic/current", trunk.id());
+        export_git_refs(tx.repo_mut()).expect("export initial backing Git branch");
+        set_local_bookmark(tx.repo_mut(), "topic/current", current.id());
+
+        tx.commit("arrange push without backing Git export")
+            .await
+            .expect("commit");
+        (trunk.id().clone(), current.id().clone())
+    });
+    let mut subject = JjWorkspace::load(fixture.path()).expect("reload workspace after remote add");
+
+    let outcome = subject
+        .push_bookmark("topic/current")
+        .expect("bookmark push succeeds");
+
+    assert_eq!(outcome.pushed_refs, 1);
+    assert_eq!(
+        subject
+            .repo
+            .view()
+            .get_remote_bookmark(
+                RefName::new("topic/current").to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
+            )
+            .target
+            .as_normal(),
+        Some(&current_id)
+    );
+    assert_eq!(
+        subject
+            .repo
+            .view()
+            .get_remote_bookmark(
+                RefName::new("topic/current").to_remote_symbol(git::REMOTE_NAME_FOR_LOCAL_GIT_REPO),
+            )
+            .target
+            .as_normal(),
+        Some(&trunk_id)
+    );
+}
+
+#[test]
 fn push_bookmark_validates_local_and_remote_state_before_transport() {
     // Verifies: Bookmark push validates local and remote state before transport.
     let fixture = TestWorkspace::new("push-validation");

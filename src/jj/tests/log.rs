@@ -99,6 +99,58 @@ fn workspace_log_omits_commit_ids_from_jx_default_header() {
 }
 
 #[test]
+fn workspace_log_ignores_unsynced_backing_git_bookmarks() {
+    // Verifies: jx log treats @git as local backing-store state, not remote publish freshness.
+    let fixture = TestWorkspace::new("workspace-log-unsynced-git-bookmark");
+    let mut config = StackedConfig::with_defaults();
+    config.extend_layers(jx_default_config_layers());
+    config.extend_layers([ConfigLayer::parse(
+        ConfigSource::User,
+        r#"
+[ui]
+color = "always"
+"#,
+    )
+    .expect("color config parses")]);
+    jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
+    let settings = UserSettings::from_config(config).expect("settings load");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
+        let current = write_child(tx.repo_mut(), &trunk, "current workspace change").await;
+
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+        set_local_bookmark(tx.repo_mut(), "topic/current", current.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/current", current.id());
+        set_remote_bookmark(
+            tx.repo_mut(),
+            git::REMOTE_NAME_FOR_LOCAL_GIT_REPO.as_str(),
+            "topic/current",
+            trunk.id(),
+        );
+
+        let repo = tx
+            .commit("arrange git-only unsynced bookmark log")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+
+    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
+        .expect("log renders");
+
+    assert!(log.contains("topic/current"), "{log}");
+    assert!(!log.contains("topic/current*"), "{log}");
+    assert!(!log.contains("\x1b[48;2;239;232;251m"), "{log}");
+}
+
+#[test]
 fn workspace_log_highlights_unsynced_local_bookmarks() {
     // Verifies: jx log makes stale local bookmark state visible without relying on operator jj templates.
     let fixture = TestWorkspace::new("workspace-log-unsynced-bookmark");

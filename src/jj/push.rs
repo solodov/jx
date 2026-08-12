@@ -431,7 +431,6 @@ impl JjWorkspace {
             &mut transport_metrics,
         )?;
         metrics.git_push_refs_us += transport_metrics.git_push_refs_us;
-        metrics.export_git_refs_us += transport_metrics.export_git_refs_us;
         metrics.commit_transaction_us += transport_metrics.commit_transaction_us;
 
         Ok(TrackedPushOutcome {
@@ -857,10 +856,6 @@ impl JjWorkspace {
                 message: push_rejection_message(&push_stats),
             });
         }
-
-        let started = Instant::now();
-        export_git_refs(tx.repo_mut())?;
-        metrics.export_git_refs_us += duration_us(started.elapsed());
 
         let started = Instant::now();
         let repo = pollster::block_on(tx.commit(tx_description)).map_err(|error| {
