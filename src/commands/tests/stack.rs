@@ -93,16 +93,27 @@ fn stack_status_interactive_flags_parse_without_loading_dashboard() {
 
 #[test]
 fn stack_move_revision_flags_parse() {
-    // Verifies: stack move accepts the same -r/--revision selector name as stack publish.
+    // Verifies: stack move accepts repeated -r selectors and defaults explicit selections to trunk.
     let matches = cli()
-        .try_get_matches_from(["jx", "stack", "-r", "topic/root", "--trunk", "--no-sync"])
+        .try_get_matches_from([
+            "jx",
+            "stack",
+            "-r",
+            "topic/root",
+            "-r",
+            "topic/child",
+            "--no-sync",
+        ])
         .expect("stack move revision args parse");
     let request = CommandRequest::from_matches(&matches).expect("request builds");
 
     let CommandRequest::Stack(StackRequest::Move(request)) = request else {
         panic!("expected stack move request");
     };
-    assert_eq!(request.revision.as_deref(), Some("topic/root"));
+    assert_eq!(
+        request.revisions,
+        vec!["topic/root".to_owned(), "topic/child".to_owned()]
+    );
     assert_eq!(request.target, StackMoveTarget::Trunk);
     assert!(request.no_sync);
 }
@@ -5338,7 +5349,7 @@ fn stack_onto_moves_current_stack_and_syncs_old_and_new_components() {
 
     assert_eq!(
         services.stack_move_requests.borrow().as_slice(),
-        &[(None, StackMoveTarget::Onto("new-root".to_owned()))]
+        &[(Vec::new(), StackMoveTarget::Onto("new-root".to_owned()))]
     );
     assert_eq!(
         services.push_syncable_revision_requests.borrow().as_slice(),
@@ -5421,7 +5432,7 @@ fn stack_revision_moves_selected_stack_and_syncs_that_component() {
 
     assert_eq!(
         services.stack_move_requests.borrow().as_slice(),
-        &[(Some("topic/root".to_owned()), StackMoveTarget::Trunk)]
+        &[(vec!["topic/root".to_owned()], StackMoveTarget::Trunk)]
     );
     assert_eq!(
         services.open_pull_request_selectors.borrow().as_slice(),
@@ -5436,7 +5447,93 @@ fn stack_revision_moves_selected_stack_and_syncs_that_component() {
     );
     assert!(result
         .stdout
-        .starts_with("Moved selected stack from a1b2c3d4 onto trunk\nSynced:"));
+        .starts_with("Moved selected revision from a1b2c3d4 onto trunk\nSynced:"));
+}
+
+#[test]
+fn stack_move_multiple_revisions_syncs_selected_components() {
+    // Verifies: repeated -r moves exact selections together and syncs each selected PR component.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![
+                stack_node("topic/root", "main", None, 10, "Root"),
+                stack_node("topic/child", "topic/root", Some("topic/root"), 11, "Child"),
+            ],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let services = FakeServices {
+        stack_move: StackMoveOutcome {
+            source_short_commit_ids: vec!["a1b2c3d4".to_owned(), "b2c3d4e5".to_owned()],
+            ..FakeServices::default().stack_move
+        },
+        pull_request_bookmarks: vec!["topic/root".to_owned(), "topic/child".to_owned()],
+        open_pull_request_candidates: vec!["topic/root".to_owned(), "topic/child".to_owned()],
+        local_stack_branches: std::cell::RefCell::new(vec![
+            vec![
+                local_stack_branch("topic/root", "main", None),
+                local_stack_branch("topic/child", "topic/root", Some("topic/root")),
+            ],
+            vec![
+                local_stack_branch("topic/root", "main", None),
+                local_stack_branch("topic/child", "main", None),
+            ],
+        ]),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "stack",
+            "--revision",
+            "topic/root",
+            "--revision",
+            "topic/child",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("multi-revision stack move succeeds");
+
+    assert_eq!(
+        services.stack_move_requests.borrow().as_slice(),
+        &[(
+            vec!["topic/root".to_owned(), "topic/child".to_owned()],
+            StackMoveTarget::Trunk,
+        )]
+    );
+    assert_eq!(
+        services.open_pull_request_selectors.borrow().as_slice(),
+        &[
+            Some("topic/root".to_owned()),
+            Some("topic/child".to_owned())
+        ]
+    );
+    assert_eq!(
+        services.push_syncable_revision_requests.borrow().as_slice(),
+        &[
+            Some("topic/root".to_owned()),
+            Some("topic/child".to_owned())
+        ]
+    );
+    assert!(result
+        .stdout
+        .starts_with("Moved selected revisions from a1b2c3d4 and 1 more onto trunk\nSynced:"));
 }
 
 #[test]
@@ -5479,7 +5576,7 @@ fn stack_move_no_sync_updates_local_metadata_without_github_mutations() {
 
     assert_eq!(
         services.stack_move_requests.borrow().as_slice(),
-        &[(None, StackMoveTarget::Trunk)]
+        &[(Vec::new(), StackMoveTarget::Trunk)]
     );
     assert!(services.fetch_origin_roots.borrow().is_empty());
     assert!(services.push_syncable_revision_requests.borrow().is_empty());
@@ -5494,7 +5591,7 @@ fn stack_move_no_sync_updates_local_metadata_without_github_mutations() {
     assert_eq!(child.parent_branch, None);
     assert_eq!(
         result.stdout,
-        "Moved current stack from a1b2c3d4 onto trunk\nSync skipped (--no-sync)\n"
+        "Moved current stack from a1b2c3d4 onto trunk\n"
     );
 }
 

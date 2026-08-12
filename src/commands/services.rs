@@ -443,11 +443,11 @@ pub(super) trait CommandServices {
         self.fetch_origin(context)
     }
 
-    /// Moves the selected change and descendants onto a stack target or trunk.
+    /// Moves the selected jj revisions or current change stack onto a stack target or trunk.
     fn move_stack(
         &self,
         context: &RepositoryContext,
-        revision: Option<&str>,
+        revisions: &[String],
         target: &StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError>;
 
@@ -2769,10 +2769,10 @@ impl CommandServices for ProductionServices<'_> {
     fn move_stack(
         &self,
         context: &RepositoryContext,
-        revision: Option<&str>,
+        revisions: &[String],
         target: &StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError> {
-        load_current_jj_workspace(context)?.move_stack(revision, target.clone())
+        load_current_jj_workspace(context)?.move_stack(revisions, target.clone())
     }
 
     fn local_stack_branches(

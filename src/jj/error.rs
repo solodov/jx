@@ -24,6 +24,8 @@ pub enum JjError {
     },
     #[error("Cannot move current stack onto one of its descendants")]
     StackTargetDescendant,
+    #[error("Cannot move selected revision `{commit_id}` onto itself")]
+    StackSourceIsTarget { commit_id: String },
     #[error("Internal PR bookmark target `{commit_id}` is not a valid commit id")]
     InvalidTargetCommitId { commit_id: String },
     #[error("Workspace `{workspace}` does not have a current working-copy change")]

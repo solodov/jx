@@ -62,7 +62,7 @@ pub(super) enum StackRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StackMoveRequest {
-    pub(super) revision: Option<String>,
+    pub(super) revisions: Vec<String>,
     pub(super) target: StackMoveTarget,
     pub(super) no_sync: bool,
 }
@@ -500,7 +500,8 @@ fn add_stack_perf_attrs(attrs: &mut Vec<PerfAttr>, request: &StackRequest) {
         StackRequest::Open { print } => attrs.extend([perf_attr("print", *print)]),
         StackRequest::Move(request) => attrs.extend([
             perf_attr("target", stack_move_target_name(&request.target)),
-            perf_attr("explicit_revision", request.revision.is_some()),
+            perf_attr("revision_count", request.revisions.len()),
+            perf_attr("explicit_revisions", !request.revisions.is_empty()),
             perf_attr("no_sync", request.no_sync),
         ]),
         StackRequest::Plan(request) => attrs.extend([
@@ -677,16 +678,17 @@ fn stack_request(matches: &ArgMatches) -> Result<StackRequest, clap::Error> {
         });
     }
 
+    let move_revisions = revisions(matches);
     if let Some(target) = matches.get_one::<String>("onto") {
         return Ok(StackRequest::Move(StackMoveRequest {
-            revision: revision(matches),
+            revisions: move_revisions,
             target: StackMoveTarget::Onto(target.clone()),
             no_sync: matches.get_flag("no-sync"),
         }));
     }
-    if matches.get_flag("trunk") {
+    if matches.get_flag("trunk") || !move_revisions.is_empty() {
         return Ok(StackRequest::Move(StackMoveRequest {
-            revision: revision(matches),
+            revisions: move_revisions,
             target: StackMoveTarget::Trunk,
             no_sync: matches.get_flag("no-sync"),
         }));
@@ -1513,7 +1515,7 @@ fn stack_command() -> ClapCommand {
         .visible_alias("sk")
         .about("Show, move, publish, or refresh repo-local pull request stack state")
         .long_about(
-            "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to fetch GitHub check and review summaries for the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish selected revisions, bookmarks, or revsets. Use -r/--revision with -o/--onto or -t/--trunk to move a selected commit or bookmark and its descendants; without -r, stack moves use the current change. Stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+            "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to fetch GitHub check and review summaries for the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish selected revisions, bookmarks, or revsets. Use repeatable -r/--revision with -o/--onto or -t/--trunk to move exact selected revisions; without an explicit target, selected revisions move onto trunk. Without -r, stack moves use the current change and descendants. Stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
         )
         .args_conflicts_with_subcommands(true)
         .group(
@@ -1521,11 +1523,16 @@ fn stack_command() -> ClapCommand {
                 .args(["onto", "trunk"])
                 .multiple(false),
         )
+        .group(
+            ArgGroup::new("stack-move")
+                .args(["onto", "trunk", "revision"])
+                .multiple(true),
+        )
         .arg(stack_interactive_arg())
         .arg(stack_move_revision_arg())
         .arg(stack_onto_arg())
         .arg(stack_trunk_arg())
-        .arg(stack_no_sync_arg().requires("stack-move-target"))
+        .arg(stack_no_sync_arg())
         .arg(open_print_arg().requires("interactive"))
         .subcommand(
             ClapCommand::new("show")
@@ -1800,10 +1807,10 @@ fn stack_move_revision_arg() -> Arg {
     Arg::new("revision")
         .short('r')
         .long("revision")
-        .value_name("COMMIT_OR_BOOKMARK")
-        .requires("stack-move-target")
+        .value_name("REVSET")
+        .action(ArgAction::Append)
         .conflicts_with("interactive")
-        .help("Move a specific jj revision or local bookmark instead of the working copy")
+        .help("Move exact selected jj revisions; repeat for multiple revsets, and omit a target to move onto trunk")
 }
 
 fn stack_onto_arg() -> Arg {
@@ -1828,6 +1835,7 @@ fn stack_no_sync_arg() -> Arg {
     Arg::new("no-sync")
         .long("no-sync")
         .action(ArgAction::SetTrue)
+        .requires("stack-move")
         .help("Update local stack state without pushing branches or updating GitHub PRs")
 }
 

@@ -165,6 +165,26 @@ impl<'a> PullRequestStackManager<'a> {
         self.sync_selection_for_branches(&selected_branches)
     }
 
+    /// Selects local stack component branches touched by one or more move selectors.
+    pub(super) fn sync_selection_for_selectors(
+        &self,
+        selectors: &[String],
+    ) -> Result<PullRequestStackSyncSelection, CommandError> {
+        let mut seen = BTreeSet::new();
+        let mut selected_branches = Vec::new();
+        for selector in selectors {
+            for branch in self
+                .services
+                .pull_request_candidate_bookmarks(self.context, Some(selector))?
+            {
+                if seen.insert(branch.clone()) {
+                    selected_branches.push(branch);
+                }
+            }
+        }
+        self.sync_selection_for_branches(&selected_branches)
+    }
+
     /// Selects local stack component branches from already-resolved PR branches.
     pub(super) fn sync_selection_for_branches(
         &self,

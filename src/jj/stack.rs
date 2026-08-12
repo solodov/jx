@@ -2,49 +2,52 @@ use super::*;
 use std::time::{Duration, Instant};
 
 impl JjWorkspace {
-    /// Moves the selected change and its descendants onto a stack target or trunk.
+    /// Moves selected jj revisions, or the current change stack, onto a stack target or trunk.
     pub fn move_stack(
         &mut self,
-        revision: Option<&str>,
+        revisions: &[String],
         target: StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError> {
         self.ensure_git_backed()?;
 
         let current_before = self.current_commit()?;
         let current_before_tree = current_before.tree();
-        let source_before = match revision {
-            Some(revision) => self.resolve_stack_move_source(revision)?,
-            None => current_before.clone(),
-        };
         let target_is_trunk = matches!(target, StackMoveTarget::Trunk);
         let target = match target {
             StackMoveTarget::Onto(target) => self.resolve_stack_move_target(&target)?,
             StackMoveTarget::Trunk => self.resolve_trunk_destination()?.1,
         };
-
-        let source_short_commit_id = short_commit_id(source_before.id());
         let target_short_commit_id = short_commit_id(target.id());
-        let target_is_descendant = self.is_ancestor_or_equal(source_before.id(), target.id())?;
-        if source_before.id() == target.id() || (target_is_trunk && target_is_descendant) {
+        let selection = self.stack_move_selection(revisions, &current_before, &target)?;
+        let source_short_commit_ids = selection.source_short_commit_ids();
+        if selection.is_empty() {
             return Ok(StackMoveOutcome {
-                source_short_commit_id,
+                source_short_commit_ids,
                 target_short_commit_id,
                 rebased_commits: 0,
-                skipped_commits: 1,
+                skipped_commits: 0,
                 current_updated: false,
             });
         }
-        if target_is_descendant {
-            return Err(JjError::StackTargetDescendant);
+        if let StackMoveSelection::CurrentStack { source } = &selection {
+            let target_is_descendant = self.is_ancestor_or_equal(source.id(), target.id())?;
+            if source.id() == target.id() || (target_is_trunk && target_is_descendant) {
+                return Ok(StackMoveOutcome {
+                    source_short_commit_ids,
+                    target_short_commit_id,
+                    rebased_commits: 0,
+                    skipped_commits: 1,
+                    current_updated: false,
+                });
+            }
+            if target_is_descendant {
+                return Err(JjError::StackTargetDescendant);
+            }
         }
 
         let workspace_name = self.workspace.workspace_name().to_owned();
         let mut tx = self.repo.start_transaction();
-        let location = MoveCommitsLocation {
-            new_parent_ids: vec![target.id().clone()],
-            new_child_ids: Vec::new(),
-            target: MoveCommitsTarget::Roots(vec![source_before.id().clone()]),
-        };
+        let location = selection.location(target.id().clone());
         let options = RebaseOptions {
             empty: EmptyBehavior::Keep,
             rewrite_refs: RewriteRefsOptions {
@@ -69,7 +72,7 @@ impl JjWorkspace {
 
         if rebased_commits == 0 && stats.num_abandoned_empty == 0 {
             return Ok(StackMoveOutcome {
-                source_short_commit_id,
+                source_short_commit_ids,
                 target_short_commit_id,
                 rebased_commits,
                 skipped_commits,
@@ -86,10 +89,9 @@ impl JjWorkspace {
             .ok_or_else(|| JjError::MissingWorkingCopy {
                 workspace: workspace_name.as_str().to_owned(),
             })?;
-        let repo = pollster::block_on(tx.commit(format!(
-            "jx stack move {} onto {}",
-            source_before.id().hex(),
-            target.id().hex()
+        let repo = pollster::block_on(tx.commit(stack_move_transaction_description(
+            &location.target,
+            target.id(),
         )))
         .map_err(|error| JjError::Transaction {
             message: error.to_string(),
@@ -110,7 +112,7 @@ impl JjWorkspace {
         self.repo = repo;
 
         Ok(StackMoveOutcome {
-            source_short_commit_id,
+            source_short_commit_ids,
             target_short_commit_id,
             rebased_commits,
             skipped_commits,
@@ -696,12 +698,83 @@ impl JjWorkspace {
         })
     }
 
-    fn resolve_stack_move_source(&self, revision: &str) -> Result<Commit, JjError> {
-        self.resolve_stack_move_revision(revision, "In `jx stack --revision`")
+    fn stack_move_selection(
+        &self,
+        revisions: &[String],
+        current_before: &Commit,
+        target: &Commit,
+    ) -> Result<StackMoveSelection, JjError> {
+        if revisions.is_empty() {
+            return Ok(StackMoveSelection::CurrentStack {
+                source: current_before.clone(),
+            });
+        }
+
+        let commits = self.resolve_stack_move_revisions(revisions)?;
+        if commits.is_empty() {
+            return Err(JjError::RevisionNotFound {
+                revision: revisions.join(" | "),
+            });
+        }
+        if commits.iter().any(|commit| commit.id() == target.id()) {
+            return Err(JjError::StackSourceIsTarget {
+                commit_id: short_commit_id(target.id()),
+            });
+        }
+        Ok(StackMoveSelection::ExactRevisions { commits })
     }
 
     fn resolve_stack_move_target(&self, target: &str) -> Result<Commit, JjError> {
         self.resolve_stack_move_revision(target, "In `jx stack --onto`")
+    }
+
+    fn resolve_stack_move_revisions(&self, revisions: &[String]) -> Result<Vec<Commit>, JjError> {
+        let mut commit_ids = Vec::new();
+        let mut seen = BTreeSet::new();
+        for revision in revisions {
+            for commit in self.resolve_stack_move_revision_set(revision)? {
+                if seen.insert(commit.id().clone()) {
+                    commit_ids.push(commit.id().clone());
+                }
+            }
+        }
+        self.order_stack_move_commits(commit_ids)
+    }
+
+    fn resolve_stack_move_revision_set(&self, revision: &str) -> Result<Vec<Commit>, JjError> {
+        match self.resolve_revisions(revision, "In `jx stack --revision`") {
+            Ok(commits) => Ok(commits),
+            Err(error) if can_try_stack_bookmark_fragment(&error) => {
+                let branch = self.resolve_local_bookmark_fragment(revision)?;
+                Ok(vec![self.resolve_single_revision(
+                    &branch,
+                    "In `jx stack --revision`",
+                )?])
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn order_stack_move_commits(&self, commit_ids: Vec<CommitId>) -> Result<Vec<Commit>, JjError> {
+        if commit_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let revset = ResolvedRevsetExpression::commits(commit_ids)
+            .evaluate(self.repo.as_ref())
+            .map_err(|error| JjError::Backend {
+                message: error.into_backend_error().to_string(),
+            })?;
+        let commit_ids =
+            pollster::block_on(revset.stream().try_collect::<Vec<_>>()).map_err(|error| {
+                JjError::Backend {
+                    message: error.into_backend_error().to_string(),
+                }
+            })?;
+        commit_ids
+            .iter()
+            .map(|commit_id| self.load_commit(commit_id))
+            .collect()
     }
 
     fn resolve_stack_move_revision(
@@ -750,6 +823,81 @@ impl JjWorkspace {
                 matches: best_matches,
             }),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum StackMoveSelection {
+    CurrentStack { source: Commit },
+    ExactRevisions { commits: Vec<Commit> },
+}
+
+impl StackMoveSelection {
+    fn is_empty(&self) -> bool {
+        match self {
+            StackMoveSelection::CurrentStack { .. } => false,
+            StackMoveSelection::ExactRevisions { commits } => commits.is_empty(),
+        }
+    }
+
+    fn source_short_commit_ids(&self) -> Vec<String> {
+        match self {
+            StackMoveSelection::CurrentStack { source } => vec![short_commit_id(source.id())],
+            StackMoveSelection::ExactRevisions { commits } => commits
+                .iter()
+                .map(|commit| short_commit_id(commit.id()))
+                .collect(),
+        }
+    }
+
+    fn location(&self, new_parent_id: CommitId) -> MoveCommitsLocation {
+        let (target, new_parent_ids) = match self {
+            StackMoveSelection::CurrentStack { source } => (
+                MoveCommitsTarget::Roots(vec![source.id().clone()]),
+                vec![new_parent_id],
+            ),
+            StackMoveSelection::ExactRevisions { commits } => (
+                MoveCommitsTarget::Commits(
+                    commits.iter().map(|commit| commit.id().clone()).collect(),
+                ),
+                vec![new_parent_id],
+            ),
+        };
+        MoveCommitsLocation {
+            new_parent_ids,
+            new_child_ids: Vec::new(),
+            target,
+        }
+    }
+}
+
+fn stack_move_transaction_description(
+    target: &MoveCommitsTarget,
+    destination: &CommitId,
+) -> String {
+    match target {
+        MoveCommitsTarget::Commits(ids) => match ids.as_slice() {
+            [] => "jx stack move 0 revisions".to_owned(),
+            [id] => format!(
+                "jx stack move revision {} onto {}",
+                id.hex(),
+                destination.hex()
+            ),
+            [first, others @ ..] => format!(
+                "jx stack move revision {} and {} more onto {}",
+                first.hex(),
+                others.len(),
+                destination.hex()
+            ),
+        },
+        MoveCommitsTarget::Roots(ids) => match ids.as_slice() {
+            [id] => format!("jx stack move {} onto {}", id.hex(), destination.hex()),
+            _ => format!(
+                "jx stack move {} stack roots onto {}",
+                ids.len(),
+                destination.hex()
+            ),
+        },
     }
 }
 

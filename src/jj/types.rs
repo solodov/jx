@@ -394,10 +394,10 @@ pub enum StackMoveTarget {
     Trunk,
 }
 
-/// Outcome of moving a selected jj change and descendants to a new parent.
+/// Outcome of moving selected jj revisions or the current change stack to a new parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackMoveOutcome {
-    pub source_short_commit_id: String,
+    pub source_short_commit_ids: Vec<String>,
     pub target_short_commit_id: String,
     pub rebased_commits: usize,
     pub skipped_commits: usize,

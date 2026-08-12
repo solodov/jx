@@ -27,7 +27,7 @@ fn stack_move_resolves_bookmark_fragment_after_revision_lookup() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_stack(None, StackMoveTarget::Onto("base-target".to_owned()))
+        .move_stack(&[], StackMoveTarget::Onto("base-target".to_owned()))
         .expect("stack move succeeds");
 
     let current = subject.current_commit().expect("current commit loads");
@@ -62,7 +62,7 @@ fn stack_trunk_moves_current_to_latest_origin_trunk() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_stack(None, StackMoveTarget::Trunk)
+        .move_stack(&[], StackMoveTarget::Trunk)
         .expect("current change is moved onto updated trunk");
 
     let current = subject.current_commit().expect("current commit loads");
@@ -72,8 +72,8 @@ fn stack_trunk_moves_current_to_latest_origin_trunk() {
 }
 
 #[test]
-fn stack_revision_moves_selected_stack_without_changing_unrelated_current() {
-    // Verifies: `jx stack -r <bookmark> --trunk` can move another stack while leaving the working copy alone.
+fn stack_revision_moves_exact_selection_without_changing_unrelated_current() {
+    // Verifies: `jx stack -r <bookmark> --trunk` moves the selected revision, not its descendants.
     let fixture = TestWorkspace::new("stack-trunk-selected-revision");
     let settings = user_settings().expect("settings");
     let (workspace, repo, old_trunk_id, updated_trunk_id, current_id) = pollster::block_on(async {
@@ -110,8 +110,8 @@ fn stack_revision_moves_selected_stack_without_changing_unrelated_current() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_stack(Some("topic/selected"), StackMoveTarget::Trunk)
-        .expect("selected stack is moved onto updated trunk");
+        .move_stack(&["topic/selected".to_owned()], StackMoveTarget::Trunk)
+        .expect("selected revision is moved onto updated trunk");
 
     let selected_id = subject
         .repo
@@ -126,9 +126,83 @@ fn stack_revision_moves_selected_stack_without_changing_unrelated_current() {
     let current = subject.current_commit().expect("current commit loads");
     assert_eq!(selected.parent_ids(), vec![updated_trunk_id]);
     assert_eq!(current.id(), &current_id);
-    assert_eq!(current.parent_ids(), vec![old_trunk_id]);
+    assert_eq!(current.parent_ids(), vec![old_trunk_id.clone()]);
+    let selected_child_id = subject
+        .repo
+        .view()
+        .get_local_bookmark(RefName::new("topic/selected-child"))
+        .as_normal()
+        .cloned()
+        .expect("selected child bookmark remains normal");
+    let selected_child = subject
+        .load_commit(&selected_child_id)
+        .expect("selected child commit loads");
+    assert_eq!(selected_child.parent_ids(), vec![old_trunk_id]);
     assert_eq!(outcome.rebased_commits, 2);
     assert!(!outcome.current_updated);
+}
+
+#[test]
+fn stack_revisions_preserve_dependencies_within_selected_set() {
+    // Verifies: repeated -r matches `jj rebase -r` by preserving selected internal edges.
+    let fixture = TestWorkspace::new("stack-trunk-multiple-revisions");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, updated_trunk_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
+        let first = write_child(tx.repo_mut(), &old_trunk, "first change").await;
+        let second = write_child(tx.repo_mut(), &first, "second change").await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated trunk").await;
+
+        set_origin_bookmark(tx.repo_mut(), "main", updated_trunk.id());
+        set_local_bookmark(tx.repo_mut(), "topic/first", first.id());
+        set_local_bookmark(tx.repo_mut(), "topic/second", second.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), second.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange multi-revision stack move")
+            .await
+            .expect("commit");
+        (workspace, repo, updated_trunk.id().clone())
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let outcome = subject
+        .move_stack(
+            &["topic/first".to_owned(), "topic/second".to_owned()],
+            StackMoveTarget::Trunk,
+        )
+        .expect("selected revisions are moved onto updated trunk");
+
+    let first_id = subject
+        .repo
+        .view()
+        .get_local_bookmark(RefName::new("topic/first"))
+        .as_normal()
+        .cloned()
+        .expect("first bookmark remains normal");
+    let second_id = subject
+        .repo
+        .view()
+        .get_local_bookmark(RefName::new("topic/second"))
+        .as_normal()
+        .cloned()
+        .expect("second bookmark remains normal");
+    let first = subject.load_commit(&first_id).expect("first commit loads");
+    let second = subject
+        .load_commit(&second_id)
+        .expect("second commit loads");
+
+    assert_eq!(first.parent_ids(), vec![updated_trunk_id]);
+    assert_eq!(second.parent_ids(), vec![first_id]);
+    assert_eq!(outcome.rebased_commits, 2);
+    assert!(outcome.current_updated);
 }
 
 #[test]
@@ -159,7 +233,7 @@ fn stack_trunk_accepts_current_that_already_landed_on_trunk() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let outcome = subject
-        .move_stack(None, StackMoveTarget::Trunk)
+        .move_stack(&[], StackMoveTarget::Trunk)
         .expect("landed current is accepted as up to date");
 
     let current = subject.current_commit().expect("current commit loads");
@@ -871,7 +945,7 @@ fn stack_move_reports_ambiguous_bookmark_fragments() {
     let mut subject = JjWorkspace { workspace, repo };
 
     let error = subject
-        .move_stack(None, StackMoveTarget::Onto("base".to_owned()))
+        .move_stack(&[], StackMoveTarget::Onto("base".to_owned()))
         .expect_err("ambiguous bookmark fragment is rejected");
 
     assert!(matches!(
