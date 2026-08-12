@@ -524,6 +524,53 @@ fn github_user_name_cache_uses_global_cache_map_shape() {
 }
 
 #[test]
+fn github_auth_cache_round_trips_authenticated_login() {
+    // Verifies: publish planning can reuse stable authenticated identity across invocations.
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [(
+            "XDG_CACHE_HOME".to_owned(),
+            workspace.path().join("cache").display().to_string(),
+        )],
+    );
+    let now = chrono::DateTime::parse_from_rfc3339("2026-06-05T12:00:00Z")
+        .expect("timestamp parses")
+        .with_timezone(&chrono::Utc);
+    let token_source = TokenSource::Environment("JX_GITHUB_TOKEN");
+    let mut cache = GitHubAuthCache::default();
+    cache.upsert_login(&token_source, "example-user", now);
+
+    write_github_auth_cache(&environment, &cache).expect("cache writes");
+
+    assert_eq!(
+        read_github_auth_cache(&environment)
+            .expect("cache reads")
+            .fresh_login(&token_source, now),
+        Some("example-user".to_owned())
+    );
+}
+
+#[test]
+fn github_auth_cache_expires_after_30_days() {
+    // Verifies: authenticated identity is reused for normal publish loops but eventually refreshes.
+    let cached_at = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+        .expect("timestamp parses")
+        .with_timezone(&chrono::Utc);
+    let fresh_at = cached_at + chrono::Duration::days(GITHUB_AUTH_CACHE_TTL_DAYS);
+    let expired_at = fresh_at + chrono::Duration::seconds(1);
+    let token_source = TokenSource::Environment("JX_GITHUB_TOKEN");
+    let mut cache = GitHubAuthCache::default();
+    cache.upsert_login(&token_source, "example-user", cached_at);
+
+    assert_eq!(
+        cache.fresh_login(&token_source, fresh_at),
+        Some("example-user".to_owned())
+    );
+    assert_eq!(cache.fresh_login(&token_source, expired_at), None);
+}
+
+#[test]
 fn github_user_name_cache_expires_after_180_days() {
     // Verifies: cached names stay long-lived but eventually refresh from GitHub.
     let cached_at = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")

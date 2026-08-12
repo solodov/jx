@@ -68,6 +68,20 @@ fn token_source_build_rejects_missing_token() {
 }
 
 #[test]
+fn github_rate_limit_error_is_distinct_from_authentication_failure() {
+    // Verifies: GitHub 403 rate limits do not look like bad credentials.
+    let error = GitHubError::RateLimitExceeded {
+        operation: "check repository access",
+        message: "API rate limit exceeded for user ID 187738".to_owned(),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "GitHub API rate limit exceeded while trying to check repository access: API rate limit exceeded for user ID 187738"
+    );
+}
+
+#[test]
 fn github_error_message_summarizes_html_body() {
     // Verifies: transient GitHub HTML error pages do not flood stderr or perf logs.
     let message = summarize_github_error_message(
@@ -823,7 +837,7 @@ fn user_profiles_mapper_keeps_unexpected_graphql_errors_fatal() {
         GraphQlResponse {
             data: Some(BTreeMap::new()),
             errors: vec![GraphQlError {
-                message: "rate limit exceeded".to_owned(),
+                message: "viewer permission denied".to_owned(),
             }],
         },
     )
@@ -832,6 +846,28 @@ fn user_profiles_mapper_keeps_unexpected_graphql_errors_fatal() {
     assert!(matches!(
         error,
         GitHubError::GraphQl {
+            operation: "load user profiles",
+            message,
+        } if message == "viewer permission denied"
+    ));
+}
+
+#[test]
+fn user_profiles_mapper_classifies_graphql_rate_limits() {
+    let error = user_profiles_from_graphql_response(
+        &["human-reviewer".to_owned()],
+        GraphQlResponse {
+            data: Some(BTreeMap::new()),
+            errors: vec![GraphQlError {
+                message: "rate limit exceeded".to_owned(),
+            }],
+        },
+    )
+    .expect_err("rate limits are distinct");
+
+    assert!(matches!(
+        error,
+        GitHubError::RateLimitExceeded {
             operation: "load user profiles",
             message,
         } if message == "rate limit exceeded"

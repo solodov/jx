@@ -801,11 +801,27 @@ impl<'environment> ProductionServices<'environment> {
         &self,
         context: &RepositoryContext,
     ) -> Result<TracedGitHubClient<OctocrabGitHubClient>, GitHubError> {
+        self.traced_github_client_for_token_source_with_repo(
+            &context.token_source,
+            context.origin.github.slug(),
+        )
+    }
+
+    fn traced_github_client_for_token_source(
+        &self,
+        token_source: &TokenSource,
+    ) -> Result<TracedGitHubClient<OctocrabGitHubClient>, GitHubError> {
+        self.traced_github_client_for_token_source_with_repo(token_source, "github".to_owned())
+    }
+
+    fn traced_github_client_for_token_source_with_repo(
+        &self,
+        token_source: &TokenSource,
+        repo: String,
+    ) -> Result<TracedGitHubClient<OctocrabGitHubClient>, GitHubError> {
         let perf = PerfLog::from_environment(self.environment);
-        let repo = context.origin.github.slug();
         let mut span = perf.start("github.client", [perf_attr("repo", repo.clone())]);
-        let result =
-            OctocrabGitHubClient::from_token_source(&context.token_source, self.environment);
+        let result = OctocrabGitHubClient::from_token_source(token_source, self.environment);
         if let Err(error) = &result {
             span.record_error(error);
         }
@@ -815,6 +831,10 @@ impl<'environment> ProductionServices<'environment> {
             perf,
             repo,
             cache: Arc::clone(&self.github_cache),
+            durable_auth_cache: Some(DurableAuthCache {
+                environment: self.environment.clone(),
+                token_source: token_source.clone(),
+            }),
         })
     }
 }
@@ -858,7 +878,7 @@ fn fetch_outcome_attrs(fetch: &FetchOutcome) -> Vec<PerfAttr> {
 
 #[derive(Debug, Default)]
 struct GitHubFactCache {
-    authenticated_user: Option<AuthenticatedUser>,
+    authenticated_user_by_token: BTreeMap<String, AuthenticatedUser>,
     repository_access_by_slug: BTreeMap<String, RepositoryAccess>,
     authored_open_pull_request_by_head:
         BTreeMap<(String, String, String), Option<PullRequestRecord>>,
@@ -872,6 +892,12 @@ struct TracedGitHubClient<C> {
     perf: PerfLog,
     repo: String,
     cache: Arc<Mutex<GitHubFactCache>>,
+    durable_auth_cache: Option<DurableAuthCache>,
+}
+
+struct DurableAuthCache {
+    environment: RuntimeEnvironment,
+    token_source: TokenSource,
 }
 
 impl<C> TracedGitHubClient<C> {
@@ -901,6 +927,40 @@ impl<C> TracedGitHubClient<C> {
         }
         span.end();
         result
+    }
+
+    fn auth_cache_key(&self) -> String {
+        self.durable_auth_cache
+            .as_ref()
+            .map(|cache| cache.token_source.cache_key())
+            .unwrap_or_else(|| "memory".to_owned())
+    }
+
+    fn durable_authenticated_user(&self, cache_key: &str) -> Option<AuthenticatedUser> {
+        let cache_config = self.durable_auth_cache.as_ref()?;
+        let cache = read_github_auth_cache(&cache_config.environment).ok()?;
+        let login = cache.fresh_login(&cache_config.token_source, Utc::now())?;
+        let user = AuthenticatedUser { login };
+        self.cache
+            .lock()
+            .expect("GitHub fact cache lock is not poisoned")
+            .authenticated_user_by_token
+            .insert(cache_key.to_owned(), user.clone());
+        Some(user)
+    }
+
+    fn cache_authenticated_user(&self, cache_key: &str, user: &AuthenticatedUser) {
+        self.cache
+            .lock()
+            .expect("GitHub fact cache lock is not poisoned")
+            .authenticated_user_by_token
+            .insert(cache_key.to_owned(), user.clone());
+        if let Some(cache_config) = &self.durable_auth_cache {
+            if let Ok(mut cache) = read_github_auth_cache(&cache_config.environment) {
+                cache.upsert_login(&cache_config.token_source, user.login.clone(), Utc::now());
+                let _ = write_github_auth_cache(&cache_config.environment, &cache);
+            }
+        }
     }
 
     fn head_key(repository: &GitHubRepository, head: &PullRequestHead) -> (String, String) {
@@ -1229,6 +1289,7 @@ fn pull_request_status_chunk_attrs(
 fn transient_github_error_kind(error: &GitHubError) -> Option<&'static str> {
     match error {
         GitHubError::Timeout { .. } => Some("timeout"),
+        GitHubError::RateLimitExceeded { .. } => Some("rate_limit"),
         GitHubError::Api { source, .. } => transient_octocrab_error_kind(source),
         GitHubError::ApiResponse { status, .. } if *status == 429 => Some("rate_limit"),
         GitHubError::ApiResponse { status, .. } if (500..=599).contains(status) => Some("server"),
@@ -1270,25 +1331,48 @@ where
 {
     async fn authenticated_user(&self) -> Result<AuthenticatedUser, GitHubError> {
         let span = self.start_span("github.authenticated_user", None, Vec::new());
+        let cache_key = self.auth_cache_key();
         if let Some(user) = self
             .cache
             .lock()
             .expect("GitHub fact cache lock is not poisoned")
-            .authenticated_user
-            .clone()
+            .authenticated_user_by_token
+            .get(&cache_key)
+            .cloned()
         {
-            return self.finish(span, Ok(user), [perf_attr("cache_hit", true)]);
+            return self.finish(
+                span,
+                Ok(user),
+                [
+                    perf_attr("cache_hit", true),
+                    perf_attr("cache_scope", "memory"),
+                ],
+            );
+        }
+        if let Some(user) = self.durable_authenticated_user(&cache_key) {
+            return self.finish(
+                span,
+                Ok(user),
+                [
+                    perf_attr("cache_hit", true),
+                    perf_attr("cache_scope", "durable"),
+                ],
+            );
         }
 
         let result =
             github_request("load authenticated user", self.inner.authenticated_user()).await;
         if let Ok(user) = &result {
-            self.cache
-                .lock()
-                .expect("GitHub fact cache lock is not poisoned")
-                .authenticated_user = Some(user.clone());
+            self.cache_authenticated_user(&cache_key, user);
         }
-        self.finish(span, result, [perf_attr("cache_hit", false)])
+        self.finish(
+            span,
+            result,
+            [
+                perf_attr("cache_hit", false),
+                perf_attr("cache_scope", "none"),
+            ],
+        )
     }
 
     async fn repository_access(
@@ -2325,7 +2409,7 @@ impl CommandServices for ProductionServices<'_> {
 
     fn authenticated_login(&self, token_source: &TokenSource) -> Result<String, WorkflowError> {
         self.github_runtime.block_on(async {
-            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
+            let github = self.traced_github_client_for_token_source(token_source)?;
             let user = github.authenticated_user().await?;
             if user.login.is_empty() {
                 return Err(WorkflowError::MissingGitHubLogin);
@@ -2494,6 +2578,7 @@ impl CommandServices for ProductionServices<'_> {
                 perf: PerfLog::from_environment(self.environment),
                 repo: "review".to_owned(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+                durable_auth_cache: None,
             };
             let inbox = github.review_requests().await?;
             if inbox.viewer.login.is_empty() {
@@ -2515,6 +2600,7 @@ impl CommandServices for ProductionServices<'_> {
                 perf: PerfLog::from_environment(self.environment),
                 repo: "review".to_owned(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+                durable_auth_cache: None,
             };
             let inbox = github
                 .review_requests_for_repositories(repositories)
@@ -2561,6 +2647,7 @@ impl CommandServices for ProductionServices<'_> {
                 perf: PerfLog::from_environment(self.environment),
                 repo: "users".to_owned(),
                 cache: Arc::clone(&self.github_cache),
+                durable_auth_cache: None,
             };
             github.user_profiles(&stale_logins).await
         });
@@ -2600,6 +2687,7 @@ impl CommandServices for ProductionServices<'_> {
                 perf: PerfLog::from_environment(self.environment),
                 repo: repository.slug(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+                durable_auth_cache: None,
             };
             PullRequestService {
                 environment: self.environment,
@@ -2623,6 +2711,7 @@ impl CommandServices for ProductionServices<'_> {
                 perf: PerfLog::from_environment(self.environment),
                 repo: repository.slug(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+                durable_auth_cache: None,
             };
             PullRequestService {
                 environment: self.environment,
@@ -2919,7 +3008,20 @@ impl CommandServices for ProductionServices<'_> {
     ) -> Result<PullRequestPlan, WorkflowError> {
         self.github_runtime.block_on(async {
             let github = self.traced_github_client(context)?;
-            domain::pull_request_plan(context, workspace, &github, task_id, labels, readiness).await
+            let user = github.authenticated_user().await?;
+            if user.login.is_empty() {
+                return Err(WorkflowError::MissingGitHubLogin);
+            }
+            domain::pull_request_plan(
+                context,
+                workspace,
+                &github,
+                &user.login,
+                task_id,
+                labels,
+                readiness,
+            )
+            .await
         })
     }
 
@@ -3141,6 +3243,7 @@ async fn production_global_stack_status_entry_traced(
                 perf: perf.clone(),
                 repo: repository_identity.slug(),
                 cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+                durable_auth_cache: None,
             },
             Err(error) => {
                 return Some(GlobalStackStatusEntry {
@@ -4263,6 +4366,7 @@ mod tests {
             perf: PerfLog::disabled(),
             repo: "example-owner/example-repo".to_owned(),
             cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            durable_auth_cache: None,
         };
         let repository = GitHubRepository {
             owner: "example-owner".to_owned(),

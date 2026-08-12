@@ -1525,9 +1525,16 @@ fn user_profiles_data_from_graphql_response(
         .map(|error| error.message)
         .collect::<Vec<_>>();
     if !fatal_errors.is_empty() {
+        let message = fatal_errors.join("; ");
+        if is_rate_limit_message(&message) {
+            return Err(GitHubError::RateLimitExceeded {
+                operation: "load user profiles",
+                message,
+            });
+        }
         return Err(GitHubError::GraphQl {
             operation: "load user profiles",
-            message: fatal_errors.join("; "),
+            message,
         });
     }
     data.ok_or_else(|| GitHubError::GraphQl {
@@ -1597,15 +1604,16 @@ pub(super) struct GraphQlResponse<T> {
 impl<T> GraphQlResponse<T> {
     fn into_data(self, operation: &'static str) -> Result<T, GitHubError> {
         if !self.errors.is_empty() {
-            return Err(GitHubError::GraphQl {
-                operation,
-                message: self
-                    .errors
-                    .into_iter()
-                    .map(|error| error.message)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            });
+            let message = self
+                .errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if is_rate_limit_message(&message) {
+                return Err(GitHubError::RateLimitExceeded { operation, message });
+            }
+            return Err(GitHubError::GraphQl { operation, message });
         }
         self.data.ok_or_else(|| GitHubError::GraphQl {
             operation,

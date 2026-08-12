@@ -14,6 +14,11 @@ pub enum GitHubError {
         operation: &'static str,
         message: String,
     },
+    #[error("GitHub API rate limit exceeded while trying to {operation}: {message}")]
+    RateLimitExceeded {
+        operation: &'static str,
+        message: String,
+    },
     #[error(
         "GitHub could not compare `{base}` with `{head}` because one target was not found: {message}. Run `jx fetch` if the branch moved, or ensure the local trunk commit exists on GitHub."
     )]
@@ -69,11 +74,15 @@ impl GitHubError {
 }
 
 pub(super) fn api_error(operation: &'static str, source: octocrab::Error) -> GitHubError {
-    if let Some(message) = octocrab_github_error(&source)
-        .filter(|error| matches!(error.status_code.as_u16(), 401 | 403))
-        .map(|error| error.message.clone())
-    {
-        return GitHubError::AuthenticationFailed { operation, message };
+    if let Some(error) = octocrab_github_error(&source) {
+        let status = error.status_code.as_u16();
+        let message = error.message.clone();
+        if matches!(status, 403 | 429) && is_rate_limit_message(&message) {
+            return GitHubError::RateLimitExceeded { operation, message };
+        }
+        if matches!(status, 401 | 403) {
+            return GitHubError::AuthenticationFailed { operation, message };
+        }
     }
 
     GitHubError::Api {
@@ -106,6 +115,11 @@ fn octocrab_github_error(source: &octocrab::Error) -> Option<&octocrab::GitHubEr
         octocrab::Error::GitHub { source, .. } => Some(source.as_ref()),
         _ => None,
     }
+}
+
+pub(super) fn is_rate_limit_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("rate limit") || message.contains("too many requests")
 }
 
 fn octocrab_error_message(error: &octocrab::Error) -> String {

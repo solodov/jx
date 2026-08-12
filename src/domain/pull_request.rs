@@ -5,6 +5,7 @@ pub async fn pull_request_plan(
     context: &RepositoryContext,
     workspace: WorkspaceFacts,
     github: &dyn GitHubClient,
+    github_login: &str,
     task_id: Option<String>,
     labels: Vec<String>,
     readiness: PullRequestReadiness,
@@ -32,7 +33,16 @@ pub async fn pull_request_plan(
         .config
         .repo
         .reviewer_candidates_for(&context.origin.github, &workspace.changed_files);
-    let bookmark_report = bookmark_report(context, workspace, github, task_id).await?;
+    let bookmark = plan_bookmark(BookmarkPlanRequest {
+        github_login,
+        task_id: task_id.as_deref(),
+        workspace: &workspace,
+    })?;
+    let bookmark_report = BookmarkReport {
+        repository: repository_summary(context),
+        task_id,
+        bookmark,
+    };
     let head = PullRequestHead::same_repository(
         &context.origin.github.owner,
         &bookmark_report.bookmark.branch,

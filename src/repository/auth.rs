@@ -52,6 +52,19 @@ impl TokenSource {
             Self::Missing => "not found".to_owned(),
         }
     }
+
+    /// Stable non-secret key for caches whose entries are scoped to a token source.
+    pub(crate) fn cache_key(&self) -> String {
+        match self {
+            Self::Environment(name) => format!("env:{name}"),
+            Self::Keychain(config) => format!(
+                "keychain:{service}:{account}",
+                service = config.service,
+                account = config.account
+            ),
+            Self::Missing => "missing".to_owned(),
+        }
+    }
 }
 
 /// Keychain entry used to load a GitHub token.
