@@ -76,7 +76,7 @@ fn layout_title_context(
         Err(error) => return Err(error),
     };
 
-    let mut context = config.shell.repository_label(&identity);
+    let mut context = config.shell.title_repository_label(&identity);
     if let Some(workspace) =
         workspace_name_for_layout_root(&config.layout, &identity, root, environment)?
     {

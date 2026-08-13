@@ -161,6 +161,9 @@ its precmd hook can compose with Starship's hook. Repositories matching
 `[shell] slug_repositories` globs render as `owner/repo` in titles and shell
 navigation, which keeps organization-scoped workspaces such as
 `example-org/backend@fix` distinct without changing personal-project titles.
+`[[shell.title_rewrites]]` rules then apply regex replacements to title labels
+only, so a prompt can shorten `ExampleOrg/backend@fix` to `E/backend@fix`
+without changing navigation keys.
 
 ## Workspace metadata
 

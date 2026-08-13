@@ -7,6 +7,7 @@ pub struct ShellConfig {
     pub navigation_tab: Option<String>,
     pub title: bool,
     pub slug_repositories: Vec<String>,
+    pub title_rewrites: Vec<TitleRewriteConfig>,
     pub zoxide: ShellZoxideMode,
 }
 
@@ -17,6 +18,7 @@ impl Default for ShellConfig {
             navigation_tab: None,
             title: false,
             slug_repositories: Vec::new(),
+            title_rewrites: Vec::new(),
             zoxide: ShellZoxideMode::Auto,
         }
     }
@@ -37,6 +39,9 @@ impl ShellConfig {
             self.slug_repositories.extend(slug_repositories);
             self.slug_repositories.sort();
             self.slug_repositories.dedup();
+        }
+        if let Some(title_rewrites) = layer.title_rewrites {
+            self.title_rewrites.extend(title_rewrites);
         }
         if let Some(zoxide) = layer.zoxide {
             self.zoxide = zoxide;
@@ -133,6 +138,15 @@ impl ShellConfig {
         }
     }
 
+    /// Returns the title-only repository label after configured presentation rewrites.
+    pub fn title_repository_label(&self, identity: &RepositoryIdentity) -> String {
+        self.title_rewrites
+            .iter()
+            .fold(self.repository_label(identity), |label, rule| {
+                rule.rewrite(&label)
+            })
+    }
+
     /// Returns whether this repository should render as `owner/repo` in shell surfaces.
     pub fn uses_repository_slug(&self, identity: &RepositoryIdentity) -> bool {
         let slug = identity.github_repository().slug();
@@ -158,6 +172,7 @@ pub(super) struct ShellConfigLayer {
     pub(super) navigation_tab: Option<String>,
     pub(super) title: Option<bool>,
     pub(super) slug_repositories: Option<Vec<String>>,
+    pub(super) title_rewrites: Option<Vec<TitleRewriteConfig>>,
     pub(super) zoxide: Option<ShellZoxideMode>,
 }
 

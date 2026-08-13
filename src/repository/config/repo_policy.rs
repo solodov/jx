@@ -507,7 +507,7 @@ impl IgnoredAuthorResponseCommentConfig {
     }
 }
 
-/// Regex-based pull-request title rewrite applied before display ellipsizing.
+/// Regex-based presentation title rewrite applied before display ellipsizing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TitleRewriteConfig {
     pub pattern: String,

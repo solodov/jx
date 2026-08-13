@@ -212,6 +212,36 @@ slug_repositories = ["example-owner/*"]
 }
 
 #[test]
+fn shell_title_applies_configured_title_rewrites() {
+    // Verifies: Title-only rewrites can shorten organization labels without changing navigation keys.
+    let workspace = TestWorkspace::new_uninitialized_under("projects/.work/backend/FD-123-fix");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "ExampleOrg"
+root = "~/projects"
+path = "{repo}"
+
+[shell]
+slug_repositories = ["ExampleOrg/*"]
+
+[[shell.title_rewrites]]
+pattern = "^ExampleOrg/"
+replace = "E/"
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(["jx", "shell", "title"], &environment, &services)
+        .expect("rewritten title succeeds");
+
+    assert_eq!(result.stdout, "E/backend@FD-123-fix\n");
+}
+
+#[test]
 fn shell_title_falls_back_to_home_relative_path() {
     // Verifies: Outside configured layout roots, title rendering remains useful without repo-specific rules.
     let workspace = TestWorkspace::new_uninitialized_under("misc/tools");

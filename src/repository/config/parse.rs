@@ -2179,7 +2179,12 @@ fn parse_shell_config(
     for key in table.keys() {
         if !matches!(
             key.as_str(),
-            "navigation" | "navigation_tab" | "title" | "slug_repositories" | "zoxide"
+            "navigation"
+                | "navigation_tab"
+                | "title"
+                | "slug_repositories"
+                | "title_rewrites"
+                | "zoxide"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -2207,6 +2212,10 @@ fn parse_shell_config(
         .transpose()?;
     let slug_repositories =
         optional_string_array(file, table, "shell.slug_repositories")?.map(normalize_string_set);
+    let title_rewrites = table
+        .get("title_rewrites")
+        .map(|value| parse_title_rewrites(file, "shell.title_rewrites", value))
+        .transpose()?;
     let zoxide = table
         .get("zoxide")
         .map(|value| parse_shell_zoxide_mode(file, "shell.zoxide", value))
@@ -2217,6 +2226,7 @@ fn parse_shell_config(
         navigation_tab,
         title,
         slug_repositories,
+        title_rewrites,
         zoxide,
     })
 }

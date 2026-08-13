@@ -2219,6 +2219,46 @@ reviewers = [" example-reviewer ", "second-reviewer", "example-reviewer"]
 }
 
 #[test]
+fn shell_title_rewrites_compose_across_config_layers() {
+    // Verifies: global title rewrite rules append in file order and leave the navigation label unchanged.
+    let workspace = TestWorkspace::new();
+    workspace.write_file(
+        ".config/jx/00-base.toml",
+        r#"
+[shell]
+slug_repositories = ["ExampleOrg/*"]
+
+[[shell.title_rewrites]]
+pattern = "^ExampleOrg/"
+replace = "E/"
+"#,
+    );
+    workspace.write_file(
+        ".config/jx/10-team.toml",
+        r#"
+[[shell.title_rewrites]]
+pattern = "^E/backend$"
+replace = "E/api"
+"#,
+    );
+    let identity = RepositoryIdentity {
+        source: "github".to_owned(),
+        host: "github.com".to_owned(),
+        owner: "ExampleOrg".to_owned(),
+        repo: "backend".to_owned(),
+    };
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+
+    let config = WorkflowConfig::discover_global(&environment).expect("config discovers");
+
+    assert_eq!(
+        config.shell.repository_label(&identity),
+        "ExampleOrg/backend"
+    );
+    assert_eq!(config.shell.title_repository_label(&identity), "E/api");
+}
+
+#[test]
 fn rejects_configured_remotes_legacy_hooks_and_bookmark_roots() {
     // Verifies: Config parsing rejects configured remotes, legacy hook tables, and bookmark roots.
     let cases = [
