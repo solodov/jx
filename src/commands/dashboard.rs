@@ -1,5 +1,11 @@
 use super::*;
 use chrono::{DateTime, Local, TimeZone as _};
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    execute, queue,
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use std::{
     env,
     ffi::OsString,
@@ -11,20 +17,70 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
+const DASHBOARD_EVENT_POLL: Duration = Duration::from_millis(100);
 const DASHBOARD_IDLE_POLL: Duration = Duration::from_millis(500);
 const DASHBOARD_REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-pub(super) type DashboardFrameLoader = Arc<dyn Fn() -> Result<String, String> + Send + Sync>;
+pub(super) type DashboardFrameLoader =
+    Arc<dyn Fn() -> Result<DashboardFrameSnapshot, String> + Send + Sync>;
 
-/// Runs a live terminal dashboard by replacing the display with complete refresh frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DashboardRenderOptions {
+    pub(super) color: bool,
+    pub(super) terminal_width: Option<usize>,
+}
+
+pub(super) struct DashboardFrameSnapshot {
+    renderer: Box<dyn Fn(DashboardRenderOptions) -> Result<String, String> + Send + Sync>,
+}
+
+impl DashboardFrameSnapshot {
+    pub(super) fn new(
+        renderer: impl Fn(DashboardRenderOptions) -> Result<String, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            renderer: Box::new(renderer),
+        }
+    }
+
+    fn render(&self, options: DashboardRenderOptions) -> Result<String, String> {
+        (self.renderer)(options)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DashboardTerminalSize {
+    width: usize,
+    height: usize,
+}
+
+impl DashboardTerminalSize {
+    fn new(width: u16, height: u16) -> Self {
+        Self {
+            width: usize::from(width),
+            height: usize::from(height),
+        }
+    }
+
+    fn render_options(self) -> DashboardRenderOptions {
+        DashboardRenderOptions {
+            color: true,
+            terminal_width: Some(self.width),
+        }
+    }
+}
+
+/// Runs a live terminal dashboard in the alternate screen until the operator exits.
 pub(super) fn run_interactive_dashboard(
     title: &'static str,
     refresh_seconds: u64,
     loader: DashboardFrameLoader,
 ) -> Result<CommandResult, CommandError> {
+    let mut terminal = DashboardTerminalSession::enter()?;
+    let mut terminal_size = dashboard_terminal_size()?;
     let mut watcher = ExecutableWatcher::from_process();
+    let mut last_snapshot = None::<DashboardFrameSnapshot>;
     let mut last_frame = None::<String>;
     let mut last_refreshed = None::<DateTime<Local>>;
     let mut next_refresh_at = None::<DateTime<Local>>;
@@ -36,32 +92,50 @@ pub(super) fn run_interactive_dashboard(
         let mut spinner_index = 0usize;
         render_dashboard_frame(
             title,
-            last_frame.as_deref(),
-            last_refreshed,
-            true,
-            last_error.as_deref(),
-            spinner_index,
-            next_refresh_at,
+            dashboard_frame_state(
+                last_frame.as_deref(),
+                last_refreshed,
+                true,
+                last_error.as_deref(),
+                spinner_index,
+                next_refresh_at,
+            ),
+            terminal_size,
         )?;
         loop {
             if watcher.changed() {
+                terminal.restore()?;
                 return restart_dashboard_process();
             }
-            match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(Ok(frame)) => {
+            match receiver.try_recv() {
+                Ok(Ok(snapshot)) => {
                     let refreshed_at = Local::now();
-                    last_frame = Some(frame);
-                    last_refreshed = Some(refreshed_at);
-                    next_refresh_at = next_dashboard_refresh_time(refreshed_at, refresh_seconds);
-                    last_error = None;
+                    match snapshot.render(terminal_size.render_options()) {
+                        Ok(frame) => {
+                            last_frame = Some(frame);
+                            last_snapshot = Some(snapshot);
+                            last_refreshed = Some(refreshed_at);
+                            next_refresh_at =
+                                next_dashboard_refresh_time(refreshed_at, refresh_seconds);
+                            last_error = None;
+                        }
+                        Err(error) => {
+                            last_error = Some(error);
+                            next_refresh_at =
+                                next_dashboard_refresh_time(Local::now(), refresh_seconds);
+                        }
+                    }
                     render_dashboard_frame(
                         title,
-                        last_frame.as_deref(),
-                        last_refreshed,
-                        false,
-                        None,
-                        spinner_index,
-                        next_refresh_at,
+                        dashboard_frame_state(
+                            last_frame.as_deref(),
+                            last_refreshed,
+                            false,
+                            last_error.as_deref(),
+                            spinner_index,
+                            next_refresh_at,
+                        ),
+                        terminal_size,
                     )?;
                     break;
                 }
@@ -70,74 +144,198 @@ pub(super) fn run_interactive_dashboard(
                     next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                     render_dashboard_frame(
                         title,
-                        last_frame.as_deref(),
-                        last_refreshed,
-                        false,
-                        last_error.as_deref(),
-                        spinner_index,
-                        next_refresh_at,
-                    )?;
-                    break;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if dashboard_refresh_timed_out(refresh_started.elapsed()) {
-                        last_error = Some(dashboard_refresh_timeout_error());
-                        next_refresh_at =
-                            next_dashboard_refresh_time(Local::now(), refresh_seconds);
-                        render_dashboard_frame(
-                            title,
+                        dashboard_frame_state(
                             last_frame.as_deref(),
                             last_refreshed,
                             false,
                             last_error.as_deref(),
                             spinner_index,
                             next_refresh_at,
-                        )?;
-                        break;
-                    }
-                    spinner_index = spinner_index.wrapping_add(1);
-                    render_dashboard_frame(
-                        title,
-                        last_frame.as_deref(),
-                        last_refreshed,
-                        true,
-                        last_error.as_deref(),
-                        spinner_index,
-                        next_refresh_at,
+                        ),
+                        terminal_size,
                     )?;
+                    break;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
                     last_error = Some("dashboard refresh worker stopped unexpectedly".to_owned());
                     next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                     render_dashboard_frame(
                         title,
+                        dashboard_frame_state(
+                            last_frame.as_deref(),
+                            last_refreshed,
+                            false,
+                            last_error.as_deref(),
+                            spinner_index,
+                            next_refresh_at,
+                        ),
+                        terminal_size,
+                    )?;
+                    break;
+                }
+            }
+
+            if dashboard_refresh_timed_out(refresh_started.elapsed()) {
+                last_error = Some(dashboard_refresh_timeout_error());
+                next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
+                render_dashboard_frame(
+                    title,
+                    dashboard_frame_state(
                         last_frame.as_deref(),
                         last_refreshed,
                         false,
                         last_error.as_deref(),
                         spinner_index,
                         next_refresh_at,
-                    )?;
-                    break;
+                    ),
+                    terminal_size,
+                )?;
+                break;
+            }
+
+            match read_dashboard_event(DASHBOARD_EVENT_POLL, &mut terminal_size)? {
+                DashboardEvent::Exit => {
+                    terminal.restore()?;
+                    return Ok(CommandResult::success(String::new()));
+                }
+                DashboardEvent::Interrupt => {
+                    terminal.restore()?;
+                    return Ok(CommandResult::with_exit_code(String::new(), 130));
+                }
+                DashboardEvent::Resized => rerender_dashboard_snapshot(
+                    last_snapshot.as_ref(),
+                    terminal_size,
+                    &mut last_frame,
+                    &mut last_error,
+                ),
+                DashboardEvent::None => {
+                    spinner_index = spinner_index.wrapping_add(1);
                 }
             }
+            render_dashboard_frame(
+                title,
+                dashboard_frame_state(
+                    last_frame.as_deref(),
+                    last_refreshed,
+                    true,
+                    last_error.as_deref(),
+                    spinner_index,
+                    next_refresh_at,
+                ),
+                terminal_size,
+            )?;
         }
 
         while let Some(wait_duration) = dashboard_wait_duration(Local::now(), next_refresh_at) {
             if watcher.changed() {
+                terminal.restore()?;
                 return restart_dashboard_process();
             }
-            thread::sleep(wait_duration);
+            match read_dashboard_event(wait_duration, &mut terminal_size)? {
+                DashboardEvent::Exit => {
+                    terminal.restore()?;
+                    return Ok(CommandResult::success(String::new()));
+                }
+                DashboardEvent::Interrupt => {
+                    terminal.restore()?;
+                    return Ok(CommandResult::with_exit_code(String::new(), 130));
+                }
+                DashboardEvent::Resized => {
+                    rerender_dashboard_snapshot(
+                        last_snapshot.as_ref(),
+                        terminal_size,
+                        &mut last_frame,
+                        &mut last_error,
+                    );
+                    render_dashboard_frame(
+                        title,
+                        dashboard_frame_state(
+                            last_frame.as_deref(),
+                            last_refreshed,
+                            false,
+                            last_error.as_deref(),
+                            spinner_index,
+                            next_refresh_at,
+                        ),
+                        terminal_size,
+                    )?;
+                }
+                DashboardEvent::None => {}
+            }
         }
     }
 }
 
-fn spawn_dashboard_load(loader: DashboardFrameLoader) -> mpsc::Receiver<Result<String, String>> {
+fn spawn_dashboard_load(
+    loader: DashboardFrameLoader,
+) -> mpsc::Receiver<Result<DashboardFrameSnapshot, String>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let _ = sender.send(loader());
     });
     receiver
+}
+
+fn rerender_dashboard_snapshot(
+    snapshot: Option<&DashboardFrameSnapshot>,
+    terminal_size: DashboardTerminalSize,
+    frame: &mut Option<String>,
+    error: &mut Option<String>,
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    match snapshot.render(terminal_size.render_options()) {
+        Ok(rendered) => *frame = Some(rendered),
+        Err(render_error) => *error = Some(render_error),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardEvent {
+    None,
+    Resized,
+    Exit,
+    Interrupt,
+}
+
+fn read_dashboard_event(
+    timeout: Duration,
+    terminal_size: &mut DashboardTerminalSize,
+) -> io::Result<DashboardEvent> {
+    if !event::poll(timeout)? {
+        return Ok(DashboardEvent::None);
+    }
+
+    match event::read()? {
+        Event::Resize(width, height) => {
+            *terminal_size = DashboardTerminalSize::new(width, height);
+            Ok(DashboardEvent::Resized)
+        }
+        Event::Key(key) if dashboard_interrupt_key(key) => Ok(DashboardEvent::Interrupt),
+        Event::Key(key) if dashboard_exit_key(key) => Ok(DashboardEvent::Exit),
+        _ => Ok(DashboardEvent::None),
+    }
+}
+
+fn dashboard_exit_key(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
+        )
+}
+
+fn dashboard_interrupt_key(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn dashboard_terminal_size() -> io::Result<DashboardTerminalSize> {
+    let (width, height) = terminal::size()?;
+    Ok(DashboardTerminalSize::new(width, height))
 }
 
 fn next_dashboard_refresh_time(
@@ -177,44 +375,134 @@ fn dashboard_wait_duration(
     Some(remaining.min(DASHBOARD_IDLE_POLL))
 }
 
-fn render_dashboard_frame(
-    title: &str,
-    frame: Option<&str>,
+struct DashboardFrameState<'a> {
+    frame: Option<&'a str>,
     last_refreshed: Option<DateTime<Local>>,
     refreshing: bool,
-    error: Option<&str>,
+    error: Option<&'a str>,
     spinner_index: usize,
     next_refresh_at: Option<DateTime<Local>>,
+}
+
+fn dashboard_frame_state<'a>(
+    frame: Option<&'a str>,
+    last_refreshed: Option<DateTime<Local>>,
+    refreshing: bool,
+    error: Option<&'a str>,
+    spinner_index: usize,
+    next_refresh_at: Option<DateTime<Local>>,
+) -> DashboardFrameState<'a> {
+    DashboardFrameState {
+        frame,
+        last_refreshed,
+        refreshing,
+        error,
+        spinner_index,
+        next_refresh_at,
+    }
+}
+
+fn render_dashboard_frame(
+    title: &str,
+    state: DashboardFrameState<'_>,
+    terminal_size: DashboardTerminalSize,
 ) -> io::Result<()> {
-    let spinner = SPINNER_FRAMES[spinner_index % SPINNER_FRAMES.len()];
-    let refreshed = last_refreshed
+    let output = dashboard_frame_text(title, state);
+    write_dashboard_screen(&output, terminal_size)
+}
+
+fn dashboard_frame_text(title: &str, state: DashboardFrameState<'_>) -> String {
+    let spinner = SPINNER_FRAMES[state.spinner_index % SPINNER_FRAMES.len()];
+    let refreshed = state
+        .last_refreshed
         .map(format_dashboard_refresh_time)
         .unwrap_or_else(|| "never".to_owned());
-    let state = if refreshing {
+    let refresh_state = if state.refreshing {
         format!("{spinner} refreshing")
     } else {
-        next_refresh_at
+        state
+            .next_refresh_at
             .map(|time| format!("next refresh: {}", format_dashboard_refresh_time(time)))
             .unwrap_or_else(|| "next refresh: unknown".to_owned())
     };
     let mut output = String::new();
-    output.push_str(CLEAR_SCREEN);
-    output.push_str(&format!("{title}  Last refreshed: {refreshed}  {state}\n",));
-    if let Some(error) = error {
+    output.push_str(&format!(
+        "{title}  Last refreshed: {refreshed}  {refresh_state}\n"
+    ));
+    if let Some(error) = state.error {
         output.push_str(&format!("Last refresh failed: {error}\n"));
     } else {
         output.push('\n');
     }
-    if let Some(frame) = frame {
+    if let Some(frame) = state.frame {
         output.push_str(frame);
     }
+    output
+}
+
+fn write_dashboard_screen(output: &str, terminal_size: DashboardTerminalSize) -> io::Result<()> {
     let mut stdout = io::stdout();
-    stdout.write_all(output.as_bytes())?;
+    queue!(stdout, MoveTo(0, 0), Clear(ClearType::All))?;
+    for (row, line) in clipped_dashboard_lines(output, terminal_size)
+        .into_iter()
+        .enumerate()
+    {
+        queue!(stdout, MoveTo(0, row as u16))?;
+        stdout.write_all(line.as_bytes())?;
+    }
     stdout.flush()
+}
+
+fn clipped_dashboard_lines(output: &str, terminal_size: DashboardTerminalSize) -> Vec<String> {
+    output
+        .split('\n')
+        .take(terminal_size.height)
+        .map(|line| ellipsize_rendered_line(line.trim_end_matches('\r'), Some(terminal_size.width)))
+        .collect()
 }
 
 fn format_dashboard_refresh_time(time: DateTime<Local>) -> String {
     time.format("%Y-%m-%d %H:%M").to_string()
+}
+
+struct DashboardTerminalSession {
+    restored: bool,
+}
+
+impl DashboardTerminalSession {
+    fn enter() -> io::Result<Self> {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(io::Error::other(
+                "Cannot run an interactive dashboard without an interactive terminal",
+            ));
+        }
+
+        terminal::enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(error);
+        }
+        Ok(Self { restored: false })
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        if self.restored {
+            return Ok(());
+        }
+        let mut stdout = io::stdout();
+        let display_result = execute!(stdout, Show, LeaveAlternateScreen);
+        let raw_result = terminal::disable_raw_mode();
+        self.restored = true;
+        display_result?;
+        raw_result
+    }
+}
+
+impl Drop for DashboardTerminalSession {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
 }
 
 struct ExecutableWatcher {
@@ -287,8 +575,10 @@ fn restart_dashboard_process() -> Result<CommandResult, CommandError> {
     let Some(executable) = restart_executable_path() else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "jx executable was not found").into());
     };
-    let _ = io::stdout().write_all(b"\x1b[2J\x1b[Hjx updated; restarting...\n");
-    let _ = io::stdout().flush();
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
+    let _ = writeln!(stdout, "jx updated; restarting...");
+    let _ = stdout.flush();
     restart_process(&executable, &argv)
 }
 
@@ -375,6 +665,44 @@ mod tests {
             dashboard_wait_duration(now, Some(now + chrono::Duration::milliseconds(100))),
             Some(Duration::from_millis(100))
         );
+    }
+
+    #[test]
+    fn dashboard_output_is_clipped_to_terminal_size() {
+        let lines = clipped_dashboard_lines(
+            "abcdef\nok\nthird",
+            DashboardTerminalSize {
+                width: 4,
+                height: 2,
+            },
+        );
+
+        assert_eq!(lines, vec!["abc…".to_owned(), "ok".to_owned()]);
+    }
+
+    #[test]
+    fn dashboard_snapshot_rerenders_with_current_terminal_width() {
+        let snapshot = DashboardFrameSnapshot::new(|options| {
+            Ok(format!(
+                "width={}",
+                options.terminal_width.unwrap_or_default()
+            ))
+        });
+        let mut frame = None;
+        let mut error = None;
+
+        rerender_dashboard_snapshot(
+            Some(&snapshot),
+            DashboardTerminalSize {
+                width: 42,
+                height: 10,
+            },
+            &mut frame,
+            &mut error,
+        );
+
+        assert_eq!(frame.as_deref(), Some("width=42"));
+        assert_eq!(error, None);
     }
 
     fn local_test_time() -> DateTime<Local> {

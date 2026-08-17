@@ -76,19 +76,18 @@ fn run_review_dashboard(
     let environment = environment.clone();
     let loader_request = request.clone();
     let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
-        render_review_dashboard_frame(loader_request.clone(), &environment)
+        load_review_dashboard_snapshot(loader_request.clone(), &environment)
             .map_err(|error| error.to_string())
     });
     run_interactive_dashboard("jx review", request.refresh_seconds, loader)
 }
 
-fn render_review_dashboard_frame(
+fn load_review_dashboard_snapshot(
     request: ReviewRequest,
     environment: &RuntimeEnvironment,
-) -> Result<String, CommandError> {
+) -> Result<DashboardFrameSnapshot, CommandError> {
     let services = ProductionServices::new(environment)?;
     let progress = SilentProgress;
-    let output = OutputMode::from_process();
     let perf = PerfLog::from_environment(environment);
     let mut span = perf.start(
         "review.dashboard_frame",
@@ -103,14 +102,14 @@ fn render_review_dashboard_frame(
             &mut span,
             ReviewDismissalMode::Apply,
         )?;
-        span.measure("review.render", Vec::new(), || {
-            Ok::<_, CommandError>(render_review_requests(
+        Ok::<_, CommandError>(DashboardFrameSnapshot::new(move |options| {
+            Ok(render_review_requests(
                 &loaded.view,
-                output.color,
-                output.terminal_width,
+                options.color,
+                options.terminal_width,
                 &loaded.display_names,
             ))
-        })
+        }))
     })();
     if let Err(error) = &result {
         span.record_error(error);

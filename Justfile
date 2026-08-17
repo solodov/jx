@@ -16,10 +16,12 @@ install:
     dest="$dest_dir/jx"
     mkdir -p "$dest_dir"
 
-    if [[ -f "$dest" ]] && cmp -s target/release/jx "$dest"; then
+    built="${CARGO_TARGET_DIR:-target}/release/jx"
+
+    if [[ -f "$dest" ]] && cmp -s "$built" "$dest"; then
         echo "jx is already up to date at $dest"
     else
-        install -m 755 target/release/jx "$dest"
+        install -m 755 "$built" "$dest"
         echo "Installed jx to $dest"
     fi
 

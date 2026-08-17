@@ -847,8 +847,16 @@ pub(super) fn install_interrupt_cursor_restore() -> io::Result<()> {
     Ok(())
 }
 
-/// Restores cursor visibility when dialoguer exits through an interrupt error path.
+/// Restores terminal state when an interactive command exits through an interrupt path.
 pub(super) fn restore_terminal_cursor() {
+    let _ = crossterm::terminal::disable_raw_mode();
+
+    if io::stdout().is_terminal() {
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(b"\x1b[?25h\x1b[?1049l");
+        let _ = stdout.flush();
+    }
+
     let mut stderr = io::stderr();
     let _ = stderr.write_all(b"\x1b[?25h");
     let _ = stderr.flush();

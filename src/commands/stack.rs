@@ -137,16 +137,16 @@ fn run_stack_status_dashboard(
     let environment = environment.clone();
     let loader_request = request.clone();
     let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
-        render_stack_status_dashboard_frame(loader_request.clone(), &environment)
+        load_stack_status_dashboard_snapshot(loader_request.clone(), &environment)
             .map_err(|error| error.to_string())
     });
     run_interactive_dashboard("jx stack status", request.refresh_seconds, loader)
 }
 
-fn render_stack_status_dashboard_frame(
+fn load_stack_status_dashboard_snapshot(
     request: StackStatusRequest,
     environment: &RuntimeEnvironment,
-) -> Result<String, CommandError> {
+) -> Result<DashboardFrameSnapshot, CommandError> {
     let services = ProductionServices::new(environment)?;
     let progress = SilentProgress;
     let output = OutputMode::from_process();
@@ -161,16 +161,15 @@ fn render_stack_status_dashboard_frame(
         ],
     );
     let result = if request.all {
-        render_global_stack_status_dashboard_frame(
+        load_global_stack_status_dashboard_snapshot(
             &request,
             environment,
             &services,
             &progress,
-            output,
             &mut span,
         )
     } else {
-        render_current_stack_status_dashboard_frame(
+        load_current_stack_status_dashboard_snapshot(
             request,
             environment,
             &services,
@@ -187,36 +186,31 @@ fn render_stack_status_dashboard_frame(
     result
 }
 
-fn render_global_stack_status_dashboard_frame(
+fn load_global_stack_status_dashboard_snapshot(
     request: &StackStatusRequest,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
-    output: OutputMode,
     span: &mut PerfSpan,
-) -> Result<String, CommandError> {
+) -> Result<DashboardFrameSnapshot, CommandError> {
     let loaded = load_global_stack_status_view(request, environment, services, progress, span)?;
-    span.measure(
-        "render",
-        [perf_attr(
-            "format",
-            stack_status_format_label(request.format),
-        )],
-        || {
-            render_global_stack_status_output(
-                &loaded.entries,
-                loaded.total_repositories,
-                environment.current_dir(),
-                output.color,
-                output.terminal_width,
-                request.format,
-                &loaded.display_names,
-            )
-        },
-    )
+    let current_dir = environment.current_dir().to_path_buf();
+    let format = request.format;
+    Ok(DashboardFrameSnapshot::new(move |options| {
+        render_global_stack_status_output(
+            &loaded.entries,
+            loaded.total_repositories,
+            &current_dir,
+            options.color,
+            options.terminal_width,
+            format,
+            &loaded.display_names,
+        )
+        .map_err(|error| error.to_string())
+    }))
 }
 
-fn render_current_stack_status_dashboard_frame(
+fn load_current_stack_status_dashboard_snapshot(
     request: StackStatusRequest,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
@@ -224,8 +218,10 @@ fn render_current_stack_status_dashboard_frame(
     output: OutputMode,
     perf: &PerfLog,
     span: &mut PerfSpan,
-) -> Result<String, CommandError> {
+) -> Result<DashboardFrameSnapshot, CommandError> {
     let context = RepositoryContext::discover(environment)?;
+    let repository_root = context.repository_root.clone();
+    let format = request.format;
     let manager = PullRequestStackManager::new(&context, services, perf.clone(), environment);
     let execution = StackStatusExecution {
         services,
@@ -236,23 +232,17 @@ fn render_current_stack_status_dashboard_frame(
         perf,
     };
     let loaded = execution.load_status_view(&request, span)?;
-    span.measure(
-        "render",
-        [perf_attr(
-            "format",
-            stack_status_format_label(request.format),
-        )],
-        || {
-            render_stack_status_output(
-                &loaded.report,
-                &context.repository_root,
-                output.color,
-                output.terminal_width,
-                request.format,
-                &loaded.display_names,
-            )
-        },
-    )
+    Ok(DashboardFrameSnapshot::new(move |options| {
+        render_stack_status_output(
+            &loaded.report,
+            &repository_root,
+            options.color,
+            options.terminal_width,
+            format,
+            &loaded.display_names,
+        )
+        .map_err(|error| error.to_string())
+    }))
 }
 
 fn handle_global_stack_status(
