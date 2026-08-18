@@ -1171,7 +1171,7 @@ path = "{repo}"
 
 #[test]
 fn work_complete_workspaces_lists_only_deletable_workspace_names() {
-    // Verifies: Delete completion offers managed workspaces but omits the primary default checkout.
+    // Verifies: Delete completion offers managed jj workspaces while omitting primary and stale layout dirs.
     let workspace = TestWorkspace::new_under("projects/jx");
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -1183,10 +1183,16 @@ root = "~/projects"
 path = "{repo}"
 "#,
     );
+    let fix_root = workspace.home.join("projects/.work/jx/fix");
+    let review_root = workspace.home.join("projects/.work/jx/review");
+    let stale_root = workspace.home.join("projects/.work/jx/stale");
+    create_jj_workspace_marker(&fix_root);
+    create_jj_workspace_marker(&review_root);
+    fs::create_dir_all(stale_root.join(".trunk")).expect("create stale managed directory");
     let mut workspaces = project_workspaces(&workspace);
     workspaces.push(WorkspaceEntry {
         name: "review".to_owned(),
-        root: workspace.home.join("projects/.work/jx/review"),
+        root: review_root,
         is_current: false,
     });
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
@@ -1203,6 +1209,56 @@ path = "{repo}"
     .expect("workspace completion succeeds");
 
     assert_eq!(result.stdout, "fix\nreview\n");
+}
+
+#[test]
+fn work_complete_workspace_picker_format_uses_smart_matching() {
+    // Verifies: fzf-backed delete completion can select deletable workspaces by navigation-style fragments.
+    let workspace = TestWorkspace::new_under("projects/jx");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let target_root = workspace.home.join("projects/.work/jx/FD-123-update-stack");
+    let review_root = workspace.home.join("projects/.work/jx/review");
+    create_jj_workspace_marker(&target_root);
+    create_jj_workspace_marker(&review_root);
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        workspaces: vec![WorkspaceEntry {
+            name: "default".to_owned(),
+            root: workspace.home.join("projects/jx"),
+            is_current: true,
+        }],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--workspaces",
+            "--format",
+            "picker",
+            "--prefix",
+            "upd-stack",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("workspace picker completion succeeds");
+
+    assert_eq!(
+        result.stdout,
+        format!("FD-123-update-stack\t{}\n", target_root.display())
+    );
 }
 
 #[test]

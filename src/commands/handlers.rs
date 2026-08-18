@@ -1049,27 +1049,30 @@ fn handle_work_complete_traced(
         let identity = span.measure("resolve_workspace_identity", Vec::new(), || {
             workspace_identity(&context, environment)
         })?;
+        let current_workspace = span.measure("load_current_workspace", Vec::new(), || {
+            services
+                .current_workspace_entry(environment.current_dir())
+                .map_err(CommandError::from)
+        })?;
         let workspaces = span.measure_with_result_attrs(
-            "load_workspace_entries",
+            "list_managed_workspaces",
             Vec::new(),
             || {
-                services
-                    .workspace_entries(environment.current_dir())
-                    .map_err(CommandError::from)
+                current_repository_managed_workspace_entries(
+                    &context.config,
+                    &identity,
+                    environment,
+                    Some(&current_workspace),
+                )
+                .map_err(CommandError::from)
             },
-            |result| count_result_attrs(result, "workspace_count"),
-        )?;
-        let workspaces = span.measure_with_result_attrs(
-            "select_deletable_workspaces",
-            [perf_attr("workspace_count", workspaces.len())],
-            || deletable_workspace_entries(&context, &identity, &workspaces, environment),
             |result| count_result_attrs(result, "deletable_workspace_count"),
         )?;
         let workspaces = span.measure_with_result_attrs(
             "filter_candidates",
             [perf_attr("prefix_len", request.prefix.len())],
             || {
-                Ok::<_, CommandError>(filter_workspace_entries_by_prefix(
+                Ok::<_, CommandError>(filter_workspace_entries_by_query(
                     &workspaces,
                     &request.prefix,
                 ))
@@ -1077,9 +1080,14 @@ fn handle_work_complete_traced(
             |result| count_result_attrs(result, "candidate_count"),
         )?;
         span.set([perf_attr("candidate_count", workspaces.len())]);
-        return span.measure("render", [perf_attr("format", "simple")], || {
-            Ok::<_, CommandError>(render_workspace_name_complete(&workspaces))
-        });
+        return span.measure(
+            "render",
+            [perf_attr(
+                "format",
+                work_complete_format_label(request.format),
+            )],
+            || Ok::<_, CommandError>(render_workspace_complete(&workspaces, request.format)),
+        );
     }
 
     let config = span.measure("discover_global_config", Vec::new(), || {

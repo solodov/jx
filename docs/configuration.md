@@ -408,10 +408,11 @@ navigation function resolves current-repository layout workspace aliases and
 trunk aliases first, then global `jx work` locations, then optionally falls back
 to zoxide when `zoxide = "auto"` and the `zoxide` binary is installed. Explicit
 absolute and dot-relative paths are used directly. Navigation completion derives
-same-repository workspace aliases from configured layout paths and discovered
-`.jj` directories rather than the jj workspace registry, so a matching managed
-directory can appear before it is registered as a jj workspace and an
-out-of-layout jj workspace may appear only by its global key. Navigation queries
+same-repository workspace aliases from configured managed directories that have
+`.jj` workspace metadata, while global locations come from discovered `.jj`
+directories rather than the jj workspace registry. A matching managed workspace
+can appear before it is registered, and an out-of-layout jj workspace may appear
+only by its global key. Navigation queries
 can also be unique key fragments, and slash-separated fragments can select child
 directories under the matched location. When `fzf` is installed, pressing Tab for
 the navigation command opens an interactive picker over navigation candidates;

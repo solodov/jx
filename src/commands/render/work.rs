@@ -307,11 +307,20 @@ pub(in crate::commands) fn render_work_repository_complete(
         .collect()
 }
 
-pub(in crate::commands) fn render_workspace_name_complete(workspaces: &[WorkspaceEntry]) -> String {
-    workspaces
-        .iter()
-        .map(|workspace| format!("{}\n", workspace.name))
-        .collect()
+pub(in crate::commands) fn render_workspace_complete(
+    workspaces: &[WorkspaceEntry],
+    format: WorkCompleteFormat,
+) -> String {
+    match format {
+        WorkCompleteFormat::Simple => workspaces
+            .iter()
+            .map(|workspace| format!("{}\n", workspace.name))
+            .collect(),
+        WorkCompleteFormat::Picker => workspaces
+            .iter()
+            .map(|workspace| format!("{}\t{}\n", workspace.name, workspace.root.display()))
+            .collect(),
+    }
 }
 
 pub(in crate::commands) fn render_work_root(root: &Path) -> String {

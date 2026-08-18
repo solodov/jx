@@ -604,9 +604,12 @@ pub(super) fn navigation_work_locations_from_global(
 
     let (current_global, other_global) =
         partition_navigation_global_locations(&global, &current_repository);
+    let current_workspace = current_workspaces
+        .iter()
+        .find(|workspace| workspace.is_current);
     locations.extend(current_repository_workspace_aliases(
-        &current_global,
         &current_repository,
+        current_workspace,
     ));
     locations.push(WorkLocation {
         key: "default".to_owned(),
@@ -662,26 +665,119 @@ fn navigation_global_work_location(
 }
 
 fn current_repository_workspace_aliases(
-    global: &[WorkLocation],
     current_repository: &CurrentNavigationRepository,
+    current_workspace: Option<&WorkspaceEntry>,
 ) -> Vec<WorkLocation> {
-    global
-        .iter()
-        .filter(|location| {
-            location
-                .root
-                .starts_with(&current_repository.workspace_collection_root)
-        })
-        .filter_map(|location| {
-            location
-                .key
-                .split_once('@')
-                .map(|(_, workspace)| WorkLocation {
-                    key: workspace.to_owned(),
-                    root: location.root.clone(),
-                })
-        })
-        .collect()
+    managed_workspace_entries_from_roots(
+        &current_repository.primary_root,
+        &current_repository.workspace_collection_root,
+        current_workspace,
+    )
+    .into_iter()
+    .map(|workspace| WorkLocation {
+        key: workspace.name,
+        root: workspace.root,
+    })
+    .collect()
+}
+
+/// Lists managed workspace directories for one repository layout without invoking jj.
+pub(super) fn current_repository_managed_workspace_entries(
+    config: &WorkflowConfig,
+    identity: &RepositoryIdentity,
+    environment: &RuntimeEnvironment,
+    current_workspace: Option<&WorkspaceEntry>,
+) -> Result<Vec<WorkspaceEntry>, RepositoryError> {
+    Ok(managed_workspace_entries_from_roots(
+        &config.layout.project_destination(identity, environment)?,
+        &config
+            .layout
+            .workspace_collection_root(identity, environment)?,
+        current_workspace,
+    ))
+}
+
+fn managed_workspace_entries_from_roots(
+    primary_root: &Path,
+    collection_root: &Path,
+    current_workspace: Option<&WorkspaceEntry>,
+) -> Vec<WorkspaceEntry> {
+    let mut workspaces = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    if let Ok(entries) = fs::read_dir(collection_root) {
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            push_managed_workspace_entry(
+                entry.path(),
+                primary_root,
+                collection_root,
+                current_workspace,
+                &mut seen,
+                &mut workspaces,
+            );
+        }
+    }
+
+    if let Some(current_workspace) = current_workspace {
+        push_managed_workspace_entry(
+            current_workspace.root.clone(),
+            primary_root,
+            collection_root,
+            Some(current_workspace),
+            &mut seen,
+            &mut workspaces,
+        );
+    }
+
+    workspaces.sort_by(|left, right| left.name.cmp(&right.name));
+    workspaces
+}
+
+fn push_managed_workspace_entry(
+    root: PathBuf,
+    primary_root: &Path,
+    collection_root: &Path,
+    current_workspace: Option<&WorkspaceEntry>,
+    seen: &mut BTreeSet<String>,
+    workspaces: &mut Vec<WorkspaceEntry>,
+) {
+    if root == primary_root || !root.join(".jj").is_dir() {
+        return;
+    }
+    let Some(name) = managed_workspace_name(collection_root, &root) else {
+        return;
+    };
+    if !seen.insert(name.clone()) {
+        return;
+    }
+
+    let is_current = current_workspace.is_some_and(|workspace| workspace.root == root);
+    workspaces.push(WorkspaceEntry {
+        name,
+        root,
+        is_current,
+    });
+}
+
+fn managed_workspace_name(collection_root: &Path, root: &Path) -> Option<String> {
+    let relative = root.strip_prefix(collection_root).ok()?;
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(name)) = components.next() else {
+        return None;
+    };
+    if components.next().is_some() {
+        return None;
+    }
+
+    let name = name.to_str()?.to_owned();
+    validate_workspace_name(&name).ok()?;
+    Some(name)
 }
 
 /// Builds the global primary-checkout index used by cross-repository commands.
@@ -705,14 +801,14 @@ pub(super) fn filter_work_repositories_by_prefix(
         .collect()
 }
 
-pub(super) fn filter_workspace_entries_by_prefix(
+/// Filters workspaces by the same exact/prefix/token/contains ranking used by navigation.
+pub(super) fn filter_workspace_entries_by_query(
     workspaces: &[WorkspaceEntry],
-    prefix: &str,
+    query: &str,
 ) -> Vec<WorkspaceEntry> {
-    workspaces
-        .iter()
-        .filter(|workspace| workspace.name.starts_with(prefix))
-        .cloned()
+    matching_workspace_entries_by_query(workspaces, query)
+        .into_iter()
+        .map(|(workspace, _)| workspace.clone())
         .collect()
 }
 
@@ -720,13 +816,7 @@ pub(super) fn resolve_workspace_entry_by_fragment(
     workspaces: &[WorkspaceEntry],
     query: &str,
 ) -> Result<WorkspaceEntry, RepositoryError> {
-    let mut matches = workspaces
-        .iter()
-        .filter_map(|workspace| {
-            navigation_match_rank(&workspace.name, query).map(|rank| (workspace, rank))
-        })
-        .collect::<Vec<_>>();
-    matches.sort_by(|left, right| (left.1, &left.0.name).cmp(&(right.1, &right.0.name)));
+    let matches = matching_workspace_entries_by_query(workspaces, query);
 
     let Some(best_rank) = matches.first().map(|(_, rank)| *rank) else {
         return Err(RepositoryError::WorkspaceNameNotFound {
@@ -756,32 +846,18 @@ pub(super) fn resolve_workspace_entry_by_fragment(
     }
 }
 
-pub(super) fn deletable_workspace_entries(
-    context: &LocalRepositoryContext,
-    identity: &RepositoryIdentity,
-    workspaces: &[WorkspaceEntry],
-    environment: &RuntimeEnvironment,
-) -> Result<Vec<WorkspaceEntry>, RepositoryError> {
-    let primary = context
-        .config
-        .layout
-        .project_destination(identity, environment)?;
-    let mut deletable = Vec::new();
-    for workspace in workspaces {
-        if workspace.root == primary {
-            continue;
-        }
-        let managed =
-            context
-                .config
-                .layout
-                .workspace_destination(identity, &workspace.name, environment)?;
-        if workspace.root == managed {
-            deletable.push(workspace.clone());
-        }
-    }
-
-    Ok(deletable)
+fn matching_workspace_entries_by_query<'a>(
+    workspaces: &'a [WorkspaceEntry],
+    query: &str,
+) -> Vec<(&'a WorkspaceEntry, NavigationMatchRank)> {
+    let mut matches = workspaces
+        .iter()
+        .filter_map(|workspace| {
+            navigation_match_rank(&workspace.name, query).map(|rank| (workspace, rank))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| (left.1, &left.0.name).cmp(&(right.1, &right.0.name)));
+    matches
 }
 
 pub(super) fn resolve_work_repository(

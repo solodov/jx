@@ -32,6 +32,20 @@ zoxide = "auto"
     assert!(result
         .stdout
         .contains("command jx work complete --workspaces --prefix \"$cur\""));
+    assert!(result.stdout.contains("__jx_work_delete_fzf_completion"));
+    assert!(result
+        .stdout
+        .contains("command jx work complete --workspaces --format picker --prefix \"$cur\""));
+    assert!(result
+        .stdout
+        .contains("--header='Enter: complete workspace to delete'"));
+    assert!(result
+        .stdout
+        .contains("if (( ${#picker_candidates[@]} == 1 )); then"));
+    assert!(result
+        .stdout
+        .contains("name=\"${picker_candidates[0]%%$'\\t'*}\""));
+    assert!(result.stdout.contains("COMPREPLY+=(\"$candidate\")"));
     assert!(result.stdout.contains("__jx_stack_reviewer_completion"));
     assert!(result.stdout.contains("stack|stk) saw_stack=1"));
     assert!(result.stdout.contains("publish|pub) saw_publish=1"));
@@ -85,6 +99,9 @@ zoxide = "auto"
     assert!(result
         .stdout
         .contains("__jx_u_remove_shadowed_picker_candidates"));
+    assert!(result
+        .stdout
+        .contains("key=\"${picker_candidates[0]%%$'\\t'*}\""));
     assert!(result.stdout.contains(
         "if [[ \"$shadow_key\" == \"$suffix\" && \"$shadow_path\" == \"$path\" ]]; then"
     ));
