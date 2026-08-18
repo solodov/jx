@@ -118,6 +118,39 @@ fn test_timestamp(milliseconds: i64) -> jj_lib::backend::Timestamp {
 }
 
 #[test]
+fn log_description_line_ellipsizes_to_content_width() {
+    // Verifies: log-only ellipsizing truncates the description line with a Unicode ellipsis.
+    let mut buffer =
+        b"header\nBRA4-350: Move InboundApplicationDeferredAcceptanceTask tail-marker\nfooter\n"
+            .to_vec();
+
+    ellipsize_log_description_line(&mut buffer, 20).expect("description ellipsizes");
+    let rendered = String::from_utf8(buffer).expect("log output is UTF-8");
+    let description = rendered.lines().nth(1).expect("description line renders");
+
+    assert!(description.ends_with('…'), "{description:?}");
+    assert!(!description.contains("..."), "{description:?}");
+    assert!(!description.contains("tail-marker"), "{description:?}");
+    assert!(rendered_visible_width(description) <= 20, "{description:?}");
+    assert!(rendered.starts_with("header\n"));
+    assert!(rendered.ends_with("\nfooter\n"));
+}
+
+#[test]
+fn log_description_line_ellipsizing_preserves_color_reset() {
+    // Verifies: truncating a colored description does not leak style into later graph output.
+    let mut buffer = b"header\n\x1b[38;5;2mVery long colored description\x1b[39m\n".to_vec();
+
+    ellipsize_log_description_line(&mut buffer, 8).expect("description ellipsizes");
+    let rendered = String::from_utf8(buffer).expect("log output is UTF-8");
+    let description = rendered.lines().nth(1).expect("description line renders");
+
+    assert!(description.contains('…'), "{description:?}");
+    assert!(description.ends_with("\x1b[0m"), "{description:?}");
+    assert!(rendered_visible_width(description) <= 8, "{description:?}");
+}
+
+#[test]
 fn workspace_log_omits_commit_ids_from_jx_default_header() {
     // Verifies: jx's default log header prioritizes the operator-facing change id.
     let fixture = TestWorkspace::new("workspace-log-compact-header");
@@ -187,6 +220,46 @@ fn workspace_log_renders_compact_commit_age() {
 
     assert!(log.contains(" 2m"), "{log}");
     assert!(!log.contains("minutes ago"), "{log}");
+}
+
+#[test]
+fn workspace_log_ellipsizes_long_description_line() {
+    // Verifies: default jx log descriptions stay on one terminal-width-bound line.
+    let fixture = TestWorkspace::new("workspace-log-ellipsized-description");
+    let settings = log_test_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let description = format!(
+            "BRA4-350: Move InboundApplicationDeferredAcceptanceTask {} tail-marker",
+            "long".repeat(2_500)
+        );
+        let current = write_child(tx.repo_mut(), &root, &description).await;
+
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange ellipsized description log")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+
+    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
+        .expect("log renders");
+    let description = log
+        .lines()
+        .find(|line| line.contains("BRA4-350"))
+        .expect("description line renders");
+
+    assert!(description.contains('…'), "{description:?}");
+    assert!(!description.contains("..."), "{description:?}");
+    assert!(!log.contains("tail-marker"), "{log}");
 }
 
 #[test]

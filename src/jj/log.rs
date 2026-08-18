@@ -284,13 +284,9 @@ pub(super) fn render_current_workspace_log(
         conflict_marker_style,
         &[JxLogTemplateExtension],
     );
-    let template = parse_log_template(
-        &ui,
-        &language,
-        &template_aliases_map,
-        &settings.get_string("templates.log").map_err(log_error)?,
-    )?
-    .labeled(["log", "commit"]);
+    let template_text = settings.get_string("templates.log").map_err(log_error)?;
+    let template = parse_log_template(&ui, &language, &template_aliases_map, &template_text)?
+        .labeled(["log", "commit"]);
     let node_template = parse_log_template(
         &ui,
         &language,
@@ -310,6 +306,7 @@ pub(super) fn render_current_workspace_log(
         LogGraphTemplates {
             commit: template,
             node: node_template,
+            ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
         },
         annotations,
     )
@@ -373,13 +370,9 @@ pub(super) fn render_commit_ids_log(
         conflict_marker_style,
         &[JxLogTemplateExtension],
     );
-    let template = parse_log_template(
-        &ui,
-        &language,
-        &template_aliases_map,
-        &settings.get_string("templates.log").map_err(log_error)?,
-    )?
-    .labeled(["log", "commit"]);
+    let template_text = settings.get_string("templates.log").map_err(log_error)?;
+    let template = parse_log_template(&ui, &language, &template_aliases_map, &template_text)?
+        .labeled(["log", "commit"]);
     let node_template = parse_log_template(
         &ui,
         &language,
@@ -399,6 +392,7 @@ pub(super) fn render_commit_ids_log(
         LogGraphTemplates {
             commit: template,
             node: node_template,
+            ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
         },
         &[],
     )
@@ -463,6 +457,10 @@ pub(super) fn compact_relative_time(timestamp: Timestamp, now: Timestamp) -> Str
         MONTH_MS..YEAR_MS => format!("{}mo", age_ms / MONTH_MS),
         _ => format!("{}y", age_ms / YEAR_MS),
     }
+}
+
+fn should_ellipsize_log_description_line(template_text: &str) -> bool {
+    template_text.trim() == "jx_builtin_log_compact"
 }
 
 fn jx_bookmark_synced_without_git(repo: &dyn jj_lib::repo::Repo, bookmark: &CommitRef) -> bool {
@@ -619,6 +617,7 @@ where
 pub(super) struct LogGraphTemplates<'repo> {
     commit: TemplateRenderer<'repo, Commit>,
     node: TemplateRenderer<'repo, Option<Commit>>,
+    ellipsize_description_line: bool,
 }
 
 pub(super) fn render_log_graph<'repo>(
@@ -688,14 +687,24 @@ pub(super) fn render_log_graph<'repo>(
             let key = (commit_id, false);
             let commit = store.get_commit(&key.0).map_err(log_error)?;
             let within_graph = with_content_format.sub_width(graph.width(&key, &graphlog_edges));
-            pollster::block_on(
-                within_graph.write(ui.new_formatter(&mut buffer).as_mut(), async |formatter| {
-                    templates.commit.format(&commit, formatter)
-                }),
-            )
-            .map_err(log_error)?;
+            if templates.ellipsize_description_line {
+                templates
+                    .commit
+                    .format(&commit, ui.new_formatter(&mut buffer).as_mut())
+                    .map_err(log_error)?;
+            } else {
+                pollster::block_on(
+                    within_graph.write(ui.new_formatter(&mut buffer).as_mut(), async |formatter| {
+                        templates.commit.format(&commit, formatter)
+                    }),
+                )
+                .map_err(log_error)?;
+            }
             let annotations = log_annotations_for_commit(repo, &commit, &annotations_by_bookmark);
             append_log_annotations(ui, &mut buffer, &annotations)?;
+            if templates.ellipsize_description_line {
+                ellipsize_log_description_line(&mut buffer, within_graph.width())?;
+            }
 
             let commit = Some(commit);
             let node_symbol = format_template(ui, &commit, &templates.node);
@@ -734,6 +743,127 @@ pub(super) fn render_log_graph<'repo>(
     }
 
     String::from_utf8(output).map_err(log_error)
+}
+
+pub(super) fn ellipsize_log_description_line(
+    buffer: &mut Vec<u8>,
+    max_width: usize,
+) -> Result<(), JjError> {
+    let rendered = String::from_utf8(std::mem::take(buffer)).map_err(log_error)?;
+    let Some(first_newline) = rendered.find('\n') else {
+        *buffer = rendered.into_bytes();
+        return Ok(());
+    };
+    let description_start = first_newline + 1;
+    let description_end = rendered[description_start..]
+        .find('\n')
+        .map(|index| description_start + index)
+        .unwrap_or(rendered.len());
+
+    let mut output = String::with_capacity(rendered.len());
+    output.push_str(&rendered[..description_start]);
+    output.push_str(&ellipsize_rendered_line(
+        &rendered[description_start..description_end],
+        max_width,
+    ));
+    output.push_str(&rendered[description_end..]);
+    *buffer = output.into_bytes();
+    Ok(())
+}
+
+fn ellipsize_rendered_line(line: &str, max_width: usize) -> String {
+    if rendered_visible_width(line) <= max_width {
+        return line.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let target_width = max_width.saturating_sub(1);
+    let mut rendered = String::new();
+    let mut width = 0usize;
+    let mut rest = line;
+    let mut open_osc8 = false;
+    let mut copied_escape_sequence = false;
+    while !rest.is_empty() && width < target_width {
+        if let Some(sequence) = ansi_sequence_prefix(rest) {
+            copied_escape_sequence = true;
+            if let Some(osc8_open) = osc8_open_state(sequence) {
+                open_osc8 = osc8_open;
+            }
+            rendered.push_str(sequence);
+            rest = &rest[sequence.len()..];
+            continue;
+        }
+
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        rendered.push(ch);
+        width += 1;
+        rest = &rest[ch.len_utf8()..];
+    }
+    rendered.push('…');
+    if open_osc8 {
+        rendered.push_str("\x1b]8;;\x1b\\");
+    }
+    if copied_escape_sequence {
+        rendered.push_str("\x1b[0m");
+    }
+    rendered
+}
+
+pub(super) fn rendered_visible_width(line: &str) -> usize {
+    let mut width = 0usize;
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(sequence) = ansi_sequence_prefix(rest) {
+            rest = &rest[sequence.len()..];
+            continue;
+        }
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        width += 1;
+        rest = &rest[ch.len_utf8()..];
+    }
+    width
+}
+
+fn ansi_sequence_prefix(value: &str) -> Option<&str> {
+    if value.starts_with("\x1b[") {
+        return csi_sequence_prefix(value);
+    }
+    if value.starts_with("\x1b]") {
+        return osc_sequence_prefix(value);
+    }
+    None
+}
+
+fn csi_sequence_prefix(value: &str) -> Option<&str> {
+    let end = value
+        .bytes()
+        .enumerate()
+        .skip(2)
+        .find_map(|(index, byte)| (0x40..=0x7e).contains(&byte).then_some(index + 1))?;
+    Some(&value[..end])
+}
+
+fn osc_sequence_prefix(value: &str) -> Option<&str> {
+    if let Some(index) = value.find('\x07') {
+        return Some(&value[..=index]);
+    }
+    let index = value.find("\x1b\\")?;
+    Some(&value[..index + 2])
+}
+
+fn osc8_open_state(sequence: &str) -> Option<bool> {
+    let body = sequence.strip_prefix("\x1b]")?;
+    let body = body
+        .strip_suffix("\x1b\\")
+        .or_else(|| body.strip_suffix('\x07'))?;
+    let payload = body.strip_prefix("8;;")?;
+    Some(!payload.is_empty())
 }
 
 fn log_annotations_by_bookmark(
