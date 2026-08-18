@@ -175,8 +175,8 @@ if(commit.root(),
 'format_jx_short_commit_header(commit)' = '''
 separate(" ",
   format_short_change_id_with_change_offset(commit),
-  format_short_signature(commit.author()),
-  format_timestamp(commit_timestamp(commit)),
+  format_jx_short_signature(commit),
+  format_jx_compact_timestamp(commit_timestamp(commit)),
   format_jx_local_bookmarks(local_bookmarks),
   commit.tags(),
   commit.working_copies(),
@@ -185,6 +185,12 @@ separate(" ",
     format_short_cryptographic_signature(commit.signature())
   ),
 )
+'''
+'format_jx_short_signature(commit)' = '''
+if(commit.mine(), label("author", "me"), format_short_signature(commit.author()))
+'''
+'format_jx_compact_timestamp(timestamp)' = '''
+label("timestamp", stringify(timestamp.jx_compact_age()))
 '''
 'format_jx_local_bookmark(bookmark)' = '''
 label(
@@ -409,6 +415,16 @@ impl AsRef<dyn CommitTemplateLanguageExtension> for JxLogTemplateExtension {
 impl CommitTemplateLanguageExtension for JxLogTemplateExtension {
     fn build_fn_table<'repo>(&self) -> CommitTemplateBuildFnTable<'repo> {
         let mut table = CommitTemplateBuildFnTable::empty();
+        table.core.timestamp_methods.insert(
+            "jx_compact_age",
+            |_language, _diagnostics, _build_ctx, self_property, function| {
+                function.expect_no_arguments()?;
+                let now = Timestamp::now();
+                let out_property =
+                    self_property.map(move |timestamp| compact_relative_time(timestamp, now));
+                Ok(out_property.into_dyn_wrapped())
+            },
+        );
         table.commit_ref_methods.insert(
             "jx_synced_without_git",
             |language, _diagnostics, _build_ctx, self_property, function| {
@@ -423,6 +439,30 @@ impl CommitTemplateLanguageExtension for JxLogTemplateExtension {
     }
 
     fn build_cache_extensions(&self, _extensions: &mut ExtensionsMap) {}
+}
+
+pub(super) fn compact_relative_time(timestamp: Timestamp, now: Timestamp) -> String {
+    const SECOND_MS: i64 = 1_000;
+    const MINUTE_MS: i64 = 60 * SECOND_MS;
+    const HOUR_MS: i64 = 60 * MINUTE_MS;
+    const DAY_MS: i64 = 24 * HOUR_MS;
+    const WEEK_MS: i64 = 7 * DAY_MS;
+    const MONTH_MS: i64 = 30 * DAY_MS;
+    const YEAR_MS: i64 = 365 * DAY_MS;
+
+    let age_ms = now.timestamp.0.saturating_sub(timestamp.timestamp.0);
+    if age_ms < MINUTE_MS {
+        return "now".to_owned();
+    }
+
+    match age_ms {
+        MINUTE_MS..HOUR_MS => format!("{}m", age_ms / MINUTE_MS),
+        HOUR_MS..DAY_MS => format!("{}h", age_ms / HOUR_MS),
+        DAY_MS..WEEK_MS => format!("{}d", age_ms / DAY_MS),
+        WEEK_MS..MONTH_MS => format!("{}w", age_ms / WEEK_MS),
+        MONTH_MS..YEAR_MS => format!("{}mo", age_ms / MONTH_MS),
+        _ => format!("{}y", age_ms / YEAR_MS),
+    }
 }
 
 fn jx_bookmark_synced_without_git(repo: &dyn jj_lib::repo::Repo, bookmark: &CommitRef) -> bool {

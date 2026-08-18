@@ -69,6 +69,55 @@ fn workspace_log_preserves_configured_jj_revset() {
 }
 
 #[test]
+fn compact_relative_time_abbreviates_log_ages() {
+    // Verifies: Compact log ages use one short unit and reserve `mo` for months.
+    const MINUTE_MS: i64 = 60_000;
+    const HOUR_MS: i64 = 60 * MINUTE_MS;
+    const DAY_MS: i64 = 24 * HOUR_MS;
+    const WEEK_MS: i64 = 7 * DAY_MS;
+    const MONTH_MS: i64 = 30 * DAY_MS;
+    const YEAR_MS: i64 = 365 * DAY_MS;
+    let now = test_timestamp(YEAR_MS * 5);
+
+    assert_eq!(compact_relative_time(now, now), "now");
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 + MINUTE_MS), now),
+        "now"
+    );
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 - 2 * MINUTE_MS), now),
+        "2m"
+    );
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 - 3 * HOUR_MS), now),
+        "3h"
+    );
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 - 4 * DAY_MS), now),
+        "4d"
+    );
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 - 2 * WEEK_MS), now),
+        "2w"
+    );
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 - 3 * MONTH_MS), now),
+        "3mo"
+    );
+    assert_eq!(
+        compact_relative_time(test_timestamp(now.timestamp.0 - 2 * YEAR_MS), now),
+        "2y"
+    );
+}
+
+fn test_timestamp(milliseconds: i64) -> jj_lib::backend::Timestamp {
+    jj_lib::backend::Timestamp {
+        timestamp: jj_lib::backend::MillisSinceEpoch(milliseconds),
+        tz_offset: 0,
+    }
+}
+
+#[test]
 fn workspace_log_omits_commit_ids_from_jx_default_header() {
     // Verifies: jx's default log header prioritizes the operator-facing change id.
     let fixture = TestWorkspace::new("workspace-log-compact-header");
@@ -96,6 +145,174 @@ fn workspace_log_omits_commit_ids_from_jx_default_header() {
 
     assert!(log.contains(&current_change_id), "{log}");
     assert!(!log.contains(&current_commit_id), "{log}");
+}
+
+#[test]
+fn workspace_log_renders_compact_commit_age() {
+    // Verifies: jx's default log header renders age as a compact relative unit.
+    let fixture = TestWorkspace::new("workspace-log-compact-age");
+    let settings = log_test_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let mut signature = root.committer().clone();
+        let now = jj_lib::backend::Timestamp::now();
+        signature.timestamp = jj_lib::backend::Timestamp {
+            timestamp: jj_lib::backend::MillisSinceEpoch(now.timestamp.0 - 2 * 60_000),
+            tz_offset: now.tz_offset,
+        };
+        let current = tx
+            .repo_mut()
+            .new_commit(vec![root.id().clone()], root.tree())
+            .set_description("compact age change")
+            .set_author(signature.clone())
+            .set_committer(signature)
+            .write()
+            .await
+            .expect("write compact age commit");
+
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx.commit("arrange compact age log").await.expect("commit");
+        (workspace, repo)
+    });
+
+    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
+        .expect("log renders");
+
+    assert!(log.contains(" 2m"), "{log}");
+    assert!(!log.contains("minutes ago"), "{log}");
+}
+
+#[test]
+fn workspace_log_renders_current_user_author_as_me() {
+    // Verifies: jx's default log abbreviates commits authored with the resolved jj user.email.
+    let fixture = TestWorkspace::new("workspace-log-current-user-author");
+    let mut config = StackedConfig::with_defaults();
+    config.extend_layers(jx_default_config_layers());
+    config.extend_layers([ConfigLayer::parse(
+        ConfigSource::User,
+        r#"
+[user]
+name = "Current User"
+email = "me@example.com"
+"#,
+    )
+    .expect("user config parses")]);
+    jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
+    let settings = UserSettings::from_config(config).expect("settings load");
+    let (workspace, repo, mine_change_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let mut mine_author = root.author().clone();
+        mine_author.name = "Current User".to_owned();
+        mine_author.email = "me@example.com".to_owned();
+        let mine = tx
+            .repo_mut()
+            .new_commit(vec![root.id().clone()], root.tree())
+            .set_description("current user change")
+            .set_author(mine_author.clone())
+            .write()
+            .await
+            .expect("write current user commit");
+        let mine_change_id = short_change_id(&mine);
+        let mut other_author = mine_author;
+        other_author.name = "Other User".to_owned();
+        other_author.email = "other@example.com".to_owned();
+        let other = tx
+            .repo_mut()
+            .new_commit(vec![mine.id().clone()], mine.tree())
+            .set_description("other user change")
+            .set_author(other_author)
+            .write()
+            .await
+            .expect("write other user commit");
+
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), other.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx.commit("arrange current user log").await.expect("commit");
+        (workspace, repo, mine_change_id)
+    });
+
+    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
+        .expect("log renders");
+
+    assert!(log.contains(&format!("{mine_change_id} me ")), "{log}");
+    assert!(!log.contains("me@example.com"), "{log}");
+    assert!(log.contains("other@example.com"), "{log}");
+}
+
+#[test]
+fn workspace_log_colors_current_user_author_like_other_authors() {
+    // Verifies: `me` and compact ages keep jj's log colors instead of rendering as plain terminal text.
+    let fixture = TestWorkspace::new("workspace-log-current-user-author-color");
+    let mut config = StackedConfig::with_defaults();
+    config.extend_layers(jx_default_config_layers());
+    config.extend_layers([ConfigLayer::parse(
+        ConfigSource::User,
+        r#"
+[user]
+name = "Current User"
+email = "me@example.com"
+
+[ui]
+color = "always"
+"#,
+    )
+    .expect("user config parses")]);
+    jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
+    let settings = UserSettings::from_config(config).expect("settings load");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let mut author = root.author().clone();
+        author.name = "Current User".to_owned();
+        author.email = "me@example.com".to_owned();
+        let now = jj_lib::backend::Timestamp::now();
+        author.timestamp = jj_lib::backend::Timestamp {
+            timestamp: jj_lib::backend::MillisSinceEpoch(now.timestamp.0 - 2 * 60_000),
+            tz_offset: now.tz_offset,
+        };
+        let current = tx
+            .repo_mut()
+            .new_commit(vec![root.id().clone()], root.tree())
+            .set_description("colored author")
+            .set_author(author.clone())
+            .set_committer(author)
+            .write()
+            .await
+            .expect("write current user commit");
+
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+
+        let repo = tx
+            .commit("arrange colored current user log")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+
+    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
+        .expect("log renders");
+
+    assert!(log.contains("me\x1b["), "{log:?}");
+    assert!(log.contains("\x1b[38;5;14m2m\x1b["), "{log:?}");
+    assert!(!log.contains("me@example.com"), "{log:?}");
 }
 
 #[test]

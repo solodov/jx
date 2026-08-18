@@ -39,7 +39,7 @@ use jj_cli::{
     ui::Ui,
 };
 use jj_lib::{
-    backend::{BackendError, ChangeId, CommitId},
+    backend::{BackendError, ChangeId, CommitId, Timestamp},
     commit::Commit,
     config::{ConfigGetResultExt as _, ConfigLayer, ConfigSource, StackedConfig},
     extensions_map::ExtensionsMap,
