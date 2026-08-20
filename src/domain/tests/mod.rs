@@ -562,10 +562,12 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
         crate::github::PullRequestCheck {
             name: "ci/build".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "generated-check".to_owned(),
             status: crate::github::PullRequestCheckStatus::Failing,
+            required: true,
         },
     ];
     status.review_activity = vec![
@@ -786,14 +788,17 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
         crate::github::PullRequestCheck {
             name: "approval gate".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "committer gate".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "ci/build".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
     let mut github_required_review = pull_request_status(34, "Requires review", false);
@@ -805,14 +810,17 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
         crate::github::PullRequestCheck {
             name: "approval gate".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "committer gate".to_owned(),
             status: crate::github::PullRequestCheckStatus::Failing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "ci/build".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
 
@@ -847,6 +855,56 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
     assert_eq!(
         stale_github_approval.check_status,
         crate::github::PullRequestCheckStatus::Passing
+    );
+}
+
+#[test]
+fn pull_request_status_policy_ignores_advisory_check_failures_for_test_health() {
+    // Verifies: optional advisory checks stay visible but do not make required check health fail.
+    let config = crate::repository::RepoStackStatusConfig {
+        review_gate_checks: vec![crate::repository::ReviewGateCheckConfig {
+            name: "^approval gate$".to_owned(),
+        }],
+        ..Default::default()
+    };
+    let mut status = pull_request_status(35, "Advisory failure", false);
+    status.check_status = crate::github::PullRequestCheckStatus::Failing;
+    status.review_status = crate::github::PullRequestReviewStatus::NotReviewed;
+    status.checks = vec![
+        crate::github::PullRequestCheck {
+            name: "approval gate".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Failing,
+            required: true,
+        },
+        crate::github::PullRequestCheck {
+            name: "ci/required-tests".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
+        },
+        crate::github::PullRequestCheck {
+            name: "ci/advisory-scan".to_owned(),
+            status: crate::github::PullRequestCheckStatus::Failing,
+            required: false,
+        },
+    ];
+
+    let filtered = apply_pull_request_status_policy(status, &config);
+
+    assert_eq!(
+        filtered.check_status,
+        crate::github::PullRequestCheckStatus::Passing
+    );
+    assert_eq!(
+        filtered.review_status,
+        crate::github::PullRequestReviewStatus::ReviewRequested
+    );
+    assert_eq!(
+        filtered
+            .checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ci/required-tests", "ci/advisory-scan"]
     );
 }
 
@@ -1001,14 +1059,17 @@ fn pull_request_status_policy_moves_auto_merge_prerequisites_out_of_test_health(
         crate::github::PullRequestCheck {
             name: "Settings".to_owned(),
             status: crate::github::PullRequestCheckStatus::Failing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "Settings - PRODUCTION".to_owned(),
             status: crate::github::PullRequestCheckStatus::Failing,
+            required: true,
         },
         crate::github::PullRequestCheck {
             name: "ci/build".to_owned(),
             status: crate::github::PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
 

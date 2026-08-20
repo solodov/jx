@@ -2477,10 +2477,12 @@ ignored_labels = ["review-only-noise"]
         PullRequestCheck {
             name: "approval gate".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/noisy-advisory".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
     ];
     let services = FakeServices {
@@ -2609,6 +2611,7 @@ fn review_status_record(
         checks: vec![PullRequestCheck {
             name: "unit tests".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         }],
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status: PullRequestReviewStatus::ReviewRequested,

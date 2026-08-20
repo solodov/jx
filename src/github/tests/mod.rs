@@ -441,6 +441,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                                     status: Some("COMPLETED".to_owned()),
                                     conclusion: Some("FAILURE".to_owned()),
                                     state: None,
+                                    required: Some(true),
                                 },
                                 GraphQlStatusCheckContextNode {
                                     type_name: "StatusContext".to_owned(),
@@ -449,6 +450,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
                                     status: None,
                                     conclusion: None,
                                     state: Some("PENDING".to_owned()),
+                                    required: Some(false),
                                 },
                             ],
                         },
@@ -468,10 +470,12 @@ fn maps_pull_request_status_rollup_and_review_decision() {
             PullRequestCheck {
                 name: "unit checks".to_owned(),
                 status: PullRequestCheckStatus::Failing,
+                required: true,
             },
             PullRequestCheck {
                 name: "integration checks".to_owned(),
                 status: PullRequestCheckStatus::Pending,
+                required: false,
             },
         ]
     );
@@ -727,6 +731,8 @@ fn pull_request_update_summary_query_uses_only_refresh_guard_fields() {
     assert!(query.contains("statusCheckRollup"));
     assert!(query.contains("              state"));
     assert!(query.contains("contexts(first: 100)"));
+    assert!(query.contains("isRequired(pullRequestNumber: 7)"));
+    assert!(query.contains("isRequired(pullRequestNumber: 12)"));
     assert!(!query.contains("reviewThreads"));
 }
 
@@ -739,6 +745,8 @@ fn pull_request_status_query_batches_numbers_with_aliases() {
     assert!(query.contains("pr1: pullRequest(number: 42)"));
     assert!(query.contains("statusCheckRollup"));
     assert!(query.contains("contexts(first: 100)"));
+    assert!(query.contains("isRequired(pullRequestNumber: 41)"));
+    assert!(query.contains("isRequired(pullRequestNumber: 42)"));
     assert!(query.contains("... on CheckRun"));
     assert!(query.contains("... on StatusContext"));
     assert!(query.contains("reviewDecision"));

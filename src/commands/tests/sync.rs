@@ -683,10 +683,12 @@ review_gate_checks = ["^review gate$"]
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
         PullRequestCheck {
             name: "review gate".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
     ];
     root_status.labels = vec![PullRequestLabel {

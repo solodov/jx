@@ -62,7 +62,7 @@ pub fn apply_pull_request_status_policy(
         })
         .cloned()
         .collect::<Vec<_>>();
-    status.check_status = aggregate_check_status(&remaining_checks);
+    status.check_status = aggregate_required_check_status(&remaining_checks);
     status.checks = remaining_checks;
 
     if !config.review_gate_checks.is_empty() {
@@ -254,6 +254,18 @@ fn aggregate_check_status(checks: &[PullRequestCheck]) -> PullRequestCheckStatus
         return PullRequestCheckStatus::Unknown;
     }
     PullRequestCheckStatus::Passing
+}
+
+fn aggregate_required_check_status(checks: &[PullRequestCheck]) -> PullRequestCheckStatus {
+    let required_checks = checks
+        .iter()
+        .filter(|check| check.required)
+        .cloned()
+        .collect::<Vec<_>>();
+    if required_checks.is_empty() && !checks.is_empty() {
+        return PullRequestCheckStatus::Passing;
+    }
+    aggregate_check_status(&required_checks)
 }
 
 fn auto_merge_prerequisite_checks_require_action(

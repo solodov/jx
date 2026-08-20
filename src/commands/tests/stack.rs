@@ -506,10 +506,12 @@ auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
         PullRequestCheck {
             name: "Settings - PRODUCTION".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
     let services = FakeServices {
@@ -1435,18 +1437,22 @@ name = "^ignored-.*$"
         PullRequestCheck {
             name: "approval gate".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/noisy-advisory".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
     let services = FakeServices {
@@ -1515,14 +1521,17 @@ review_gate_checks = ["^approval gate$", "^committer gate$"]
         PullRequestCheck {
             name: "approval gate".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
         PullRequestCheck {
             name: "committer gate".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
     let services = FakeServices {
@@ -1590,14 +1599,17 @@ review_gate_checks = ["^approval gate$", "^committer gate$"]
         PullRequestCheck {
             name: "approval gate".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
         PullRequestCheck {
             name: "committer gate".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
     ];
     let services = FakeServices {
@@ -1654,14 +1666,17 @@ fn stack_status_uses_latest_contexts_when_rollup_has_stale_failure() {
         PullRequestCheck {
             name: "Trunk Runner".to_owned(),
             status: PullRequestCheckStatus::Failing,
+            required: true,
         },
         PullRequestCheck {
             name: "Trunk Runner".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         },
         PullRequestCheck {
             name: "ci/build".to_owned(),
             status: PullRequestCheckStatus::Pending,
+            required: true,
         },
     ];
     let services = FakeServices {

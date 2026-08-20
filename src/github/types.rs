@@ -361,6 +361,13 @@ impl PullRequestCheckStatus {
 pub struct PullRequestCheck {
     pub name: String,
     pub status: PullRequestCheckStatus,
+    /// Whether GitHub branch protection requires this check for the pull request.
+    #[serde(default = "default_pull_request_check_required")]
+    pub required: bool,
+}
+
+fn default_pull_request_check_required() -> bool {
+    true
 }
 
 /// Summary of GitHub's review decision and outstanding review requests.

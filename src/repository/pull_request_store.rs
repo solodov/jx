@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension as _};
 
 pub const PULL_REQUEST_STORE_FILE: &str = "pull-request-store.sqlite";
 pub const PULL_REQUEST_STORE_SCHEMA_VERSION: i64 = 2;
-pub const PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION: i64 = 2;
+pub const PULL_REQUEST_SNAPSHOT_SCHEMA_VERSION: i64 = 3;
 
 const CREATE_PULL_REQUEST_STORE_SCHEMA: &str = r#"
 -- All *_at_unix columns store UTC Unix timestamps in seconds.

@@ -1237,8 +1237,9 @@ pub(super) fn pull_request_update_summary_query(numbers: &[u64]) -> String {
         .iter()
         .enumerate()
         .map(|(index, number)| {
+            let check_context_fields = pull_request_check_context_fields(*number);
             format!(
-                "    {}: pullRequest(number: {number}) {{\n      number\n      updatedAt\n      commits(last: 1) {{\n        nodes {{\n          commit {{\n            oid\n            statusCheckRollup {{\n              state\n              contexts(first: 100) {{\n                nodes {{\n                  __typename\n                  ... on CheckRun {{\n                    name\n                    status\n                    conclusion\n                  }}\n                  ... on StatusContext {{\n                    context\n                    state\n                  }}\n                }}\n              }}\n            }}\n          }}\n        }}\n      }}\n    }}",
+                "    {}: pullRequest(number: {number}) {{\n      number\n      updatedAt\n      commits(last: 1) {{\n        nodes {{\n          commit {{\n            oid\n            statusCheckRollup {{\n              state\n{check_context_fields}\n            }}\n          }}\n        }}\n      }}\n    }}",
                 pull_request_update_summary_alias(index)
             )
         })
@@ -1300,8 +1301,9 @@ pub(super) fn pull_request_status_query(numbers: &[u64]) -> String {
         .iter()
         .enumerate()
         .map(|(index, number)| {
+            let check_context_fields = pull_request_check_context_fields(*number);
             format!(
-                "    {}: pullRequest(number: {number}) {{\n      ...PullRequestStatusFields\n    }}",
+                "    {}: pullRequest(number: {number}) {{\n      ...PullRequestStatusFields\n      commits(last: 1) {{\n        nodes {{\n          commit {{\n            oid\n            statusCheckRollup {{\n              state\n{check_context_fields}\n            }}\n          }}\n        }}\n      }}\n    }}",
                 pull_request_status_alias(index)
             )
         })
@@ -1429,30 +1431,6 @@ fragment PullRequestStatusFields on PullRequest {{
       }}
     }}
   }}
-  commits(last: 1) {{
-    nodes {{
-      commit {{
-        oid
-        statusCheckRollup {{
-          state
-          contexts(first: 100) {{
-            nodes {{
-              __typename
-              ... on CheckRun {{
-                name
-                status
-                conclusion
-              }}
-              ... on StatusContext {{
-                context
-                state
-              }}
-            }}
-          }}
-        }}
-      }}
-    }}
-  }}
 }}
 "#
     )
@@ -1460,6 +1438,27 @@ fragment PullRequestStatusFields on PullRequest {{
 
 fn pull_request_status_alias(index: usize) -> String {
     format!("pr{index}")
+}
+
+fn pull_request_check_context_fields(number: u64) -> String {
+    format!(
+        r#"              contexts(first: 100) {{
+                nodes {{
+                  __typename
+                  ... on CheckRun {{
+                    name
+                    status
+                    conclusion
+                    isRequired(pullRequestNumber: {number})
+                  }}
+                  ... on StatusContext {{
+                    context
+                    state
+                    isRequired(pullRequestNumber: {number})
+                  }}
+                }}
+              }}"#
+    )
 }
 
 const USER_PROFILE_QUERY_CHUNK_SIZE: usize = 50;
@@ -1922,6 +1921,8 @@ pub(super) struct GraphQlStatusCheckContextNode {
     pub(super) status: Option<String>,
     pub(super) conclusion: Option<String>,
     pub(super) state: Option<String>,
+    #[serde(default, rename = "isRequired")]
+    pub(super) required: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2368,6 +2369,7 @@ fn check_from_graphql(node: GraphQlStatusCheckContextNode) -> Option<PullRequest
     Some(PullRequestCheck {
         name: name.to_owned(),
         status,
+        required: node.required.unwrap_or(true),
     })
 }
 

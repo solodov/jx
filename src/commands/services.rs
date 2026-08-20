@@ -767,10 +767,10 @@ fn pull_request_refresh_plan(
 
 fn pull_request_check_summary(
     checks: &[PullRequestCheck],
-) -> BTreeMap<&str, PullRequestCheckStatus> {
+) -> BTreeMap<&str, (PullRequestCheckStatus, bool)> {
     checks
         .iter()
-        .map(|check| (check.name.as_str(), check.status))
+        .map(|check| (check.name.as_str(), (check.status, check.required)))
         .collect()
 }
 
@@ -4188,10 +4188,12 @@ mod tests {
         let pending_check = PullRequestCheck {
             name: "check-description".to_owned(),
             status: PullRequestCheckStatus::Pending,
+            required: true,
         };
         let passing_check = PullRequestCheck {
             name: "check-description".to_owned(),
             status: PullRequestCheckStatus::Passing,
+            required: true,
         };
         *github
             .update_summaries
