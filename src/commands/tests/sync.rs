@@ -1,15 +1,9 @@
 use super::*;
 
-fn blank_sync_pull_request_cell() -> String {
-    " ".repeat(7)
-}
-
-fn sync_pull_request_cell(number: u64) -> String {
-    let target = format!("#{number}");
-    format!(
-        "{}{}",
-        example_pull_request_link(number),
-        " ".repeat(7_usize.saturating_sub(target.chars().count()))
+fn sync_pull_request_commit_cell(number: u64, commit: &str) -> String {
+    osc8_link(
+        &format!("https://github.com/example-owner/example-repo/pull/{number}"),
+        commit,
     )
 }
 
@@ -629,12 +623,33 @@ fn sync_fetches_then_pushes_repository_tracked_state_with_commit_lists() {
     assert!(services.push_syncable_revision_requests.borrow().is_empty());
     assert_eq!(
         result.stdout,
-        format!(
-            "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nRebased on origin/main:\n  default@  changeaa  example change\n  default@  changebb  follow-up change\n\nPushed commits:\n  Commit    PR       Title\n  changecc  {}  example change default@\n\nDeleted bookmarks:\n  {}: changedd obsolete example change\n",
-            blank_sync_pull_request_cell(),
-            example_bookmark_link("example-user/old")
-        )
+        "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n\nPushed:\n  default@\n    changecc  example change\n\nRebased locally:\n  default@\n    changeaa  example change\n    changebb  follow-up change\n"
+            .to_owned()
     );
+}
+
+#[test]
+fn sync_renders_rebased_pushed_changes_once() {
+    // Verifies: A change that was both rebased and pushed is rendered in one state bucket.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let mut services = FakeServices::default();
+    services.tracked_push.bookmarks[0].new_short_change_id = Some("changeaa".to_owned());
+
+    let result =
+        run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
+
+    assert_eq!(result.stdout.matches("changeaa").count(), 1);
+    assert!(result.stdout.contains(
+        "Rebased and pushed:\n  default@\n    changeaa  example change\n\nRebased locally:\n  default@\n    changebb  follow-up change\n"
+    ));
+    assert!(!result.stdout.contains("Pushed:"));
 }
 
 #[test]
@@ -1789,8 +1804,8 @@ advance_trunk = true
 }
 
 #[test]
-fn sync_links_pull_requests_in_pushed_commit_table() {
-    // Verifies: Sync shows pushed PRs inline while keeping deleted PR annotations secondary.
+fn sync_links_pull_requests_from_pushed_commit_ids() {
+    // Verifies: Sync links pushed PRs from commit ids without rendering a separate PR column.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1835,19 +1850,16 @@ fn sync_links_pull_requests_in_pushed_commit_table() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  changecc  {}  current pull request default@\n",
-        sync_pull_request_cell(1234)
+        "Pushed:\n  default@\n    {}  current pull request\n",
+        sync_pull_request_commit_cell(1234, "changecc")
     )));
-    assert!(result.stdout.contains(&format!(
-        "Deleted bookmarks:\n  {}: changedd obsolete example change\n  ↳ PR {}\n",
-        example_bookmark_link("example-user/old"),
-        example_pull_request_link(1200)
-    )));
+    assert!(!result.stdout.contains("Deleted bookmarks:"));
+    assert!(!result.stdout.contains(&example_pull_request_link(1200)));
 }
 
 #[test]
-fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
-    // Verifies: Sync preserves PR column space for pushed commits without known PRs.
+fn sync_groups_pushed_bookmarks_by_workspace() {
+    // Verifies: Sync groups pushed bookmark heads by workspace without reserving an empty PR column.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1880,7 +1892,7 @@ fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
             new_description: Some("long branch".to_owned()),
             pull_request_description: Some("long branch".to_owned()),
             pull_request_base: Some("main".to_owned()),
-            new_workspace_visibility: current_workspace_visibility(),
+            new_workspace_visibility: WorkspaceVisibility::default(),
         },
         PushedBookmarkSummary {
             branch: "old".to_owned(),
@@ -1899,15 +1911,12 @@ fn sync_aligns_blank_pull_request_cells_and_deleted_bookmarks() {
     let result =
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
-    assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  changesh  {}  short branch default@\n  changelg  {}  long branch default@\n",
-        blank_sync_pull_request_cell(),
-        blank_sync_pull_request_cell()
-    )));
-    assert!(result.stdout.contains(&format!(
-        "Deleted bookmarks:\n  {}: changeod old branch\n",
-        example_bookmark_link("old")
-    )));
+    assert!(result
+        .stdout
+        .contains("Pushed:\n  default@\n    changesh  short branch\n    changelg  long branch\n"));
+    assert!(!result.stdout.contains("Deleted bookmarks:"));
+    assert!(!result.stdout.contains(&example_bookmark_link("long")));
+    assert!(!result.stdout.contains(&example_bookmark_link("old")));
 }
 
 #[test]
@@ -1966,8 +1975,8 @@ fn sync_expands_and_aligns_workspace_rows() {
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
     assert!(result.stdout.contains(
-            "Rebased on origin/main:\n  default@  changemt  multi workspace\n  default@  changecu  current workspace\n  review@   changemt  multi workspace\n  review@   changeot  other workspace\n            changenw  no workspace\n"
-        ));
+        "Rebased locally:\n  default@\n    changemt  multi workspace\n    changecu  current workspace\n    changenw  no workspace\n\n  review@\n    changemt  multi workspace\n    changeot  other workspace\n"
+    ));
 }
 
 #[test]
@@ -1993,16 +2002,15 @@ fn sync_omits_deleted_bookmark_section_when_none_were_deleted() {
     let result =
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
-    assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  changecc  {}  example change default@\n",
-        blank_sync_pull_request_cell()
-    )));
+    assert!(result
+        .stdout
+        .contains("Pushed:\n  default@\n    changecc  example change\n"));
     assert!(!result.stdout.contains("Deleted bookmarks:"));
 }
 
 #[test]
-fn sync_omits_empty_rebase_and_push_sections_when_only_deletions_changed() {
-    // Verifies: Sync only renders sections whose underlying operation changed visible state.
+fn sync_omits_bookmark_deletions_when_only_deletions_changed() {
+    // Verifies: Sync keeps bookmark-only deletion noise out of the default output.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2027,12 +2035,10 @@ fn sync_omits_empty_rebase_and_push_sections_when_only_deletions_changed() {
     let result =
         run_with_args_and_services(["jx", "sync"], &environment, &services).expect("sync succeeds");
 
-    assert!(!result.stdout.contains("Rebased on origin/main:"));
-    assert!(!result.stdout.contains("Pushed commits:"));
-    assert!(result.stdout.contains(&format!(
-        "Deleted bookmarks:\n  {}:",
-        example_bookmark_link("example-user/old")
-    )));
+    assert_eq!(
+        result.stdout,
+        "Synced: origin/main (\x1b]8;;https://github.com/example-owner/example-repo/tree/main\x1b\\ssh://git@github.com/example-owner/example-repo.git\x1b]8;;\x1b\\)\n"
+    );
 }
 
 #[test]
@@ -2091,6 +2097,17 @@ fn sync_pushes_clean_bookmarks_and_reports_conflicted_skips() {
                 workspace_visibility: current_workspace_visibility(),
             }],
         }],
+        sync_pull_requests: vec![PullRequestRecord {
+            number: 1235,
+            title: "conflicted pull request".to_owned(),
+            body: None,
+            head_branch: "example-user/conflicted".to_owned(),
+            base_branch: "main".to_owned(),
+            html_url: Some("https://github.com/example-owner/example-repo/pull/1235".to_owned()),
+            draft: false,
+            merged: false,
+            reviewers: ReviewerSelection::default(),
+        }],
         ..FakeServices::default()
     };
 
@@ -2098,12 +2115,26 @@ fn sync_pushes_clean_bookmarks_and_reports_conflicted_skips() {
         .expect("conflicted sync returns normal output");
 
     assert_eq!(result.exit_code, 1);
+    assert_eq!(
+        services.sync_pull_request_pushes.borrow()[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| bookmark.branch.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "example-user/current",
+            "example-user/old",
+            "example-user/conflicted",
+        ]
+    );
+    assert!(result
+        .stdout
+        .contains("Pushed:\n  default@\n    changecc  example change\n"));
     assert!(result.stdout.contains(&format!(
-        "Pushed commits:\n  Commit    PR       Title\n  changecc  {}  example change default@\n",
-        blank_sync_pull_request_cell()
+        "Conflicts blocking push:\n  default@\n    {}  example change\n",
+        sync_pull_request_commit_cell(1235, "ccccdddd")
     )));
-    assert!(result.stdout.contains(&format!(
-        "Skipped bookmarks with conflicts:\n  {}  ccccdddd  example change (conflicted)\n",
-        example_bookmark_link("example-user/conflicted")
-    )));
+    assert!(!result
+        .stdout
+        .contains(&example_bookmark_link("example-user/conflicted")));
 }

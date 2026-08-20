@@ -882,9 +882,12 @@ path = "{repo}"
 }
 
 #[test]
-fn work_list_marks_current_workspace_in_plain_output_and_aligns_paths() {
-    // Verifies: Plain output still has a current-workspace fallback when color is unavailable.
-    let environment = RuntimeEnvironment::new("/workspace", []);
+fn work_list_marks_current_workspace_and_shortens_home_paths() {
+    // Verifies: Plain output marks the current workspace and keeps home paths concise.
+    let environment = RuntimeEnvironment::new(
+        "/workspace",
+        [("HOME".to_owned(), "/Users/example".to_owned())],
+    );
     let services = FakeServices {
         workspaces: vec![
             WorkspaceEntry {
@@ -906,7 +909,7 @@ fn work_list_marks_current_workspace_in_plain_output_and_aligns_paths() {
 
     assert_eq!(
         result.stdout,
-        "default@  /Users/example/projects/jx\nfix       /Users/example/projects/.work/jx/fix\n"
+        "default@  ~/projects/jx\nfix       ~/projects/.work/jx/fix\n"
     );
 }
 
@@ -1048,20 +1051,17 @@ fn work_list_groups_workspace_metadata_projects() {
 
     assert_eq!(
         result.stdout,
-        format!(
-            "github-navigation\n  first   {}\n  second  {}\n\nreview-inbox\n  other  {}\n\nNo project\n  default@  {}\n",
-            first_root.display(),
-            second_root.display(),
-            other_root.display(),
-            default_root.display()
-        )
+        "github-navigation\n  first   ~/projects/.work/jx/first\n  second  ~/projects/.work/jx/second\n\nreview-inbox\n  other  ~/projects/.work/jx/other\n\nNo project\n  default@  ~/projects/jx\n"
     );
 }
 
 #[test]
 fn work_list_styles_current_workspace_in_color_output() {
     // Verifies: Terminal output keeps workspace names unchanged and uses style for currentness.
-    let environment = RuntimeEnvironment::new("/workspace", []);
+    let environment = RuntimeEnvironment::new(
+        "/workspace",
+        [("HOME".to_owned(), "/Users/example".to_owned())],
+    );
     let services = FakeServices {
         workspaces: vec![
             WorkspaceEntry {
@@ -1093,7 +1093,7 @@ fn work_list_styles_current_workspace_in_color_output() {
 
     assert_eq!(
         result.stdout,
-        "\x1b[1m\x1b[32mdefault\x1b[0m  /Users/example/projects/jx\nfix      /Users/example/projects/.work/jx/fix\n"
+        "\x1b[1m\x1b[32mdefault\x1b[0m  ~/projects/jx\nfix      ~/projects/.work/jx/fix\n"
     );
 }
 
@@ -2119,11 +2119,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!(
-            "github-navigation\n  project@fix  {}\n\nNo project\n  project  {}\n",
-            workspace_root.display(),
-            project_root.display()
-        )
+        "github-navigation\n  project@fix  ~/projects/.work/project/fix\n\nNo project\n  project  ~/projects/project\n"
     );
 }
 
@@ -2157,11 +2153,7 @@ path = "{repo}"
 
     assert_eq!(
         result.stdout,
-        format!(
-            "project      {}\nproject@fix  {}\n",
-            project_root.display(),
-            workspace_root.display()
-        )
+        "project      ~/projects/project\nproject@fix  ~/projects/.work/project/fix\n"
     );
 }
 

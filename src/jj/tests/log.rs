@@ -69,6 +69,68 @@ fn workspace_log_preserves_configured_jj_revset() {
 }
 
 #[test]
+fn workspace_log_omits_empty_workspace_heads_on_trunk() {
+    // Verifies: jx log focuses on work in flight instead of empty trunk-based workspaces.
+    let fixture = TestWorkspace::new("workspace-log-empty-heads");
+    let settings = log_test_settings().expect("settings");
+    let (workspace, repo) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let trunk = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "hypothetical main trunk",
+            &[("README.md", b"main\n")],
+        )
+        .await;
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        let empty_workspace = tx
+            .repo_mut()
+            .new_commit(vec![trunk.id().clone()], trunk.tree())
+            .write()
+            .await
+            .expect("write empty workspace head");
+        let feature = write_child_with_files(
+            tx.repo_mut(),
+            &trunk,
+            "hypothetical feature change",
+            &[("feature.txt", b"feature\n")],
+        )
+        .await;
+
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                empty_workspace.id().clone(),
+            )
+            .expect("set current working-copy change");
+        tx.repo_mut()
+            .set_wc_commit(
+                WorkspaceNameBuf::from("feature-workspace"),
+                feature.id().clone(),
+            )
+            .expect("set feature working-copy change");
+
+        let repo = tx
+            .commit("arrange empty workspace head log")
+            .await
+            .expect("commit");
+        (workspace, repo)
+    });
+
+    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
+        .expect("log renders");
+
+    assert!(log.contains("hypothetical feature change"), "{log}");
+    assert!(log.contains("hypothetical main trunk"), "{log}");
+    assert!(!log.contains("(empty)"), "{log}");
+    assert!(!log.contains("(no description set)"), "{log}");
+}
+
+#[test]
 fn compact_relative_time_abbreviates_log_ages() {
     // Verifies: Compact log ages use one short unit and reserve `mo` for months.
     const MINUTE_MS: i64 = 60_000;

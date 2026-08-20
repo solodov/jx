@@ -168,19 +168,27 @@ fn work_info_parent_label(parent: Option<&WorkspaceParentMetadata>) -> String {
     }
 }
 
-pub(in crate::commands) fn render_work_list(entries: &[WorkListEntry], color: bool) -> String {
+pub(in crate::commands) fn render_work_list(
+    entries: &[WorkListEntry],
+    color: bool,
+    home_dir: Option<&Path>,
+) -> String {
     if entries.iter().all(|entry| entry.project.is_none()) {
         return render_keyed_paths(
             entries
                 .iter()
-                .map(|entry| workspace_path_row(&entry.workspace, color)),
+                .map(|entry| workspace_path_row(&entry.workspace, color, home_dir)),
         );
     }
 
-    render_project_work_list(entries, color)
+    render_project_work_list(entries, color, home_dir)
 }
 
-fn render_project_work_list(entries: &[WorkListEntry], color: bool) -> String {
+fn render_project_work_list(
+    entries: &[WorkListEntry],
+    color: bool,
+    home_dir: Option<&Path>,
+) -> String {
     let mut output = String::new();
     let projects = entries
         .iter()
@@ -195,12 +203,13 @@ fn render_project_work_list(entries: &[WorkListEntry], color: bool) -> String {
                 .iter()
                 .filter(|entry| entry.project.as_deref() == Some(project)),
             color,
+            home_dir,
         );
     }
 
     let unprojected = entries.iter().filter(|entry| entry.project.is_none());
     if unprojected.clone().next().is_some() {
-        append_project_work_list_group(&mut output, "No project", unprojected, color);
+        append_project_work_list_group(&mut output, "No project", unprojected, color, home_dir);
     }
 
     output
@@ -211,35 +220,50 @@ fn append_project_work_list_group<'a>(
     title: &str,
     entries: impl Iterator<Item = &'a WorkListEntry>,
     color: bool,
+    home_dir: Option<&Path>,
 ) {
     if !output.is_empty() {
         output.push('\n');
     }
     output.push_str(title);
     output.push('\n');
-    output.push_str(&render_keyed_paths(
-        entries.map(|entry| indented_workspace_path_row(&entry.workspace, color)),
-    ));
+    output.push_str(&render_keyed_paths(entries.map(|entry| {
+        indented_workspace_path_row(&entry.workspace, color, home_dir)
+    })));
 }
 
-fn indented_workspace_path_row(workspace: &WorkspaceEntry, color: bool) -> KeyedPathRow<'_> {
-    let mut row = workspace_path_row(workspace, color);
+fn indented_workspace_path_row(
+    workspace: &WorkspaceEntry,
+    color: bool,
+    home_dir: Option<&Path>,
+) -> KeyedPathRow {
+    let mut row = workspace_path_row(workspace, color, home_dir);
     row.label = format!("  {}", row.label);
     row.visible_label_width += 2;
     row
 }
 
-pub(in crate::commands) fn render_global_work_list(entries: &[WorkLocationListEntry]) -> String {
+pub(in crate::commands) fn render_global_work_list(
+    entries: &[WorkLocationListEntry],
+    home_dir: Option<&Path>,
+) -> String {
     if entries.iter().all(|entry| entry.project.is_none()) {
         return render_keyed_paths(entries.iter().map(|entry| {
-            keyed_path_row(entry.location.key.clone(), entry.location.root.as_path())
+            keyed_path_row(
+                entry.location.key.clone(),
+                entry.location.root.as_path(),
+                home_dir,
+            )
         }));
     }
 
-    render_project_location_list(entries)
+    render_project_location_list(entries, home_dir)
 }
 
-fn render_project_location_list(entries: &[WorkLocationListEntry]) -> String {
+fn render_project_location_list(
+    entries: &[WorkLocationListEntry],
+    home_dir: Option<&Path>,
+) -> String {
     let mut output = String::new();
     let projects = entries
         .iter()
@@ -253,12 +277,13 @@ fn render_project_location_list(entries: &[WorkLocationListEntry]) -> String {
             entries
                 .iter()
                 .filter(|entry| entry.project.as_deref() == Some(project)),
+            home_dir,
         );
     }
 
     let unprojected = entries.iter().filter(|entry| entry.project.is_none());
     if unprojected.clone().next().is_some() {
-        append_project_location_list_group(&mut output, "No project", unprojected);
+        append_project_location_list_group(&mut output, "No project", unprojected, home_dir);
     }
 
     output
@@ -268,6 +293,7 @@ fn append_project_location_list_group<'a>(
     output: &mut String,
     title: &str,
     entries: impl Iterator<Item = &'a WorkLocationListEntry>,
+    home_dir: Option<&Path>,
 ) {
     if !output.is_empty() {
         output.push('\n');
@@ -275,7 +301,11 @@ fn append_project_location_list_group<'a>(
     output.push_str(title);
     output.push('\n');
     output.push_str(&render_keyed_paths(entries.map(|entry| {
-        let mut row = keyed_path_row(entry.location.key.clone(), entry.location.root.as_path());
+        let mut row = keyed_path_row(
+            entry.location.key.clone(),
+            entry.location.root.as_path(),
+            home_dir,
+        );
         row.label = format!("  {}", row.label);
         row.visible_label_width += 2;
         row
@@ -331,13 +361,13 @@ pub(in crate::commands) fn render_work_delete(workspace: &WorkspaceEntry) -> Str
     format!("Deleted workspace: {}\n", workspace.name)
 }
 
-struct KeyedPathRow<'a> {
+struct KeyedPathRow {
     label: String,
     visible_label_width: usize,
-    path: &'a Path,
+    path: String,
 }
 
-fn render_keyed_paths<'a>(rows: impl IntoIterator<Item = KeyedPathRow<'a>>) -> String {
+fn render_keyed_paths(rows: impl IntoIterator<Item = KeyedPathRow>) -> String {
     let rows = rows.into_iter().collect::<Vec<_>>();
     let width = rows
         .iter()
@@ -347,12 +377,16 @@ fn render_keyed_paths<'a>(rows: impl IntoIterator<Item = KeyedPathRow<'a>>) -> S
     let mut output = String::new();
     for row in rows {
         let padding = " ".repeat(width.saturating_sub(row.visible_label_width));
-        output.push_str(&format!("{}{padding}  {}\n", row.label, row.path.display()));
+        output.push_str(&format!("{}{padding}  {}\n", row.label, row.path));
     }
     output
 }
 
-fn workspace_path_row(workspace: &WorkspaceEntry, color: bool) -> KeyedPathRow<'_> {
+fn workspace_path_row(
+    workspace: &WorkspaceEntry,
+    color: bool,
+    home_dir: Option<&Path>,
+) -> KeyedPathRow {
     let label = if workspace.is_current {
         current_workspace_label(&workspace.name, color)
     } else {
@@ -367,17 +401,30 @@ fn workspace_path_row(workspace: &WorkspaceEntry, color: bool) -> KeyedPathRow<'
     KeyedPathRow {
         label,
         visible_label_width,
-        path: workspace.root.as_path(),
+        path: work_list_display_path(&workspace.root, home_dir),
     }
 }
 
-fn keyed_path_row(label: String, path: &Path) -> KeyedPathRow<'_> {
+fn keyed_path_row(label: String, path: &Path, home_dir: Option<&Path>) -> KeyedPathRow {
     let visible_label_width = label.chars().count();
     KeyedPathRow {
         label,
         visible_label_width,
-        path,
+        path: work_list_display_path(path, home_dir),
     }
+}
+
+fn work_list_display_path(path: &Path, home_dir: Option<&Path>) -> String {
+    if let Some(home) = home_dir {
+        if path == home {
+            return "~".to_owned();
+        }
+        if let Ok(relative) = path.strip_prefix(home) {
+            return format!("~/{}", relative.display());
+        }
+    }
+
+    path.display().to_string()
 }
 
 fn current_workspace_label(name: &str, color: bool) -> String {

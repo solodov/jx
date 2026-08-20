@@ -210,6 +210,9 @@ label("root", "root()") ++ "\n"
 
 [colors]
 link = { underline = true }
+pull_request_commit = { bold = true }
+conflicted_commit = { fg = "red" }
+conflicted_pull_request_commit = { fg = "red", bold = true }
 bookmark_synced = { fg = "#5a32a3", bold = false }
 bookmark_unsynced = { fg = "#5a32a3", bg = "#efe8fb", bold = false }
 "##,
@@ -271,6 +274,12 @@ pub(super) fn render_current_workspace_log(
         &revset_extensions,
     )?;
     let immutable_expression = immutable_expression(&ui, &revset_context)?;
+    let log_empty_workspace_parent_ids = log_immutable_commit_ids(
+        repo,
+        revset_extensions.clone(),
+        &id_prefix_context,
+        immutable_expression.clone(),
+    )?;
     let conflict_marker_style = settings
         .get("ui.conflict-marker-style")
         .map_err(log_error)?;
@@ -307,6 +316,7 @@ pub(super) fn render_current_workspace_log(
             commit: template,
             node: node_template,
             ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
+            empty_workspace_parent_ids: log_empty_workspace_parent_ids,
         },
         annotations,
     )
@@ -393,6 +403,7 @@ pub(super) fn render_commit_ids_log(
             commit: template,
             node: node_template,
             ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
+            empty_workspace_parent_ids: BTreeSet::new(),
         },
         &[],
     )
@@ -556,6 +567,23 @@ pub(super) fn log_revset<'repo>(
     .map_err(log_error)
 }
 
+pub(super) fn log_immutable_commit_ids<'repo>(
+    repo: &'repo ReadonlyRepo,
+    revset_extensions: Arc<RevsetExtensions>,
+    id_prefix_context: &'repo IdPrefixContext,
+    expression: Arc<jj_lib::revset::UserRevsetExpression>,
+) -> Result<BTreeSet<CommitId>, JjError> {
+    let mut stream =
+        RevsetExpressionEvaluator::new(repo, revset_extensions, id_prefix_context, expression)
+            .evaluate_to_commit_ids()
+            .map_err(log_error)?;
+    let mut commit_ids = BTreeSet::new();
+    while let Some(commit_id) = pollster::block_on(stream.try_next()).map_err(log_error)? {
+        commit_ids.insert(commit_id);
+    }
+    Ok(commit_ids)
+}
+
 pub(super) fn graph_prioritize_revset<'repo>(
     settings: &UserSettings,
     ui: &Ui,
@@ -618,6 +646,7 @@ pub(super) struct LogGraphTemplates<'repo> {
     commit: TemplateRenderer<'repo, Commit>,
     node: TemplateRenderer<'repo, Option<Commit>>,
     ellipsize_description_line: bool,
+    empty_workspace_parent_ids: BTreeSet<CommitId>,
 }
 
 pub(super) fn render_log_graph<'repo>(
@@ -655,9 +684,15 @@ pub(super) fn render_log_graph<'repo>(
 
         let forward_stream = forward_iter.stream();
         futures::pin_mut!(forward_stream);
-        while let Some((commit_id, edges)) =
-            pollster::block_on(forward_stream.try_next()).map_err(log_error)?
-        {
+        let forward_items =
+            pollster::block_on(forward_stream.try_collect::<Vec<_>>()).map_err(log_error)?;
+        let mut commit_ids_with_visible_children = BTreeSet::new();
+        for (_commit_id, edges) in &forward_items {
+            for edge in edges {
+                commit_ids_with_visible_children.insert(edge.target.clone());
+            }
+        }
+        for (commit_id, edges) in forward_items {
             let mut graphlog_edges = vec![];
             let mut missing_edge_id = None;
             let mut elided_targets = vec![];
@@ -686,6 +721,14 @@ pub(super) fn render_log_graph<'repo>(
             let mut buffer = vec![];
             let key = (commit_id, false);
             let commit = store.get_commit(&key.0).map_err(log_error)?;
+            if omit_empty_workspace_head_from_log(
+                repo,
+                &commit,
+                &templates.empty_workspace_parent_ids,
+                &commit_ids_with_visible_children,
+            )? {
+                continue;
+            }
             let within_graph = with_content_format.sub_width(graph.width(&key, &graphlog_edges));
             if templates.ellipsize_description_line {
                 templates
@@ -743,6 +786,33 @@ pub(super) fn render_log_graph<'repo>(
     }
 
     String::from_utf8(output).map_err(log_error)
+}
+
+fn omit_empty_workspace_head_from_log(
+    repo: &ReadonlyRepo,
+    commit: &Commit,
+    immutable_parent_ids: &BTreeSet<CommitId>,
+    commit_ids_with_visible_children: &BTreeSet<CommitId>,
+) -> Result<bool, JjError> {
+    if commit_ids_with_visible_children.contains(commit.id())
+        || commit.has_conflict()
+        || !commit.description().trim().is_empty()
+    {
+        return Ok(false);
+    }
+
+    let is_empty = pollster::block_on(commit.is_empty(repo)).map_err(|error| JjError::Backend {
+        message: error.to_string(),
+    })?;
+    if !is_empty {
+        return Ok(false);
+    }
+
+    let parents = commit.parent_ids();
+    if parents.len() != 1 {
+        return Ok(false);
+    }
+    Ok(immutable_parent_ids.contains(&parents[0]))
 }
 
 pub(super) fn ellipsize_log_description_line(

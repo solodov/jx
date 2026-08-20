@@ -488,7 +488,7 @@ pub(in crate::commands) fn write_repository_bootstrap(
 }
 
 const SYNC_COMMIT_WIDTH: usize = 8;
-const SYNC_PULL_REQUEST_WIDTH: usize = 7;
+const SYNC_FALLBACK_WORKSPACE: &str = "default";
 
 pub(in crate::commands) fn write_sync(
     report: &SyncReport,
@@ -519,72 +519,42 @@ pub(in crate::commands) fn write_sync(
                 && bookmark.old_short_commit_id != bookmark.new_short_commit_id
         })
         .collect::<Vec<_>>();
-    let deleted_bookmarks = report
-        .push
-        .bookmarks
-        .iter()
-        .filter(|bookmark| bookmark.new_short_commit_id.is_none())
-        .collect::<Vec<_>>();
     let pull_requests = report
         .pull_requests
         .iter()
         .map(|pull_request| (pull_request.head_branch.as_str(), pull_request))
         .collect::<BTreeMap<_, _>>();
 
-    write_rebased_section(
+    let sections = sync_change_sections(
+        &rebased_commits,
+        &pushed_bookmarks,
+        &report.skipped_conflicted_bookmarks,
+        &pull_requests,
+    );
+    write_sync_change_section(
         formatter,
-        report.repository.origin_name,
-        &report.fetch.branch,
-        rebased_commits,
+        "Conflicts blocking push:",
+        &sections.conflicts,
+        &report.repository.github_url,
     )?;
-
-    if !pushed_bookmarks.is_empty() {
-        write_sync_section_separator(formatter)?;
-        writeln!(formatter, "Pushed commits:")?;
-        let mut rows = sync_workspace_rows(pushed_bookmarks, |bookmark| {
-            &bookmark.new_workspace_visibility
-        });
-        let pull_request_width = sync_pull_request_width(&rows, &pull_requests);
-        writeln!(
-            formatter,
-            "  {:<commit_width$}  {:<pull_request_width$}  Title",
-            "Commit",
-            "PR",
-            commit_width = SYNC_COMMIT_WIDTH,
-        )?;
-        for row in &mut rows {
-            let pull_request = pull_requests.get(row.item.branch.as_str()).copied();
-            write_pushed_bookmark_commit(
-                formatter,
-                row,
-                pull_request_width,
-                &report.repository.github_url,
-                pull_request,
-            )?;
-        }
-    }
-
-    if !deleted_bookmarks.is_empty() {
-        write_sync_section_separator(formatter)?;
-        writeln!(formatter, "Deleted bookmarks:")?;
-        for bookmark in deleted_bookmarks {
-            write_deleted_bookmark(
-                formatter,
-                bookmark,
-                &report.repository.github_url,
-                pull_requests.get(bookmark.branch.as_str()).copied(),
-            )?;
-        }
-    }
-
-    if !report.skipped_conflicted_bookmarks.is_empty() {
-        write_sync_section_separator(formatter)?;
-        write_skipped_conflicted_bookmarks(
-            formatter,
-            &report.skipped_conflicted_bookmarks,
-            &report.repository.github_url,
-        )?;
-    }
+    write_sync_change_section(
+        formatter,
+        "Rebased and pushed:",
+        &sections.rebased_and_pushed,
+        &report.repository.github_url,
+    )?;
+    write_sync_change_section(
+        formatter,
+        "Pushed:",
+        &sections.pushed,
+        &report.repository.github_url,
+    )?;
+    write_sync_change_section(
+        formatter,
+        "Rebased locally:",
+        &sections.rebased,
+        &report.repository.github_url,
+    )?;
 
     Ok(())
 }
@@ -653,6 +623,298 @@ pub(in crate::commands) fn write_rebased_section(
         write_rebased_commit(formatter, row, workspace_width)?;
     }
     Ok(())
+}
+
+fn sync_change_sections<'a>(
+    rebased_commits: &[&'a crate::jj::RebasedCommitSummary],
+    pushed_bookmarks: &[&'a crate::jj::PushedBookmarkSummary],
+    skipped_conflicted_bookmarks: &'a [crate::jj::SkippedPushBookmarkSummary],
+    pull_requests: &BTreeMap<&'a str, &'a PullRequestRecord>,
+) -> SyncChangeSections<'a> {
+    let mut sections = SyncChangeSections::default();
+    let skipped_conflict_descriptions = skipped_conflicted_bookmarks
+        .iter()
+        .flat_map(|bookmark| bookmark.conflicted_commits.iter())
+        .map(|commit| commit.description.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for bookmark in skipped_conflicted_bookmarks {
+        let pull_request = pull_requests.get(bookmark.branch.as_str()).copied();
+        sections
+            .conflicts
+            .extend(
+                bookmark
+                    .conflicted_commits
+                    .iter()
+                    .map(|commit| SyncChangeEntry {
+                        commit: commit.short_commit_id.as_str(),
+                        description: commit.description.as_str(),
+                        visibility: sync_display_visibility(&commit.workspace_visibility),
+                        pull_request,
+                        conflicted: true,
+                    }),
+            );
+    }
+
+    let mut used_pushed_indexes = BTreeSet::new();
+    for rebased in rebased_commits {
+        if rebased.has_conflict {
+            if !skipped_conflict_descriptions.contains(rebased.description.as_str()) {
+                sections.conflicts.push(sync_rebased_change_entry(rebased));
+            }
+            continue;
+        }
+
+        if let Some((index, pushed)) =
+            pushed_bookmarks
+                .iter()
+                .enumerate()
+                .find(|(index, bookmark)| {
+                    !used_pushed_indexes.contains(index)
+                        && bookmark.new_short_change_id.as_deref()
+                            == Some(rebased.short_change_id.as_str())
+                })
+        {
+            used_pushed_indexes.insert(index);
+            let pull_request = pull_requests.get(pushed.branch.as_str()).copied();
+            if let Some(entry) = sync_pushed_change_entry(
+                pushed,
+                pull_request,
+                sync_rebased_pushed_visibility(rebased, pushed),
+                Some(rebased.description.as_str()),
+            ) {
+                sections.rebased_and_pushed.push(entry);
+            }
+        } else {
+            sections.rebased.push(sync_rebased_change_entry(rebased));
+        }
+    }
+
+    for (index, pushed) in pushed_bookmarks.iter().enumerate() {
+        if used_pushed_indexes.contains(&index) {
+            continue;
+        }
+
+        let pull_request = pull_requests.get(pushed.branch.as_str()).copied();
+        if let Some(entry) = sync_pushed_change_entry(
+            pushed,
+            pull_request,
+            pushed.new_workspace_visibility.clone(),
+            None,
+        ) {
+            sections.pushed.push(entry);
+        }
+    }
+
+    sections
+}
+
+#[derive(Debug, Default)]
+struct SyncChangeSections<'a> {
+    conflicts: Vec<SyncChangeEntry<'a>>,
+    rebased_and_pushed: Vec<SyncChangeEntry<'a>>,
+    pushed: Vec<SyncChangeEntry<'a>>,
+    rebased: Vec<SyncChangeEntry<'a>>,
+}
+
+#[derive(Debug)]
+struct SyncChangeEntry<'a> {
+    commit: &'a str,
+    description: &'a str,
+    visibility: crate::jj::WorkspaceVisibility,
+    pull_request: Option<&'a PullRequestRecord>,
+    conflicted: bool,
+}
+
+fn sync_display_visibility(
+    visibility: &crate::jj::WorkspaceVisibility,
+) -> crate::jj::WorkspaceVisibility {
+    if visibility.names.is_empty() {
+        crate::jj::WorkspaceVisibility {
+            names: vec![SYNC_FALLBACK_WORKSPACE.to_owned()],
+            includes_current: true,
+        }
+    } else {
+        visibility.clone()
+    }
+}
+
+fn sync_rebased_change_entry(commit: &crate::jj::RebasedCommitSummary) -> SyncChangeEntry<'_> {
+    SyncChangeEntry {
+        commit: commit.short_change_id.as_str(),
+        description: commit.description.as_str(),
+        visibility: sync_display_visibility(&commit.workspace_visibility),
+        pull_request: None,
+        conflicted: commit.has_conflict,
+    }
+}
+
+fn sync_pushed_change_entry<'a>(
+    bookmark: &'a crate::jj::PushedBookmarkSummary,
+    pull_request: Option<&'a PullRequestRecord>,
+    visibility: crate::jj::WorkspaceVisibility,
+    fallback_description: Option<&'a str>,
+) -> Option<SyncChangeEntry<'a>> {
+    Some(SyncChangeEntry {
+        commit: bookmark.new_short_change_id.as_deref()?,
+        description: pushed_bookmark_description(bookmark, pull_request, fallback_description),
+        visibility: sync_display_visibility(&visibility),
+        pull_request,
+        conflicted: false,
+    })
+}
+
+fn sync_rebased_pushed_visibility(
+    rebased: &crate::jj::RebasedCommitSummary,
+    pushed: &crate::jj::PushedBookmarkSummary,
+) -> crate::jj::WorkspaceVisibility {
+    if rebased.workspace_visibility.names.is_empty() {
+        pushed.new_workspace_visibility.clone()
+    } else {
+        rebased.workspace_visibility.clone()
+    }
+}
+
+fn pushed_bookmark_description<'a>(
+    bookmark: &'a crate::jj::PushedBookmarkSummary,
+    pull_request: Option<&'a PullRequestRecord>,
+    fallback: Option<&'a str>,
+) -> &'a str {
+    pull_request
+        .map(|pull_request| pull_request.title.trim())
+        .filter(|title| !title.is_empty())
+        .or_else(|| {
+            bookmark
+                .new_description
+                .as_deref()
+                .filter(|title| !title.is_empty())
+        })
+        .or_else(|| fallback.filter(|title| !title.is_empty()))
+        .unwrap_or("(no description)")
+}
+
+fn write_sync_change_section(
+    formatter: &mut dyn Formatter,
+    title: &str,
+    entries: &[SyncChangeEntry<'_>],
+    repository_url: &str,
+) -> io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    write_sync_section_separator(formatter)?;
+    writeln!(formatter, "{title}")?;
+    let rows = sync_workspace_rows(entries.iter().collect(), |entry| &entry.visibility);
+    write_workspace_grouped_rows(formatter, &rows, |formatter, row| {
+        write_sync_change_entry(formatter, row.item, repository_url)
+    })
+}
+
+fn write_workspace_grouped_rows<T>(
+    formatter: &mut dyn Formatter,
+    rows: &[SyncWorkspaceRow<'_, T>],
+    mut write_row: impl FnMut(&mut dyn Formatter, &SyncWorkspaceRow<'_, T>) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut index = 0;
+    let mut group_index = 0;
+    while index < rows.len() {
+        if group_index > 0 {
+            writeln!(formatter)?;
+        }
+
+        let workspace = rows[index].workspace;
+        write_sync_workspace_group_heading(formatter, workspace)?;
+        while index < rows.len() && rows[index].workspace == workspace {
+            write_row(formatter, &rows[index])?;
+            index += 1;
+        }
+        group_index += 1;
+    }
+    Ok(())
+}
+
+fn write_sync_workspace_group_heading(
+    formatter: &mut dyn Formatter,
+    workspace: Option<&str>,
+) -> io::Result<()> {
+    write!(formatter, "  ")?;
+    write_workspace_label(formatter, workspace.unwrap_or(SYNC_FALLBACK_WORKSPACE))?;
+    writeln!(formatter)
+}
+
+fn write_sync_change_entry(
+    formatter: &mut dyn Formatter,
+    entry: &SyncChangeEntry<'_>,
+    repository_url: &str,
+) -> io::Result<()> {
+    let pull_request_url = entry
+        .pull_request
+        .map(|pull_request| pull_request_url(repository_url, pull_request));
+    let style = match (entry.conflicted, pull_request_url.as_deref()) {
+        (true, Some(url)) => SyncCommitStyle::ConflictedPullRequest { url },
+        (true, None) => SyncCommitStyle::Conflicted,
+        (false, Some(url)) => SyncCommitStyle::PullRequest { url },
+        (false, None) => SyncCommitStyle::Plain,
+    };
+
+    write!(formatter, "    ")?;
+    write_sync_commit_cell(formatter, entry.commit, SYNC_COMMIT_WIDTH, style)?;
+    write!(formatter, "  ")?;
+    write_description(formatter, entry.description)?;
+    writeln!(formatter)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SyncCommitStyle<'a> {
+    Plain,
+    PullRequest { url: &'a str },
+    Conflicted,
+    ConflictedPullRequest { url: &'a str },
+}
+
+impl<'a> SyncCommitStyle<'a> {
+    fn labels(self) -> &'static [&'static str] {
+        match self {
+            Self::Plain => &["commit_id"],
+            Self::PullRequest { .. } => &["commit_id", "link", "pull_request_commit"],
+            Self::Conflicted => &["commit_id", "conflict", "conflicted_commit"],
+            Self::ConflictedPullRequest { .. } => &[
+                "commit_id",
+                "conflict",
+                "link",
+                "conflicted_pull_request_commit",
+            ],
+        }
+    }
+
+    fn url(self) -> Option<&'a str> {
+        match self {
+            Self::Plain | Self::Conflicted => None,
+            Self::PullRequest { url } | Self::ConflictedPullRequest { url } => Some(url),
+        }
+    }
+}
+
+fn write_sync_commit_cell(
+    formatter: &mut dyn Formatter,
+    commit: &str,
+    width: usize,
+    style: SyncCommitStyle<'_>,
+) -> io::Result<()> {
+    if let Some(url) = style.url() {
+        write_osc8_start(formatter, url)?;
+    }
+    write_labeled_text(formatter, style.labels(), commit)?;
+    if style.url().is_some() {
+        write_osc8_end(formatter)?;
+    }
+    write!(
+        formatter,
+        "{:padding$}",
+        "",
+        padding = width.saturating_sub(commit.chars().count())
+    )
 }
 
 pub(in crate::commands) fn visible_rebased_commits(
@@ -773,190 +1035,6 @@ pub(in crate::commands) fn write_rebased_commit(
     writeln!(formatter)
 }
 
-pub(in crate::commands) fn write_skipped_conflicted_bookmarks(
-    formatter: &mut dyn Formatter,
-    bookmarks: &[crate::jj::SkippedPushBookmarkSummary],
-    repository_url: &str,
-) -> io::Result<()> {
-    writeln!(formatter, "Skipped bookmarks with conflicts:")?;
-    let bookmark_width = bookmarks
-        .iter()
-        .map(|bookmark| bookmark.branch.chars().count())
-        .max()
-        .unwrap_or(0);
-
-    for bookmark in bookmarks {
-        for (index, commit) in bookmark.conflicted_commits.iter().enumerate() {
-            write!(formatter, "  ")?;
-            if index == 0 {
-                write_bookmark_target(formatter, repository_url, &bookmark.branch, bookmark_width)?;
-            } else {
-                write!(formatter, "{:bookmark_width$}", "")?;
-            }
-            write!(formatter, "  ")?;
-            write_commit_id(formatter, &commit.short_commit_id)?;
-            write!(formatter, "  ")?;
-            write_description(formatter, &commit.description)?;
-            write_labeled_text(formatter, &["conflict"], " (conflicted)")?;
-            writeln!(formatter)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(in crate::commands) fn write_pushed_bookmark_commit(
-    formatter: &mut dyn Formatter,
-    row: &SyncWorkspaceRow<'_, crate::jj::PushedBookmarkSummary>,
-    pull_request_width: usize,
-    repository_url: &str,
-    pull_request: Option<&PullRequestRecord>,
-) -> io::Result<()> {
-    let bookmark = row.item;
-    let commit = bookmark
-        .new_short_change_id
-        .as_deref()
-        .expect("caller filters pushed bookmarks");
-    let title = pushed_bookmark_title(bookmark, pull_request);
-
-    write!(formatter, "  ")?;
-    write_commit_id(formatter, commit)?;
-    write!(formatter, "  ")?;
-    write_pull_request_cell(formatter, repository_url, pull_request, pull_request_width)?;
-    write!(formatter, "  ")?;
-    write_description(formatter, title)?;
-    write_workspace_suffix(formatter, row.workspace)?;
-    writeln!(formatter)
-}
-
-fn sync_pull_request_width(
-    rows: &[SyncWorkspaceRow<'_, crate::jj::PushedBookmarkSummary>],
-    pull_requests: &BTreeMap<&str, &PullRequestRecord>,
-) -> usize {
-    rows.iter()
-        .filter_map(|row| pull_requests.get(row.item.branch.as_str()).copied())
-        .map(pull_request_label_width)
-        .max()
-        .unwrap_or(SYNC_PULL_REQUEST_WIDTH)
-        .max(SYNC_PULL_REQUEST_WIDTH)
-}
-
-fn pushed_bookmark_title<'a>(
-    bookmark: &'a crate::jj::PushedBookmarkSummary,
-    pull_request: Option<&'a PullRequestRecord>,
-) -> &'a str {
-    pull_request
-        .map(|pull_request| pull_request.title.trim())
-        .filter(|title| !title.is_empty())
-        .or(bookmark.new_description.as_deref())
-        .unwrap_or("(no description)")
-}
-
-fn write_pull_request_cell(
-    formatter: &mut dyn Formatter,
-    repository_url: &str,
-    pull_request: Option<&PullRequestRecord>,
-    width: usize,
-) -> io::Result<()> {
-    let Some(pull_request) = pull_request else {
-        return write!(formatter, "{:width$}", "");
-    };
-
-    let label = pull_request_label(pull_request);
-    write_pull_request_link(formatter, repository_url, pull_request, &label)?;
-    write!(
-        formatter,
-        "{:padding$}",
-        "",
-        padding = width.saturating_sub(label.chars().count())
-    )
-}
-
-fn write_pull_request_link(
-    formatter: &mut dyn Formatter,
-    repository_url: &str,
-    pull_request: &PullRequestRecord,
-    label: &str,
-) -> io::Result<()> {
-    write_osc8_start(formatter, &pull_request_url(repository_url, pull_request))?;
-    if pull_request.draft {
-        write_labeled_text(formatter, &["link", "placeholder"], label)?;
-    } else {
-        write_labeled_text(formatter, &["link"], label)?;
-    }
-    write_osc8_end(formatter)
-}
-
-fn pull_request_label(pull_request: &PullRequestRecord) -> String {
-    format!("#{}", pull_request.number)
-}
-
-fn pull_request_label_width(pull_request: &PullRequestRecord) -> usize {
-    pull_request_label(pull_request).chars().count()
-}
-
-fn write_workspace_suffix(
-    formatter: &mut dyn Formatter,
-    workspace: Option<&str>,
-) -> io::Result<()> {
-    let Some(workspace) = workspace else {
-        return Ok(());
-    };
-
-    write!(formatter, " ")?;
-    write_workspace_label(formatter, workspace)
-}
-
-pub(in crate::commands) fn write_deleted_bookmark(
-    formatter: &mut dyn Formatter,
-    bookmark: &crate::jj::PushedBookmarkSummary,
-    repository_url: &str,
-    pull_request: Option<&PullRequestRecord>,
-) -> io::Result<()> {
-    let commit = bookmark
-        .old_short_change_id
-        .as_deref()
-        .expect("deleted tracked bookmarks have an old change");
-    let description = bookmark
-        .old_description
-        .as_deref()
-        .unwrap_or("(no description)");
-    write!(formatter, "  ")?;
-    write_bookmark_commit_tail(
-        formatter,
-        repository_url,
-        &bookmark.branch,
-        commit,
-        description,
-    )?;
-
-    if let Some(pull_request) = pull_request {
-        write_pull_request_annotation(formatter, 2, repository_url, pull_request)?;
-    }
-
-    Ok(())
-}
-
-pub(in crate::commands) fn write_pull_request_annotation(
-    formatter: &mut dyn Formatter,
-    indent: usize,
-    repository_url: &str,
-    pull_request: &PullRequestRecord,
-) -> io::Result<()> {
-    write!(formatter, "{:indent$}↳ ", "")?;
-    if pull_request.draft {
-        write!(formatter, "draft ")?;
-    }
-    write!(formatter, "PR ")?;
-    let label = format!("#{}", pull_request.number);
-    write_osc8_link(
-        formatter,
-        &pull_request_url(repository_url, pull_request),
-        &label,
-    )?;
-    writeln!(formatter)
-}
-
 pub(in crate::commands) fn pull_request_url(
     repository_url: &str,
     pull_request: &PullRequestRecord,
@@ -965,21 +1043,6 @@ pub(in crate::commands) fn pull_request_url(
         .html_url
         .clone()
         .unwrap_or_else(|| format!("{repository_url}/pull/{}", pull_request.number))
-}
-
-pub(in crate::commands) fn write_bookmark_commit_tail(
-    formatter: &mut dyn Formatter,
-    repository_url: &str,
-    branch: &str,
-    commit: &str,
-    description: &str,
-) -> io::Result<()> {
-    write_bookmark(formatter, repository_url, branch)?;
-    write!(formatter, ": ")?;
-    write_commit_id(formatter, commit)?;
-    write!(formatter, " ")?;
-    write_description(formatter, description)?;
-    writeln!(formatter)
 }
 
 pub(in crate::commands) fn write_workspace_prefix(
@@ -1008,21 +1071,6 @@ pub(in crate::commands) fn write_workspace_label(
     workspace: &str,
 ) -> io::Result<()> {
     write_labeled_text(formatter, &["working_copies"], &format!("{workspace}@"))
-}
-
-pub(in crate::commands) fn write_bookmark_target(
-    formatter: &mut dyn Formatter,
-    repository_url: &str,
-    branch: &str,
-    bookmark_width: usize,
-) -> io::Result<()> {
-    write_bookmark(formatter, repository_url, branch)?;
-    write!(
-        formatter,
-        "{:padding$}",
-        "",
-        padding = bookmark_width.saturating_sub(branch.chars().count())
-    )
 }
 
 pub(in crate::commands) fn write_bookmark(

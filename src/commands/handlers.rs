@@ -811,11 +811,15 @@ fn handle_work(
                 let locations = global_work_locations(&config, environment)?;
                 let locations = filter_work_locations_by_prefix(&locations, &request.prefix);
                 let entries = work_location_list_entries(locations)?;
-                Ok(render_global_work_list(&entries))
+                Ok(render_global_work_list(&entries, environment.home_dir()))
             } else {
                 let workspaces = services.workspace_entries(environment.current_dir())?;
                 let entries = work_list_entries(workspaces)?;
-                Ok(render_work_list(&entries, output_mode.color))
+                Ok(render_work_list(
+                    &entries,
+                    output_mode.color,
+                    environment.home_dir(),
+                ))
             }
         }
         WorkRequest::Info(request) => {
@@ -2219,6 +2223,41 @@ fn pull_request_sync_push(
     }
 }
 
+fn pull_request_sync_push_with_conflicted_bookmarks(
+    mut push: TrackedPushOutcome,
+    skipped_conflicted_bookmarks: &[crate::jj::SkippedPushBookmarkSummary],
+) -> TrackedPushOutcome {
+    let mut branches = push
+        .bookmarks
+        .iter()
+        .map(|bookmark| bookmark.branch.clone())
+        .collect::<BTreeSet<_>>();
+    push.bookmarks.extend(
+        skipped_conflicted_bookmarks
+            .iter()
+            .filter(|bookmark| branches.insert(bookmark.branch.clone()))
+            .map(conflicted_pull_request_lookup_bookmark),
+    );
+    push
+}
+
+fn conflicted_pull_request_lookup_bookmark(
+    bookmark: &crate::jj::SkippedPushBookmarkSummary,
+) -> PushedBookmarkSummary {
+    PushedBookmarkSummary {
+        branch: bookmark.branch.clone(),
+        old_short_commit_id: None,
+        new_short_commit_id: None,
+        old_short_change_id: None,
+        new_short_change_id: None,
+        old_description: None,
+        new_description: None,
+        pull_request_description: None,
+        pull_request_base: None,
+        new_workspace_visibility: WorkspaceVisibility::default(),
+    }
+}
+
 fn pushed_bookmark_changed(bookmark: &PushedBookmarkSummary) -> bool {
     bookmark.old_short_commit_id != bookmark.new_short_commit_id
 }
@@ -2298,6 +2337,10 @@ fn sync_current_stack_traced(
     )?;
     progress.status("Syncing pull request descriptions…");
     let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
+    let pull_request_push = pull_request_sync_push_with_conflicted_bookmarks(
+        pull_request_push,
+        &push.skipped_conflicted_bookmarks,
+    );
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
         [perf_attr(
@@ -2467,6 +2510,10 @@ fn sync_selected_revision_traced(
         environment,
     );
     let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
+    let pull_request_push = pull_request_sync_push_with_conflicted_bookmarks(
+        pull_request_push,
+        &push.skipped_conflicted_bookmarks,
+    );
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
         [perf_attr(
@@ -2740,6 +2787,10 @@ fn sync_existing_origin_traced(
         environment,
     );
     let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
+    let pull_request_push = pull_request_sync_push_with_conflicted_bookmarks(
+        pull_request_push,
+        &push.skipped_conflicted_bookmarks,
+    );
     let pull_requests = span.measure_with_result_attrs(
         "sync_pull_requests",
         [perf_attr(
