@@ -317,6 +317,10 @@ pub(super) fn render_current_workspace_log(
             node: node_template,
             ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
             empty_workspace_parent_ids: log_empty_workspace_parent_ids,
+            current_workspace_commit_id: repo
+                .view()
+                .get_wc_commit_id(workspace.workspace_name())
+                .cloned(),
         },
         annotations,
     )
@@ -404,6 +408,7 @@ pub(super) fn render_commit_ids_log(
             node: node_template,
             ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
             empty_workspace_parent_ids: BTreeSet::new(),
+            current_workspace_commit_id: None,
         },
         &[],
     )
@@ -647,6 +652,7 @@ pub(super) struct LogGraphTemplates<'repo> {
     node: TemplateRenderer<'repo, Option<Commit>>,
     ellipsize_description_line: bool,
     empty_workspace_parent_ids: BTreeSet<CommitId>,
+    current_workspace_commit_id: Option<CommitId>,
 }
 
 pub(super) fn render_log_graph<'repo>(
@@ -725,6 +731,7 @@ pub(super) fn render_log_graph<'repo>(
                 repo,
                 &commit,
                 &templates.empty_workspace_parent_ids,
+                templates.current_workspace_commit_id.as_ref(),
                 &commit_ids_with_visible_children,
             )? {
                 continue;
@@ -792,8 +799,13 @@ fn omit_empty_workspace_head_from_log(
     repo: &ReadonlyRepo,
     commit: &Commit,
     immutable_parent_ids: &BTreeSet<CommitId>,
+    current_workspace_commit_id: Option<&CommitId>,
     commit_ids_with_visible_children: &BTreeSet<CommitId>,
 ) -> Result<bool, JjError> {
+    if current_workspace_commit_id.is_some_and(|current_id| current_id == commit.id()) {
+        return Ok(false);
+    }
+
     if commit_ids_with_visible_children.contains(commit.id())
         || commit.has_conflict()
         || !commit.description().trim().is_empty()
