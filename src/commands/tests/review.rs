@@ -252,7 +252,13 @@ fn review_render_uses_viewer_review_state_symbols() {
         }],
     };
 
-    let output = render_review_requests(&view, true, None, &BTreeMap::new());
+    let output = render_review_requests(
+        &view,
+        true,
+        None,
+        PullRequestTableLayout::Flow,
+        &BTreeMap::new(),
+    );
 
     assert!(output.contains("\x1b[36m?\x1b[0m    —     ◯ Waiting on me"));
     assert!(output.contains("\x1b[38;2;194;95;0m!\x1b[0m    —     ◯ I left comments"));
@@ -263,6 +269,59 @@ fn review_render_uses_viewer_review_state_symbols() {
     assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ My approval was dismissed"));
     assert!(output.contains("\x1b[1mexample-author\x1b[0m"));
     assert!(!output.contains("Legend:"));
+}
+
+#[test]
+fn review_interactive_layout_shrinks_titles_before_right_metadata() {
+    // Verifies: dashboard rows preserve labels and authors at the right edge before truncating metadata.
+    let mut status = review_status_record(
+        12,
+        "Implement a very long synthetic review request title that should shrink first",
+        "example-author",
+        false,
+    );
+    status.labels = vec![PullRequestLabel {
+        name: "workflow".to_owned(),
+        color: "5319e7".to_owned(),
+    }];
+    let view = ReviewRequestsView {
+        viewer: "example-reviewer".to_owned(),
+        repositories: vec![ReviewRequestRepositoryView {
+            repository: GitHubRepository {
+                owner: "example-owner".to_owned(),
+                name: "api-alpha".to_owned(),
+            },
+            layout_key: None,
+            root: None,
+            display_root: None,
+            rows: vec![ReviewRequestRowView {
+                status,
+                state: crate::domain::ReviewRequestState::New,
+                viewer_signal: ReviewRequestViewerSignal::None,
+                lag_since_unix: None,
+                dismissal: None,
+            }],
+            external: false,
+            review_wait_threshold_seconds: None,
+        }],
+    };
+
+    let output = render_review_requests(
+        &view,
+        false,
+        Some(88),
+        PullRequestTableLayout::FitTerminal,
+        &BTreeMap::new(),
+    );
+    let row = output
+        .lines()
+        .find(|line| line.contains("#12"))
+        .expect("review row renders");
+
+    assert_eq!(rendered_visible_width(row), 88);
+    assert!(row.ends_with("example-author "));
+    assert!(row.contains("… [workflow]"));
+    assert!(!row.contains("should shrink first"));
 }
 
 #[test]

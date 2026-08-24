@@ -26,8 +26,16 @@ pub fn pull_request_stack_status_report(
 
 /// Applies repository-specific PR status policy to raw GitHub check and review facts.
 pub fn apply_pull_request_status_policy(
+    status: PullRequestStatusRecord,
+    config: &RepoStackStatusConfig,
+) -> PullRequestStatusRecord {
+    apply_pull_request_status_policy_inner(status, config, true)
+}
+
+fn apply_pull_request_status_policy_inner(
     mut status: PullRequestStatusRecord,
     config: &RepoStackStatusConfig,
+    rewrite_labels: bool,
 ) -> PullRequestStatusRecord {
     status.title = config.rewrite_title(&status.title);
     let label_names = status
@@ -48,6 +56,9 @@ pub fn apply_pull_request_status_policy(
         }
         status.auto_merge_status =
             pull_request_auto_merge_status(&status, config, &label_names, false);
+        if rewrite_labels {
+            rewrite_pull_request_status_labels(&mut status, config);
+        }
         return status;
     }
 
@@ -75,6 +86,9 @@ pub fn apply_pull_request_status_policy(
         &label_names,
         auto_merge_prerequisites_require_action,
     );
+    if rewrite_labels {
+        rewrite_pull_request_status_labels(&mut status, config);
+    }
     status
 }
 
@@ -84,8 +98,11 @@ pub fn apply_review_request_status_policy(
     stack_status_config: &RepoStackStatusConfig,
     review_config: &RepoReviewConfig,
 ) -> PullRequestStatusRecord {
-    let mut status = apply_pull_request_status_policy(status, stack_status_config);
-    if !review_config.ignored_labels.is_empty() || !review_config.hidden_labels.is_empty() {
+    let mut status = apply_pull_request_status_policy_inner(status, stack_status_config, false);
+    if !review_config.ignored_labels.is_empty()
+        || !review_config.ignored_label_patterns.is_empty()
+        || !review_config.hidden_labels.is_empty()
+    {
         status.labels = status
             .labels
             .clone()
@@ -93,12 +110,25 @@ pub fn apply_review_request_status_policy(
             .filter(|label| !review_config.hides_label(&status, &label.name))
             .collect();
     }
+    rewrite_pull_request_status_labels(&mut status, stack_status_config);
     if !review_config.ignored_author_response_comments.is_empty() {
         status
             .reviewer_responses
             .retain(|response| !review_config.ignores_author_response_comment(&response.body_text));
     }
     status
+}
+
+fn rewrite_pull_request_status_labels(
+    status: &mut PullRequestStatusRecord,
+    config: &RepoStackStatusConfig,
+) {
+    if config.label_rewrites.is_empty() {
+        return;
+    }
+    for label in &mut status.labels {
+        label.name = config.rewrite_label(&label.name);
+    }
 }
 
 fn pull_request_auto_merge_status(
@@ -158,6 +188,7 @@ fn apply_ignored_pull_request_status_facts(
             .retain(|check| !config.ignores_check(&check.name));
     }
     if !config.ignored_labels.is_empty()
+        || !config.ignored_label_patterns.is_empty()
         || !config.ignored_labels_when_merged.is_empty()
         || !config.hidden_labels.is_empty()
         || !config.auto_merge_labels.is_empty()

@@ -345,11 +345,13 @@ pub struct RepoStackStatusConfig {
     pub auto_merge_prerequisite_checks: Vec<AutoMergePrerequisiteCheckConfig>,
     pub ignored_checks: Vec<IgnoredCheckConfig>,
     pub ignored_labels: Vec<IgnoredLabelConfig>,
+    pub ignored_label_patterns: Vec<IgnoredLabelPatternConfig>,
     pub ignored_labels_when_merged: Vec<IgnoredLabelConfig>,
     pub hidden_labels: Vec<HiddenLabelConfig>,
     pub auto_merge_labels: Vec<AutoMergeLabelConfig>,
     pub ignored_reviewers: Vec<IgnoredReviewerConfig>,
     pub title_rewrites: Vec<TitleRewriteConfig>,
+    pub label_rewrites: Vec<LabelRewriteConfig>,
     pub review_wait_threshold_seconds: Option<u64>,
 }
 
@@ -362,6 +364,10 @@ impl RepoStackStatusConfig {
         );
         merge_ignored_checks(&mut self.ignored_checks, layer.ignored_checks);
         merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
+        merge_ignored_label_patterns(
+            &mut self.ignored_label_patterns,
+            layer.ignored_label_patterns,
+        );
         merge_ignored_labels(
             &mut self.ignored_labels_when_merged,
             layer.ignored_labels_when_merged,
@@ -370,6 +376,7 @@ impl RepoStackStatusConfig {
         merge_auto_merge_labels(&mut self.auto_merge_labels, layer.auto_merge_labels);
         merge_ignored_reviewers(&mut self.ignored_reviewers, layer.ignored_reviewers);
         self.title_rewrites.extend(layer.title_rewrites);
+        self.label_rewrites.extend(layer.label_rewrites);
         if layer.review_wait_threshold_seconds.is_some() {
             self.review_wait_threshold_seconds = layer.review_wait_threshold_seconds;
         }
@@ -397,11 +404,15 @@ impl RepoStackStatusConfig {
     /// Returns whether a pull-request label should be omitted from stack/review status views.
     pub fn ignores_label(&self, label: &str) -> bool {
         self.ignored_labels.iter().any(|rule| rule.matches(label))
+            || self
+                .ignored_label_patterns
+                .iter()
+                .any(|rule| rule.matches(label))
     }
 
     /// Returns whether a pull-request label should be omitted for the current PR snapshot.
     pub fn hides_label(&self, status: &PullRequestStatusRecord, label: &str) -> bool {
-        self.ignored_labels.iter().any(|rule| rule.matches(label))
+        self.ignores_label(label)
             || (status.merged
                 && self
                     .ignored_labels_when_merged
@@ -448,12 +459,20 @@ impl RepoStackStatusConfig {
             .iter()
             .fold(title.to_owned(), |title, rule| rule.rewrite(&title))
     }
+
+    /// Applies repository-specific label presentation rewrites in configured order.
+    pub fn rewrite_label(&self, label: &str) -> String {
+        self.label_rewrites
+            .iter()
+            .fold(label.to_owned(), |label, rule| rule.rewrite(&label))
+    }
 }
 
 /// Review-request presentation behavior layered on top of shared PR status policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoReviewConfig {
     pub ignored_labels: Vec<IgnoredLabelConfig>,
+    pub ignored_label_patterns: Vec<IgnoredLabelPatternConfig>,
     pub hidden_labels: Vec<HiddenLabelConfig>,
     pub ignored_author_response_comments: Vec<IgnoredAuthorResponseCommentConfig>,
 }
@@ -461,6 +480,10 @@ pub struct RepoReviewConfig {
 impl RepoReviewConfig {
     fn apply_layer(&mut self, layer: RepoReviewConfig) {
         merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
+        merge_ignored_label_patterns(
+            &mut self.ignored_label_patterns,
+            layer.ignored_label_patterns,
+        );
         merge_hidden_labels(&mut self.hidden_labels, layer.hidden_labels);
         merge_ignored_author_response_comments(
             &mut self.ignored_author_response_comments,
@@ -471,11 +494,15 @@ impl RepoReviewConfig {
     /// Returns whether a pull-request label should be omitted from review views only.
     pub fn ignores_label(&self, label: &str) -> bool {
         self.ignored_labels.iter().any(|rule| rule.matches(label))
+            || self
+                .ignored_label_patterns
+                .iter()
+                .any(|rule| rule.matches(label))
     }
 
     /// Returns whether a pull-request label should be omitted for the current PR snapshot.
     pub fn hides_label(&self, status: &PullRequestStatusRecord, label: &str) -> bool {
-        self.ignored_labels.iter().any(|rule| rule.matches(label))
+        self.ignores_label(label)
             || self
                 .hidden_labels
                 .iter()
@@ -517,10 +544,21 @@ pub struct TitleRewriteConfig {
 impl TitleRewriteConfig {
     /// Applies this rewrite once using Rust regex replacement syntax such as `$1`.
     pub fn rewrite(&self, title: &str) -> String {
-        regex::Regex::new(&self.pattern)
-            .ok()
-            .map(|regex| regex.replace(title, self.replace.as_str()).into_owned())
-            .unwrap_or_else(|| title.to_owned())
+        regex_replace(&self.pattern, &self.replace, title)
+    }
+}
+
+/// Regex-based presentation label rewrite applied before rendering label chips.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelRewriteConfig {
+    pub pattern: String,
+    pub replace: String,
+}
+
+impl LabelRewriteConfig {
+    /// Applies this rewrite once using Rust regex replacement syntax such as `$1`.
+    pub fn rewrite(&self, label: &str) -> String {
+        regex_replace(&self.pattern, &self.replace, label)
     }
 }
 
@@ -560,6 +598,19 @@ impl IgnoredLabelConfig {
     /// Returns whether this rule matches a GitHub label name exactly.
     pub fn matches(&self, label_name: &str) -> bool {
         self.name == label_name
+    }
+}
+
+/// Label-name regex hidden from stack/review status presentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredLabelPatternConfig {
+    pub name: String,
+}
+
+impl IgnoredLabelPatternConfig {
+    /// Returns whether this regex matches a GitHub label name.
+    pub fn matches(&self, label_name: &str) -> bool {
+        regex_matches(&self.name, label_name)
     }
 }
 
@@ -653,6 +704,13 @@ fn regex_matches(pattern: &str, value: &str) -> bool {
     regex::Regex::new(pattern)
         .ok()
         .is_some_and(|regex| regex.is_match(value))
+}
+
+fn regex_replace(pattern: &str, replace: &str, value: &str) -> String {
+    regex::Regex::new(pattern)
+        .ok()
+        .map(|regex| regex.replace(value, replace).into_owned())
+        .unwrap_or_else(|| value.to_owned())
 }
 
 /// Reviewer-name regex hidden from stack/review status presentation.
@@ -1201,6 +1259,21 @@ fn merge_ignored_checks(target: &mut Vec<IgnoredCheckConfig>, checks: Vec<Ignore
 }
 
 fn merge_ignored_labels(target: &mut Vec<IgnoredLabelConfig>, labels: Vec<IgnoredLabelConfig>) {
+    let mut seen = target
+        .iter()
+        .map(|label| label.name.clone())
+        .collect::<BTreeSet<_>>();
+    for label in labels {
+        if seen.insert(label.name.clone()) {
+            target.push(label);
+        }
+    }
+}
+
+fn merge_ignored_label_patterns(
+    target: &mut Vec<IgnoredLabelPatternConfig>,
+    labels: Vec<IgnoredLabelPatternConfig>,
+) {
     let mut seen = target
         .iter()
         .map(|label| label.name.clone())

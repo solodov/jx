@@ -73,7 +73,6 @@ impl DashboardTerminalSize {
 
 /// Runs a live terminal dashboard in the alternate screen until the operator exits.
 pub(super) fn run_interactive_dashboard(
-    title: &'static str,
     refresh_seconds: u64,
     loader: DashboardFrameLoader,
 ) -> Result<CommandResult, CommandError> {
@@ -82,23 +81,19 @@ pub(super) fn run_interactive_dashboard(
     let mut watcher = ExecutableWatcher::from_process();
     let mut last_snapshot = None::<DashboardFrameSnapshot>;
     let mut last_frame = None::<String>;
-    let mut last_refreshed = None::<DateTime<Local>>;
-    let mut next_refresh_at = None::<DateTime<Local>>;
     let mut last_error = None::<String>;
 
     loop {
         let receiver = spawn_dashboard_load(Arc::clone(&loader));
         let refresh_started = Instant::now();
         let mut spinner_index = 0usize;
+        let next_refresh_at: Option<DateTime<Local>>;
         render_dashboard_frame(
-            title,
             dashboard_frame_state(
                 last_frame.as_deref(),
-                last_refreshed,
                 true,
                 last_error.as_deref(),
                 spinner_index,
-                next_refresh_at,
             ),
             terminal_size,
         )?;
@@ -114,7 +109,6 @@ pub(super) fn run_interactive_dashboard(
                         Ok(frame) => {
                             last_frame = Some(frame);
                             last_snapshot = Some(snapshot);
-                            last_refreshed = Some(refreshed_at);
                             next_refresh_at =
                                 next_dashboard_refresh_time(refreshed_at, refresh_seconds);
                             last_error = None;
@@ -126,14 +120,11 @@ pub(super) fn run_interactive_dashboard(
                         }
                     }
                     render_dashboard_frame(
-                        title,
                         dashboard_frame_state(
                             last_frame.as_deref(),
-                            last_refreshed,
                             false,
                             last_error.as_deref(),
                             spinner_index,
-                            next_refresh_at,
                         ),
                         terminal_size,
                     )?;
@@ -143,14 +134,11 @@ pub(super) fn run_interactive_dashboard(
                     last_error = Some(error);
                     next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                     render_dashboard_frame(
-                        title,
                         dashboard_frame_state(
                             last_frame.as_deref(),
-                            last_refreshed,
                             false,
                             last_error.as_deref(),
                             spinner_index,
-                            next_refresh_at,
                         ),
                         terminal_size,
                     )?;
@@ -161,14 +149,11 @@ pub(super) fn run_interactive_dashboard(
                     last_error = Some("dashboard refresh worker stopped unexpectedly".to_owned());
                     next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                     render_dashboard_frame(
-                        title,
                         dashboard_frame_state(
                             last_frame.as_deref(),
-                            last_refreshed,
                             false,
                             last_error.as_deref(),
                             spinner_index,
-                            next_refresh_at,
                         ),
                         terminal_size,
                     )?;
@@ -180,14 +165,11 @@ pub(super) fn run_interactive_dashboard(
                 last_error = Some(dashboard_refresh_timeout_error());
                 next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                 render_dashboard_frame(
-                    title,
                     dashboard_frame_state(
                         last_frame.as_deref(),
-                        last_refreshed,
                         false,
                         last_error.as_deref(),
                         spinner_index,
-                        next_refresh_at,
                     ),
                     terminal_size,
                 )?;
@@ -214,14 +196,11 @@ pub(super) fn run_interactive_dashboard(
                 }
             }
             render_dashboard_frame(
-                title,
                 dashboard_frame_state(
                     last_frame.as_deref(),
-                    last_refreshed,
                     true,
                     last_error.as_deref(),
                     spinner_index,
-                    next_refresh_at,
                 ),
                 terminal_size,
             )?;
@@ -249,14 +228,11 @@ pub(super) fn run_interactive_dashboard(
                         &mut last_error,
                     );
                     render_dashboard_frame(
-                        title,
                         dashboard_frame_state(
                             last_frame.as_deref(),
-                            last_refreshed,
                             false,
                             last_error.as_deref(),
                             spinner_index,
-                            next_refresh_at,
                         ),
                         terminal_size,
                     )?;
@@ -377,62 +353,40 @@ fn dashboard_wait_duration(
 
 struct DashboardFrameState<'a> {
     frame: Option<&'a str>,
-    last_refreshed: Option<DateTime<Local>>,
     refreshing: bool,
     error: Option<&'a str>,
     spinner_index: usize,
-    next_refresh_at: Option<DateTime<Local>>,
 }
 
 fn dashboard_frame_state<'a>(
     frame: Option<&'a str>,
-    last_refreshed: Option<DateTime<Local>>,
     refreshing: bool,
     error: Option<&'a str>,
     spinner_index: usize,
-    next_refresh_at: Option<DateTime<Local>>,
 ) -> DashboardFrameState<'a> {
     DashboardFrameState {
         frame,
-        last_refreshed,
         refreshing,
         error,
         spinner_index,
-        next_refresh_at,
     }
 }
 
 fn render_dashboard_frame(
-    title: &str,
     state: DashboardFrameState<'_>,
     terminal_size: DashboardTerminalSize,
 ) -> io::Result<()> {
-    let output = dashboard_frame_text(title, state);
+    let output = dashboard_frame_text(state);
     write_dashboard_screen(&output, terminal_size)
 }
 
-fn dashboard_frame_text(title: &str, state: DashboardFrameState<'_>) -> String {
-    let spinner = SPINNER_FRAMES[state.spinner_index % SPINNER_FRAMES.len()];
-    let refreshed = state
-        .last_refreshed
-        .map(format_dashboard_refresh_time)
-        .unwrap_or_else(|| "never".to_owned());
-    let refresh_state = if state.refreshing {
-        format!("{spinner} refreshing")
-    } else {
-        state
-            .next_refresh_at
-            .map(|time| format!("next refresh: {}", format_dashboard_refresh_time(time)))
-            .unwrap_or_else(|| "next refresh: unknown".to_owned())
-    };
+fn dashboard_frame_text(state: DashboardFrameState<'_>) -> String {
     let mut output = String::new();
-    output.push_str(&format!(
-        "{title}  Last refreshed: {refreshed}  {refresh_state}\n"
-    ));
     if let Some(error) = state.error {
-        output.push_str(&format!("Last refresh failed: {error}\n"));
-    } else {
-        output.push('\n');
+        output.push_str(&format!("Last refresh failed: {error}\n\n"));
+    } else if state.frame.is_none() && state.refreshing {
+        let spinner = SPINNER_FRAMES[state.spinner_index % SPINNER_FRAMES.len()];
+        output.push_str(&format!("{spinner} refreshing\n"));
     }
     if let Some(frame) = state.frame {
         output.push_str(frame);
@@ -459,10 +413,6 @@ fn clipped_dashboard_lines(output: &str, terminal_size: DashboardTerminalSize) -
         .take(terminal_size.height)
         .map(|line| ellipsize_rendered_line(line.trim_end_matches('\r'), Some(terminal_size.width)))
         .collect()
-}
-
-fn format_dashboard_refresh_time(time: DateTime<Local>) -> String {
-    time.format("%Y-%m-%d %H:%M").to_string()
 }
 
 struct DashboardTerminalSession {
@@ -637,11 +587,29 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_refresh_time_format_omits_seconds() {
-        assert_eq!(
-            format_dashboard_refresh_time(local_test_time_at(12, 2, 15)),
-            "2026-01-15 12:02"
-        );
+    fn dashboard_frame_text_omits_persistent_refresh_header() {
+        let text = dashboard_frame_text(dashboard_frame_state(Some("repo rows\n"), false, None, 0));
+
+        assert_eq!(text, "repo rows\n");
+    }
+
+    #[test]
+    fn dashboard_frame_text_shows_initial_refresh_until_frame_exists() {
+        let text = dashboard_frame_text(dashboard_frame_state(None, true, None, 0));
+
+        assert_eq!(text, "⠋ refreshing\n");
+    }
+
+    #[test]
+    fn dashboard_frame_text_keeps_refresh_errors_visible() {
+        let text = dashboard_frame_text(dashboard_frame_state(
+            Some("cached rows\n"),
+            false,
+            Some("network down"),
+            0,
+        ));
+
+        assert_eq!(text, "Last refresh failed: network down\n\ncached rows\n");
     }
 
     #[test]

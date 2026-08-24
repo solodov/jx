@@ -79,7 +79,7 @@ fn run_review_dashboard(
         load_review_dashboard_snapshot(loader_request.clone(), &environment)
             .map_err(|error| error.to_string())
     });
-    run_interactive_dashboard("jx review", request.refresh_seconds, loader)
+    run_interactive_dashboard(request.refresh_seconds, loader)
 }
 
 fn load_review_dashboard_snapshot(
@@ -107,6 +107,7 @@ fn load_review_dashboard_snapshot(
                 &loaded.view,
                 options.color,
                 options.terminal_width,
+                PullRequestTableLayout::FitTerminal,
                 &loaded.display_names,
             ))
         }))
@@ -189,6 +190,7 @@ fn handle_review_traced(
                 &loaded.view,
                 output.color,
                 output.terminal_width,
+                PullRequestTableLayout::Flow,
                 &loaded.display_names,
             ),
             ReviewFormat::Json => render_review_requests_json(&loaded.view, &loaded.display_names),

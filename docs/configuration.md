@@ -225,9 +225,9 @@ Stack status and review views can classify repository-specific approval gate
 checks separately from test health, highlight stale review wait time, omit noisy
 checks, stack-status labels, or reviewer identities, report label-driven
 auto-merge state, hide pre-merge-only labels after merge, and rewrite title
-prefixes before display ellipsizing. Review views can also omit review-only
-labels without affecting stack status, and ignore command-style author comments
-that should not resurface dismissed reviews.
+prefixes or label names before display rendering. Review views can also omit
+review-only labels without affecting stack status, and ignore command-style
+author comments that should not resurface dismissed reviews.
 Matching review-gate checks are removed from the `Chk` aggregate and drive the
 review state instead:
 all configured gate regexes must have passing matching checks for the PR to render
@@ -241,11 +241,15 @@ make armed auto-merge render as waiting for manual prerequisites instead of as a
 test failure. Remaining checks still decide whether `Chk` is passing, pending, or
 failing. Review-wait thresholds accept `m`, `h`, or `d` suffixes; fresh waits
 render subdued, overdue waits render red, drafts stay subdued, and merged PRs
-stay green. Check ignore, review-gate, auto-merge prerequisite, and reviewer
-entries are Rust regexes. Label entries are exact names; `auto_merge_labels` and
-`hidden_labels` add snapshot-backed `when` conditions such as `ALWAYS`,
-`NOT_DRAFT`, `MERGED`, and `TARGETS_DEFAULT_BRANCH`. Configured auto-merge labels are hidden from label
-chips; matching non-draft open PRs show `◎` when armed, matching armed PRs with
+stay green. Check ignore, review-gate, auto-merge prerequisite,
+`ignored_label_patterns`, and reviewer entries are Rust regexes. Label entries
+are exact names; `auto_merge_labels` and `hidden_labels` add snapshot-backed
+`when` conditions such as `ALWAYS`, `NOT_DRAFT`, `MERGED`, and
+`TARGETS_DEFAULT_BRANCH`. Stack-status `label_rewrites` are regex replacements
+applied after label filtering and before chip rendering, and review views inherit
+them through the shared stack-status policy. Configured auto-merge labels are
+hidden from label chips; matching non-draft open PRs show `◎` when armed,
+matching armed PRs with
 non-passing prerequisites show an orange `◈`, and otherwise-ready matching PRs
 show an orange `◆` to indicate that auto-merge is not armed. Existing
 `ignored_labels` entries are unconditional hides, and
@@ -258,8 +262,8 @@ conditions are `ALWAYS`, `DRAFT`, `NOT_DRAFT`, `OPEN`, `CLOSED`, `MERGED`,
 against PR-author comment bodies before dismissal resurfacing. Local review
 visibility state lives in the shared pull-request store; `review-dismissals.toml`
 is no longer read. See [review management](review-management.md) for dismissal,
-audit-log, and store behavior. Title rewrites use Rust regex capture
-replacements:
+audit-log, and store behavior. Title and label rewrites use Rust regex capture
+replacements in configured order:
 
 ```toml
 [[repo.rules]]
@@ -268,10 +272,11 @@ repo = "example-owner/example-repo"
 [repo.rules.stack_status]
 ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
 ignored_labels = ["generated-noise"]
-ignored_labels_when_merged = ["auto-merge", "run-ci"]
+ignored_label_patterns = ["^category: .*"]
+ignored_labels_when_merged = ["auto-merge", "bot-trigger"]
 auto_merge_labels = ["auto-merge"]
 hidden_labels = [
-  { label = "run-ci", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
+  { label = "bot-trigger", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
 ignored_reviewers = ["^automation-bot$", "-bot$"]
 review_gate_checks = ["^approval gate$"]
@@ -281,6 +286,7 @@ review_wait_threshold = "4h"
 [repo.rules.review]
 ignored_author_response_comments = ["^/automation merge\\s*$"]
 ignored_labels = ["team-review"]
+ignored_label_patterns = ["^review-only-category: .*"]
 hidden_labels = [
   { label = "review-only-noise", when = ["ALWAYS"] },
 ]
@@ -288,6 +294,18 @@ hidden_labels = [
 [[repo.rules.stack_status.title_rewrites]]
 pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
 replace = "$1: $2"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^(?:feat|fix)\\([^)]+\\):\\s+(.+)$"
+replace = "$1"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^(.+?)\\s+(?:\\(|\\[)([A-Z][A-Z0-9]+-[0-9]+)(?:\\)|\\])(\\s+\\[[0-9]+/[0-9]+\\])?$"
+replace = "$2: $1$3"
+
+[[repo.rules.stack_status.label_rewrites]]
+pattern = "^workflow-setting-change$"
+replace = "workflow"
 ```
 
 Event handlers run configured PR automation while `jx stack publish` prepares,

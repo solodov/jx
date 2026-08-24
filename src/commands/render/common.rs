@@ -21,6 +21,66 @@ pub(in crate::commands) fn render_plain_output(
     String::from_utf8(output).expect("command output is UTF-8")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::commands) enum PullRequestTableLayout {
+    Flow,
+    FitTerminal,
+}
+
+pub(in crate::commands) fn render_elastic_table_row(
+    prefix: &str,
+    title: &str,
+    suffix: &str,
+    right: &str,
+    terminal_width: Option<usize>,
+) -> String {
+    let Some(terminal_width) = terminal_width else {
+        return flow_table_row(prefix, title, suffix, right);
+    };
+
+    let prefix_width = rendered_visible_width(prefix);
+    let suffix_width = rendered_visible_width(suffix);
+    let title_suffix_gap = usize::from(!suffix.is_empty());
+    let right_gap = usize::from(!right.is_empty()) * 2;
+    let right_width = rendered_visible_width(right);
+    let right_margin = usize::from(!right.is_empty());
+    let title_width = terminal_width.saturating_sub(
+        prefix_width + title_suffix_gap + suffix_width + right_gap + right_width + right_margin,
+    );
+    let title = ellipsize_rendered_line(title, Some(title_width));
+
+    let title_suffix_gap = if suffix.is_empty() { "" } else { " " };
+    let left = format!("{prefix}{title}{title_suffix_gap}{suffix}");
+    if right.is_empty() {
+        return ellipsize_rendered_line(&left, Some(terminal_width));
+    }
+
+    let used_width = rendered_visible_width(&left) + right_width + right_margin;
+    let gap = terminal_width.saturating_sub(used_width);
+    let line = format!(
+        "{left}{}{right}{}",
+        " ".repeat(gap),
+        " ".repeat(right_margin)
+    );
+    ellipsize_rendered_line(&line, Some(terminal_width))
+}
+
+pub(in crate::commands) fn flow_table_row(
+    prefix: &str,
+    title: &str,
+    suffix: &str,
+    right: &str,
+) -> String {
+    let mut parts = vec![title.to_owned()];
+    if !suffix.is_empty() {
+        parts.push(suffix.to_owned());
+    }
+    if !right.is_empty() {
+        parts.push(right.to_owned());
+    }
+    format!("{prefix}{}", parts.join(" "))
+}
+
 pub(in crate::commands) fn ellipsize_rendered_line(line: &str, max_width: Option<usize>) -> String {
     let Some(max_width) = max_width else {
         return line.to_owned();
@@ -117,4 +177,40 @@ fn osc8_open_state(sequence: &str) -> Option<bool> {
         .or_else(|| body.strip_suffix('\x07'))?;
     let payload = body.strip_prefix("8;;")?;
     Some(!payload.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elastic_table_row_shrinks_title_before_right_metadata() {
+        let row = render_elastic_table_row(
+            "  #12      ✓    ?    <1h   ",
+            "Implement a very long synthetic pull request title",
+            "[workflow]",
+            "Example Reviewer",
+            Some(72),
+        );
+
+        assert_eq!(rendered_visible_width(&row), 72);
+        assert!(row.ends_with("Example Reviewer "));
+        assert!(row.contains("… [workflow]"));
+        assert!(!row.contains("request title"));
+    }
+
+    #[test]
+    fn elastic_table_row_right_aligns_metadata_when_title_fits() {
+        let row = render_elastic_table_row(
+            "  #12      ✓    ?    <1h   ",
+            "Short title",
+            "[workflow]",
+            "Example Reviewer",
+            Some(72),
+        );
+
+        assert_eq!(rendered_visible_width(&row), 72);
+        assert!(row.ends_with("Example Reviewer "));
+        assert!(row.contains("Short title [workflow]"));
+    }
 }

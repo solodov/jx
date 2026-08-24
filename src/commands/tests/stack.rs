@@ -226,6 +226,12 @@ fn stack_status_renders_check_and_review_summary() {
             "example-owner/example-repo"
         )
     )));
+    let status_lines = result.stdout.lines().collect::<Vec<_>>();
+    let repository_header_index = status_lines
+        .iter()
+        .position(|line| line.contains("example-owner/example-repo"))
+        .expect("repository header renders");
+    assert!(status_lines[repository_header_index + 1].starts_with("PR       Chk"));
     assert!(result.stdout.contains("(origin/main behind)"));
     assert!(result.stdout.contains("PR       Chk  Rev  Lag   Title"));
     assert!(result.stdout.contains(&format!(
@@ -2610,18 +2616,32 @@ path = "{repo}"
     .expect("beta stack metadata writes");
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let services = FakeServices {
-        pull_request_statuses: BTreeMap::from([(
-            201,
-            stack_status_record(
+        pull_request_statuses: BTreeMap::from([
+            (
                 201,
-                "Alpha change",
-                "topic/alpha",
-                "main",
-                PullRequestCheckStatus::Passing,
-                PullRequestReviewStatus::Approved,
-                ReviewerSelection::default(),
+                stack_status_record(
+                    201,
+                    "Alpha change",
+                    "topic/alpha",
+                    "main",
+                    PullRequestCheckStatus::Passing,
+                    PullRequestReviewStatus::Approved,
+                    ReviewerSelection::default(),
+                ),
             ),
-        )]),
+            (
+                202,
+                stack_status_record(
+                    202,
+                    "Beta change",
+                    "topic/beta",
+                    "main",
+                    PullRequestCheckStatus::Pending,
+                    PullRequestReviewStatus::ReviewRequested,
+                    ReviewerSelection::default(),
+                ),
+            ),
+        ]),
         ..FakeServices::default()
     };
 
@@ -2634,12 +2654,37 @@ path = "{repo}"
 
     assert!(!result.stdout.contains("Stack status:"));
     assert!(result.stdout.contains("api-alpha"));
+    let status_lines = result.stdout.lines().collect::<Vec<_>>();
+    let repository_header_index = status_lines
+        .iter()
+        .position(|line| line.contains("api-alpha"))
+        .expect("repository header renders");
+    assert!(status_lines[repository_header_index + 1].starts_with("  PR       Chk"));
     assert!(result.stdout.contains("Alpha change"));
     assert!(!result.stdout.contains("web-beta"));
     assert_eq!(
         services.pull_request_status_calls.borrow().as_slice(),
         &[vec![201]]
     );
+
+    let unfiltered =
+        run_with_args_and_services(["jx", "stack", "status", "-a"], &environment, &services)
+            .expect("global stack status succeeds");
+    let status_lines = unfiltered.stdout.lines().collect::<Vec<_>>();
+    let alpha_header_index = status_lines
+        .iter()
+        .position(|line| line.contains("api-alpha"))
+        .expect("alpha repository header renders");
+    let beta_header_index = status_lines
+        .iter()
+        .position(|line| line.contains("web-beta"))
+        .expect("beta repository header renders");
+    assert!(status_lines[alpha_header_index + 1].starts_with("  PR       Chk"));
+    assert!(status_lines[alpha_header_index + 2].contains("Alpha change"));
+    assert_eq!(status_lines[alpha_header_index + 3], "");
+    assert_eq!(beta_header_index, alpha_header_index + 4);
+    assert!(status_lines[beta_header_index + 1].starts_with("  PR       Chk"));
+    assert!(status_lines[beta_header_index + 2].contains("Beta change"));
 }
 
 #[test]

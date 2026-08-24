@@ -776,11 +776,13 @@ fn parse_stack_status_config(
                 | "auto_merge_prerequisite_checks"
                 | "ignored_checks"
                 | "ignored_labels"
+                | "ignored_label_patterns"
                 | "ignored_labels_when_merged"
                 | "hidden_labels"
                 | "auto_merge_labels"
                 | "ignored_reviewers"
                 | "title_rewrites"
+                | "label_rewrites"
                 | "review_wait_threshold"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
@@ -816,6 +818,13 @@ fn parse_stack_status_config(
         .map(|value| parse_ignored_labels(file, &format!("{key}.ignored_labels"), value))
         .transpose()?
         .unwrap_or_default();
+    let ignored_label_patterns = table
+        .get("ignored_label_patterns")
+        .map(|value| {
+            parse_ignored_label_patterns(file, &format!("{key}.ignored_label_patterns"), value)
+        })
+        .transpose()?
+        .unwrap_or_default();
     let ignored_labels_when_merged = table
         .get("ignored_labels_when_merged")
         .map(|value| {
@@ -843,6 +852,11 @@ fn parse_stack_status_config(
         .map(|value| parse_title_rewrites(file, &format!("{key}.title_rewrites"), value))
         .transpose()?
         .unwrap_or_default();
+    let label_rewrites = table
+        .get("label_rewrites")
+        .map(|value| parse_label_rewrites(file, &format!("{key}.label_rewrites"), value))
+        .transpose()?
+        .unwrap_or_default();
     let review_wait_threshold_seconds = table
         .get("review_wait_threshold")
         .map(|value| {
@@ -855,11 +869,13 @@ fn parse_stack_status_config(
         auto_merge_prerequisite_checks,
         ignored_checks,
         ignored_labels,
+        ignored_label_patterns,
         ignored_labels_when_merged,
         hidden_labels,
         auto_merge_labels,
         ignored_reviewers,
         title_rewrites,
+        label_rewrites,
         review_wait_threshold_seconds,
     })
 }
@@ -879,7 +895,10 @@ fn parse_review_config(
     for name in table.keys() {
         if !matches!(
             name.as_str(),
-            "ignored_labels" | "hidden_labels" | "ignored_author_response_comments"
+            "ignored_labels"
+                | "ignored_label_patterns"
+                | "hidden_labels"
+                | "ignored_author_response_comments"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -891,6 +910,13 @@ fn parse_review_config(
     let ignored_labels = table
         .get("ignored_labels")
         .map(|value| parse_ignored_labels(file, &format!("{key}.ignored_labels"), value))
+        .transpose()?
+        .unwrap_or_default();
+    let ignored_label_patterns = table
+        .get("ignored_label_patterns")
+        .map(|value| {
+            parse_ignored_label_patterns(file, &format!("{key}.ignored_label_patterns"), value)
+        })
         .transpose()?
         .unwrap_or_default();
     let hidden_labels = table
@@ -912,6 +938,7 @@ fn parse_review_config(
 
     Ok(RepoReviewConfig {
         ignored_labels,
+        ignored_label_patterns,
         hidden_labels,
         ignored_author_response_comments,
     })
@@ -1005,6 +1032,56 @@ fn parse_title_rewrite(
     index: usize,
     value: &toml::Value,
 ) -> Result<TitleRewriteConfig, RepositoryError> {
+    let rewrite = parse_rewrite_rule(file, key, index, value)?;
+    Ok(TitleRewriteConfig {
+        pattern: rewrite.pattern,
+        replace: rewrite.replace,
+    })
+}
+
+fn parse_label_rewrites(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<LabelRewriteConfig>, RepositoryError> {
+    let Some(rules) = value.as_array() else {
+        return Err(RepositoryError::InvalidConfig {
+            file: file.to_owned(),
+            message: format!("`{key}` must be an array of tables"),
+        });
+    };
+
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_label_rewrite(file, key, index, value))
+        .collect()
+}
+
+fn parse_label_rewrite(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<LabelRewriteConfig, RepositoryError> {
+    let rewrite = parse_rewrite_rule(file, key, index, value)?;
+    Ok(LabelRewriteConfig {
+        pattern: rewrite.pattern,
+        replace: rewrite.replace,
+    })
+}
+
+struct ParsedRewriteRule {
+    pattern: String,
+    replace: String,
+}
+
+fn parse_rewrite_rule(
+    file: &str,
+    key: &str,
+    index: usize,
+    value: &toml::Value,
+) -> Result<ParsedRewriteRule, RepositoryError> {
     let Some(table) = value.as_table() else {
         return Err(RepositoryError::InvalidConfig {
             file: file.to_owned(),
@@ -1029,7 +1106,7 @@ fn parse_title_rewrite(
     })?;
     let replace = required_non_empty_string(file, table, &format!("{key}[{index}].replace"))?;
 
-    Ok(TitleRewriteConfig { pattern, replace })
+    Ok(ParsedRewriteRule { pattern, replace })
 }
 
 fn parse_ignored_checks(
@@ -1054,6 +1131,19 @@ fn parse_ignored_labels(
         rules
             .into_iter()
             .map(|name| IgnoredLabelConfig { name })
+            .collect()
+    })
+}
+
+fn parse_ignored_label_patterns(
+    file: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<Vec<IgnoredLabelPatternConfig>, RepositoryError> {
+    parse_named_regex_rules(file, key, value, "label-name regex").map(|rules| {
+        rules
+            .into_iter()
+            .map(|name| IgnoredLabelPatternConfig { name })
             .collect()
     })
 }

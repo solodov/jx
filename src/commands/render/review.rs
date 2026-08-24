@@ -56,6 +56,7 @@ pub(in crate::commands) fn render_review_requests(
     view: &ReviewRequestsView,
     color: bool,
     terminal_width: Option<usize>,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
 ) -> String {
     let mut output = String::new();
@@ -83,6 +84,7 @@ pub(in crate::commands) fn render_review_requests(
                 &view.viewer,
                 color,
                 terminal_width,
+                layout,
                 display_names,
             ));
             output.push('\n');
@@ -435,6 +437,7 @@ fn review_request_row(
     viewer: &str,
     color: bool,
     terminal_width: Option<usize>,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
 ) -> String {
     let row_color = color;
@@ -474,20 +477,31 @@ fn review_request_row(
         row_style,
     );
     let lag = render_review_lag_cell(&lag, color && !on_ice, row_style, false, row.status.draft);
-    let title = review_request_title(row, row_color, display_names);
+    let title = review_request_title(row, row_color, layout, display_names);
     let pr_padding = " ".repeat(
         PULL_REQUEST_STATUS_PR_WIDTH.saturating_sub(format!("#{}", row.status.number).len()),
     );
-    let line = format!(
-        "  {pr}{pr_padding}  {check}    {state}    {lag}  {title}",
+    let prefix = format!(
+        "  {pr}{pr_padding}  {check}    {state}    {lag}  ",
         pr = pr,
         pr_padding = pr_padding,
         check = check,
         state = state,
         lag = lag,
-        title = title,
     );
-    let line = ellipsize_rendered_line(&line, terminal_width);
+    let line = match layout {
+        PullRequestTableLayout::Flow => ellipsize_rendered_line(
+            &flow_table_row(&prefix, &title.title, &title.suffix, &title.right),
+            terminal_width,
+        ),
+        PullRequestTableLayout::FitTerminal => render_elastic_table_row(
+            &prefix,
+            &title.title,
+            &title.suffix,
+            &title.right,
+            terminal_width,
+        ),
+    };
     if row_style.is_empty() {
         line
     } else {
@@ -611,31 +625,38 @@ fn review_request_label_chips(row: &ReviewRequestRowView, color: bool) -> Vec<St
     pull_request_label_chips(&labels, color, row.status.draft)
 }
 
+struct ReviewRequestTitleParts {
+    title: String,
+    suffix: String,
+    right: String,
+}
+
 fn review_request_title(
     row: &ReviewRequestRowView,
     color: bool,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
-) -> String {
+) -> ReviewRequestTitleParts {
     let status = &row.status;
-    let title = ellipsize_pull_request_title(&status.title);
-    let mut parts = vec![pull_request_node_title_with_restore(
-        Some(status),
-        status.draft,
-        &title,
-        color,
-        "",
-    )];
+    let title = match layout {
+        PullRequestTableLayout::Flow => ellipsize_pull_request_title(&status.title),
+        PullRequestTableLayout::FitTerminal => status.title.clone(),
+    };
+    let title = pull_request_node_title_with_restore(Some(status), status.draft, &title, color, "");
     if review_request_is_on_ice(status) {
-        return parts.join(" ");
+        return ReviewRequestTitleParts {
+            title,
+            suffix: String::new(),
+            right: String::new(),
+        };
     }
     let label_chips = review_request_label_chips(row, color);
-    if !label_chips.is_empty() {
-        parts.push(label_chips.join(pull_request_label_separator(color)));
+    let author = review_request_author_token(status, color, display_names);
+    ReviewRequestTitleParts {
+        title,
+        suffix: label_chips.join(pull_request_label_separator(color)),
+        right: author.unwrap_or_default(),
     }
-    if let Some(author) = review_request_author_token(status, color, display_names) {
-        parts.push(author);
-    }
-    parts.join(" ")
 }
 
 fn review_request_author_token(

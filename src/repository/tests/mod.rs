@@ -1132,6 +1132,7 @@ fn stack_status_review_gate_checks_compose_for_matching_repo() {
 [repo.stack_status]
 ignored_checks = ["^global-noise-check$"]
 ignored_labels = ["global-noise"]
+ignored_label_patterns = ["^global-category: .*"]
 ignored_labels_when_merged = ["global-merge-noise"]
 hidden_labels = [
   { label = "global-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
@@ -1148,12 +1149,17 @@ review_wait_threshold = "8h"
 pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
 replace = "$1: $2"
 
+[[repo.stack_status.label_rewrites]]
+pattern = "^global-long-label$"
+replace = "global-short"
+
 [[repo.rules]]
 repo = "example-owner/*"
 
 [repo.rules.stack_status]
 ignored_checks = ["^repo-noise-check.*"]
 ignored_labels = ["repo-noise-label"]
+ignored_label_patterns = ["^repo-category: .*"]
 ignored_labels_when_merged = ["repo-merge-noise-label"]
 hidden_labels = [
   { label = "repo-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
@@ -1169,6 +1175,18 @@ review_wait_threshold = "4h"
 [[repo.rules.stack_status.title_rewrites]]
 pattern = "^Draft: (.+)$"
 replace = "$1"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^(?:feat|fix)\\([^)]+\\):\\s+(.+)$"
+replace = "$1"
+
+[[repo.rules.stack_status.title_rewrites]]
+pattern = "^(.+?)\\s+(?:\\(|\\[)([A-Z][A-Z0-9]+-[0-9]+)(?:\\)|\\])(\\s+\\[[0-9]+/[0-9]+\\])?$"
+replace = "$2: $1$3"
+
+[[repo.rules.stack_status.label_rewrites]]
+pattern = "^repo-long-label$"
+replace = "repo-short"
 "#,
     );
     let environment = RuntimeEnvironment::new(workspace.path(), []);
@@ -1204,6 +1222,8 @@ replace = "$1"
     assert!(stack_status.ignores_check("repo-noise-check-required"));
     assert!(stack_status.ignores_label("global-noise"));
     assert!(stack_status.ignores_label("repo-noise-label"));
+    assert!(stack_status.ignores_label("global-category: chore"));
+    assert!(stack_status.ignores_label("repo-category: feature"));
     assert!(stack_status.ignores_label_when_merged("global-merge-noise"));
     assert!(stack_status.ignores_label_when_merged("repo-merge-noise-label"));
     assert_eq!(
@@ -1253,6 +1273,15 @@ replace = "$1"
         stack_status.rewrite_title("Draft: Update endpoint"),
         "Update endpoint"
     );
+    assert_eq!(
+        stack_status.rewrite_title("feat(scope): Add synthetic operation (TASK-123) [1/3]"),
+        "TASK-123: Add synthetic operation [1/3]"
+    );
+    assert_eq!(
+        stack_status.rewrite_label("global-long-label"),
+        "global-short"
+    );
+    assert_eq!(stack_status.rewrite_label("repo-long-label"), "repo-short");
 }
 
 #[test]
@@ -1288,6 +1317,7 @@ ignored_labels = ["stack-noise"]
 
 [repo.review]
 ignored_labels = ["global-review-noise"]
+ignored_label_patterns = ["^global-review-category: .*"]
 hidden_labels = [
   { label = "global-review-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
@@ -1298,6 +1328,7 @@ repo = "example-owner/*"
 
 [repo.rules.review]
 ignored_labels = ["repo-review-noise-extra"]
+ignored_label_patterns = ["^repo-review-category: .*"]
 hidden_labels = [
   { label = "repo-review-ready", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
 ]
@@ -1315,6 +1346,8 @@ ignored_author_response_comments = ["^/repo command$"]
     assert!(!stack_status.ignores_label("repo-review-noise-extra"));
     assert!(review.ignores_label("global-review-noise"));
     assert!(review.ignores_label("repo-review-noise-extra"));
+    assert!(review.ignores_label("global-review-category: chore"));
+    assert!(review.ignores_label("repo-review-category: feature"));
     assert_eq!(
         review.hidden_labels,
         vec![

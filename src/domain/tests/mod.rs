@@ -592,6 +592,7 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
                 name: "generated-noise".to_owned(),
             }],
+            ignored_label_patterns: Vec::new(),
             ignored_labels_when_merged: Vec::new(),
             hidden_labels: Vec::new(),
             auto_merge_labels: Vec::new(),
@@ -604,6 +605,7 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
                 },
             ],
             title_rewrites: Vec::new(),
+            label_rewrites: Vec::new(),
             review_wait_threshold_seconds: None,
         },
     );
@@ -642,6 +644,56 @@ fn pull_request_status_policy_filters_ignored_labels_and_reviewers() {
 }
 
 #[test]
+fn pull_request_status_policy_hides_label_patterns_and_rewrites_labels() {
+    // Verifies: shared stack/review label presentation can hide regex-matched labels and shorten noisy label names.
+    let mut status = pull_request_status(34, "Label policy", false);
+    status.labels = vec![
+        crate::github::PullRequestLabel {
+            name: "workflow-setting-change".to_owned(),
+            color: "0e8a16".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "category: chore".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "bot-trigger".to_owned(),
+            color: "fbca04".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "kept".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+    ];
+
+    let filtered = apply_pull_request_status_policy(
+        status,
+        &crate::repository::RepoStackStatusConfig {
+            ignored_labels: vec![crate::repository::IgnoredLabelConfig {
+                name: "bot-trigger".to_owned(),
+            }],
+            ignored_label_patterns: vec![crate::repository::IgnoredLabelPatternConfig {
+                name: "^category: .*".to_owned(),
+            }],
+            label_rewrites: vec![crate::repository::LabelRewriteConfig {
+                pattern: "^workflow-setting-change$".to_owned(),
+                replace: "workflow".to_owned(),
+            }],
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        filtered
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .collect::<Vec<_>>(),
+        ["workflow", "kept"]
+    );
+}
+
+#[test]
 fn review_request_status_policy_filters_review_only_labels() {
     // Verifies: jx review can hide extra labels without mutating stack status policy.
     let mut status = pull_request_status(31, "Review facts", false);
@@ -656,6 +708,14 @@ fn review_request_status_policy_filters_review_only_labels() {
         },
         crate::github::PullRequestLabel {
             name: "review-noise".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "review-generated: bot".to_owned(),
+            color: "5319e7".to_owned(),
+        },
+        crate::github::PullRequestLabel {
+            name: "workflow-setting-change".to_owned(),
             color: "5319e7".to_owned(),
         },
     ];
@@ -678,11 +738,18 @@ fn review_request_status_policy_filters_review_only_labels() {
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
                 name: "stack-noise".to_owned(),
             }],
+            label_rewrites: vec![crate::repository::LabelRewriteConfig {
+                pattern: "^workflow-setting-change$".to_owned(),
+                replace: "workflow".to_owned(),
+            }],
             ..Default::default()
         },
         &crate::repository::RepoReviewConfig {
             ignored_labels: vec![crate::repository::IgnoredLabelConfig {
                 name: "review-noise".to_owned(),
+            }],
+            ignored_label_patterns: vec![crate::repository::IgnoredLabelPatternConfig {
+                name: "^review-generated:".to_owned(),
             }],
             hidden_labels: Vec::new(),
             ignored_author_response_comments: vec![
@@ -699,7 +766,7 @@ fn review_request_status_policy_filters_review_only_labels() {
             .iter()
             .map(|label| label.name.as_str())
             .collect::<Vec<_>>(),
-        ["useful-signal"]
+        ["useful-signal", "workflow"]
     );
     assert_eq!(filtered.reviewer_responses.len(), 1);
     assert_eq!(
@@ -929,6 +996,7 @@ fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
         auto_merge_prerequisite_checks: Vec::new(),
         ignored_checks: Vec::new(),
         ignored_labels: Vec::new(),
+        ignored_label_patterns: Vec::new(),
         ignored_labels_when_merged: vec![crate::repository::IgnoredLabelConfig {
             name: "run-ci".to_owned(),
         }],
@@ -936,6 +1004,7 @@ fn pull_request_status_policy_filters_merged_only_labels_after_merge() {
         auto_merge_labels: Vec::new(),
         ignored_reviewers: Vec::new(),
         title_rewrites: Vec::new(),
+        label_rewrites: Vec::new(),
         review_wait_threshold_seconds: None,
     };
 

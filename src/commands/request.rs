@@ -1915,7 +1915,7 @@ fn dashboard_interactive_arg() -> Arg {
         .short('i')
         .long("interactive")
         .action(ArgAction::SetTrue)
-        .help("Continuously refresh this dashboard until interrupted")
+        .help("Continuously refresh this dashboard until interrupted (default: every 5 minutes)")
 }
 
 fn dashboard_refresh_seconds_arg() -> Arg {
@@ -1924,7 +1924,7 @@ fn dashboard_refresh_seconds_arg() -> Arg {
         .value_name("SECONDS")
         .default_value("300")
         .value_parser(clap::value_parser!(u64).range(1..))
-        .help("Seconds between interactive dashboard refreshes")
+        .help("Seconds between interactive dashboard refreshes (default: 300)")
 }
 
 fn dashboard_refresh_seconds(matches: &ArgMatches) -> Result<u64, clap::Error> {

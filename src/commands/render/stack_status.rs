@@ -34,6 +34,7 @@ pub(in crate::commands) fn render_stack_status(
     current_dir: &Path,
     color: bool,
     terminal_width: Option<usize>,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
 ) -> Result<String, JjError> {
     Ok(render_plain_output(|formatter| {
@@ -48,9 +49,15 @@ pub(in crate::commands) fn render_stack_status(
                 color,
             )
         )?;
-        writeln!(formatter)?;
-        let _ =
-            write_stack_status_report(formatter, report, color, 0, terminal_width, display_names)?;
+        let _ = write_stack_status_report(
+            formatter,
+            report,
+            color,
+            0,
+            terminal_width,
+            layout,
+            display_names,
+        )?;
         Ok(())
     }))
 }
@@ -61,6 +68,7 @@ pub(in crate::commands) fn render_global_stack_status(
     current_dir: &Path,
     color: bool,
     terminal_width: Option<usize>,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
 ) -> Result<String, JjError> {
     let _ = current_dir;
@@ -95,13 +103,13 @@ pub(in crate::commands) fn render_global_stack_status(
             )?;
             match &entry.result {
                 Ok(report) => {
-                    writeln!(formatter)?;
                     let _ = write_stack_status_report(
                         formatter,
                         report,
                         color,
                         2,
                         terminal_width,
+                        layout,
                         display_names,
                     )?;
                 }
@@ -134,6 +142,7 @@ fn write_stack_status_report(
     color: bool,
     indent: usize,
     terminal_width: Option<usize>,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
 ) -> io::Result<bool> {
     let indent = " ".repeat(indent);
@@ -143,7 +152,7 @@ fn write_stack_status_report(
         return Ok(false);
     }
 
-    let rows = stack_status_table_rows(report, &visible_snapshot, color, display_names);
+    let rows = stack_status_table_rows(report, &visible_snapshot, color, layout, display_names);
     let pr_width = rows
         .iter()
         .map(|row| row.pr_visible_width)
@@ -167,11 +176,23 @@ fn write_stack_status_report(
             row.merged,
             row.draft,
         );
-        let line = format!(
-            "{indent}{}{}  {}    {}    {}  {}",
-            row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, review_lag, row.title,
+        let prefix = format!(
+            "{indent}{}{}  {}    {}    {}  ",
+            row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, review_lag,
         );
-        let line = ellipsize_rendered_line(&line, terminal_width);
+        let line = match layout {
+            PullRequestTableLayout::Flow => ellipsize_rendered_line(
+                &flow_table_row(&prefix, &row.title, &row.suffix, &row.right),
+                terminal_width,
+            ),
+            PullRequestTableLayout::FitTerminal => render_elastic_table_row(
+                &prefix,
+                &row.title,
+                &row.suffix,
+                &row.right,
+                terminal_width,
+            ),
+        };
         writeln!(formatter, "{}", style_stack_status_row(line, row.style))?;
     }
     Ok(true)
@@ -184,6 +205,8 @@ struct StackStatusTableRow {
     review_symbol: String,
     review_lag: ReviewLagCell,
     title: String,
+    suffix: String,
+    right: String,
     draft: bool,
     merged: bool,
     closed: bool,
@@ -194,6 +217,7 @@ fn stack_status_table_rows(
     report: &PullRequestStackStatusReport,
     snapshot: &PullRequestStackSnapshot,
     color: bool,
+    layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
 ) -> Vec<StackStatusTableRow> {
     snapshot
@@ -211,6 +235,16 @@ fn stack_status_table_rows(
             let pr_cell = stack_status_pr_cell(report, &row, status, merged, color);
             let review_lag =
                 pull_request_stack_review_lag(status, report.review_wait_threshold_seconds);
+            let title = stack_status_title(StackStatusTitleContext {
+                row: &row,
+                status,
+                draft,
+                merged,
+                closed,
+                color,
+                layout,
+                display_names,
+            });
             StackStatusTableRow {
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
@@ -228,15 +262,9 @@ fn stack_status_table_rows(
                     style,
                 ),
                 review_lag,
-                title: stack_status_title(
-                    &row,
-                    status,
-                    draft,
-                    merged,
-                    closed,
-                    color,
-                    display_names,
-                ),
+                title: title.title,
+                suffix: title.suffix,
+                right: title.right,
                 draft,
                 merged,
                 closed,
@@ -327,20 +355,40 @@ fn stack_status_row_is_draft(
     !merged && !closed && status.map_or(node.draft, |status| status.draft)
 }
 
-fn stack_status_title(
-    row: &PullRequestStackRow<'_>,
-    status: Option<&PullRequestStatusRecord>,
+struct StackStatusTitleParts {
+    title: String,
+    suffix: String,
+    right: String,
+}
+
+struct StackStatusTitleContext<'a> {
+    row: &'a PullRequestStackRow<'a>,
+    status: Option<&'a PullRequestStatusRecord>,
     draft: bool,
     merged: bool,
     closed: bool,
     color: bool,
-    display_names: &BTreeMap<String, String>,
-) -> String {
-    let title = ellipsize_pull_request_title(
+    layout: PullRequestTableLayout,
+    display_names: &'a BTreeMap<String, String>,
+}
+
+fn stack_status_title(context: StackStatusTitleContext<'_>) -> StackStatusTitleParts {
+    let StackStatusTitleContext {
+        row,
+        status,
+        draft,
+        merged,
+        closed,
+        color,
+        layout,
+        display_names,
+    } = context;
+    let title = pull_request_table_title(
         status
             .map(|status| status.title.trim())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| row.node.display_title()),
+        layout,
     );
     if merged || closed {
         let label_chips = if merged {
@@ -350,7 +398,7 @@ fn stack_status_title(
         } else {
             Vec::new()
         };
-        let mut title = if merged {
+        let title = if merged {
             if color {
                 format!("{GREEN_STYLE}● {title}{RESET_STYLE}")
             } else {
@@ -359,21 +407,19 @@ fn stack_status_title(
         } else {
             format!("⊖ {title}")
         };
-        if !label_chips.is_empty() {
-            title.push(' ');
-            title.push_str(&label_chips.join(pull_request_label_separator(color)));
-        }
-        if merged {
-            let reviewer_tokens = status
+        let reviewer_tokens = if merged {
+            status
                 .map(|status| pull_request_completed_reviewer_tokens(status, color, display_names))
-                .unwrap_or_default();
-            if !reviewer_tokens.is_empty() {
-                title.push(' ');
-                title.push_str(&reviewer_tokens.join(", "));
-            }
-        }
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let prefix = compact_stack_prefix(&row.prefix);
-        return format!("{prefix}{title}");
+        return StackStatusTitleParts {
+            title: format!("{prefix}{title}"),
+            suffix: stack_status_label_suffix(label_chips, color),
+            right: reviewer_tokens.join(", "),
+        };
     }
 
     let label_chips = status
@@ -384,14 +430,22 @@ fn stack_status_title(
         .unwrap_or_default();
     let prefix = compact_stack_prefix(&row.prefix);
     let node_title = pull_request_node_title_with_restore(status, draft, &title, color, "");
-    let mut parts = vec![format!("{prefix}{node_title}")];
-    if !label_chips.is_empty() {
-        parts.push(label_chips.join(pull_request_label_separator(color)));
+    StackStatusTitleParts {
+        title: format!("{prefix}{node_title}"),
+        suffix: stack_status_label_suffix(label_chips, color),
+        right: reviewer_tokens.join(", "),
     }
-    if !reviewer_tokens.is_empty() {
-        parts.push(reviewer_tokens.join(", "));
+}
+
+fn pull_request_table_title(title: &str, layout: PullRequestTableLayout) -> String {
+    match layout {
+        PullRequestTableLayout::Flow => ellipsize_pull_request_title(title),
+        PullRequestTableLayout::FitTerminal => title.to_owned(),
     }
-    parts.join(" ")
+}
+
+fn stack_status_label_suffix(label_chips: Vec<String>, color: bool) -> String {
+    label_chips.join(pull_request_label_separator(color))
 }
 
 fn stack_status_repository_header(
