@@ -1675,6 +1675,7 @@ fn workspace_revision_arg() -> Arg {
 
 fn work_all_arg() -> Arg {
     Arg::new("all")
+        .short('a')
         .long("all")
         .action(ArgAction::SetTrue)
         .help("List global work locations from configured layout roots")

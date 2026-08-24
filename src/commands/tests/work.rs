@@ -2125,7 +2125,7 @@ path = "{repo}"
 
 #[test]
 fn work_list_all_renders_global_keys_and_paths() {
-    // Verifies: The global work list exposes the same keys that shell completion resolves.
+    // Verifies: The -a alias exposes the same global keys that shell completion resolves.
     let workspace = TestWorkspace::new();
     workspace.write_home_file(
         ".config/jx/config.toml",
@@ -2145,7 +2145,7 @@ path = "{repo}"
     let services = FakeServices::default();
 
     let result = run_with_args_and_services(
-        ["jx", "work", "list", "--all", "--prefix", "project"],
+        ["jx", "work", "list", "-a", "--prefix", "project"],
         &environment,
         &services,
     )
