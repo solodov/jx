@@ -52,12 +52,25 @@ pub(super) fn snapshot_working_copy_for_read(current_dir: &Path) -> Result<PathB
     let workspace_root = find_jj_workspace_root(current_dir)?;
     // jj-lib loads are read-only with respect to the working copy. Reuse jj's
     // command entrypoint so jx read commands see the same disk state as jj.
-    run_jj_status(&workspace_root, false)?;
+    run_quiet_jj_status(&workspace_root, false)?;
     Ok(workspace_root)
 }
 
 pub(super) fn run_jj_status(current_dir: &Path, color: bool) -> Result<String, JjError> {
-    let output = Command::new("jj")
+    run_jj_status_with_stderr(current_dir, color, JjStatusStderr::Inherit)
+}
+
+fn run_quiet_jj_status(current_dir: &Path, color: bool) -> Result<String, JjError> {
+    run_jj_status_with_stderr(current_dir, color, JjStatusStderr::Capture)
+}
+
+fn run_jj_status_with_stderr(
+    current_dir: &Path,
+    color: bool,
+    stderr: JjStatusStderr,
+) -> Result<String, JjError> {
+    let mut command = Command::new("jj");
+    command
         .arg("--no-pager")
         .arg(if color {
             "--color=always"
@@ -67,19 +80,44 @@ pub(super) fn run_jj_status(current_dir: &Path, color: bool) -> Result<String, J
         .arg("status")
         .current_dir(current_dir)
         .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped());
+    match stderr {
+        JjStatusStderr::Inherit => {
+            command.stderr(Stdio::inherit());
+        }
+        JjStatusStderr::Capture => {
+            command.stderr(Stdio::piped());
+        }
+    }
+
+    let output = command
         .spawn()
         .and_then(|child| child.wait_with_output())
         .map_err(|source| JjError::StatusStart { source })?;
 
     if !output.status.success() {
         return Err(JjError::StatusFailed {
-            status: exit_status_summary(output.status),
+            status: jj_status_failure_summary(exit_status_summary(output.status), &output.stderr),
         });
     }
 
     String::from_utf8(output.stdout).map_err(|source| JjError::StatusDecode { source })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JjStatusStderr {
+    Inherit,
+    Capture,
+}
+
+pub(super) fn jj_status_failure_summary(mut status: String, stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        status.push_str(": ");
+        status.push_str(stderr);
+    }
+    status
 }
 
 pub(super) fn workspace_status_from_jj_status(

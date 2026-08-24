@@ -391,6 +391,7 @@ struct FakeServices {
     hook_command_calls: std::cell::RefCell<Vec<(PathBuf, RepoHook)>>,
     workspace_delete_events: std::cell::RefCell<Vec<String>>,
     status_workspace: StatusWorkspaceFacts,
+    status_workspace_error: Option<String>,
     check: CheckReport,
     status: StatusReport,
     stack_trunk_branch_head_sha: String,
@@ -511,6 +512,7 @@ impl Default for FakeServices {
             hook_command_calls: std::cell::RefCell::new(Vec::new()),
             workspace_delete_events: std::cell::RefCell::new(Vec::new()),
             status_workspace: status_workspace_facts(),
+            status_workspace_error: None,
             check: CheckReport {
                 repository: repository.clone(),
                 workspace: CheckWorkspaceSummary {
@@ -1085,6 +1087,12 @@ impl CommandServices for FakeServices {
         &self,
         _context: &RepositoryContext,
     ) -> Result<StatusWorkspaceFacts, JjError> {
+        if let Some(message) = &self.status_workspace_error {
+            return Err(JjError::StatusFailed {
+                status: message.clone(),
+            });
+        }
+
         Ok(self.status_workspace.clone())
     }
 

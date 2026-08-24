@@ -23,6 +23,19 @@ fn workspace_status_parser_reuses_jj_commit_and_change_lines() {
 }
 
 #[test]
+fn jj_status_failure_summary_includes_captured_stderr() {
+    // Verifies: quiet internal jj status calls suppress successful stderr but preserve failed diagnostics.
+    assert_eq!(
+        jj_status_failure_summary("exit code 1".to_owned(), b"snapshot failed\n"),
+        "exit code 1: snapshot failed"
+    );
+    assert_eq!(
+        jj_status_failure_summary("exit code 1".to_owned(), b"\n"),
+        "exit code 1"
+    );
+}
+
+#[test]
 fn workspace_status_parser_keeps_no_change_summary() {
     // Verifies: Empty jj status output still produces a status line after the description.
     let status = workspace_status_from_jj_status(

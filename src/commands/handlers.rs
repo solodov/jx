@@ -1398,7 +1398,7 @@ fn handle_global_sync(
     }
 
     progress.finish();
-    let exit_code = if global_sync_has_conflicts(&entries) {
+    let exit_code = if global_sync_has_failures(&entries) {
         1
     } else {
         0
@@ -1842,11 +1842,11 @@ fn sync_report_has_conflicts(report: &SyncReport) -> bool {
     fetch_has_conflicts(&report.fetch) || !report.skipped_conflicted_bookmarks.is_empty()
 }
 
-fn global_sync_has_conflicts(entries: &[GlobalSyncEntry]) -> bool {
+fn global_sync_has_failures(entries: &[GlobalSyncEntry]) -> bool {
     entries.iter().any(|entry| {
         matches!(
             &entry.outcome,
-            GlobalSyncOutcome::SyncedWithConflicts { .. }
+            GlobalSyncOutcome::SyncedWithConflicts { .. } | GlobalSyncOutcome::Error(_)
         )
     })
 }

@@ -283,6 +283,46 @@ path = "{repo}"
 }
 
 #[test]
+fn sync_all_repository_errors_return_nonzero_exit_code() {
+    // Verifies: global sync reports per-repository errors as command failures instead of success.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example-owner"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let broken = workspace.create_jj_workspace("projects/broken");
+    TestWorkspace::write_git_config_at(
+        &broken,
+        r#"
+[remote "origin"]
+    url = https://github.com/example-owner/broken.git
+"#,
+    );
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices {
+        status_workspace_error: Some("exit code 1: snapshot failed".to_owned()),
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(["jx", "sync", "--all"], &environment, &services)
+        .expect("global sync renders repository errors");
+
+    assert_eq!(result.exit_code, 1);
+    assert_eq!(
+        result.stdout,
+        "Errors\n  ~/projects/broken  `jj status` failed with exit code 1: snapshot failed\n"
+    );
+    assert!(services.fetch_origin_roots.borrow().is_empty());
+    assert!(services.push_tracked_roots.borrow().is_empty());
+}
+
+#[test]
 fn sync_all_configured_read_only_access_fetches_without_pushing() {
     // Verifies: configured read-only repos use the fetch-only sync strategy instead of being skipped.
     let workspace = TestWorkspace::new();
