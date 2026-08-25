@@ -281,6 +281,156 @@ fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
 }
 
 #[test]
+fn fetch_repair_moves_abandoned_other_workspace_to_updated_trunk() {
+    // Verifies: if Git import abandons another workspace's landed head, fetch reparents
+    // jj's empty replacement workspace commit from old trunk to the updated trunk.
+    let fixture = TestWorkspace::new("fetch-repair-abandoned-other-workspace");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
+        let runner_current = write_child(tx.repo_mut(), &old_trunk, "running workspace head").await;
+        let abandoned_current = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "landed other workspace head",
+            &[("feature.txt", b"landed")],
+        )
+        .await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated main trunk").await;
+        let other_workspace = WorkspaceNameBuf::from("other-workspace");
+
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                runner_current.id().clone(),
+            )
+            .expect("set running working-copy commit");
+        tx.repo_mut()
+            .set_wc_commit(other_workspace.clone(), abandoned_current.id().clone())
+            .expect("set other working-copy commit");
+        let workspaces_before = collect_workspace_current_commits(tx.repo());
+
+        tx.repo_mut().record_abandoned_commit(&abandoned_current);
+        tx.repo_mut()
+            .rebase_descendants_with_options(
+                &RevsetExpression::none(),
+                &RebaseOptions::default(),
+                |_, _| {},
+            )
+            .await
+            .expect("import rewrite creates replacement workspace commit");
+        let replacement_id = tx
+            .repo()
+            .view()
+            .get_wc_commit_id(&other_workspace)
+            .expect("other workspace has replacement commit")
+            .clone();
+        let replacement =
+            load_commit_from_repo(tx.repo(), &replacement_id).expect("load replacement");
+        assert_eq!(replacement.parent_ids(), &[old_trunk.id().clone()]);
+        assert!(replacement
+            .is_discardable(tx.repo())
+            .await
+            .expect("replacement is discardable"));
+
+        let stats = repair_fetch_working_copies(
+            tx.repo_mut(),
+            &workspaces_before,
+            workspace.workspace_name(),
+            old_trunk.id(),
+            &updated_trunk,
+            &HashSet::from([abandoned_current.id().clone()]),
+        )
+        .await
+        .expect("repair abandoned workspace replacement");
+
+        assert_eq!(stats.repaired_workspaces, 1);
+        assert!(!stats.current_repaired);
+        let repaired_id = tx
+            .repo()
+            .view()
+            .get_wc_commit_id(&other_workspace)
+            .expect("other workspace remains present");
+        let repaired = load_commit_from_repo(tx.repo(), repaired_id).expect("load repaired");
+        assert_eq!(repaired.parent_ids(), &[updated_trunk.id().clone()]);
+        tx.commit("repair abandoned workspace replacement")
+            .await
+            .expect("repair transaction commits cleanly");
+    });
+}
+
+#[test]
+fn fetch_repair_moves_abandoned_current_workspace_to_updated_trunk() {
+    // Verifies: when the running workspace's landed head is abandoned by Git import,
+    // fetch repairs jj's empty replacement and reports the current workspace changed.
+    let fixture = TestWorkspace::new("fetch-repair-abandoned-current-workspace");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
+        let abandoned_current = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "landed current workspace head",
+            &[("feature.txt", b"landed")],
+        )
+        .await;
+        let updated_trunk = write_child(tx.repo_mut(), &old_trunk, "updated main trunk").await;
+
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                abandoned_current.id().clone(),
+            )
+            .expect("set current working-copy commit");
+        let workspaces_before = collect_workspace_current_commits(tx.repo());
+
+        tx.repo_mut().record_abandoned_commit(&abandoned_current);
+        tx.repo_mut()
+            .rebase_descendants_with_options(
+                &RevsetExpression::none(),
+                &RebaseOptions::default(),
+                |_, _| {},
+            )
+            .await
+            .expect("import rewrite creates replacement workspace commit");
+
+        let stats = repair_fetch_working_copies(
+            tx.repo_mut(),
+            &workspaces_before,
+            workspace.workspace_name(),
+            old_trunk.id(),
+            &updated_trunk,
+            &HashSet::from([abandoned_current.id().clone()]),
+        )
+        .await
+        .expect("repair abandoned current workspace replacement");
+
+        assert_eq!(stats.repaired_workspaces, 1);
+        assert!(stats.current_repaired);
+        let repaired_id = tx
+            .repo()
+            .view()
+            .get_wc_commit_id(workspace.workspace_name())
+            .expect("current workspace remains present");
+        let repaired = load_commit_from_repo(tx.repo(), repaired_id).expect("load repaired");
+        assert_eq!(repaired.parent_ids(), &[updated_trunk.id().clone()]);
+        tx.commit("repair abandoned current workspace replacement")
+            .await
+            .expect("repair transaction commits cleanly");
+    });
+}
+
+#[test]
 fn fetch_origin_refs_selects_trunk_tracked_and_refresh_bookmarks_only() {
     // Verifies: Fetch avoids enumerating every remote bookmark while still pruning stale candidates.
     let fixture = TestWorkspace::new("fetch-tracked-bookmarks");

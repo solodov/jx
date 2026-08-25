@@ -86,6 +86,16 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
+        let workspace_currents_before = measure_fetch_step(
+            trace,
+            "collect_workspace_currents",
+            Vec::new(),
+            || Ok(collect_workspace_current_commits(self.repo.as_ref())),
+            |result: &Result<Vec<WorkspaceCurrentCommit>, JjError>| match result {
+                Ok(workspaces) => vec![fetch_trace_attr("workspace_count", workspaces.len())],
+                Err(_) => Vec::new(),
+            },
+        )?;
         let protected_rebase_roots = measure_fetch_step(
             trace,
             "resolve_protected_rebase_roots",
@@ -140,27 +150,39 @@ impl JjWorkspace {
         )?;
 
         let workspace_name = self.workspace.workspace_name().to_owned();
+        let import_abandoned_commit_ids = import_stats
+            .abandoned_commits
+            .iter()
+            .map(|commit| commit.id().clone())
+            .collect::<HashSet<_>>();
         let repair_stats = measure_fetch_step(
             trace,
-            "repair_working_copy",
+            "repair_working_copies",
             [
                 fetch_trace_attr("workspace", workspace_name.as_str()),
+                fetch_trace_attr("workspace_count", workspace_currents_before.len()),
                 fetch_trace_attr("current_before", current_before.id().hex()),
                 fetch_trace_attr("previous_trunk", fetch_trunk.commit.id().hex()),
                 fetch_trace_attr("updated_trunk", updated_trunk.id().hex()),
+                fetch_trace_attr(
+                    "import_abandoned_commit_count",
+                    import_abandoned_commit_ids.len(),
+                ),
             ],
             || {
-                pollster::block_on(repair_immutable_working_copy(
+                pollster::block_on(repair_fetch_working_copies(
                     tx.repo_mut(),
-                    workspace_name.clone(),
-                    current_before.id(),
+                    &workspace_currents_before,
+                    self.workspace.workspace_name(),
                     fetch_trunk.commit.id(),
                     &updated_trunk,
+                    &import_abandoned_commit_ids,
                 ))
             },
             |result| match result {
                 Ok(stats) => vec![
-                    fetch_trace_attr("repaired", stats.repaired),
+                    fetch_trace_attr("current_workspace_repaired", stats.current_repaired),
+                    fetch_trace_attr("repaired_workspace_count", stats.repaired_workspaces),
                     fetch_trace_attr("rebased_descendants", stats.rebased_descendants),
                 ],
                 Err(_) => Vec::new(),
@@ -214,7 +236,8 @@ impl JjWorkspace {
             },
         )?;
 
-        let current_repaired = repair_stats.repaired || final_current_id != *current_before.id();
+        let current_repaired =
+            repair_stats.current_repaired || final_current_id != *current_before.id();
         if current_repaired {
             let final_current = measure_fetch_step(
                 trace,
@@ -479,6 +502,20 @@ pub(super) fn collect_trunk_child_changes(
         .collect()
 }
 
+/// Snapshots workspace current commits before fetch import can rewrite or abandon them.
+pub(super) fn collect_workspace_current_commits(
+    repo: &dyn jj_lib::repo::Repo,
+) -> Vec<WorkspaceCurrentCommit> {
+    repo.view()
+        .wc_commit_ids()
+        .iter()
+        .map(|(name, commit_id)| WorkspaceCurrentCommit {
+            name: name.to_owned(),
+            commit_id: commit_id.clone(),
+        })
+        .collect()
+}
+
 pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
     mut_repo: &mut MutableRepo,
     trunk_children_before: &[TrunkChildChange],
@@ -676,46 +713,113 @@ fn resolve_visible_trunk_child_change(
     load_commit_from_repo(repo, commit_id).map(Some)
 }
 
-pub(super) async fn repair_immutable_working_copy(
+/// Moves workspace current commits forward after fetch import/rebase updates trunk.
+pub(super) async fn repair_fetch_working_copies(
     mut_repo: &mut MutableRepo,
-    workspace_name: WorkspaceNameBuf,
-    previous_current_id: &CommitId,
+    workspaces_before: &[WorkspaceCurrentCommit],
+    current_workspace_name: &WorkspaceName,
     previous_trunk_id: &CommitId,
     updated_trunk: &Commit,
+    import_abandoned_commit_ids: &HashSet<CommitId>,
 ) -> Result<WorkingCopyRepairStats, JjError> {
-    if previous_current_id == updated_trunk.id()
-        || !is_ancestor_or_equal_in_repo(mut_repo, previous_current_id, updated_trunk.id())?
-    {
-        return Ok(WorkingCopyRepairStats::default());
+    let mut stats = WorkingCopyRepairStats::default();
+    for workspace_before in workspaces_before {
+        let repair = repair_fetch_working_copy(
+            mut_repo,
+            workspace_before,
+            previous_trunk_id,
+            updated_trunk,
+            import_abandoned_commit_ids.contains(&workspace_before.commit_id),
+        )
+        .await?;
+        if repair.repaired {
+            stats.repaired_workspaces += 1;
+            if workspace_before.name.as_str() == current_workspace_name.as_str() {
+                stats.current_repaired = true;
+            }
+        }
+        stats.rebased_descendants += repair.rebased_descendants;
+    }
+    // `check_out()` may abandon the previous empty workspace commit. Drain that
+    // rewrite mapping before the fetch transaction is committed.
+    if mut_repo.has_rewrites() {
+        stats.rebased_descendants +=
+            mut_repo
+                .rebase_descendants()
+                .await
+                .map_err(|error| JjError::Backend {
+                    message: error.to_string(),
+                })?;
     }
 
-    let current_id = mut_repo
+    Ok(stats)
+}
+
+async fn repair_fetch_working_copy(
+    mut_repo: &mut MutableRepo,
+    workspace_before: &WorkspaceCurrentCommit,
+    previous_trunk_id: &CommitId,
+    updated_trunk: &Commit,
+    import_abandoned: bool,
+) -> Result<SingleWorkingCopyRepairStats, JjError> {
+    let previous_current_id = &workspace_before.commit_id;
+    let previous_current_landed = previous_current_id != updated_trunk.id()
+        && is_ancestor_or_equal_in_repo(mut_repo, previous_current_id, updated_trunk.id())?;
+    if !previous_current_landed && !import_abandoned {
+        return Ok(SingleWorkingCopyRepairStats::default());
+    }
+
+    let Some(current_id) = mut_repo
         .view()
-        .get_wc_commit_id(&workspace_name)
+        .get_wc_commit_id(&workspace_before.name)
         .cloned()
-        .ok_or_else(|| JjError::MissingWorkingCopy {
-            workspace: workspace_name.as_str().to_owned(),
-        })?;
+    else {
+        return Ok(SingleWorkingCopyRepairStats::default());
+    };
     let current = load_commit_from_repo(mut_repo, &current_id)?;
+
+    if import_abandoned && !previous_current_landed {
+        if !abandoned_workspace_replacement_needs_repair(
+            mut_repo,
+            &current,
+            previous_trunk_id,
+            updated_trunk,
+        )
+        .await?
+        {
+            return Ok(SingleWorkingCopyRepairStats::default());
+        }
+
+        mut_repo
+            .check_out(workspace_before.name.clone(), updated_trunk)
+            .await
+            .map_err(|error| JjError::WorkingCopyCheckout {
+                message: error.to_string(),
+            })?;
+        return Ok(SingleWorkingCopyRepairStats {
+            repaired: true,
+            rebased_descendants: 0,
+        });
+    }
 
     if current_id == *previous_current_id
         || previous_current_id == previous_trunk_id
         || current.id() == updated_trunk.id()
     {
         mut_repo
-            .check_out(workspace_name, updated_trunk)
+            .check_out(workspace_before.name.clone(), updated_trunk)
             .await
             .map_err(|error| JjError::WorkingCopyCheckout {
                 message: error.to_string(),
             })?;
-        return Ok(WorkingCopyRepairStats {
+        return Ok(SingleWorkingCopyRepairStats {
             repaired: true,
             rebased_descendants: 0,
         });
     }
 
     if current.parent_ids().contains(updated_trunk.id()) {
-        return Ok(WorkingCopyRepairStats {
+        return Ok(SingleWorkingCopyRepairStats {
             repaired: current_id != *previous_current_id,
             rebased_descendants: 0,
         });
@@ -734,10 +838,32 @@ pub(super) async fn repair_immutable_working_copy(
                 message: error.to_string(),
             })?;
 
-    Ok(WorkingCopyRepairStats {
+    Ok(SingleWorkingCopyRepairStats {
         repaired: true,
         rebased_descendants,
     })
+}
+
+/// Detects jj's empty replacement for a workspace commit abandoned during Git import.
+async fn abandoned_workspace_replacement_needs_repair(
+    repo: &dyn jj_lib::repo::Repo,
+    current: &Commit,
+    previous_trunk_id: &CommitId,
+    updated_trunk: &Commit,
+) -> Result<bool, JjError> {
+    if current.id() == updated_trunk.id() || current.parent_ids().contains(updated_trunk.id()) {
+        return Ok(false);
+    }
+    if current.parent_ids().len() != 1 || current.parent_ids().first() != Some(previous_trunk_id) {
+        return Ok(false);
+    }
+
+    current
+        .is_discardable(repo)
+        .await
+        .map_err(|error| JjError::Backend {
+            message: error.to_string(),
+        })
 }
 
 pub(super) fn fetch_rebase_options() -> RebaseOptions {
@@ -815,8 +941,21 @@ pub(super) struct RebasedCommitRecord {
     pub(super) has_conflict: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceCurrentCommit {
+    pub(super) name: WorkspaceNameBuf,
+    pub(super) commit_id: CommitId,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct WorkingCopyRepairStats {
-    pub(super) repaired: bool,
+    pub(super) current_repaired: bool,
+    pub(super) repaired_workspaces: usize,
     pub(super) rebased_descendants: usize,
+}
+
+#[derive(Debug, Default)]
+struct SingleWorkingCopyRepairStats {
+    repaired: bool,
+    rebased_descendants: usize,
 }
