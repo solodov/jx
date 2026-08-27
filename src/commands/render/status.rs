@@ -1,6 +1,6 @@
 use super::*;
 
-/// Renders the shared current commit status block shown by `jx status` and stack publish previews.
+/// Renders the shared commit status block shown by `jx status` and stack publish previews.
 pub(in crate::commands) fn render_workspace_status(status: &WorkspaceStatus) -> String {
     render_workspace_status_with_width(status, termimad::terminal_size().0.into())
 }

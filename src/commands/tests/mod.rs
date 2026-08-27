@@ -382,6 +382,7 @@ struct FakeServices {
     previous_commit_log: String,
     next_commit_log: String,
     workspace_status: WorkspaceStatus,
+    workspace_status_requests: std::cell::RefCell<Vec<Option<String>>>,
     workspace: WorkspaceFacts,
     description_rewrites: std::cell::RefCell<Vec<(String, String)>>,
     check_snapshots: std::cell::RefCell<Vec<WorkingCopySnapshot>>,
@@ -503,6 +504,7 @@ impl Default for FakeServices {
             previous_commit_log: "previous commit graph\n".to_owned(),
             next_commit_log: "next commit graph\n".to_owned(),
             workspace_status: workspace_status(),
+            workspace_status_requests: std::cell::RefCell::new(Vec::new()),
             workspace: workspace_facts(),
             description_rewrites: std::cell::RefCell::new(Vec::new()),
             check_snapshots: std::cell::RefCell::new(Vec::new()),
@@ -992,8 +994,12 @@ impl CommandServices for FakeServices {
     fn workspace_status(
         &self,
         _current_dir: &Path,
+        revision: Option<&str>,
         _color: bool,
     ) -> Result<WorkspaceStatus, JjError> {
+        self.workspace_status_requests
+            .borrow_mut()
+            .push(revision.map(str::to_owned));
         Ok(self.workspace_status.clone())
     }
 

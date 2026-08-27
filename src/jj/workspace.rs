@@ -77,6 +77,56 @@ impl JjWorkspace {
         Ok(first)
     }
 
+    /// Resolves a single revision, accepting local bookmark fragments like stack publishing.
+    pub(super) fn resolve_single_revision_or_local_bookmark_fragment(
+        &self,
+        revision: &str,
+        diagnostics_source: &'static str,
+    ) -> Result<Commit, JjError> {
+        match self.resolve_single_revision(revision, diagnostics_source) {
+            Ok(commit) => Ok(commit),
+            Err(error) if can_try_local_bookmark_fragment(&error) => {
+                let branch = self.resolve_revision_local_bookmark_fragment(revision)?;
+                self.resolve_single_revision(&branch, diagnostics_source)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_revision_local_bookmark_fragment(&self, target: &str) -> Result<String, JjError> {
+        let target = target.trim();
+        let mut matches = self
+            .repo
+            .view()
+            .local_bookmarks()
+            .filter(|(_, ref_target)| ref_target.as_normal().is_some())
+            .filter_map(|(bookmark, _)| {
+                let branch = bookmark.as_str();
+                local_bookmark_match_rank(branch, target).map(|rank| (branch.to_owned(), rank))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| (left.1, &left.0).cmp(&(right.1, &right.0)));
+
+        let Some(best_rank) = matches.first().map(|(_, rank)| *rank) else {
+            return Err(JjError::RevisionTargetNotFound {
+                target: target.to_owned(),
+            });
+        };
+        let best_matches = matches
+            .into_iter()
+            .filter(|(_, rank)| *rank == best_rank)
+            .map(|(branch, _)| branch)
+            .collect::<Vec<_>>();
+
+        match best_matches.as_slice() {
+            [branch] => Ok(branch.clone()),
+            _ => Err(JjError::RevisionTargetAmbiguous {
+                target: target.to_owned(),
+                matches: best_matches,
+            }),
+        }
+    }
+
     /// Resolves a user-supplied jj revset to zero or more commits.
     pub(super) fn resolve_revisions(
         &self,
@@ -591,4 +641,30 @@ impl JjWorkspace {
 
 fn duration_us(duration: Duration) -> u64 {
     duration.as_micros().try_into().unwrap_or(u64::MAX)
+}
+
+fn can_try_local_bookmark_fragment(error: &JjError) -> bool {
+    matches!(
+        error,
+        JjError::Revision { .. } | JjError::RevisionNotFound { .. }
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LocalBookmarkMatchRank {
+    Exact,
+    Prefix,
+    Contains,
+}
+
+fn local_bookmark_match_rank(candidate: &str, query: &str) -> Option<LocalBookmarkMatchRank> {
+    if candidate == query {
+        Some(LocalBookmarkMatchRank::Exact)
+    } else if candidate.starts_with(query) {
+        Some(LocalBookmarkMatchRank::Prefix)
+    } else if candidate.contains(query) {
+        Some(LocalBookmarkMatchRank::Contains)
+    } else {
+        None
+    }
 }

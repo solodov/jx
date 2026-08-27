@@ -386,7 +386,7 @@ impl JjWorkspace {
         })
     }
 
-    /// Chooses a fetch trunk from cached jj state, with an injectable live-default lookup for tests.
+    /// Chooses a fetch trunk from cached jj state, using live remote HEAD to recover stale trunk selection.
     pub(super) fn resolve_fetch_trunk_with_default_branch(
         &self,
         target: &Commit,
@@ -415,6 +415,17 @@ impl JjWorkspace {
                     branch,
                     commit,
                     refresh_bookmarks: branches,
+                })
+            }
+            Err(JjError::MissingTrunk { remote }) if remote == ORIGIN_REMOTE_NAME => {
+                let Some(default_branch) = live_default_branch(&remote) else {
+                    return Err(JjError::MissingTrunk { remote });
+                };
+                let commit = load_origin_branch(self.repo.as_ref(), &default_branch)?;
+                Ok(FetchTrunkSelection {
+                    branch: default_branch,
+                    commit,
+                    refresh_bookmarks: Vec::new(),
                 })
             }
             Err(error) => Err(error),

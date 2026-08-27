@@ -4,7 +4,7 @@ use super::*;
 pub(super) enum CommandRequest {
     Default,
     Log,
-    Status,
+    Status(StatusRequest),
     PreviousCommit,
     NextCommit,
     Diff(DiffRequest),
@@ -28,6 +28,11 @@ pub(super) struct DiffRequest {
     pub(super) no_tests: bool,
     pub(super) tool: Option<String>,
     pub(super) tool_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StatusRequest {
+    pub(super) revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,7 +306,9 @@ impl CommandRequest {
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches)?)),
             Some(("review", matches)) => Ok(Self::Review(review_request(matches)?)),
             Some(("log", _)) => Ok(Self::Log),
-            Some(("status" | "st", _)) => Ok(Self::Status),
+            Some(("status" | "st", matches)) => Ok(Self::Status(StatusRequest {
+                revision: revision(matches),
+            })),
             Some(("prev-commit" | "prev", _)) => Ok(Self::PreviousCommit),
             Some(("next-commit" | "next", _)) => Ok(Self::NextCommit),
             Some(("check", _)) => Ok(Self::Check),
@@ -338,12 +345,10 @@ impl CommandRequest {
         }
 
         match self {
-            Self::Default
-            | Self::Log
-            | Self::Status
-            | Self::PreviousCommit
-            | Self::NextCommit
-            | Self::Check => {}
+            Self::Default | Self::Log | Self::PreviousCommit | Self::NextCommit | Self::Check => {}
+            Self::Status(request) => {
+                attrs.extend([perf_attr("has_revision", request.revision.is_some())])
+            }
             Self::Diff(request) => attrs.extend([
                 perf_attr("has_revision", request.revision.is_some()),
                 perf_attr("path_count", request.paths.len()),
@@ -402,7 +407,7 @@ impl CommandRequest {
         match self {
             Self::Default => "default",
             Self::Log => "log",
-            Self::Status => "status",
+            Self::Status(_) => "status",
             Self::PreviousCommit => "prev-commit",
             Self::NextCommit => "next-commit",
             Self::Diff(_) => "diff",
@@ -1338,7 +1343,11 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(
             ClapCommand::new("status")
                 .visible_alias("st")
-                .about("Show current jj commit status with description"),
+                .about("Show jj commit status with description")
+                .long_about(
+                    "Show jj commit status with description.\n\nWithout -r/--revision, jx shows the working-copy status from jj, including untracked paths. With -r/--revision, jx shows the selected commit's description and changed files without moving the working copy.",
+                )
+                .arg(status_revision_arg()),
         )
         .subcommand(
             ClapCommand::new("clone")
@@ -1773,6 +1782,14 @@ fn stack_publish_revision_arg() -> Arg {
         .value_name("COMMIT_OR_BOOKMARK")
         .action(ArgAction::Append)
         .help("Publish exactly the selected jj revision, local bookmark, or revset; repeat for multiple selections")
+}
+
+fn status_revision_arg() -> Arg {
+    Arg::new("revision")
+        .short('r')
+        .long("revision")
+        .value_name("COMMIT_OR_BOOKMARK")
+        .help("Show a specific jj revision, local bookmark, or revset instead of the working copy")
 }
 
 fn stack_plan_revision_arg() -> Arg {

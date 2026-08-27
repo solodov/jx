@@ -16,8 +16,12 @@ pub(super) fn handle_request(
             let annotations = workspace_log_annotations(environment)?;
             services.workspace_log(&annotations)?
         }
-        CommandRequest::Status => {
-            let status = services.workspace_status(environment.current_dir(), output.color)?;
+        CommandRequest::Status(request) => {
+            let status = services.workspace_status(
+                environment.current_dir(),
+                request.revision.as_deref(),
+                output.color,
+            )?;
             render_workspace_status(&status)
         }
         CommandRequest::Diff(request) => {

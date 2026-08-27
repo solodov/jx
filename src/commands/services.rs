@@ -89,9 +89,13 @@ pub(super) trait CommandServices {
         target: &InitialPublishTarget,
     ) -> Result<BootstrapPushOutcome, JjError>;
 
-    /// Loads the current working-copy status block shared by status and PR preview.
-    fn workspace_status(&self, current_dir: &Path, color: bool)
-        -> Result<WorkspaceStatus, JjError>;
+    /// Loads the selected commit status block shared by status and PR preview.
+    fn workspace_status(
+        &self,
+        current_dir: &Path,
+        revision: Option<&str>,
+        color: bool,
+    ) -> Result<WorkspaceStatus, JjError>;
 
     /// Rewrites a selected commit description and returns the replacement commit id.
     fn rewrite_commit_description(
@@ -2261,9 +2265,10 @@ impl CommandServices for ProductionServices<'_> {
     fn workspace_status(
         &self,
         current_dir: &Path,
+        revision: Option<&str>,
         color: bool,
     ) -> Result<WorkspaceStatus, JjError> {
-        JjWorkspace::current_status(current_dir, color)
+        JjWorkspace::status(current_dir, revision, color)
     }
 
     fn rewrite_commit_description(

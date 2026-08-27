@@ -28,6 +28,18 @@ impl JjWorkspace {
         Ok(())
     }
 
+    /// Returns status lines for the working copy or a selected revision.
+    pub fn status(
+        current_dir: &Path,
+        revision: Option<&str>,
+        color: bool,
+    ) -> Result<WorkspaceStatus, JjError> {
+        match revision {
+            Some(revision) => Self::selected_revision_status(current_dir, revision),
+            None => Self::current_status(current_dir, color),
+        }
+    }
+
     /// Returns status lines for the current working-copy commit using jj's own summary rendering.
     pub fn current_status(current_dir: &Path, color: bool) -> Result<WorkspaceStatus, JjError> {
         let workspace_root = find_jj_workspace_root(current_dir)?;
@@ -44,6 +56,68 @@ impl JjWorkspace {
             status.extra_lines.extend(lines);
         }
         Ok(status)
+    }
+
+    /// Returns status lines for one selected commit without moving the working copy.
+    pub fn selected_revision_status(
+        current_dir: &Path,
+        revision: &str,
+    ) -> Result<WorkspaceStatus, JjError> {
+        let workspace = Self::load_after_working_copy_snapshot(current_dir)?;
+        workspace.status_for_revision(revision)
+    }
+
+    pub(super) fn status_for_revision(&self, revision: &str) -> Result<WorkspaceStatus, JjError> {
+        let target = self.resolve_single_revision_or_local_bookmark_fragment(
+            revision,
+            "In selected jj revision",
+        )?;
+        self.status_for_commit(&target)
+    }
+
+    fn status_for_commit(&self, target: &Commit) -> Result<WorkspaceStatus, JjError> {
+        let changed = changed_file_facts_for_commit(self.repo.as_ref(), target)?;
+        let change_lines = if changed.lines.is_empty() {
+            vec!["The selected commit has no changes.".to_owned()]
+        } else {
+            changed.lines
+        };
+        let mut commit_lines = vec![format!(
+            "Selected commit: {}",
+            self.status_commit_summary(target)
+        )];
+        for parent_id in target.parent_ids() {
+            let parent = self.load_commit(parent_id)?;
+            commit_lines.push(format!(
+                "Parent commit  : {}",
+                self.status_commit_summary(&parent)
+            ));
+        }
+
+        Ok(WorkspaceStatus {
+            commit_lines,
+            description: target.description().to_owned(),
+            change_lines,
+            extra_lines: Vec::new(),
+        })
+    }
+
+    fn status_commit_summary(&self, commit: &Commit) -> String {
+        let mut summary = format!(
+            "{} {}",
+            short_change_id(commit),
+            short_commit_id(commit.id())
+        );
+        let mut bookmarks = self.local_bookmarks_for_commit(commit.id());
+        bookmarks.sort();
+        bookmarks.dedup();
+        if !bookmarks.is_empty() {
+            summary.push(' ');
+            summary.push_str(&bookmarks.join(" "));
+        }
+        summary.push_str(" | ");
+        summary.push_str(first_description_line(commit.description()));
+        summary
     }
 }
 

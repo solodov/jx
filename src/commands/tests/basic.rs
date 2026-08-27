@@ -129,6 +129,26 @@ fn st_alias_runs_status() {
 }
 
 #[test]
+fn status_revision_passes_selected_revision_to_workspace_status() {
+    // Verifies: status -r selects a specific revision without changing rendering ownership.
+    let environment = RuntimeEnvironment::new("/workspace", []);
+    let services = FakeServices::default();
+
+    let result = run_with_args_and_services(
+        ["jx", "status", "--revision", "example-user/topic"],
+        &environment,
+        &services,
+    )
+    .expect("status revision succeeds");
+
+    assert_eq!(result.stdout, expected_workspace_status());
+    assert_eq!(
+        services.workspace_status_requests.borrow().as_slice(),
+        [Some("example-user/topic".to_owned())]
+    );
+}
+
+#[test]
 fn command_run_perf_span_records_successful_commands() {
     // Verifies: top-level tracing captures the parsed command and dispatch phases.
     let workspace = TestWorkspace::new();

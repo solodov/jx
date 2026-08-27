@@ -36,6 +36,63 @@ fn jj_status_failure_summary_includes_captured_stderr() {
 }
 
 #[test]
+fn selected_revision_status_accepts_bookmark_fragments_without_moving_current() {
+    // Verifies: status -r uses the same local bookmark fragment selection as stack publishing.
+    let fixture = TestWorkspace::new("selected-status-bookmark-fragment");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, selected, current) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let selected = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "selected ancestor\n\nBody",
+            &[("README.md", b"readme\n".as_slice())],
+        )
+        .await;
+        let current = write_child_with_files(
+            tx.repo_mut(),
+            &selected,
+            "current change",
+            &[("src/main.rs", b"fn main() {}\n".as_slice())],
+        )
+        .await;
+
+        set_local_bookmark(tx.repo_mut(), "example-user/selected", selected.id());
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+            .expect("set current working-copy change");
+        let repo = tx
+            .commit("arrange selected status workspace")
+            .await
+            .expect("commit");
+        (workspace, repo, selected, current)
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    let status = subject
+        .status_for_revision("selected")
+        .expect("selected status loads");
+
+    assert_eq!(status.description, "selected ancestor\n\nBody");
+    assert_eq!(status.change_lines, vec!["A README.md".to_owned()]);
+    assert!(
+        status.commit_lines[0].contains(&short_commit_id(selected.id())),
+        "{:?}",
+        status.commit_lines
+    );
+    assert!(status.commit_lines[0].contains("example-user/selected"));
+    assert!(status.commit_lines[0].contains("selected ancestor"));
+    assert_eq!(
+        subject.current_commit().expect("current commit").id(),
+        current.id()
+    );
+}
+
+#[test]
 fn workspace_status_parser_keeps_no_change_summary() {
     // Verifies: Empty jj status output still produces a status line after the description.
     let status = workspace_status_from_jj_status(

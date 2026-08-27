@@ -55,6 +55,57 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
 }
 
 #[test]
+fn fetch_trunk_uses_live_default_branch_after_sideways_trunk_rewrite() {
+    // Verifies: Fetch can still select origin trunk after local main was rewritten sideways.
+    let fixture = TestWorkspace::new("fetch-sideways-main-default");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, remote_main_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_base = write_child(tx.repo_mut(), &root, "old base").await;
+        let remote_main = write_child(tx.repo_mut(), &old_base, "main before local rewrite").await;
+        let new_base = write_child(tx.repo_mut(), &root, "new base").await;
+        let local_main = tx
+            .repo_mut()
+            .new_commit(vec![new_base.id().clone()], new_base.tree())
+            .set_change_id(remote_main.change_id().clone())
+            .set_description("main after local rewrite")
+            .write()
+            .await
+            .expect("write sideways local main rewrite");
+
+        set_origin_bookmark(tx.repo_mut(), "main", remote_main.id());
+        set_local_bookmark(tx.repo_mut(), "main", local_main.id());
+        tx.repo_mut()
+            .set_wc_commit(
+                workspace.workspace_name().to_owned(),
+                local_main.id().clone(),
+            )
+            .expect("set current working-copy change");
+
+        let remote_main_id = remote_main.id().clone();
+        let repo = tx
+            .commit("arrange sideways main default workspace")
+            .await
+            .expect("commit");
+        (workspace, repo, remote_main_id)
+    });
+    let subject = JjWorkspace { workspace, repo };
+    let target = subject.current_commit().expect("current commit loads");
+
+    let selection = subject
+        .resolve_fetch_trunk_with_default_branch(&target, |_| Some("main".to_owned()))
+        .expect("live default branch recovers cached sideways trunk");
+
+    assert_eq!(selection.branch, "main");
+    assert_eq!(selection.commit.id(), &remote_main_id);
+    assert!(selection.refresh_bookmarks.is_empty());
+}
+
+#[test]
 fn fetch_trunk_uses_origin_trunk_when_protecting_historical_stack() {
     // Verifies: protected sync fetches semantic trunk even when PR refs are the only ancestors.
     let fixture = TestWorkspace::new("fetch-protected-default-not-ancestor");

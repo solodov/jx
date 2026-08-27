@@ -21,7 +21,7 @@ fn root_help_uses_operator_facing_command_descriptions() {
     assert!(stdout.contains("Show a jj diff"));
     assert!(stdout.contains("status"));
     assert!(stdout.contains("st"));
-    assert!(stdout.contains("Show current jj commit status with description"));
+    assert!(stdout.contains("Show jj commit status with description"));
     assert!(stdout.contains("work"));
     assert!(stdout.contains("Manage layout workspaces"));
     assert!(stdout.contains("Check repository and PR readiness"));
@@ -90,7 +90,10 @@ fn status_help_explains_commit_status_without_loading_repo() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
-    assert!(stdout.contains("Show current jj commit status with description"));
+    assert!(stdout.contains("Show jj commit status with description"));
+    assert!(stdout.contains("--revision"));
+    assert!(stdout.contains("Show a specific jj revision, local bookmark, or revset"));
+    assert!(stdout.contains("COMMIT_OR_BOOKMARK"));
     assert!(output.stderr.is_empty());
 }
 

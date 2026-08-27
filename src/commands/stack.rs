@@ -772,8 +772,11 @@ impl StackPublishExecution<'_> {
         add_projected_stack_context_to_existing_plans(&mut plans);
         span.set([perf_attr("plan_count", plans.len())]);
         let status = span.measure("workspace_status", Vec::new(), || {
-            self.services
-                .workspace_status(self.environment.current_dir(), io::stderr().is_terminal())
+            self.services.workspace_status(
+                self.environment.current_dir(),
+                None,
+                io::stderr().is_terminal(),
+            )
         })?;
         self.progress.finish();
 

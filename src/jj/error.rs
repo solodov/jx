@@ -15,6 +15,13 @@ pub enum JjError {
     RevisionNotFound { revision: String },
     #[error("Revision `{revision}` resolved to multiple commits; pass a single commit")]
     AmbiguousRevision { revision: String },
+    #[error("Revision `{target}` did not resolve to a commit or local bookmark")]
+    RevisionTargetNotFound { target: String },
+    #[error("Revision `{target}` matches multiple local bookmarks: {matches:?}")]
+    RevisionTargetAmbiguous {
+        target: String,
+        matches: Vec<String>,
+    },
     #[error("Stack target `{target}` did not resolve to a commit or local bookmark")]
     StackTargetNotFound { target: String },
     #[error("Stack target `{target}` matches multiple local bookmarks: {matches:?}")]
