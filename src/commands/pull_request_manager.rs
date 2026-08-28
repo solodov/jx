@@ -1662,8 +1662,10 @@ fn stack_context_sync_push(
             new_description: Some(pull_request.title.clone()),
             pull_request_description: Some(pull_request_description(pull_request)),
             pull_request_base: match mode {
-                StackContextSyncMode::Full => Some(node.base_branch.clone()),
-                StackContextSyncMode::ContextOnly => None,
+                StackContextSyncMode::Full if !pull_request.merged => {
+                    Some(node.base_branch.clone())
+                }
+                StackContextSyncMode::Full | StackContextSyncMode::ContextOnly => None,
             },
             new_workspace_visibility: WorkspaceVisibility::default(),
         })

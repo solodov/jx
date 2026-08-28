@@ -3242,6 +3242,101 @@ fn sync_pull_requests_falls_back_to_metadata_number_when_head_lookup_misses() {
 }
 
 #[test]
+fn sync_pull_requests_updates_merged_pr_stack_context_from_metadata_number() {
+    // Verifies: stack context sync can refresh retained merged ancestors that open-head
+    // search omits.
+    let context = context();
+    let stack_metadata = StackMetadata {
+        version: 1,
+        work_item_handler_runs: Vec::new(),
+        nodes: vec![
+            StackMetadataNode {
+                branch: "example-user/root".to_owned(),
+                base_branch: "main".to_owned(),
+                parent_branch: None,
+                pull_request: Some(6),
+                parent_pull_request: None,
+                title: "Root".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
+                draft: false,
+                merged: true,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+            StackMetadataNode {
+                branch: "example-user/child".to_owned(),
+                base_branch: "example-user/root".to_owned(),
+                parent_branch: Some("example-user/root".to_owned()),
+                pull_request: Some(7),
+                parent_pull_request: Some(6),
+                title: "Child".to_owned(),
+                url: Some("https://github.com/example-owner/example-repo/pull/7".to_owned()),
+                draft: false,
+                merged: false,
+                work_ids: Vec::new(),
+                fixes_work_ids: Vec::new(),
+            },
+        ],
+    };
+    let merged_root = PullRequestRecord {
+        number: 6,
+        title: "Root".to_owned(),
+        body: Some("Merged body".to_owned()),
+        head_branch: "example-user/root".to_owned(),
+        base_branch: "main".to_owned(),
+        html_url: Some("https://github.com/example-owner/example-repo/pull/6".to_owned()),
+        draft: false,
+        merged: true,
+        reviewers: ReviewerSelection::default(),
+    };
+    let github = FakeGitHub {
+        open_pull_request: None,
+        pull_requests_by_number: BTreeMap::from([(6, merged_root)]),
+        ..FakeGitHub::default()
+    };
+    let update_calls = github.update_calls.clone();
+    let push = TrackedPushOutcome {
+        pushed_refs: 0,
+        bookmarks: vec![PushedBookmarkSummary {
+            branch: "example-user/root".to_owned(),
+            old_short_commit_id: None,
+            new_short_commit_id: None,
+            old_short_change_id: None,
+            new_short_change_id: None,
+            old_description: None,
+            new_description: None,
+            pull_request_description: Some("Root\n\nMerged body".to_owned()),
+            pull_request_base: Some("example-user/other".to_owned()),
+            new_workspace_visibility: WorkspaceVisibility::default(),
+        }],
+        pushed_commits: Vec::new(),
+    };
+
+    pollster::block_on(sync_pull_requests(
+        &context,
+        &push,
+        &stack_metadata,
+        &github,
+    ))
+    .expect("pull requests sync");
+
+    assert_eq!(
+        update_calls.lock().expect("update calls").as_slice(),
+        &[(
+            6,
+            PullRequestUpdate {
+                title: None,
+                body: Some(
+                    "Merged body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n✓ **[#6 Root](https://github.com/example-owner/example-repo/pull/6)** — this PR\n└ ◯ [#7 Child](https://github.com/example-owner/example-repo/pull/7)\n<!-- jx-stack:end -->"
+                        .to_owned()
+                ),
+                base: None,
+            }
+        )]
+    );
+}
+
+#[test]
 fn sync_pull_requests_removes_stack_context_for_untracked_pr() {
     // Verifies: generated stack blocks are output-only and disappear when local stack state no longer includes the PR.
     let github = FakeGitHub {
@@ -3902,7 +3997,11 @@ impl GitHubClient for FakeGitHub {
             .expect("update calls")
             .push((number, request.clone()));
 
-        let existing = self.open_pull_request.clone();
+        let existing = self
+            .pull_requests_by_number
+            .get(&number)
+            .cloned()
+            .or_else(|| self.open_pull_request.clone());
         Ok(PullRequestRecord {
             number,
             title: request.title.unwrap_or_else(|| {

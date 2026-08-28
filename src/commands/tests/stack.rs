@@ -4541,6 +4541,127 @@ fn stack_publish_revision_publishes_explicit_subset_only() {
 }
 
 #[test]
+fn stack_publish_middle_revision_refreshes_connected_published_stack_context() {
+    // Verifies: publishing a middle stack commit refreshes connected existing PR descriptions,
+    // including merged ancestors.
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        r#"
+[remote "origin"]
+    url = ssh://git@github.com/example-owner/example-repo.git
+"#,
+    );
+    let root_branch = "example-user/00-aaaaaaaa";
+    let child_branch = "example-user/01-bbbbbbbb";
+    let bar_branch = "example-user/02-cccccccc";
+    let mut root_node = stack_node(root_branch, "main", None, 40, "YYY change");
+    root_node.merged = true;
+    let mut child_node = stack_node(
+        child_branch,
+        root_branch,
+        Some(root_branch),
+        41,
+        "Baz change",
+    );
+    child_node.parent_pull_request = Some(40);
+    child_node.draft = true;
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            version: 1,
+            work_item_handler_runs: Vec::new(),
+            nodes: vec![root_node, child_node],
+        },
+    )
+    .expect("stack metadata writes");
+    let environment = RuntimeEnvironment::new(
+        workspace.path(),
+        [("GH_TOKEN".to_owned(), "placeholder-token".to_owned())],
+    );
+    let mut root = workspace_facts();
+    root.target_change.change_id = "aaaaaaaa11111111".to_owned();
+    root.target_change.description = "YYY change".to_owned();
+    root.local_bookmarks_at_target = vec![root_branch.to_owned()];
+    root.nearest_ancestor_bookmark = None;
+    root.stack_index = 0;
+    let mut child = workspace_facts();
+    child.target_change.change_id = "bbbbbbbb22222222".to_owned();
+    child.target_change.description = "Baz change".to_owned();
+    child.local_bookmarks_at_target = vec![child_branch.to_owned()];
+    child.nearest_ancestor_bookmark = Some(root_branch.to_owned());
+    child.stack_index = 1;
+    let mut bar = workspace_facts();
+    bar.target_change.change_id = "cccccccc33333333".to_owned();
+    bar.target_change.description = "Bar change".to_owned();
+    bar.nearest_ancestor_bookmark = Some(child_branch.to_owned());
+    bar.stack_index = 2;
+    let mut root_pr = pull_request_choice_record(40, "YYY change", root_branch, "main", false);
+    root_pr.merged = true;
+    let child_pr = pull_request_choice_record(41, "Baz change", child_branch, root_branch, true);
+    let bar_pr = pull_request_choice_record(42, "Bar change", bar_branch, child_branch, false);
+    let services = FakeServices {
+        stack_publish_facts: Some(StackPublishFacts {
+            nodes: vec![
+                crate::jj::StackPublishNodeFacts {
+                    workspace: root,
+                    parent_index: None,
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: child,
+                    parent_index: Some(0),
+                },
+                crate::jj::StackPublishNodeFacts {
+                    workspace: bar,
+                    parent_index: Some(1),
+                },
+            ],
+            publish_indexes: vec![2],
+            anchor_index: None,
+            metrics: StackPublishMetrics::default(),
+        }),
+        pull_requests_by_head: BTreeMap::from([(child_branch.to_owned(), child_pr.clone())]),
+        pull_requests_by_number: BTreeMap::from([(40, root_pr.clone()), (41, child_pr.clone())]),
+        sync_pull_requests: vec![root_pr, child_pr, bar_pr],
+        ..FakeServices::default()
+    };
+
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "-r", "cccccccc"],
+        &environment,
+        &services,
+    )
+    .expect("middle revision publishes");
+
+    let sync_pushes = services.sync_pull_request_pushes.borrow();
+    assert_eq!(sync_pushes.len(), 1);
+    assert_eq!(
+        sync_pushes[0]
+            .bookmarks
+            .iter()
+            .map(|bookmark| (
+                bookmark.branch.as_str(),
+                bookmark.pull_request_base.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (root_branch, None),
+            (child_branch, Some(root_branch)),
+            (bar_branch, Some(child_branch)),
+        ]
+    );
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Created {}\nStack: refreshed stack context on {}, {}, {}\n",
+            example_pull_request_link(42),
+            example_pull_request_link(40),
+            example_pull_request_link(41),
+            example_pull_request_link(42),
+        )
+    );
+}
+
+#[test]
 fn stack_subcommand_help_explains_effects() {
     // Verifies: Stack subcommand help names data sources and non-mutating GitHub behavior.
     let show_help = help_output(["jx", "stack", "show", "--help"]);

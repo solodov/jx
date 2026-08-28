@@ -80,12 +80,13 @@ async fn sync_bookmark_pull_request(
         return Ok(Some(pull_request));
     }
 
-    // Newly created PRs can lag behind head-branch search, so durable stack metadata
-    // gives immediate post-publish stack-context sync a stable lookup key.
+    // Newly created PRs can lag behind head-branch search, and merged PRs no
+    // longer appear in open-head lookups. Durable stack metadata gives stack
+    // context sync a stable PR identity for both cases.
     let Some(number) = stack_metadata
         .nodes
         .iter()
-        .find(|node| node.branch == branch && !node.merged)
+        .find(|node| node.branch == branch)
         .and_then(|node| node.pull_request)
     else {
         return Ok(None);
@@ -124,7 +125,9 @@ async fn sync_pull_request_metadata(
     }
 
     if let Some(base) = base {
-        if pull_request.base_branch != base {
+        // Merged PRs are included for stack context, but their historical base
+        // should not move.
+        if !pull_request.merged && pull_request.base_branch != base {
             update.base = Some(base.to_owned());
         }
     }
