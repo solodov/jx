@@ -1514,6 +1514,63 @@ path = "{repo}"
 }
 
 #[test]
+fn work_complete_navigation_lists_fragment_subpath_directories() {
+    // Verifies: navigation completion can offer child directories once a work-location fragment is slash-addressed.
+    let workspace = TestWorkspace::new();
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let flow_repo = workspace.home.join("projects/flow-repo");
+    create_jj_workspace_marker(&flow_repo);
+    fs::create_dir_all(flow_repo.join("bin")).expect("create bin directory");
+    fs::create_dir_all(flow_repo.join("src")).expect("create src directory");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let all_children = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--prefix",
+            "flow/",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("navigation child completion succeeds");
+    let src_picker = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--format",
+            "picker",
+            "--prefix",
+            "flow/s",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("navigation child picker completion succeeds");
+
+    assert_eq!(all_children.stdout, "flow-repo/bin\nflow-repo/src\n");
+    assert_eq!(
+        src_picker.stdout,
+        format!("flow-repo/src\t{}\n", flow_repo.join("src").display())
+    );
+}
+
+#[test]
 fn work_root_navigation_accepts_explicit_paths() {
     // Verifies: `u` treats absolute and dot-relative paths as filesystem navigation before fuzzy matching.
     let workspace = TestWorkspace::new_uninitialized_under("projects/current");
@@ -2076,8 +2133,22 @@ owner = "beta"
         &services,
     )
     .expect("work completion succeeds");
+    let navigation = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--prefix",
+            "alpha/",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("navigation slash-key completion succeeds");
 
     assert_eq!(result.stdout, "alpha/tool\nalpha/tool@fix\nbeta/tool\n");
+    assert_eq!(navigation.stdout, "alpha/tool\nalpha/tool@fix\n");
 }
 
 #[test]

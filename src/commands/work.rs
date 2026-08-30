@@ -586,6 +586,42 @@ pub(super) fn filter_navigation_work_locations_by_query(
         .collect()
 }
 
+/// Builds shell navigation completions for work keys and slash-addressed child directories.
+pub(super) fn complete_navigation_work_locations_by_query(
+    locations: &[WorkLocation],
+    query: &str,
+) -> Vec<WorkLocation> {
+    let literal_key_candidates = slash_query_literal_key_candidates(locations, query);
+    if !literal_key_candidates.is_empty() {
+        return literal_key_candidates;
+    }
+
+    let mut candidates = if query.ends_with('/') {
+        Vec::new()
+    } else {
+        filter_navigation_work_locations_by_query(locations, query)
+    };
+    candidates.extend(navigation_subpath_completion_work_locations(
+        locations, query,
+    ));
+    deduplicate_work_locations_by_key(candidates)
+}
+
+fn slash_query_literal_key_candidates(
+    locations: &[WorkLocation],
+    query: &str,
+) -> Vec<WorkLocation> {
+    if !query.contains('/') {
+        return Vec::new();
+    }
+
+    locations
+        .iter()
+        .filter(|location| location.key.starts_with(query))
+        .cloned()
+        .collect()
+}
+
 pub(super) fn navigation_work_locations_from_global(
     config: &WorkflowConfig,
     environment: &RuntimeEnvironment,
@@ -1140,6 +1176,115 @@ fn resolve_navigation_child(parent: &Path, query: &str) -> Option<(PathBuf, Navi
         [(path, rank)] => Some((path.clone(), *rank)),
         _ => None,
     }
+}
+
+fn navigation_subpath_completion_work_locations(
+    locations: &[WorkLocation],
+    query: &str,
+) -> Vec<WorkLocation> {
+    let Some(components) = navigation_completion_query_components(query) else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    for split in 1..components.len() {
+        let location_query = components[..split].join("/");
+        let path_queries = &components[split..];
+        let Some((child_query, parent_queries)) = path_queries.split_last() else {
+            continue;
+        };
+
+        for (location, _) in matching_navigation_locations(locations, &location_query) {
+            let Some((parent, _)) = resolve_navigation_subpath(&location.root, parent_queries)
+            else {
+                continue;
+            };
+            candidates.extend(navigation_child_completion_work_locations(
+                location,
+                &parent,
+                child_query,
+            ));
+        }
+    }
+
+    deduplicate_work_locations_by_key(candidates)
+}
+
+fn navigation_completion_query_components(query: &str) -> Option<Vec<String>> {
+    if query.is_empty()
+        || !query.contains('/')
+        || is_explicit_navigation_path(query, Path::new(query))
+    {
+        return None;
+    }
+
+    let components = query.split('/').map(str::to_owned).collect::<Vec<_>>();
+    if components
+        .iter()
+        .take(components.len().saturating_sub(1))
+        .any(|component| component.is_empty())
+    {
+        return None;
+    }
+
+    Some(components)
+}
+
+fn navigation_child_completion_work_locations(
+    location: &WorkLocation,
+    parent: &Path,
+    child_query: &str,
+) -> Vec<WorkLocation> {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+
+    let mut matches = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_owned();
+            if !entry.path().is_dir()
+                || name == ".jj"
+                || (name.starts_with('.') && !child_query.starts_with('.'))
+            {
+                return None;
+            }
+            let rank = navigation_match_rank(&name, child_query)?;
+            Some((rank, name, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+
+    matches
+        .into_iter()
+        .filter_map(|(_, _, path)| navigation_subpath_completion_work_location(location, path))
+        .collect()
+}
+
+fn navigation_subpath_completion_work_location(
+    location: &WorkLocation,
+    path: PathBuf,
+) -> Option<WorkLocation> {
+    let relative = path.strip_prefix(&location.root).ok()?;
+    let relative_key = navigation_relative_path_key(relative)?;
+    if relative_key.is_empty() {
+        return None;
+    }
+
+    Some(WorkLocation {
+        key: format!("{}/{}", location.key, relative_key),
+        root: path,
+    })
+}
+
+fn navigation_relative_path_key(path: &Path) -> Option<String> {
+    path.components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|components| components.join("/"))
 }
 
 fn navigation_match_rank(candidate: &str, query: &str) -> Option<NavigationMatchRank> {

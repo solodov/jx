@@ -1134,7 +1134,7 @@ fn handle_work_complete_traced(
             "filter_candidates",
             [perf_attr("prefix_len", request.prefix.len())],
             || {
-                Ok::<_, CommandError>(filter_navigation_work_locations_by_query(
+                Ok::<_, CommandError>(complete_navigation_work_locations_by_query(
                     &locations,
                     &request.prefix,
                 ))

@@ -67,6 +67,12 @@ zoxide = "auto"
         .stdout
         .contains("bind '\"\\e[0n\": redraw-current-line'"));
     assert!(result.stdout.contains("__jx_u_path_like"));
+    assert!(result
+        .stdout
+        .contains("\"$1\" == \"~\" || \"$1\" == \"~/\"*"));
+    assert!(result.stdout.contains("__jx_u_complete_path"));
+    assert!(result.stdout.contains("COMPREPLY=(\"~/\")"));
+    assert!(result.stdout.contains("compgen -d -- \"$expanded\""));
     assert!(result.stdout.contains("compgen -d -- \"$cur\""));
     assert!(result
         .stdout
@@ -92,6 +98,15 @@ zoxide = "auto"
     assert!(result.stdout.contains("local display_candidates=()"));
     assert!(result
         .stdout
+        .contains("__jx_u_add_picker_candidate \"work\" \"$key\" \"$path\""));
+    assert!(result
+        .stdout
+        .contains("__jx_u_add_picker_directory_candidates \"$cur\""));
+    assert!(result
+        .stdout
+        .contains("__jx_u_add_picker_candidate \"dir\" \"$key\" \"$display_path\""));
+    assert!(result
+        .stdout
         .contains("done < <(__jx_u_jx_completion_picker_candidates \"$cur\")"));
     assert!(result
         .stdout
@@ -115,7 +130,7 @@ zoxide = "auto"
         .contains("display_path=\"~/${path#\"$HOME\"/}\""));
     assert!(result
         .stdout
-        .contains("display_candidates+=(\"$key\"$'\\t'\"$(printf '%-*s  %s'"));
+        .contains("display_candidates+=(\"$key\"$'\\t'\"$(printf '%-4s  %-*s  %s'"));
     assert!(result.stdout.contains("--no-sort --delimiter=$'\\t'"));
     assert!(result.stdout.contains("--with-nth=2 --nth=1"));
     assert!(result.stdout.contains("--query \"$cur\""));

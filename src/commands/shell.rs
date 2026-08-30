@@ -516,7 +516,7 @@ fn bash_navigation_script(
 bind '"\e[0n": redraw-current-line' 2>/dev/null || true
 
 {zoxide_enabled_function}{jx_first_key_function}{helper_prefix}_path_like() {{
-  [[ "$1" == /* || "$1" == "." || "$1" == ".." || "$1" == ./* || "$1" == ../* ]]
+  [[ "$1" == /* || "$1" == "~" || "$1" == "~/"* || "$1" == "." || "$1" == ".." || "$1" == ./* || "$1" == ../* ]]
 }}
 
 {helper_prefix}_cd() {{
@@ -586,6 +586,35 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   printf '%s\n' "${{{helper_prefix}_completion_picker_cache}}"
 }}
 
+{helper_prefix}_complete_path() {{
+  local cur="$1" expanded candidate
+  local IFS=$'\n'
+  COMPREPLY=()
+  compopt -o filenames 2>/dev/null || true
+
+  if [[ "$cur" == "~" ]]; then
+    COMPREPLY=("~/")
+    return 0
+  fi
+
+  if [[ "$cur" == "~/"* ]]; then
+    [[ -n "${{HOME:-}}" ]] || return 0
+    expanded="${{HOME}}/${{cur#"~/"}}"
+    while IFS= read -r candidate; do
+      if [[ "$candidate" == "$HOME" ]]; then
+        COMPREPLY+=("~/")
+      elif [[ "$candidate" == "$HOME"/* ]]; then
+        COMPREPLY+=("~/${{candidate#"$HOME"/}}")
+      fi
+    done < <(compgen -d -- "$expanded")
+    return 0
+  fi
+
+  while IFS= read -r candidate; do
+    COMPREPLY+=("$candidate")
+  done < <(compgen -d -- "$cur")
+}}
+
 {helper_prefix}_add_candidate() {{
   local candidate="$1" existing
   [[ -n "$candidate" ]] || return 0
@@ -595,27 +624,60 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   candidates+=("$candidate")
 }}
 
+{helper_prefix}_add_directory_candidates() {{
+  local query="${{1:-}}" path name key
+  local IFS=$'\n'
+  [[ "$query" != */* ]] || return 0
+  while IFS= read -r path; do
+    name="$(basename "$path")"
+    [[ -n "$name" ]] || continue
+    key="./$name"
+    {helper_prefix}_add_candidate "$key"
+  done < <(compgen -d -- "$query")
+}}
+
 {helper_prefix}_add_picker_candidate() {{
-  local key="$1" path="${{2:-}}" existing existing_key
+  local kind="$1" key="$2" path="${{3:-}}" existing existing_key
   [[ -n "$key" ]] || return 0
   for existing in "${{picker_candidates[@]}}"; do
     existing_key="${{existing%%$'\t'*}}"
     [[ "$existing_key" == "$key" ]] && return 0
   done
-  picker_candidates+=("$key"$'\t'"$path")
+  picker_candidates+=("$key"$'\t'"$path"$'\t'"$kind")
+}}
+
+{helper_prefix}_add_picker_directory_candidates() {{
+  local query="${{1:-}}" path name key display_path
+  local IFS=$'\n'
+  [[ "$query" != */* ]] || return 0
+  while IFS= read -r path; do
+    name="$(basename "$path")"
+    [[ -n "$name" ]] || continue
+    key="./$name"
+    if [[ "$path" == /* ]]; then
+      display_path="$path"
+    elif [[ "$path" == ./* ]]; then
+      display_path="$PWD/${{path#./}}"
+    else
+      display_path="$PWD/$path"
+    fi
+    {helper_prefix}_add_picker_candidate "dir" "$key" "$display_path"
+  done < <(compgen -d -- "$query")
 }}
 
 {helper_prefix}_remove_shadowed_picker_candidates() {{
-  local row key path shadow_row shadow_key shadow_path suffix
+  local row key rest path shadow_row shadow_key shadow_rest shadow_path suffix
   local filtered_candidates=()
   for row in "${{picker_candidates[@]}}"; do
     key="${{row%%$'\t'*}}"
-    path="${{row#*$'\t'}}"
+    rest="${{row#*$'\t'}}"
+    path="${{rest%%$'\t'*}}"
     if [[ "$key" == *@* ]]; then
       suffix="${{key#*@}}"
       for shadow_row in "${{picker_candidates[@]}}"; do
         shadow_key="${{shadow_row%%$'\t'*}}"
-        shadow_path="${{shadow_row#*$'\t'}}"
+        shadow_rest="${{shadow_row#*$'\t'}}"
+        shadow_path="${{shadow_rest%%$'\t'*}}"
         if [[ "$shadow_key" == "$suffix" && "$shadow_path" == "$path" ]]; then
           continue 2
         fi
@@ -631,15 +693,16 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
 }}
 
 {helper_prefix}_fzf_completion() {{
-  local cur="$1" output selection key path display_key display_path row
+  local cur="$1" output selection key path kind rest display_key display_path row
   local IFS=$'\n'
   local key_width=0 max_key_width=64
   local picker_candidates=()
   local display_candidates=()
 
   while IFS=$'\t' read -r key path; do
-    [[ -n "$key" ]] && {helper_prefix}_add_picker_candidate "$key" "$path"
+    [[ -n "$key" ]] && {helper_prefix}_add_picker_candidate "work" "$key" "$path"
   done < <({helper_prefix}_jx_completion_picker_candidates "$cur")
+  {helper_prefix}_add_picker_directory_candidates "$cur"
 {zoxide_picker_completion}  (( ${{#picker_candidates[@]}} > 0 )) || return 0
   {helper_prefix}_remove_shadowed_picker_candidates
   if (( ${{#picker_candidates[@]}} == 1 )); then
@@ -656,7 +719,9 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
 
   for row in "${{picker_candidates[@]}}"; do
     key="${{row%%$'\t'*}}"
-    path="${{row#*$'\t'}}"
+    rest="${{row#*$'\t'}}"
+    path="${{rest%%$'\t'*}}"
+    kind="${{rest#*$'\t'}}"
     display_key="$key"
     if (( ${{#display_key}} > key_width )); then
       display_key="${{display_key:0:$(( key_width - 1 ))}}…"
@@ -667,7 +732,7 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
     elif [[ -n "${{HOME:-}}" && "$path" == "$HOME"/* ]]; then
       display_path="~/${{path#"$HOME"/}}"
     fi
-    display_candidates+=("$key"$'\t'"$(printf '%-*s  %s' "$key_width" "$display_key" "$display_path")")
+    display_candidates+=("$key"$'\t'"$(printf '%-4s  %-*s  %s' "$kind" "$key_width" "$display_key" "$display_path")")
   done
 
   (( ${{#display_candidates[@]}} > 0 )) || return 0
@@ -691,8 +756,7 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   local candidate path
 
   if {helper_prefix}_path_like "$cur"; then
-    compopt -o filenames 2>/dev/null || true
-    COMPREPLY=($(compgen -d -- "$cur"))
+    {helper_prefix}_complete_path "$cur"
     return
   fi
 
@@ -704,6 +768,7 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
   while IFS= read -r candidate; do
     {helper_prefix}_add_candidate "$candidate"
   done < <({helper_prefix}_jx_completion_candidates "$cur")
+  {helper_prefix}_add_directory_candidates "$cur"
 {auto_zoxide_completion}
   COMPREPLY=("${{candidates[@]}}")
 }}
@@ -785,7 +850,7 @@ fn bash_navigation_zoxide_completion_function(
   [[ -n "$1" ]] || return 0
   while IFS= read -r path; do
     candidate="$(basename "$path")"
-    {helper_prefix}_add_picker_candidate "$candidate" "$path"
+    {helper_prefix}_add_picker_candidate "zox" "$candidate" "$path"
   done < <(zoxide query --list "$1" 2>/dev/null)
 }}
 "#
@@ -814,6 +879,7 @@ fn bash_navigation_prefer_completion(helper_prefix: &str, zoxide: ShellZoxideMod
     for candidate in default trunk root; do
       [[ "$candidate" == "$cur"* ]] && {helper_prefix}_add_candidate "$candidate"
     done
+    {helper_prefix}_add_directory_candidates "$cur"
   fi
   {helper_prefix}_add_zoxide_candidates "$cur"
   if (( ${{#candidates[@]}} > 0 )); then
