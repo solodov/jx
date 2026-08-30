@@ -7,6 +7,78 @@ pub struct GitRemote {
     pub url: String,
 }
 
+/// Result of ensuring a Git remote exists with the expected target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRemoteUpdate {
+    pub remote: String,
+    pub url: String,
+    pub action: GitRemoteUpdateAction,
+}
+
+/// Remote-management mutation applied before a fork sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitRemoteUpdateAction {
+    AlreadyConfigured,
+    Added,
+    Updated { old_url: String },
+}
+
+/// Local graph operation needed to align a fork branch with its source branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSyncBranchPlan {
+    pub branch: String,
+    pub origin_remote: String,
+    pub upstream_remote: String,
+    pub upstream_branch: String,
+    pub local_commit_id: String,
+    pub local_short_commit_id: String,
+    pub upstream_commit_id: String,
+    pub upstream_short_commit_id: String,
+    pub origin_commit_id: Option<String>,
+    pub origin_short_commit_id: Option<String>,
+    pub push_needed: bool,
+    pub operation: ForkSyncBranchOperation,
+}
+
+/// Local branch move required before pushing a fork branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkSyncBranchOperation {
+    AlreadySynced,
+    FastForward,
+    Rebase {
+        root_commit_id: String,
+        root_short_change_id: String,
+        commit_count: usize,
+    },
+}
+
+/// Completed local fork branch alignment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSyncBranchOutcome {
+    pub branch: String,
+    pub origin_remote: String,
+    pub upstream_remote: String,
+    pub upstream_branch: String,
+    pub old_short_commit_id: String,
+    pub new_short_commit_id: String,
+    pub operation: ForkSyncBranchOutcomeKind,
+    pub rebased_commits: Vec<RebasedCommitSummary>,
+    pub abandoned_commits: usize,
+    pub skipped_commits: usize,
+    pub current_updated: bool,
+}
+
+/// Result of the local fork branch operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkSyncBranchOutcomeKind {
+    AlreadySynced,
+    FastForward,
+    Rebased {
+        root_short_change_id: String,
+        commit_count: usize,
+    },
+}
+
 /// One jj workspace and its root path for layout management commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceEntry {

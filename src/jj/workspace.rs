@@ -627,6 +627,16 @@ impl JjWorkspace {
             })
     }
 
+    pub(super) fn reload_at_head(&mut self) -> Result<(), JjError> {
+        self.repo =
+            pollster::block_on(self.workspace.repo_loader().load_at_head()).map_err(|error| {
+                JjError::RepoLoad {
+                    message: error.to_string(),
+                }
+            })?;
+        Ok(())
+    }
+
     pub(super) fn ensure_git_backed(&self) -> Result<(), JjError> {
         let backend_name = self.repo.store().backend().name();
         if backend_name == GIT_BACKEND_NAME {

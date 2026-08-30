@@ -191,6 +191,7 @@ path = "{repo}"
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,

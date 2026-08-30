@@ -10,7 +10,7 @@ use crate::{
         PullRequestMergeStatus, PullRequestRecord, PullRequestReviewActivity,
         PullRequestReviewRequest, PullRequestReviewRequests, PullRequestReviewStatus,
         PullRequestReviewerResponse, PullRequestStatusRecord, PullRequestTimelineEvent,
-        PullRequestTimelineEventKind, ReviewerSelection, ReviewerSyncResult,
+        PullRequestTimelineEventKind, RepositoryFork, ReviewerSelection, ReviewerSyncResult,
     },
     jj::{
         ChangeSummary, PushedBookmarkSummary, PushedCommitSummary, RebasedCommitSummary,
@@ -40,6 +40,7 @@ mod checks;
 mod clone;
 mod diff;
 mod fetch;
+mod fork;
 mod open;
 mod pull_request;
 mod push;
@@ -74,6 +75,7 @@ fn test_prompt_handlers() -> PromptHandlers<'static> {
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
@@ -395,6 +397,15 @@ struct FakeServices {
     status_workspace_error: Option<String>,
     check: CheckReport,
     status: StatusReport,
+    repository_fork: Option<RepositoryFork>,
+    repository_fork_calls: std::cell::Cell<usize>,
+    ensured_git_remotes: std::cell::RefCell<Vec<(String, String, bool, bool)>>,
+    git_remote_update: GitRemoteUpdate,
+    fetch_remote_calls: std::cell::RefCell<Vec<String>>,
+    fork_sync_branch_plan: ForkSyncBranchPlan,
+    fork_sync_branch_plan_requests: std::cell::RefCell<Vec<(String, String, String)>>,
+    fork_sync_outcome: ForkSyncBranchOutcome,
+    applied_fork_sync_plans: std::cell::RefCell<Vec<ForkSyncBranchPlan>>,
     stack_trunk_branch_head_sha: String,
     status_uses_context_remotes: bool,
     clean_status_repos: Vec<String>,
@@ -552,6 +563,57 @@ impl Default for FakeServices {
                 }],
                 fork: None,
             },
+            repository_fork: Some(RepositoryFork {
+                source: GitHubRepository {
+                    owner: "source-owner".to_owned(),
+                    name: "example-repo".to_owned(),
+                },
+                source_default_branch: Some("main".to_owned()),
+            }),
+            repository_fork_calls: std::cell::Cell::new(0),
+            ensured_git_remotes: std::cell::RefCell::new(Vec::new()),
+            git_remote_update: GitRemoteUpdate {
+                remote: "upstream".to_owned(),
+                url: "git@github.com:source-owner/example-repo.git".to_owned(),
+                action: GitRemoteUpdateAction::AlreadyConfigured,
+            },
+            fetch_remote_calls: std::cell::RefCell::new(Vec::new()),
+            fork_sync_branch_plan: ForkSyncBranchPlan {
+                branch: "main".to_owned(),
+                origin_remote: "origin".to_owned(),
+                upstream_remote: "upstream".to_owned(),
+                upstream_branch: "main".to_owned(),
+                local_commit_id: "1111222233334444555566667777888899990000".to_owned(),
+                local_short_commit_id: "11112222".to_owned(),
+                upstream_commit_id: "aaaabbbbccccddddeeeeffff0000111122223333".to_owned(),
+                upstream_short_commit_id: "aaaabbbb".to_owned(),
+                origin_commit_id: Some("1111222233334444555566667777888899990000".to_owned()),
+                origin_short_commit_id: Some("11112222".to_owned()),
+                push_needed: false,
+                operation: ForkSyncBranchOperation::Rebase {
+                    root_commit_id: "2222333344445555666677778888999900001111".to_owned(),
+                    root_short_change_id: "changeaa".to_owned(),
+                    commit_count: 2,
+                },
+            },
+            fork_sync_branch_plan_requests: std::cell::RefCell::new(Vec::new()),
+            fork_sync_outcome: ForkSyncBranchOutcome {
+                branch: "main".to_owned(),
+                origin_remote: "origin".to_owned(),
+                upstream_remote: "upstream".to_owned(),
+                upstream_branch: "main".to_owned(),
+                old_short_commit_id: "11112222".to_owned(),
+                new_short_commit_id: "aaaabbbb".to_owned(),
+                operation: ForkSyncBranchOutcomeKind::Rebased {
+                    root_short_change_id: "changeaa".to_owned(),
+                    commit_count: 2,
+                },
+                rebased_commits: Vec::new(),
+                abandoned_commits: 0,
+                skipped_commits: 0,
+                current_updated: false,
+            },
+            applied_fork_sync_plans: std::cell::RefCell::new(Vec::new()),
             stack_trunk_branch_head_sha: "aaaabbbbccccdddd".to_owned(),
             status_uses_context_remotes: false,
             clean_status_repos: Vec::new(),
@@ -1143,6 +1205,72 @@ impl CommandServices for FakeServices {
             }
         }
         Ok(status)
+    }
+
+    fn repository_fork(
+        &self,
+        _context: &RepositoryContext,
+    ) -> Result<Option<RepositoryFork>, WorkflowError> {
+        self.repository_fork_calls
+            .set(self.repository_fork_calls.get() + 1);
+        Ok(self.repository_fork.clone())
+    }
+
+    fn ensure_git_remote(
+        &self,
+        _context: &RepositoryContext,
+        remote: &str,
+        expected_url: &str,
+        fix: bool,
+        setup: bool,
+    ) -> Result<GitRemoteUpdate, JjError> {
+        self.ensured_git_remotes.borrow_mut().push((
+            remote.to_owned(),
+            expected_url.to_owned(),
+            fix,
+            setup,
+        ));
+        let mut update = self.git_remote_update.clone();
+        update.remote = remote.to_owned();
+        update.url = expected_url.to_owned();
+        Ok(update)
+    }
+
+    fn fetch_remote(&self, _context: &RepositoryContext, remote: &str) -> Result<(), JjError> {
+        self.fetch_remote_calls.borrow_mut().push(remote.to_owned());
+        Ok(())
+    }
+
+    fn fork_sync_branch_plan(
+        &self,
+        _context: &RepositoryContext,
+        branch: &str,
+        upstream_remote: &str,
+        upstream_branch: &str,
+    ) -> Result<ForkSyncBranchPlan, JjError> {
+        self.fork_sync_branch_plan_requests.borrow_mut().push((
+            branch.to_owned(),
+            upstream_remote.to_owned(),
+            upstream_branch.to_owned(),
+        ));
+        let mut plan = self.fork_sync_branch_plan.clone();
+        plan.branch = branch.to_owned();
+        plan.upstream_remote = upstream_remote.to_owned();
+        plan.upstream_branch = upstream_branch.to_owned();
+        Ok(plan)
+    }
+
+    fn apply_fork_sync_branch_plan(
+        &self,
+        _context: &RepositoryContext,
+        plan: &ForkSyncBranchPlan,
+    ) -> Result<ForkSyncBranchOutcome, JjError> {
+        self.applied_fork_sync_plans.borrow_mut().push(plan.clone());
+        let mut outcome = self.fork_sync_outcome.clone();
+        outcome.branch = plan.branch.clone();
+        outcome.upstream_remote = plan.upstream_remote.clone();
+        outcome.upstream_branch = plan.upstream_branch.clone();
+        Ok(outcome)
     }
 
     fn stack_trunk_status_report(

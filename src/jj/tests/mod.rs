@@ -22,6 +22,7 @@ mod description;
 mod diff;
 mod facts;
 mod fetch;
+mod fork;
 mod git_transport;
 mod log;
 mod navigation;

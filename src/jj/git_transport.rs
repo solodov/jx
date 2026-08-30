@@ -30,6 +30,46 @@ pub(super) fn run_jj_git_push_bookmark(workspace_root: &Path, branch: &str) -> R
     }
 }
 
+pub(super) fn run_jj_git_fetch_remote(workspace_root: &Path, remote: &str) -> Result<(), JjError> {
+    let output = Command::new("jj")
+        .arg("--repository")
+        .arg(workspace_root)
+        .arg("--no-pager")
+        .arg("git")
+        .arg("fetch")
+        .arg("--remote")
+        .arg(remote)
+        .current_dir(workspace_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|source| JjError::RemoteFetchStart {
+            remote: remote.to_owned(),
+            source,
+        })?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(JjError::RemoteFetchFailed {
+            remote: remote.to_owned(),
+            status: failed_command_status_with_stderr(output.status, &output.stderr),
+        })
+    }
+}
+
+fn failed_command_status_with_stderr(status: std::process::ExitStatus, stderr: &[u8]) -> String {
+    let status = exit_status_summary(status);
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        status
+    } else {
+        format!("{status}: {stderr}")
+    }
+}
+
 pub(super) fn exit_status_summary(status: std::process::ExitStatus) -> String {
     status
         .code()
@@ -616,6 +656,52 @@ impl JjWorkspace {
             working_copy_short_commit_id: (final_current_id != target_id)
                 .then(|| short_commit_id(&final_current_id)),
         })
+    }
+
+    /// Adds a Git remote to the backing repository.
+    pub fn add_git_remote(&mut self, remote: &str, remote_url: &str) -> Result<(), JjError> {
+        self.ensure_git_backed()?;
+        let mut tx = self.repo.start_transaction();
+        git::add_remote(
+            tx.repo_mut(),
+            RemoteName::new(remote),
+            remote_url,
+            None,
+            gix::remote::fetch::Tags::None,
+        )
+        .map_err(|error| JjError::RemoteAdd {
+            remote: remote.to_owned(),
+            message: error.to_string(),
+        })?;
+        let repo = pollster::block_on(tx.commit(format!("jx git remote add {remote}"))).map_err(
+            |error| JjError::Transaction {
+                message: error.to_string(),
+            },
+        )?;
+        self.repo = repo;
+        Ok(())
+    }
+
+    /// Updates a Git remote's fetch URL in the backing repository.
+    pub fn set_git_remote_url(&mut self, remote: &str, remote_url: &str) -> Result<(), JjError> {
+        self.ensure_git_backed()?;
+        git::set_remote_urls(
+            self.repo.store(),
+            RemoteName::new(remote),
+            Some(remote_url),
+            None,
+        )
+        .map_err(|error| JjError::RemoteSetUrl {
+            remote: remote.to_owned(),
+            message: error.to_string(),
+        })
+    }
+
+    /// Fetches one configured Git remote and reloads the jj repository view.
+    pub fn fetch_remote(&mut self, remote: &str) -> Result<(), JjError> {
+        self.ensure_git_backed()?;
+        run_jj_git_fetch_remote(self.workspace.workspace_root(), remote)?;
+        self.reload_at_head()
     }
 
     /// Returns Git remotes from the Git backend associated with this jj workspace.

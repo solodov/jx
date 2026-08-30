@@ -59,6 +59,9 @@ pub(super) fn handle_request(
         CommandRequest::Review(request) => {
             handle_review(request, environment, services, progress, output)?
         }
+        CommandRequest::Fork(request) => {
+            return handle_fork(request, environment, services, progress, &prompts, output);
+        }
         CommandRequest::PreviousCommit => {
             services.previous_commit_log(environment.current_dir())?
         }

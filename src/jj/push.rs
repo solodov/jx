@@ -754,11 +754,11 @@ pub(super) fn classify_push_bookmark_update(
         }),
         RefPushAction::RemoteConflicted => Err(JjError::ConflictedRemoteBookmark {
             branch: remote_symbol.name.as_str().to_owned(),
-            remote: ORIGIN_REMOTE_NAME,
+            remote: ORIGIN_REMOTE_NAME.to_owned(),
         }),
         RefPushAction::RemoteUntracked => Err(JjError::NonTrackingRemoteBookmark {
             branch: remote_symbol.name.as_str().to_owned(),
-            remote: ORIGIN_REMOTE_NAME,
+            remote: ORIGIN_REMOTE_NAME.to_owned(),
         }),
         RefPushAction::Update(update) if update.after.is_none() && !allow_delete => {
             Err(JjError::DeletedBookmarkNotRequested {
@@ -768,7 +768,7 @@ pub(super) fn classify_push_bookmark_update(
         RefPushAction::Update(_) if !targets.remote_ref.is_tracked() && !allow_new => {
             Err(JjError::NewRemoteBookmarkNotAllowed {
                 branch: remote_symbol.name.as_str().to_owned(),
-                remote: ORIGIN_REMOTE_NAME,
+                remote: ORIGIN_REMOTE_NAME.to_owned(),
             })
         }
         RefPushAction::Update(update) => Ok(Some(update)),

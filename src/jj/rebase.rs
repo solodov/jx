@@ -15,7 +15,7 @@ impl JjWorkspace {
         if !remote_ref.is_tracked() {
             return Err(JjError::NonTrackingRemoteBookmark {
                 branch: branch.clone(),
-                remote: ORIGIN_REMOTE_NAME,
+                remote: ORIGIN_REMOTE_NAME.to_owned(),
             });
         }
 

@@ -19,9 +19,10 @@ use crate::{
         ReviewerSelection, ReviewerSyncResult, ReviewerTarget,
     },
     jj::{
-        BookmarkUpdate, FetchOutcome, LocalStackBranch, PushOutcome, SkippedPushBookmarkSummary,
-        StatusRemoteFacts, StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome,
-        TrunkStateSummary, WorkspaceFacts,
+        BookmarkUpdate, FetchOutcome, ForkSyncBranchOutcome, ForkSyncBranchPlan, GitRemoteUpdate,
+        LocalStackBranch, PushOutcome, SkippedPushBookmarkSummary, StatusRemoteFacts,
+        StatusWorkspaceFacts, SyncPushOutcome, TrackedPushOutcome, TrunkStateSummary,
+        WorkspaceFacts,
     },
     repository::{
         GitHubRepository, PullRequestEventPredicate, PullRequestEventQuery, RepoEvent,
@@ -32,6 +33,7 @@ use crate::{
 
 mod bookmark;
 mod errors;
+mod fork;
 mod pull_request;
 mod pull_request_stack;
 mod push;
@@ -43,6 +45,7 @@ mod sync;
 
 pub use bookmark::*;
 pub use errors::*;
+pub use fork::*;
 pub use pull_request::*;
 pub use pull_request_stack::*;
 pub use push::*;

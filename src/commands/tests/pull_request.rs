@@ -1229,6 +1229,7 @@ fn pull_request_previews_next_to_final_confirmation() {
         reviewer_selector: &reviewer_selector,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,

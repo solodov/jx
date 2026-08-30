@@ -47,6 +47,10 @@ pub enum JjError {
     Index { message: String },
     #[error("Could not complete jj git fetch from `origin`: {message}")]
     Fetch { message: String },
+    #[error("Could not run `jj git fetch --remote {remote}`: {source}")]
+    RemoteFetchStart { remote: String, source: io::Error },
+    #[error("`jj git fetch --remote {remote}` failed with {status}")]
+    RemoteFetchFailed { remote: String, status: String },
     #[error("Could not import fetched origin refs into jj: {message}")]
     Import { message: String },
     #[error("Could not export jj bookmarks to the backing Git repo: {message}")]
@@ -116,6 +120,16 @@ pub enum JjError {
     NoPublishableCommit { message: String },
     #[error("Could not add Git remote `{remote}`: {message}")]
     RemoteAdd { remote: String, message: String },
+    #[error("Could not update Git remote `{remote}` URL: {message}")]
+    RemoteSetUrl { remote: String, message: String },
+    #[error("Missing Git remote `{remote}` and remote setup is disabled")]
+    MissingGitRemote { remote: String },
+    #[error("Git remote `{remote}` points to `{current_url}`, expected `{expected_url}`; use --fix-remotes to update it")]
+    RemoteUrlMismatch {
+        remote: String,
+        current_url: String,
+        expected_url: String,
+    },
     #[error("Could not run `jj git push -b {branch}`: {source}")]
     BootstrapPushStart { branch: String, source: io::Error },
     #[error("`jj git push -b {branch}` failed with {status}")]
@@ -142,22 +156,15 @@ pub enum JjError {
     #[error(
         "Remote bookmark `{branch}@{remote}` is conflicted; fetch or resolve it before pushing"
     )]
-    ConflictedRemoteBookmark {
-        branch: String,
-        remote: &'static str,
-    },
+    ConflictedRemoteBookmark { branch: String, remote: String },
     #[error("Remote bookmark `{branch}@{remote}` is not tracked locally; fetch or track it before pushing")]
-    NonTrackingRemoteBookmark {
-        branch: String,
-        remote: &'static str,
-    },
+    NonTrackingRemoteBookmark { branch: String, remote: String },
+    #[error("Remote bookmark `{branch}@{remote}` is missing; fetch that remote or check the branch name")]
+    MissingRemoteBookmark { branch: String, remote: String },
     #[error("Refusing to push deleted bookmark `{branch}` without tracked-delete mode")]
     DeletedBookmarkNotRequested { branch: String },
     #[error("Refusing to create new remote bookmark `{branch}@{remote}` in tracked-only mode")]
-    NewRemoteBookmarkNotAllowed {
-        branch: String,
-        remote: &'static str,
-    },
+    NewRemoteBookmarkNotAllowed { branch: String, remote: String },
     #[error("Local bookmark `{branch}` is missing; create it before pushing")]
     MissingLocalBookmark { branch: String },
     #[error("Selected change has no local bookmark; create or choose a bookmark before syncing one target")]
@@ -187,6 +194,14 @@ pub enum JjError {
     AmbiguousTrunk {
         remote: String,
         branches: Vec<String>,
+    },
+    #[error(
+        "Expected one fork stack root for `{branch}` relative to `{upstream}`; found {roots:?}"
+    )]
+    MultipleForkStackRoots {
+        branch: String,
+        upstream: String,
+        roots: Vec<String>,
     },
     #[error("Could not render workspace jj log: {message}")]
     Log { message: String },

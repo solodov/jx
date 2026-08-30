@@ -83,6 +83,7 @@ mod diff;
 mod error;
 mod facts;
 mod fetch;
+mod fork;
 mod git_transport;
 mod log;
 mod navigation;

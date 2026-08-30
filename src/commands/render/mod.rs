@@ -2,6 +2,7 @@ use super::*;
 
 mod check;
 mod common;
+mod fork;
 mod pull_request;
 mod pull_request_health;
 mod review;
@@ -13,6 +14,7 @@ mod work;
 
 pub(in crate::commands) use check::*;
 pub(in crate::commands) use common::*;
+pub(in crate::commands) use fork::*;
 pub(in crate::commands) use pull_request::*;
 pub(in crate::commands) use pull_request_health::*;
 pub(in crate::commands) use review::*;

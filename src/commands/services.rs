@@ -183,6 +183,41 @@ pub(super) trait CommandServices {
         self.status_report(context, workspace)
     }
 
+    /// Returns source repository metadata when origin is a GitHub fork.
+    fn repository_fork(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<Option<RepositoryFork>, WorkflowError>;
+
+    /// Ensures a Git remote exists and points at the expected target.
+    fn ensure_git_remote(
+        &self,
+        context: &RepositoryContext,
+        remote: &str,
+        expected_url: &str,
+        fix: bool,
+        setup: bool,
+    ) -> Result<GitRemoteUpdate, JjError>;
+
+    /// Fetches one configured Git remote without stack-rebase side effects.
+    fn fetch_remote(&self, context: &RepositoryContext, remote: &str) -> Result<(), JjError>;
+
+    /// Plans the local branch move needed for a fork sync.
+    fn fork_sync_branch_plan(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+        upstream_remote: &str,
+        upstream_branch: &str,
+    ) -> Result<ForkSyncBranchPlan, JjError>;
+
+    /// Applies a previously planned local fork branch move.
+    fn apply_fork_sync_branch_plan(
+        &self,
+        context: &RepositoryContext,
+        plan: &ForkSyncBranchPlan,
+    ) -> Result<ForkSyncBranchOutcome, JjError>;
+
     /// Returns whether the current token can push to the fixed origin repository.
     fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError>;
 
@@ -2394,6 +2429,98 @@ impl CommandServices for ProductionServices<'_> {
         })
     }
 
+    fn repository_fork(
+        &self,
+        context: &RepositoryContext,
+    ) -> Result<Option<RepositoryFork>, WorkflowError> {
+        self.github_runtime.block_on(async {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, self.environment)?;
+            Ok(github.repository_fork(&context.origin.github).await?)
+        })
+    }
+
+    fn ensure_git_remote(
+        &self,
+        context: &RepositoryContext,
+        remote: &str,
+        expected_url: &str,
+        fix: bool,
+        setup: bool,
+    ) -> Result<GitRemoteUpdate, JjError> {
+        let mut workspace = JjWorkspace::load(context.workspace_root.clone())?;
+        let current_url = workspace
+            .git_remotes()?
+            .into_iter()
+            .find(|configured| configured.name == remote)
+            .map(|configured| configured.url);
+
+        let Some(current_url) = current_url else {
+            if !setup {
+                return Err(JjError::MissingGitRemote {
+                    remote: remote.to_owned(),
+                });
+            }
+            workspace.add_git_remote(remote, expected_url)?;
+            return Ok(GitRemoteUpdate {
+                remote: remote.to_owned(),
+                url: expected_url.to_owned(),
+                action: GitRemoteUpdateAction::Added,
+            });
+        };
+
+        if same_remote_target(&current_url, expected_url) {
+            return Ok(GitRemoteUpdate {
+                remote: remote.to_owned(),
+                url: current_url,
+                action: GitRemoteUpdateAction::AlreadyConfigured,
+            });
+        }
+
+        if !fix {
+            return Err(JjError::RemoteUrlMismatch {
+                remote: remote.to_owned(),
+                current_url,
+                expected_url: expected_url.to_owned(),
+            });
+        }
+
+        workspace.set_git_remote_url(remote, expected_url)?;
+        Ok(GitRemoteUpdate {
+            remote: remote.to_owned(),
+            url: expected_url.to_owned(),
+            action: GitRemoteUpdateAction::Updated {
+                old_url: current_url,
+            },
+        })
+    }
+
+    fn fetch_remote(&self, context: &RepositoryContext, remote: &str) -> Result<(), JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.fetch_remote(remote)
+    }
+
+    fn fork_sync_branch_plan(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+        upstream_remote: &str,
+        upstream_branch: &str,
+    ) -> Result<ForkSyncBranchPlan, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.fork_sync_branch_plan(
+            branch,
+            upstream_remote,
+            upstream_branch,
+        )
+    }
+
+    fn apply_fork_sync_branch_plan(
+        &self,
+        context: &RepositoryContext,
+        plan: &ForkSyncBranchPlan,
+    ) -> Result<ForkSyncBranchOutcome, JjError> {
+        JjWorkspace::load(context.workspace_root.clone())?.apply_fork_sync_branch_plan(plan)
+    }
+
     fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError> {
         self.github_runtime.block_on(async {
             let github =
@@ -3821,6 +3948,24 @@ async fn prepare_global_remote_status(
     })
     .await
     .map_err(|error| format!("status worker failed: {error}"))?
+}
+
+pub(super) fn same_remote_target(left: &str, right: &str) -> bool {
+    if let (Ok(left), Ok(right)) = (
+        GitHubRepository::parse(left),
+        GitHubRepository::parse(right),
+    ) {
+        return left == right;
+    }
+
+    normalize_remote_url(left) == normalize_remote_url(right)
+}
+
+fn normalize_remote_url(url: &str) -> String {
+    url.trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_owned()
 }
 
 #[cfg(test)]

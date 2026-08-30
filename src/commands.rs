@@ -33,8 +33,8 @@ use crate::{
         self, apply_local_stack_branches, prune_merged_stack_metadata_trees,
         pull_request_status_has_green_stack_checks, refresh_stack_metadata_pull_requests,
         stack_metadata_from_pull_requests, upsert_stack_metadata_pull_requests, BookmarkAction,
-        CheckReport, FetchReport, ForkStatusReport, ForkStatusState, PullRequestAction,
-        PullRequestEventEffect, PullRequestEventEffectKind, PullRequestPlan,
+        CheckReport, FetchReport, ForkStatusReport, ForkStatusState, ForkSyncPlan, ForkSyncReport,
+        PullRequestAction, PullRequestEventEffect, PullRequestEventEffectKind, PullRequestPlan,
         PullRequestPublishOptions, PullRequestReadiness, PullRequestReport, PullRequestStackNode,
         PullRequestStackRow, PullRequestStackSelection, PullRequestStackSnapshot,
         PullRequestStackStatusReport, PushPlan, PushReport, RemoteStatusReport, RepositorySummary,
@@ -53,14 +53,16 @@ use crate::{
         run_jj_git_clone, run_jj_git_init, run_jj_workspace_add, AdvanceTrunkOutcome,
         BookmarkUpdate, BootstrapPushOutcome, CommitDescriptionRewrite, DiffOptions,
         DiffToolInvocation, ExternalDiffTool, FetchOptions, FetchOutcome, FetchTraceAttr,
-        FetchTraceStep, FetchTraceValue, InitialPublishTarget, JjError, JjWorkspace,
-        LocalStackBranch, LocalStackBranchFacts, LocalStackBranchMetrics, LogBookmarkAnnotation,
-        PipeDiffTool, PushBookmarksMetrics, PushBookmarksOutcome, PushOutcome,
-        PushedBookmarkSummary, StackBasePolicy, StackMoveOutcome, StackMoveTarget, StackPlanFacts,
-        StackPlanSelection, StackPublishFacts, StackPublishSelection, StatusWorkspaceFacts,
-        StatusWorkspaceMetrics, SyncPushMetrics, SyncPushMetricsOutcome, SyncPushOutcome,
-        TrackedPushOutcome, WorkingCopySnapshot, WorkspaceAddOptions, WorkspaceEntry,
-        WorkspaceFacts, WorkspaceRemoveOptions, WorkspaceStatus, WorkspaceVisibility,
+        FetchTraceStep, FetchTraceValue, ForkSyncBranchOperation, ForkSyncBranchOutcome,
+        ForkSyncBranchOutcomeKind, ForkSyncBranchPlan, GitRemoteUpdate, GitRemoteUpdateAction,
+        InitialPublishTarget, JjError, JjWorkspace, LocalStackBranch, LocalStackBranchFacts,
+        LocalStackBranchMetrics, LogBookmarkAnnotation, PipeDiffTool, PushBookmarksMetrics,
+        PushBookmarksOutcome, PushOutcome, PushedBookmarkSummary, StackBasePolicy,
+        StackMoveOutcome, StackMoveTarget, StackPlanFacts, StackPlanSelection, StackPublishFacts,
+        StackPublishSelection, StatusWorkspaceFacts, StatusWorkspaceMetrics, SyncPushMetrics,
+        SyncPushMetricsOutcome, SyncPushOutcome, TrackedPushOutcome, WorkingCopySnapshot,
+        WorkspaceAddOptions, WorkspaceEntry, WorkspaceFacts, WorkspaceRemoveOptions,
+        WorkspaceStatus, WorkspaceVisibility,
     },
     repository::{
         read_github_auth_cache, read_github_user_name_cache, read_stack_metadata,
@@ -80,6 +82,7 @@ use crate::{
 
 mod checks;
 mod dashboard;
+mod fork;
 mod handlers;
 mod hooks;
 mod perf;
@@ -96,15 +99,17 @@ mod work;
 
 use checks::*;
 use dashboard::*;
+use fork::*;
 use handlers::*;
 use hooks::*;
 use perf::*;
 use progress::*;
 use prompts::*;
 pub use prompts::{
-    PullRequestConfirmationError, PullRequestSelectionError, PushConfirmationError,
-    RepositoryCreationConfirmationError, RepositoryInitializationConfirmationError,
-    ReviewerSelectionError, WorkspaceRemoveConfirmationError,
+    ForkSyncConfirmationError, PullRequestConfirmationError, PullRequestSelectionError,
+    PushConfirmationError, RepositoryCreationConfirmationError,
+    RepositoryInitializationConfirmationError, ReviewerSelectionError,
+    WorkspaceRemoveConfirmationError,
 };
 use pull_request_manager::*;
 use render::*;
@@ -160,6 +165,8 @@ pub enum CommandError {
     PullRequestConfirmation(#[from] PullRequestConfirmationError),
     #[error(transparent)]
     PushConfirmation(#[from] PushConfirmationError),
+    #[error(transparent)]
+    ForkSyncConfirmation(#[from] ForkSyncConfirmationError),
     #[error(transparent)]
     RepositoryInitializationConfirmation(#[from] RepositoryInitializationConfirmationError),
     #[error(transparent)]
@@ -231,6 +238,7 @@ where
     let reviewer_selector = TerminalReviewerSelector;
     let pull_request_confirmer = TerminalPullRequestConfirmer;
     let push_confirmer = TerminalPushConfirmer;
+    let fork_sync_confirmer = TerminalForkSyncConfirmer;
     let repository_initialization_confirmer = TerminalRepositoryInitializationConfirmer;
     let repository_creation_confirmer = TerminalRepositoryCreationConfirmer;
     let workspace_remove_confirmer = TerminalWorkspaceRemoveConfirmer;
@@ -240,6 +248,7 @@ where
         reviewer_selector: &reviewer_selector,
         pull_request_confirmer: &pull_request_confirmer,
         push_confirmer: &push_confirmer,
+        fork_sync_confirmer: &fork_sync_confirmer,
         repository_initialization_confirmer: &repository_initialization_confirmer,
         repository_creation_confirmer: &repository_creation_confirmer,
         workspace_remove_confirmer: &workspace_remove_confirmer,
@@ -290,6 +299,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
@@ -342,6 +352,7 @@ where
         reviewer_selector,
         pull_request_confirmer,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
@@ -373,6 +384,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
@@ -404,6 +416,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
@@ -435,6 +448,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer: &AlwaysConfirmWorkspaceRemove,
@@ -466,6 +480,7 @@ where
         reviewer_selector: &SelectAllReviewers,
         pull_request_confirmer: &AlwaysConfirmPullRequest,
         push_confirmer: &AlwaysConfirmPush,
+        fork_sync_confirmer: &AlwaysConfirmForkSync,
         repository_initialization_confirmer: &AlwaysConfirmRepositoryInitialization,
         repository_creation_confirmer: &AlwaysConfirmRepositoryCreation,
         workspace_remove_confirmer,
@@ -563,6 +578,7 @@ where
             reviewer_selector: prompts.reviewer_selector,
             pull_request_confirmer: &YES_CONFIRMER,
             push_confirmer: &YES_CONFIRMER,
+            fork_sync_confirmer: &YES_CONFIRMER,
             repository_initialization_confirmer: &YES_CONFIRMER,
             repository_creation_confirmer: &YES_CONFIRMER,
             workspace_remove_confirmer: &YES_CONFIRMER,

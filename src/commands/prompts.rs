@@ -8,6 +8,7 @@ pub(super) struct PromptHandlers<'a> {
     pub(super) reviewer_selector: &'a dyn ReviewerSelector,
     pub(super) pull_request_confirmer: &'a dyn PullRequestConfirmer,
     pub(super) push_confirmer: &'a dyn PushConfirmer,
+    pub(super) fork_sync_confirmer: &'a dyn ForkSyncConfirmer,
     pub(super) repository_initialization_confirmer: &'a dyn RepositoryInitializationConfirmer,
     pub(super) repository_creation_confirmer: &'a dyn RepositoryCreationConfirmer,
     pub(super) workspace_remove_confirmer: &'a dyn WorkspaceRemoveConfirmer,
@@ -388,6 +389,74 @@ impl PushConfirmer for AlwaysConfirmPush {
 
 impl PushConfirmer for YesConfirmer {
     fn confirm_push(&self, _plan: &PushPlan) -> Result<bool, PushConfirmationError> {
+        Ok(true)
+    }
+}
+
+/// Confirms whether a fork sync should rewrite or push the fork branch.
+pub(super) trait ForkSyncConfirmer {
+    fn confirm_fork_sync(&self, plan: &ForkSyncPlan) -> Result<bool, ForkSyncConfirmationError>;
+}
+
+#[derive(Debug, Error)]
+pub enum ForkSyncConfirmationError {
+    #[error("Cannot confirm fork sync without an interactive terminal")]
+    NonInteractive,
+    #[error("Could not read fork sync confirmation: {source}")]
+    Read { source: dialoguer::Error },
+}
+
+pub(super) struct TerminalForkSyncConfirmer;
+
+impl ForkSyncConfirmer for TerminalForkSyncConfirmer {
+    fn confirm_fork_sync(&self, plan: &ForkSyncPlan) -> Result<bool, ForkSyncConfirmationError> {
+        if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+            return Err(ForkSyncConfirmationError::NonInteractive);
+        }
+        ensure_dialoguer_prompt_space()
+            .map_err(|source| ForkSyncConfirmationError::Read { source })?;
+
+        eprintln!();
+        let theme = PlainPromptTheme;
+        let confirmed = Confirm::with_theme(&theme)
+            .with_prompt(fork_sync_confirmation_prompt(plan))
+            .default(false)
+            .show_default(false)
+            .report(false)
+            .interact_opt()
+            .map_err(|source| {
+                restore_terminal_cursor();
+                ForkSyncConfirmationError::Read { source }
+            })?;
+
+        Ok(confirmed.unwrap_or(false))
+    }
+}
+
+#[cfg(test)]
+pub(super) struct AlwaysConfirmForkSync;
+
+#[cfg(test)]
+impl ForkSyncConfirmer for AlwaysConfirmForkSync {
+    fn confirm_fork_sync(&self, _plan: &ForkSyncPlan) -> Result<bool, ForkSyncConfirmationError> {
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+pub(super) struct FixedForkSyncConfirmer {
+    pub(super) confirmed: bool,
+}
+
+#[cfg(test)]
+impl ForkSyncConfirmer for FixedForkSyncConfirmer {
+    fn confirm_fork_sync(&self, _plan: &ForkSyncPlan) -> Result<bool, ForkSyncConfirmationError> {
+        Ok(self.confirmed)
+    }
+}
+
+impl ForkSyncConfirmer for YesConfirmer {
+    fn confirm_fork_sync(&self, _plan: &ForkSyncPlan) -> Result<bool, ForkSyncConfirmationError> {
         Ok(true)
     }
 }

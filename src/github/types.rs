@@ -39,6 +39,11 @@ impl GitHubRepository {
     pub fn https_url(&self) -> String {
         format!("https://github.com/{}/{}", self.owner, self.name)
     }
+
+    /// Returns the canonical SSH clone URL for this GitHub repository.
+    pub fn ssh_url(&self) -> String {
+        format!("git@github.com:{}/{}.git", self.owner, self.name)
+    }
 }
 
 /// Marker error for unsuitable GitHub remote URL syntax.

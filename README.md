@@ -26,6 +26,8 @@ inside the directory you already happen to be in.
 - **Stacked pull request management**: publish, display, move, refresh, and sync
   PR stacks from local jj ancestry while keeping GitHub bases and descriptions
   aligned.
+- **Fork maintenance**: sync a fork branch with its GitHub source without
+  keeping a separate shell script for upstream remote setup, rebases, and pushes.
 - **Jujutsu-first daily flow**: read the current stack, inspect status, diff with
   configured renderers, fetch/rebase around `origin`, and push tracked bookmark
   state without replacing `jj`.
@@ -175,7 +177,8 @@ surface.
 - `jj` commits and bookmarks are the local workflow model.
 - GitHub publishing uses the fixed `origin` remote.
 - PR heads are pushed to the same GitHub repository, not a fork.
-- Configurable remotes and configurable bookmark roots are out of scope.
+- Fork source synchronization is limited to the dedicated `jx fork` workflow.
+- Broad configurable remotes and configurable bookmark roots are out of scope.
 
 Those constraints keep the tool predictable: if a workflow needs broad `jj`
 control, use `jj` directly.

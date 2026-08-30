@@ -56,6 +56,19 @@ pub enum WorkflowError {
         fork: String,
         fork_branch: String,
     },
+    #[error("Repository `{repository}` is not a GitHub fork; pass --upstream-url to sync against an explicit source")]
+    NotGitHubFork { repository: String },
+    #[error("Upstream URL `{url}` is not a supported GitHub remote URL")]
+    InvalidForkUpstreamUrl { url: String },
+    #[error("Refusing to sync fork `{repository}` against itself")]
+    ForkSourceMatchesOrigin { repository: String },
+    #[error(
+        "Refusing to use upstream `{upstream_url}` because it points at origin `{origin_url}`"
+    )]
+    ForkUpstreamMatchesOrigin {
+        origin_url: String,
+        upstream_url: String,
+    },
     #[error("Local status facts did not include configured remote `{remote}`")]
     MissingStatusRemote { remote: String },
 }

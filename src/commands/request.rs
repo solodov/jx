@@ -14,6 +14,7 @@ pub(super) enum CommandRequest {
     Shell(ShellRequest),
     Open(OpenRequest),
     Review(ReviewRequest),
+    Fork(ForkRequest),
     RemoteStatus(RemoteStatusRequest),
     Fetch(FetchRequest),
     Push(PushRequest),
@@ -216,6 +217,21 @@ pub(super) struct ReviewRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ForkRequest {
+    Sync(ForkSyncRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ForkSyncRequest {
+    pub(super) branch: Option<String>,
+    pub(super) upstream_remote: String,
+    pub(super) upstream_url: Option<String>,
+    pub(super) fix_remotes: bool,
+    pub(super) remote_setup: bool,
+    pub(super) push: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ReviewAction {
     Show,
     Dismiss {
@@ -305,6 +321,7 @@ impl CommandRequest {
             Some(("shell", matches)) => Ok(Self::Shell(shell_request(matches)?)),
             Some(("open" | "o", matches)) => Ok(Self::Open(open_request(matches)?)),
             Some(("review", matches)) => Ok(Self::Review(review_request(matches)?)),
+            Some(("fork", matches)) => Ok(Self::Fork(fork_request(matches)?)),
             Some(("log", _)) => Ok(Self::Log),
             Some(("status" | "st", matches)) => Ok(Self::Status(StatusRequest {
                 revision: revision(matches),
@@ -373,6 +390,13 @@ impl CommandRequest {
                 perf_attr("interactive", request.interactive),
                 perf_attr("refresh_seconds", request.refresh_seconds),
                 perf_attr("cached", request.cached),
+            ]),
+            Self::Fork(ForkRequest::Sync(request)) => attrs.extend([
+                perf_attr("has_branch", request.branch.is_some()),
+                perf_attr("has_upstream_url", request.upstream_url.is_some()),
+                perf_attr("fix_remotes", request.fix_remotes),
+                perf_attr("remote_setup", request.remote_setup),
+                perf_attr("push", request.push),
             ]),
             Self::RemoteStatus(request) => attrs.extend([
                 perf_attr("all", request.all),
@@ -446,6 +470,7 @@ impl CommandRequest {
                 ..
             }) => "open.prs",
             Self::Review(_) => "review",
+            Self::Fork(ForkRequest::Sync(_)) => "fork.sync",
             Self::RemoteStatus(_) => "remote-status",
             Self::Fetch(_) => "fetch",
             Self::Push(_) => "push",
@@ -741,6 +766,21 @@ fn stack_status_request(matches: &ArgMatches) -> Result<StackStatusRequest, clap
         interactive,
         refresh_seconds: dashboard_refresh_seconds(matches)?,
     })
+}
+
+fn fork_request(matches: &ArgMatches) -> Result<ForkRequest, clap::Error> {
+    match matches.subcommand() {
+        Some(("sync", matches)) => Ok(ForkRequest::Sync(ForkSyncRequest {
+            branch: string_arg(matches, "branch"),
+            upstream_remote: string_arg(matches, "upstream")
+                .unwrap_or_else(|| "upstream".to_owned()),
+            upstream_url: string_arg(matches, "upstream-url"),
+            fix_remotes: matches.get_flag("fix-remotes"),
+            remote_setup: !matches.get_flag("no-remote-setup"),
+            push: !matches.get_flag("no-push"),
+        })),
+        _ => unreachable!("clap rejects unknown fork subcommands"),
+    }
 }
 
 fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
@@ -1410,6 +1450,7 @@ pub(super) fn cli() -> ClapCommand {
                 ),
         )
         .subcommand(stack_command())
+        .subcommand(fork_command())
         .subcommand(
             ClapCommand::new("shell")
                 .about("Generate shell integration scripts")
@@ -1535,6 +1576,26 @@ pub(super) fn cli() -> ClapCommand {
                 .arg(sync_stack_arg())
                 .arg(sync_rebase_arg())
                 .arg(sync_revision_arg()),
+        )
+}
+
+fn fork_command() -> ClapCommand {
+    ClapCommand::new("fork")
+        .about("Manage GitHub fork source synchronization")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            ClapCommand::new("sync")
+                .about("Sync the local fork branch with its source repository")
+                .long_about(
+                    "Sync the local fork branch with its source repository.\n\nBy default, jx detects the GitHub fork source from origin, ensures an upstream remote exists for that source, fetches upstream and origin, rebases fork-only local branch commits onto upstream, then pushes the rewritten branch back to origin. If the local branch is simply behind upstream, jx fast-forwards it before pushing. Use --no-push to stop after the local branch update, --upstream-url to use an explicit source repository, and --fix-remotes to update an existing upstream remote that points elsewhere.",
+                )
+                .arg(fork_branch_arg())
+                .arg(fork_upstream_arg())
+                .arg(fork_upstream_url_arg())
+                .arg(fork_fix_remotes_arg())
+                .arg(fork_no_remote_setup_arg())
+                .arg(fork_no_push_arg()),
         )
 }
 
@@ -1979,6 +2040,50 @@ fn review_history_pull_request_arg() -> Arg {
         .value_name("PR")
         .required(true)
         .help("Pull request number, repo#number suffix, owner/repo#number, or URL to inspect")
+}
+
+fn fork_branch_arg() -> Arg {
+    Arg::new("branch")
+        .long("branch")
+        .value_name("BRANCH")
+        .help("Local fork branch to sync; defaults to the source default branch, then main")
+}
+
+fn fork_upstream_arg() -> Arg {
+    Arg::new("upstream")
+        .long("upstream")
+        .value_name("REMOTE")
+        .default_value("upstream")
+        .help("Remote name for the source repository")
+}
+
+fn fork_upstream_url_arg() -> Arg {
+    Arg::new("upstream-url")
+        .long("upstream-url")
+        .value_name("URL")
+        .help("Explicit GitHub source remote URL instead of GitHub fork detection")
+}
+
+fn fork_fix_remotes_arg() -> Arg {
+    Arg::new("fix-remotes")
+        .long("fix-remotes")
+        .action(ArgAction::SetTrue)
+        .help("Update an existing upstream remote when it points to a different target")
+}
+
+fn fork_no_remote_setup_arg() -> Arg {
+    Arg::new("no-remote-setup")
+        .long("no-remote-setup")
+        .action(ArgAction::SetTrue)
+        .conflicts_with("fix-remotes")
+        .help("Validate existing remotes without adding or updating them")
+}
+
+fn fork_no_push_arg() -> Arg {
+    Arg::new("no-push")
+        .long("no-push")
+        .action(ArgAction::SetTrue)
+        .help("Update the local fork branch without pushing it to origin")
 }
 
 fn remote_status_all_arg() -> Arg {

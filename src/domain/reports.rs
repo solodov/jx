@@ -202,6 +202,28 @@ pub struct SyncReport {
     pub pull_requests: Vec<PullRequestRecord>,
 }
 
+/// Planned fork/source branch synchronization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSyncPlan {
+    pub repository: RepositorySummary,
+    pub source: GitHubRepository,
+    pub branch: String,
+    pub source_branch: String,
+    pub upstream_remote: String,
+    pub upstream_url: String,
+    pub push: bool,
+    pub branch_plan: ForkSyncBranchPlan,
+}
+
+/// Result of synchronizing a fork branch with its source branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSyncReport {
+    pub plan: ForkSyncPlan,
+    pub upstream: GitRemoteUpdate,
+    pub outcome: ForkSyncBranchOutcome,
+    pub push: Option<PushOutcome>,
+}
+
 /// Viewer-specific review-request state for a pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewRequestState {
