@@ -882,8 +882,8 @@ path = "{repo}"
 }
 
 #[test]
-fn work_list_marks_current_workspace_and_shortens_home_paths() {
-    // Verifies: Plain output marks the current workspace and keeps home paths concise.
+fn work_list_and_no_args_mark_current_workspace_and_shorten_home_paths() {
+    // Verifies: Bare work and explicit list show the same local workspaces and concise paths.
     let environment = RuntimeEnvironment::new(
         "/workspace",
         [("HOME".to_owned(), "/Users/example".to_owned())],
@@ -904,13 +904,16 @@ fn work_list_marks_current_workspace_and_shortens_home_paths() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "work", "list"], &environment, &services)
-        .expect("workspace list succeeds");
+    for args in [&["jx", "work"][..], &["jx", "work", "list"][..]] {
+        let result = run_with_args_and_services(args, &environment, &services)
+            .expect("workspace list succeeds");
 
-    assert_eq!(
-        result.stdout,
-        "default@  ~/projects/jx\nfix       ~/projects/.work/jx/fix\n"
-    );
+        assert_eq!(
+            result.stdout,
+            "default@  ~/projects/jx\nfix       ~/projects/.work/jx/fix\n"
+        );
+        assert_eq!(result.exit_code, 0);
+    }
 }
 
 #[test]

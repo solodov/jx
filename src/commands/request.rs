@@ -649,8 +649,13 @@ fn string_arg(matches: &ArgMatches, name: &str) -> Option<String> {
     matches.get_one::<String>(name).cloned()
 }
 
+/// Parses work subcommands, defaulting to the local workspace list.
 fn work_request(matches: &ArgMatches) -> Result<WorkRequest, clap::Error> {
     match matches.subcommand() {
+        None => Ok(WorkRequest::List(WorkListRequest {
+            all: false,
+            prefix: String::new(),
+        })),
         Some(("add", matches)) => Ok(WorkRequest::Add(WorkAddRequest {
             name: required_arg(matches, "name"),
             revision: revision(matches),
@@ -1399,8 +1404,9 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(
             ClapCommand::new("work")
                 .about("Manage layout workspaces")
-                .subcommand_required(true)
-                .arg_required_else_help(true)
+                .long_about(
+                    "Manage layout workspaces.\n\nWithout a subcommand, list jj workspaces and roots (same as `jx work list`).",
+                )
                 .subcommand(
                     ClapCommand::new("add")
                         .about("Add a workspace under the configured hidden layout")
