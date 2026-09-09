@@ -55,15 +55,18 @@ impl<'a> PullRequestStackManager<'a> {
         self.snapshot_from_live_pull_requests(Vec::new(), selection)
     }
 
-    /// Applies GitHub status facts to durable metadata and prunes completed cached trees.
+    /// Caches discovered PRs and status facts, then prunes completed cached trees.
     pub(super) fn maintain_status_metadata(
         &self,
         statuses: &[PullRequestStatusRecord],
+        discovered_pull_requests: &[PullRequestRecord],
     ) -> Result<PullRequestStackSnapshot, CommandError> {
         let metadata = self.read_metadata()?;
-        let maintenance = self
-            .status_metadata_maintainer
-            .maintain(&metadata, statuses)?;
+        let maintenance = self.status_metadata_maintainer.maintain(
+            &metadata,
+            statuses,
+            discovered_pull_requests,
+        )?;
         let maintained = maintenance.metadata;
         let local_branches = self.local_pull_request_branches()?;
         Ok(PullRequestStackSnapshot::from_metadata(
@@ -967,14 +970,26 @@ impl<'a> StackStatusMetadataMaintainer<'a> {
         }
     }
 
-    /// Applies status facts, reconciles configured work-item side effects, and writes changed metadata.
+    /// Adds newly discovered PRs, applies status facts, reconciles side effects, and writes changed metadata.
     pub(super) fn maintain(
         &self,
         metadata: &StackMetadata,
         statuses: &[PullRequestStatusRecord],
+        discovered_pull_requests: &[PullRequestRecord],
     ) -> Result<StackStatusMetadataMaintenance, CommandError> {
+        // Discovery must not overwrite local ancestry or replace durable identities for known branches.
+        let untracked = discovered_pull_requests
+            .iter()
+            .filter(|pr| {
+                !metadata.nodes.iter().any(|node| {
+                    node.pull_request == Some(pr.number) || node.branch == pr.head_branch
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let discovered = domain::upsert_stack_metadata_pull_requests(&untracked, metadata);
         let mut refreshed =
-            domain::refresh_stack_metadata_pull_request_statuses(statuses, metadata);
+            domain::refresh_stack_metadata_pull_request_statuses(statuses, &discovered);
         // Reconcile side effects before completed stacks age out so missing ledgers do not skip configured cleanup.
         apply_pull_request_effects(
             self.context,

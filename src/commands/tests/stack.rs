@@ -1,6 +1,9 @@
 use super::*;
 use crate::github::PullRequestMergeStatus;
 
+#[path = "stack_discovery.rs"]
+mod discovery;
+
 #[test]
 fn stack_help_describes_cached_display_and_live_refresh() {
     // Verifies: Stack help distinguishes local cached display from GitHub-backed refresh.

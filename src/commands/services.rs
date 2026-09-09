@@ -380,7 +380,7 @@ pub(super) trait CommandServices {
     /// Opens a URL in the platform default browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
 
-    /// Loads global stack-status rows, preserving layout order and skipping repositories without stack metadata.
+    /// Discovers authored PRs and loads global stack-status rows, omitting repositories with no active stack.
     fn global_stack_status_entries(
         &self,
         repositories: &[WorkRepository],
@@ -394,6 +394,13 @@ pub(super) trait CommandServices {
             let entry = stack_status_entry_for_repository(
                 repository,
                 environment,
+                |context| {
+                    let author = self
+                        .authenticated_login(&context.token_source)
+                        .map_err(|error| error.to_string())?;
+                    self.authored_open_pull_requests(context, &author)
+                        .map_err(|error| error.to_string())
+                },
                 |context, numbers| {
                     self.pull_request_statuses(context, numbers)
                         .map_err(CommandError::from)
@@ -2873,6 +2880,7 @@ impl CommandServices for ProductionServices<'_> {
                             repository,
                             environment,
                             self.environment,
+                            &self.github_cache,
                         )
                         .await,
                     )
@@ -3206,9 +3214,11 @@ fn open_url_in_browser(url: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Discovers authored PRs before deciding whether a repository has a stack to display.
 fn stack_status_entry_for_repository(
     repository: &WorkRepository,
     environment: &RuntimeEnvironment,
+    discover_authored: impl FnOnce(&RepositoryContext) -> Result<Vec<PullRequestRecord>, String>,
     fetch_statuses: impl FnOnce(
         &RepositoryContext,
         &[u64],
@@ -3221,7 +3231,6 @@ fn stack_status_entry_for_repository(
 ) -> Option<GlobalStackStatusEntry> {
     let display_root = display_path(&repository.root, environment);
     let metadata = match read_stack_metadata(&repository.root) {
-        Ok(metadata) if metadata.nodes.is_empty() => return None,
         Ok(metadata) => metadata,
         Err(error) => {
             return Some(GlobalStackStatusEntry {
@@ -3247,25 +3256,23 @@ fn stack_status_entry_for_repository(
         }
     };
     let repository_identity = context.origin.github.clone();
-    let discovered_pull_requests =
-        stack_status_missing_pull_requests_from_metadata(&metadata, |branch| {
-            resolve_pull_request(&context, branch)
-        });
-    let numbers = discovered_pull_requests
-        .as_ref()
-        .map(|pull_requests| stack_status_numbers_from_metadata(&metadata, pull_requests))
-        .unwrap_or_else(|_| stack_status_numbers_from_metadata(&metadata, &[]));
-    let statuses = if numbers.is_empty() {
-        Ok(Vec::new())
-    } else {
-        fetch_statuses(&context, &numbers)
-    };
-    let result = discovered_pull_requests.and(statuses).and_then(|statuses| {
+    let result = discover_authored(&context).and_then(|authored| {
+        let discovered =
+            discover_stack_status_pull_requests_from_metadata(&metadata, authored, |branch| {
+                resolve_pull_request(&context, branch)
+            })?;
+        let numbers = stack_status_numbers_from_metadata(&metadata, &discovered);
+        let statuses = if numbers.is_empty() {
+            Vec::new()
+        } else {
+            fetch_statuses(&context, &numbers)?
+        };
         maintained_stack_status_report(
             &context,
             &repository_environment,
             &metadata,
             statuses,
+            &discovered,
             || fetch_trunk(&context),
         )
     });
@@ -3288,6 +3295,7 @@ async fn production_global_stack_status_entry(
     repository: &WorkRepository,
     environment: &RuntimeEnvironment,
     token_environment: &RuntimeEnvironment,
+    cache: &Arc<Mutex<GitHubFactCache>>,
 ) -> Option<GlobalStackStatusEntry> {
     let perf = PerfLog::from_environment(token_environment);
     let mut span = perf.start(
@@ -3301,6 +3309,7 @@ async fn production_global_stack_status_entry(
         repository,
         environment,
         token_environment,
+        cache,
         &perf,
         &mut span,
     )
@@ -3330,6 +3339,7 @@ async fn production_global_stack_status_entry_traced(
     repository: &WorkRepository,
     environment: &RuntimeEnvironment,
     token_environment: &RuntimeEnvironment,
+    cache: &Arc<Mutex<GitHubFactCache>>,
     perf: &PerfLog,
     span: &mut PerfSpan,
 ) -> Option<GlobalStackStatusEntry> {
@@ -3340,13 +3350,10 @@ async fn production_global_stack_status_entry_traced(
         record_global_stack_status_preparation_steps(span, &prepared.metrics);
     }
     let (context, metadata) = match prepared_result {
-        Ok(prepared) => match prepared.data {
-            Some(data) => {
-                let data = *data;
-                (data.context, data.metadata)
-            }
-            None => return None,
-        },
+        Ok(prepared) => {
+            let data = *prepared.data;
+            (data.context, data.metadata)
+        }
         Err(error) => {
             return Some(GlobalStackStatusEntry {
                 key: Some(repository.key.clone()),
@@ -3368,8 +3375,11 @@ async fn production_global_stack_status_entry_traced(
                 inner: github,
                 perf: perf.clone(),
                 repo: repository_identity.slug(),
-                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
-                durable_auth_cache: None,
+                cache: Arc::clone(cache),
+                durable_auth_cache: Some(DurableAuthCache {
+                    environment: token_environment.clone(),
+                    token_source: context.token_source.clone(),
+                }),
             },
             Err(error) => {
                 return Some(GlobalStackStatusEntry {
@@ -3381,18 +3391,39 @@ async fn production_global_stack_status_entry_traced(
                 });
             }
         };
-    let status_facts_task = spawn_global_stack_status_facts_load(
-        context.workspace_root.clone(),
-        context
-            .github_remotes
-            .iter()
-            .map(|remote| remote.name.clone())
-            .collect(),
-    );
-    let discover_step = span.start_step("discover_missing_pull_requests", Vec::new());
+    // Keep local fact loading overlapped for cached stacks, but avoid it for empty repositories.
+    let load_status_facts = || {
+        spawn_global_stack_status_facts_load(
+            context.workspace_root.clone(),
+            context
+                .github_remotes
+                .iter()
+                .map(|remote| remote.name.clone())
+                .collect(),
+        )
+    };
+    let status_facts_task = (!metadata.nodes.is_empty()).then(&load_status_facts);
+    let discover_step = span.start_step("discover_pull_requests", Vec::new());
     let discovered_pull_requests = async {
-        let mut pull_requests = Vec::new();
+        let author = github
+            .authenticated_user()
+            .await
+            .map_err(|error| error.to_string())?;
+        if author.login.is_empty() {
+            return Err(WorkflowError::MissingGitHubLogin.to_string());
+        }
+        let mut pull_requests = github
+            .authored_open_pull_requests(&context.origin.github, &author.login)
+            .await
+            .map_err(|error| error.to_string())?;
+        let authored_branches = pull_requests
+            .iter()
+            .map(|pr| pr.head_branch.clone())
+            .collect::<BTreeSet<_>>();
         for branch in stack_status_missing_pull_request_branches_from_metadata(&metadata) {
+            if authored_branches.contains(&branch) {
+                continue;
+            }
             let head = PullRequestHead::same_repository(&context.origin.github.owner, &branch);
             if let Some(pull_request) = github
                 .find_pull_request_for_head(&context.origin.github, &head)
@@ -3426,6 +3457,10 @@ async fn production_global_stack_status_entry_traced(
         perf_attr("pr_count", numbers.len()),
     ]);
 
+    if metadata.nodes.is_empty() && discovered_pull_requests.as_ref().is_ok_and(Vec::is_empty) {
+        return None;
+    }
+    let status_facts_task = status_facts_task.unwrap_or_else(load_status_facts);
     let fetch_statuses = async {
         let started = Instant::now();
         let result = if numbers.is_empty() {
@@ -3492,14 +3527,21 @@ async fn production_global_stack_status_entry_traced(
         trunk_result.as_ref().err(),
     );
 
-    let result = match discovered_pull_requests.and(statuses_result) {
-        Ok(statuses) => {
+    let result = match discovered_pull_requests
+        .and_then(|discovered| statuses_result.map(|statuses| (discovered, statuses)))
+    {
+        Ok((discovered, statuses)) => {
             let maintain_step = span.start_step(
                 "maintain_stack_metadata",
                 [perf_attr("status_count", statuses.len())],
             );
-            let maintained =
-                maintain_stack_status_metadata(&context, token_environment, &metadata, &statuses);
+            let maintained = maintain_stack_status_metadata(
+                &context,
+                token_environment,
+                &metadata,
+                &statuses,
+                &discovered,
+            );
             span.finish_step(
                 maintain_step,
                 maintained
@@ -3550,7 +3592,7 @@ async fn production_global_stack_status_entry_traced(
 }
 
 struct GlobalStackStatusPreparation {
-    data: Option<Box<GlobalStackStatusPreparationData>>,
+    data: Box<GlobalStackStatusPreparationData>,
     metrics: GlobalStackStatusPreparationMetrics,
 }
 
@@ -3578,6 +3620,7 @@ struct GlobalStackStatusFactsMetrics {
     status_facts: StatusWorkspaceMetrics,
 }
 
+/// Loads repository context even without cached metadata so authored discovery can seed the stack.
 async fn prepare_global_stack_status(
     root: PathBuf,
     environment: RuntimeEnvironment,
@@ -3589,12 +3632,6 @@ async fn prepare_global_stack_status(
             || read_stack_metadata(&root).map_err(|error| error.to_string()),
         )?;
         metrics.metadata_node_count = metadata.nodes.len();
-        if metadata.nodes.is_empty() {
-            return Ok(GlobalStackStatusPreparation {
-                data: None,
-                metrics,
-            });
-        }
 
         let environment = environment.with_current_dir(&root);
         let context = measure_global_stack_status_preparation_step(
@@ -3602,10 +3639,7 @@ async fn prepare_global_stack_status(
             || RepositoryContext::discover(&environment).map_err(|error| error.to_string()),
         )?;
         Ok(GlobalStackStatusPreparation {
-            data: Some(Box::new(GlobalStackStatusPreparationData {
-                context,
-                metadata,
-            })),
+            data: Box::new(GlobalStackStatusPreparationData { context, metadata }),
             metrics,
         })
     })
@@ -3803,10 +3837,16 @@ fn maintained_stack_status_report(
     environment: &RuntimeEnvironment,
     metadata: &StackMetadata,
     statuses: Vec<PullRequestStatusRecord>,
+    discovered_pull_requests: &[PullRequestRecord],
     fetch_trunk: impl FnOnce() -> Result<Option<RemoteStatusReport>, String>,
 ) -> Result<Option<PullRequestStackStatusReport>, String> {
-    let Some(maintained) =
-        maintain_stack_status_metadata(context, environment, metadata, &statuses)?
+    let Some(maintained) = maintain_stack_status_metadata(
+        context,
+        environment,
+        metadata,
+        &statuses,
+        discovered_pull_requests,
+    )?
     else {
         return Ok(None);
     };
@@ -3828,9 +3868,10 @@ fn maintain_stack_status_metadata(
     environment: &RuntimeEnvironment,
     metadata: &StackMetadata,
     statuses: &[PullRequestStatusRecord],
+    discovered_pull_requests: &[PullRequestRecord],
 ) -> Result<Option<StackMetadata>, String> {
     let maintained = StackStatusMetadataMaintainer::new(context, environment)
-        .maintain(metadata, statuses)
+        .maintain(metadata, statuses, discovered_pull_requests)
         .map_err(|error| error.to_string())?
         .metadata;
     if maintained.nodes.is_empty() {
@@ -3858,12 +3899,20 @@ fn stack_status_numbers_from_metadata(
         .collect()
 }
 
-fn stack_status_missing_pull_requests_from_metadata(
+/// Supplements authored search results with unresolved cached branches without repeating head lookups.
+fn discover_stack_status_pull_requests_from_metadata(
     metadata: &StackMetadata,
+    mut pull_requests: Vec<PullRequestRecord>,
     mut resolve_pull_request: impl FnMut(&str) -> Result<Option<PullRequestRecord>, String>,
 ) -> Result<Vec<PullRequestRecord>, String> {
-    let mut pull_requests = Vec::new();
+    let authored_branches = pull_requests
+        .iter()
+        .map(|pr| pr.head_branch.clone())
+        .collect::<BTreeSet<_>>();
     for branch in stack_status_missing_pull_request_branches_from_metadata(metadata) {
+        if authored_branches.contains(&branch) {
+            continue;
+        }
         if let Some(pull_request) = resolve_pull_request(&branch)? {
             pull_requests.push(pull_request);
         }

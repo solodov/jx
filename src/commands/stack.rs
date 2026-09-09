@@ -481,9 +481,9 @@ impl StackStatusExecution<'_> {
             stack_snapshot_result_attrs,
         )?;
         let discovered_pull_requests = span.measure_with_result_attrs(
-            "discover_missing_pull_requests",
+            "discover_pull_requests",
             Vec::new(),
-            || stack_status_missing_pull_requests(self.services, self.context, &snapshot),
+            || discover_stack_status_pull_requests(self.services, self.context, &snapshot),
             pull_request_discovery_result_attrs,
         )?;
         let numbers = stack_status_pull_request_numbers(&snapshot, &discovered_pull_requests);
@@ -496,7 +496,7 @@ impl StackStatusExecution<'_> {
         let fetches = self.services.stack_status_fetches(
             self.context,
             &numbers,
-            !snapshot.nodes.is_empty(),
+            !snapshot.nodes.is_empty() || !numbers.is_empty(),
         )?;
         if !numbers.is_empty() {
             span.record_step_us(
@@ -523,7 +523,10 @@ impl StackStatusExecution<'_> {
         let snapshot = span.measure_with_result_attrs(
             "maintain_stack_metadata",
             [perf_attr("status_count", statuses.len())],
-            || self.manager.maintain_status_metadata(&statuses),
+            || {
+                self.manager
+                    .maintain_status_metadata(&statuses, &discovered_pull_requests)
+            },
             stack_snapshot_result_attrs,
         )?;
         let trunk = (!snapshot.nodes.is_empty())
@@ -2255,13 +2258,18 @@ fn stack_status_pull_request_numbers(
         .collect()
 }
 
-fn stack_status_missing_pull_requests(
+/// Discovers authored PRs independently of local commits, then resolves uncached stack branches.
+fn discover_stack_status_pull_requests(
     services: &dyn CommandServices,
     context: &RepositoryContext,
     snapshot: &PullRequestStackSnapshot,
-) -> Result<Vec<PullRequestRecord>, WorkflowError> {
-    let mut seen = BTreeSet::new();
-    let mut pull_requests = Vec::new();
+) -> Result<Vec<PullRequestRecord>, CommandError> {
+    let author = services.authenticated_login(&context.token_source)?;
+    let mut pull_requests = services.authored_open_pull_requests(context, &author)?;
+    let mut seen = pull_requests
+        .iter()
+        .map(|pr| pr.head_branch.clone())
+        .collect::<BTreeSet<_>>();
     for branch in snapshot
         .nodes
         .iter()
@@ -2294,7 +2302,7 @@ fn stack_snapshot_result_attrs(
 }
 
 fn pull_request_discovery_result_attrs(
-    result: &Result<Vec<PullRequestRecord>, WorkflowError>,
+    result: &Result<Vec<PullRequestRecord>, CommandError>,
 ) -> Vec<PerfAttr> {
     result
         .as_ref()

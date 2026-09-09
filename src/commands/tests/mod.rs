@@ -417,6 +417,8 @@ struct FakeServices {
     authored_open_pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
     authored_open_pull_request_head_calls: std::cell::RefCell<Vec<(String, String)>>,
     authored_open_pull_requests: Vec<PullRequestRecord>,
+    authored_open_pull_requests_by_repository: BTreeMap<String, Vec<PullRequestRecord>>,
+    authored_open_pull_request_errors: BTreeSet<String>,
     authored_open_pull_request_calls: std::cell::RefCell<Vec<String>>,
     pull_requests_by_head: BTreeMap<String, PullRequestRecord>,
     open_pull_request_head_calls: std::cell::RefCell<Vec<String>>,
@@ -625,6 +627,8 @@ impl Default for FakeServices {
             authored_open_pull_requests_by_head: BTreeMap::new(),
             authored_open_pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
             authored_open_pull_requests: Vec::new(),
+            authored_open_pull_requests_by_repository: BTreeMap::new(),
+            authored_open_pull_request_errors: BTreeSet::new(),
             authored_open_pull_request_calls: std::cell::RefCell::new(Vec::new()),
             pull_requests_by_head: BTreeMap::new(),
             open_pull_request_head_calls: std::cell::RefCell::new(Vec::new()),
@@ -1330,13 +1334,25 @@ impl CommandServices for FakeServices {
 
     fn authored_open_pull_requests(
         &self,
-        _context: &RepositoryContext,
+        context: &RepositoryContext,
         author: &str,
     ) -> Result<Vec<PullRequestRecord>, WorkflowError> {
         self.authored_open_pull_request_calls
             .borrow_mut()
             .push(author.to_owned());
-        Ok(self.authored_open_pull_requests.clone())
+        let repository = context.origin.github.slug();
+        if self.authored_open_pull_request_errors.contains(&repository) {
+            return Err(GitHubError::GraphQl {
+                operation: "search authored open pull requests",
+                message: "discovery unavailable".to_owned(),
+            }
+            .into());
+        }
+        Ok(self
+            .authored_open_pull_requests_by_repository
+            .get(&repository)
+            .unwrap_or(&self.authored_open_pull_requests)
+            .clone())
     }
 
     fn find_pull_request_for_head(
