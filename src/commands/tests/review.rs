@@ -272,6 +272,58 @@ fn review_render_uses_viewer_review_state_symbols() {
 }
 
 #[test]
+fn review_renders_readable_pastel_labels_in_flow_and_terminal_layouts() {
+    // Verifies: review uses the shared palette, clearing dim for each chip and restoring draft rows.
+    for draft in [false, true] {
+        let mut status = review_status_record(12, "Labeled review", "example-author", draft);
+        status.labels = ["workflow", "guard"]
+            .map(|name| PullRequestLabel {
+                name: name.to_owned(),
+                color: "5319e7".to_owned(),
+            })
+            .to_vec();
+        let view = ReviewRequestsView {
+            viewer: "example-reviewer".to_owned(),
+            repositories: vec![ReviewRequestRepositoryView {
+                repository: GitHubRepository {
+                    owner: "example-owner".to_owned(),
+                    name: "api-alpha".to_owned(),
+                },
+                layout_key: None,
+                root: None,
+                display_root: None,
+                rows: vec![ReviewRequestRowView {
+                    status,
+                    state: crate::domain::ReviewRequestState::New,
+                    viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
+                    dismissal: None,
+                }],
+                external: false,
+                review_wait_threshold_seconds: None,
+            }],
+        };
+        let (background, text, restore) = if draft {
+            ("228;219;241", "98;93;86", DRAFT_ROW_STYLE)
+        } else {
+            ("207;191;239", "52;49;46", "")
+        };
+        let expected_chips = ["workflow", "guard"]
+            .map(|name| {
+                format!("\x1b[22m\x1b[48;2;{background}m\x1b[38;2;{text}m {name} \x1b[0m{restore}")
+            })
+            .join("");
+        for layout in [
+            PullRequestTableLayout::Flow,
+            PullRequestTableLayout::FitTerminal,
+        ] {
+            let output = render_review_requests(&view, true, Some(100), layout, &BTreeMap::new());
+            assert!(output.contains(&expected_chips), "{output:?}");
+        }
+    }
+}
+
+#[test]
 fn review_interactive_layout_shrinks_titles_before_right_metadata() {
     // Verifies: dashboard rows preserve labels and authors at the right edge before truncating metadata.
     let mut status = review_status_record(

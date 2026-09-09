@@ -1,6 +1,175 @@
 use super::*;
 
 #[test]
+fn pull_request_label_chips_use_readable_pastels_and_restore_row_style() {
+    // Verifies: saturated and neutral colors become pastel chips, never raw GitHub backgrounds.
+    for (source, active_rgb, muted_rgb) in [
+        ("d93f0b", [240, 200, 184], [244, 224, 214]),
+        ("5319e7", [207, 191, 239], [228, 219, 241]),
+        ("1d76db", [193, 214, 236], [222, 231, 239]),
+        ("0e8a16", [190, 219, 187], [220, 233, 216]),
+        ("fbca04", [249, 235, 183], [248, 241, 213]),
+        ("000000", [186, 185, 182], [218, 216, 213]),
+        ("ffffff", [250, 248, 245], [249, 247, 244]),
+    ] {
+        let labels = [PullRequestLabel {
+            name: "area: \tbackend".to_owned(),
+            color: source.to_owned(),
+        }];
+        for (chips, [red, green, blue], text, restore) in [
+            (
+                pull_request_label_chips(&labels, true, false),
+                active_rgb,
+                "52;49;46",
+                "",
+            ),
+            (
+                pull_request_label_chips(&labels, true, true),
+                muted_rgb,
+                "98;93;86",
+                DRAFT_ROW_STYLE,
+            ),
+            (
+                muted_pull_request_label_chips(&labels, true),
+                muted_rgb,
+                "98;93;86",
+                "",
+            ),
+        ] {
+            assert_eq!(chips, [format!(
+                "\x1b[22m\x1b[48;2;{red};{green};{blue}m\x1b[38;2;{text}m area:backend \x1b[0m{restore}"
+            )], "source: {source}");
+        }
+    }
+}
+
+#[test]
+fn pull_request_label_text_meets_srgb_contrast_threshold() {
+    // Verifies: all palette variants remain readable across the RGB cube, including black
+    // as the darkest possible blend, rather than relying on a perceived-brightness cutoff.
+    let channels = [0, 32, 64, 96, 128, 160, 192, 224, 255];
+    for red in channels {
+        for green in channels {
+            for blue in channels {
+                let labels = [PullRequestLabel {
+                    name: "label".to_owned(),
+                    color: format!("{red:02x}{green:02x}{blue:02x}"),
+                }];
+                for chips in [
+                    pull_request_label_chips(&labels, true, false),
+                    pull_request_label_chips(&labels, true, true),
+                    muted_pull_request_label_chips(&labels, true),
+                ] {
+                    assert_label_chip_contrast(&chips[0]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pull_request_label_chips_fall_back_to_readable_neutral_colors() {
+    // Verifies: malformed color metadata never produces malformed ANSI or low-contrast chips.
+    for source in ["", "invalid", "123", "1234567", "gggggg", "ééé"] {
+        let labels = [PullRequestLabel {
+            name: "label".to_owned(),
+            color: source.to_owned(),
+        }];
+        for (chips, expected_background) in [
+            (
+                pull_request_label_chips(&labels, true, false),
+                [221, 221, 221],
+            ),
+            (
+                pull_request_label_chips(&labels, true, true),
+                [232, 228, 222],
+            ),
+            (
+                muted_pull_request_label_chips(&labels, true),
+                [232, 228, 222],
+            ),
+        ] {
+            assert_eq!(label_chip_rgb(&chips[0], "\x1b[48;2;"), expected_background);
+            assert_label_chip_contrast(&chips[0]);
+        }
+    }
+}
+
+#[test]
+fn pull_request_label_chips_accept_normalized_hex_colors() {
+    // Verifies: optional hash prefixes, whitespace, and case keep the same palette.
+    let label = PullRequestLabel {
+        name: "label".to_owned(),
+        color: "5319e7".to_owned(),
+    };
+    let expected = pull_request_label_chips(std::slice::from_ref(&label), true, false);
+    for source in ["5319E7", "#5319e7", "  #5319E7  "] {
+        let labels = [PullRequestLabel {
+            color: source.to_owned(),
+            ..label.clone()
+        }];
+        assert_eq!(pull_request_label_chips(&labels, true, false), expected);
+    }
+}
+
+#[test]
+fn plain_pull_request_labels_remain_unstyled() {
+    // Verifies: disabling color preserves compact bracketed labels in every lifecycle state.
+    let labels = [PullRequestLabel {
+        name: "area: \tbackend".to_owned(),
+        color: "5319e7".to_owned(),
+    }];
+    for chips in [
+        pull_request_label_chips(&labels, false, false),
+        pull_request_label_chips(&labels, false, true),
+        muted_pull_request_label_chips(&labels, false),
+    ] {
+        assert_eq!(chips, ["[area:backend]"]);
+    }
+    assert_eq!(pull_request_label_separator(false), " ");
+    assert_eq!(pull_request_label_separator(true), "");
+}
+
+fn assert_label_chip_contrast(chip: &str) {
+    assert!(
+        chip.starts_with("\x1b[22m"),
+        "chip must clear inherited intensity: {chip:?}"
+    );
+    let background = label_relative_luminance(label_chip_rgb(chip, "\x1b[48;2;"));
+    let text = label_relative_luminance(label_chip_rgb(chip, "\x1b[38;2;"));
+    let contrast = (background.max(text) + 0.05) / (background.min(text) + 0.05);
+    assert!(
+        contrast >= 4.5,
+        "label contrast {contrast:.2}:1 is below 4.5:1: {chip:?}"
+    );
+}
+
+fn label_chip_rgb(chip: &str, prefix: &str) -> [u8; 3] {
+    let (_, channels) = chip.split_once(prefix).expect("chip has an RGB color");
+    let (channels, _) = channels
+        .split_once('m')
+        .expect("color ends with SGR terminator");
+    channels
+        .split(';')
+        .map(|channel| channel.parse::<u8>().expect("color channel is a byte"))
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("color has three channels")
+}
+
+fn label_relative_luminance(rgb: [u8; 3]) -> f64 {
+    let [red, green, blue] = rgb.map(|channel| {
+        let srgb = f64::from(channel) / 255.0;
+        if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+#[test]
 fn pull_request_selection_formats_draft_state_as_color_only() {
     // Verifies: Draft PR choices keep text aligned and signal state with subdued color only.
     let ready = PullRequestRecord {

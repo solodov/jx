@@ -1936,8 +1936,8 @@ fn stack_status_resolves_merged_branch_only_stack_nodes() {
 }
 
 #[test]
-fn stack_status_colorizes_labels_with_github_backgrounds() {
-    // Verifies: colored stack status renders labels as GitHub-colored chips.
+fn stack_status_colorizes_labels_with_readable_pastel_backgrounds() {
+    // Verifies: active, draft, and merged labels share the pastel palette and restore row styling.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -2106,7 +2106,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
     .expect("colored stack status succeeds");
 
     assert!(result.stdout.contains(
-        "\x1b[48;2;0;0;0m\x1b[38;2;255;255;255m bug \x1b[0m\x1b[48;2;251;202;4m\x1b[38;2;0;0;0m docs \x1b[0m\x1b[48;2;14;138;22m\x1b[38;2;255;255;255m run-ci \x1b[0m\x1b[48;2;215;58;74m\x1b[38;2;0;0;0m pink \x1b[0m\x1b[48;2;83;25;231m\x1b[38;2;255;255;255m area:backend \x1b[0m"
+        "\x1b[22m\x1b[48;2;186;185;182m\x1b[38;2;52;49;46m bug \x1b[0m\x1b[22m\x1b[48;2;249;235;183m\x1b[38;2;52;49;46m docs \x1b[0m\x1b[22m\x1b[48;2;190;219;187m\x1b[38;2;52;49;46m run-ci \x1b[0m\x1b[22m\x1b[48;2;240;199;200m\x1b[38;2;52;49;46m pink \x1b[0m\x1b[22m\x1b[48;2;207;191;239m\x1b[38;2;52;49;46m area:backend \x1b[0m"
     ));
     assert!(result
         .stdout
@@ -2125,12 +2125,12 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .stdout
         .contains("\x1b[3m\x1b[32mreviewer-commented-approved\x1b[0m"));
     assert!(result.stdout.contains(
-        "\x1b[48;2;246;237;234m\x1b[38;2;190;184;176m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
+        "\x1b[22m\x1b[48;2;244;223;222m\x1b[38;2;98;93;86m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
     ));
     assert!(result.stdout.contains("\x1b[32m#112\x1b[0m"));
     assert!(result.stdout.contains("\x1b[32m● Merged change\x1b[0m"));
     assert!(result.stdout.contains(
-        "\x1b[32m● Merged change\x1b[0m \x1b[48;2;236;241;231m\x1b[38;2;190;184;176m done \x1b[0m"
+        "\x1b[32m● Merged change\x1b[0m \x1b[22m\x1b[48;2;220;233;216m\x1b[38;2;98;93;86m done \x1b[0m"
     ));
     let merged_line = result
         .stdout

@@ -9,7 +9,6 @@ const BLACK_ITALIC_STYLE: &str = "\x1b[3m\x1b[30m";
 pub(in crate::commands) const DIM_STYLE: &str = "\x1b[2m";
 pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
 pub(in crate::commands) const DRAFT_CONFLICT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;218;128;132m";
-const DRAFT_TEXT_RGB: (u8, u8, u8) = (190, 184, 176);
 pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
 const GREEN_ITALIC_STYLE: &str = "\x1b[3m\x1b[32m";
 const MERGED_APPROVED_REVIEWER_STYLE: &str = "\x1b[38;2;118;108;96m";
@@ -27,6 +26,7 @@ pub(in crate::commands) fn ellipsize_pull_request_title(title: &str) -> String {
     ellipsize_rendered_line(title, Some(PULL_REQUEST_TITLE_MAX_WIDTH))
 }
 
+/// Renders pastel label chips, with quieter colors and row-style restoration for drafts.
 pub(in crate::commands) fn pull_request_label_chips(
     labels: &[PullRequestLabel],
     color: bool,
@@ -38,6 +38,7 @@ pub(in crate::commands) fn pull_request_label_chips(
         .collect()
 }
 
+/// Renders subdued label chips for completed PRs without applying draft row styling.
 pub(in crate::commands) fn muted_pull_request_label_chips(
     labels: &[PullRequestLabel],
     color: bool,
@@ -61,6 +62,7 @@ fn pull_request_label_chip(label: &PullRequestLabel, color: bool, draft: bool) -
     pull_request_label_chip_with_restore(label, color, draft, restore_style)
 }
 
+/// Draws each chip at normal intensity, then restores the surrounding row style.
 fn pull_request_label_chip_with_restore(
     label: &PullRequestLabel,
     color: bool,
@@ -71,22 +73,15 @@ fn pull_request_label_chip_with_restore(
         return plain_pull_request_label_chip(&label.name);
     }
     let (red, green, blue) = github_label_rgb(&label.color)
-        .map(|color| {
-            if muted {
-                pastel_github_label_rgb(color)
-            } else {
-                color
-            }
-        })
+        .map(|color| pastel_github_label_rgb(color, muted))
         .unwrap_or_else(|| fallback_label_rgb(muted));
-    let (text_red, text_green, text_blue) = if muted {
-        DRAFT_TEXT_RGB
-    } else {
-        github_label_text_rgb(red, green, blue)
-    };
+    // Both text colors retain at least 4.5:1 contrast against their darkest possible
+    // blended background (a black source). Muting must not make labels hard to read.
+    let (text_red, text_green, text_blue) = if muted { (98, 93, 86) } else { (52, 49, 46) };
     let display_name = compact_label_name(&label.name);
+    // SGR 22 clears inherited bold/dim intensity so terminal dimming cannot alter contrast.
     format!(
-        "\x1b[48;2;{red};{green};{blue}m\x1b[38;2;{text_red};{text_green};{text_blue}m {display_name} {RESET_STYLE}{restore_style}"
+        "\x1b[22m\x1b[48;2;{red};{green};{blue}m\x1b[38;2;{text_red};{text_green};{text_blue}m {display_name} {RESET_STYLE}{restore_style}"
     )
 }
 
@@ -108,13 +103,14 @@ fn compact_label_name(name: &str) -> String {
     compacted
 }
 
-fn pastel_github_label_rgb((red, green, blue): (u8, u8, u8)) -> (u8, u8, u8) {
-    const DRAFT_BLEND_TARGET: (u8, u8, u8) = (248, 246, 242);
-    const SOURCE_WEIGHT_PERCENT: u16 = 5;
+/// Blends toward warm off-white, retaining less source color for draft and merged PRs.
+fn pastel_github_label_rgb((red, green, blue): (u8, u8, u8), muted: bool) -> (u8, u8, u8) {
+    const BLEND_TARGET: (u8, u8, u8) = (248, 246, 242);
+    let source_weight_percent = if muted { 12 } else { 25 };
     (
-        blend_color_channel(red, DRAFT_BLEND_TARGET.0, SOURCE_WEIGHT_PERCENT),
-        blend_color_channel(green, DRAFT_BLEND_TARGET.1, SOURCE_WEIGHT_PERCENT),
-        blend_color_channel(blue, DRAFT_BLEND_TARGET.2, SOURCE_WEIGHT_PERCENT),
+        blend_color_channel(red, BLEND_TARGET.0, source_weight_percent),
+        blend_color_channel(green, BLEND_TARGET.1, source_weight_percent),
+        blend_color_channel(blue, BLEND_TARGET.2, source_weight_percent),
     )
 }
 
@@ -125,8 +121,8 @@ fn blend_color_channel(source: u8, target: u8, source_weight_percent: u16) -> u8
     (value / 100) as u8
 }
 
-fn fallback_label_rgb(draft: bool) -> (u8, u8, u8) {
-    if draft {
+fn fallback_label_rgb(muted: bool) -> (u8, u8, u8) {
+    if muted {
         (232, 228, 222)
     } else {
         (221, 221, 221)
@@ -143,21 +139,6 @@ fn github_label_rgb(color: &str) -> Option<(u8, u8, u8)> {
         u8::from_str_radix(&color[2..4], 16).ok()?,
         u8::from_str_radix(&color[4..6], 16).ok()?,
     ))
-}
-
-fn github_label_text_rgb(red: u8, green: u8, blue: u8) -> (u8, u8, u8) {
-    // Terminal chips preserve the label background as the primary signal. A lower
-    // brightness cutoff keeps dark greens readable with white text while avoiding
-    // washed-out white text on saturated reds and pinks.
-    if perceived_brightness(red, green, blue) >= 100 {
-        (0, 0, 0)
-    } else {
-        (255, 255, 255)
-    }
-}
-
-fn perceived_brightness(red: u8, green: u8, blue: u8) -> u16 {
-    ((u32::from(red) * 299 + u32::from(green) * 587 + u32::from(blue) * 114) / 1000) as u16
 }
 
 pub(in crate::commands) fn pull_request_status_user_logins<'a>(
