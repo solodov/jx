@@ -1,5 +1,8 @@
 use super::*;
 
+mod discovery;
+pub(crate) use discovery::*;
+
 const DEFAULT_LAYOUT_SOURCE: &str = "github";
 const DEFAULT_LAYOUT_ROOT: &str = "~/src";
 const DEFAULT_LAYOUT_WORKSPACE_DIR: &str = ".work";

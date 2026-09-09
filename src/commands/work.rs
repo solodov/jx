@@ -2,6 +2,9 @@ use super::*;
 use globset::{Glob, GlobMatcher};
 use std::fs;
 
+mod discovery;
+use discovery::{discovered_work_locations, WorkDiscoveryScope};
+
 /// One globally navigable work location discovered from the configured layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkLocation {
@@ -508,49 +511,6 @@ fn global_discovered_work_repositories(
             .filter(|location| location.workspace.is_none())
             .collect(),
     )
-}
-
-fn discovered_work_locations(
-    config: &WorkflowConfig,
-    environment: &RuntimeEnvironment,
-    scope: WorkDiscoveryScope,
-) -> Result<Vec<DiscoveredWorkLocation>, RepositoryError> {
-    let mut workspace_roots = Vec::new();
-    let max_depth = max_work_location_depth(&config.layout);
-    for root in config.layout.configured_roots(environment)? {
-        collect_jj_workspace_roots(
-            &root,
-            max_depth,
-            scope.skipped_child_name(&config.layout),
-            &mut workspace_roots,
-        );
-    }
-    workspace_roots.sort();
-    workspace_roots.dedup();
-
-    let mut discovered = Vec::new();
-    for root in workspace_roots {
-        if let Some(location) = discovered_work_location(&config.layout, &root, environment)? {
-            discovered.push(location);
-        }
-    }
-
-    Ok(discovered)
-}
-
-#[derive(Debug, Clone, Copy)]
-enum WorkDiscoveryScope {
-    All,
-    PrimaryOnly,
-}
-
-impl WorkDiscoveryScope {
-    fn skipped_child_name(self, layout: &LayoutConfig) -> Option<&str> {
-        match self {
-            Self::All => None,
-            Self::PrimaryOnly => Some(&layout.workspace_dir),
-        }
-    }
 }
 
 /// Builds the global work-location index used by shell completion and path resolution.
@@ -1484,98 +1444,6 @@ fn contains_glob_meta(pattern: &str) -> bool {
         .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
 }
 
-fn collect_jj_workspace_roots(
-    root: &Path,
-    max_depth: usize,
-    skipped_child_name: Option<&str>,
-    roots: &mut Vec<PathBuf>,
-) {
-    collect_jj_workspace_roots_at_depth(root, 0, max_depth, skipped_child_name, roots);
-}
-
-fn collect_jj_workspace_roots_at_depth(
-    path: &Path,
-    depth: usize,
-    max_depth: usize,
-    skipped_child_name: Option<&str>,
-    roots: &mut Vec<PathBuf>,
-) {
-    if is_jj_workspace_root(path) {
-        roots.push(path.to_path_buf());
-        return;
-    }
-    if depth >= max_depth {
-        return;
-    }
-
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-    let mut children = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() || entry.file_name() == ".jj" {
-            continue;
-        }
-        if skipped_child_name.is_some_and(|name| entry.file_name() == name) {
-            continue;
-        }
-        children.push(entry.path());
-    }
-    children.sort();
-
-    for child in children {
-        collect_jj_workspace_roots_at_depth(
-            &child,
-            depth + 1,
-            max_depth,
-            skipped_child_name,
-            roots,
-        );
-    }
-}
-
-fn is_jj_workspace_root(path: &Path) -> bool {
-    path.join(".jj").is_dir()
-}
-
-fn discovered_work_location(
-    layout: &LayoutConfig,
-    root: &Path,
-    environment: &RuntimeEnvironment,
-) -> Result<Option<DiscoveredWorkLocation>, RepositoryError> {
-    let Ok(identity) = layout.identity_for_workspace_root(root, environment) else {
-        return Ok(None);
-    };
-
-    if layout.project_destination(&identity, environment)? == root {
-        return Ok(Some(DiscoveredWorkLocation {
-            identity,
-            workspace: None,
-            root: root.to_path_buf(),
-        }));
-    }
-
-    let Some(workspace) = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_owned)
-    else {
-        return Ok(None);
-    };
-    if layout.workspace_destination(&identity, &workspace, environment)? != root {
-        return Ok(None);
-    }
-
-    Ok(Some(DiscoveredWorkLocation {
-        identity,
-        workspace: Some(workspace),
-        root: root.to_path_buf(),
-    }))
-}
-
 fn assign_work_location_keys(locations: Vec<DiscoveredWorkLocation>) -> Vec<WorkLocation> {
     let identities = unique_identities(&locations);
     let (repo_counts, owner_repo_counts) = repo_key_counts(&identities);
@@ -1695,23 +1563,4 @@ fn work_location_sort_key(location: &WorkLocation) -> (String, u8, String) {
 
 fn work_repository_sort_key(repository: &WorkRepository) -> String {
     repository.key.clone()
-}
-
-fn max_work_location_depth(layout: &LayoutConfig) -> usize {
-    layout
-        .rules
-        .iter()
-        .map(|rule| rule.path.as_deref().unwrap_or(&layout.default.path))
-        .chain(std::iter::once(layout.default.path.as_str()))
-        .map(path_component_count)
-        .max()
-        .unwrap_or(0)
-        + 2
-}
-
-fn path_component_count(path: &str) -> usize {
-    Path::new(path)
-        .components()
-        .filter(|component| matches!(component, std::path::Component::Normal(_)))
-        .count()
 }

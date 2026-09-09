@@ -243,6 +243,8 @@ def event_extras(record: dict[str, Any]) -> str:
         "mode",
         "repo",
         "workspace_root",
+        "scope",
+        "workspace_root_count",
         "jj_workspace",
         "pid",
         "exit_code",
@@ -282,6 +284,12 @@ def event_extras(record: dict[str, Any]) -> str:
 
 def step_extras(step: dict[str, Any]) -> str:
     keys = [
+        "layout_root",
+        "pattern_count",
+        "directory_count",
+        "read_dir_count",
+        "entry_count",
+        "workspace_root_count",
         "tracked_update_count",
         "pushable_update_count",
         "pushed_ref_count",

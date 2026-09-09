@@ -51,6 +51,7 @@ mod shell;
 mod stack;
 mod sync;
 mod work;
+mod work_discovery;
 
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 

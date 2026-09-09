@@ -16,6 +16,8 @@ use jj_lib::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod layout_discovery;
+
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
