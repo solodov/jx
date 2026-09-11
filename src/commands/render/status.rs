@@ -113,22 +113,29 @@ fn render_generated_stack_context_line(line: &str) -> String {
     render_stack_context_inline_markdown(&line)
 }
 
+/// Projects generated list emphasis and PR links while preserving escaped title text.
 fn render_stack_context_inline_markdown(value: &str) -> String {
     let mut rendered = String::new();
     let mut offset = 0;
     while offset < value.len() {
         let remaining = &value[offset..];
-        if let Some(link) = parse_bold_markdown_link_prefix(remaining)
-            .or_else(|| parse_markdown_link_prefix(remaining))
-        {
-            rendered.push_str(&osc8_link(&link.url, &link.label));
-            offset += link.consumed;
+        if let Some((consumed, ch)) = markdown_escaped_punctuation_prefix(remaining) {
+            rendered.push(ch);
+            offset += consumed;
             continue;
         }
 
-        if let Some((consumed, ch)) = markdown_escaped_bracket_prefix(remaining) {
-            rendered.push(ch);
+        if let Some((content, consumed, style)) = parse_markdown_emphasis_prefix(remaining) {
+            rendered.push_str(style);
+            rendered.push_str(&render_stack_context_inline_markdown(content));
+            rendered.push_str(RESET_STYLE);
             offset += consumed;
+            continue;
+        }
+
+        if let Some(link) = parse_markdown_link_prefix(remaining) {
+            rendered.push_str(&osc8_link(&link.url, &link.label));
+            offset += link.consumed;
             continue;
         }
 
@@ -149,19 +156,24 @@ struct MarkdownLink {
     url: String,
 }
 
-fn parse_bold_markdown_link_prefix(value: &str) -> Option<MarkdownLink> {
-    let inner = value.strip_prefix("**")?;
-    let link = parse_markdown_link_prefix(inner)?;
-    let suffix = &inner[link.consumed..];
-    if !suffix.starts_with("**") {
-        return None;
+/// Reads the emphasis forms emitted for the current PR marker and lifecycle suffixes.
+fn parse_markdown_emphasis_prefix(value: &str) -> Option<(&str, usize, &'static str)> {
+    for (delimiter, style) in [("**", BOLD_STYLE), ("*", "\x1b[3m")] {
+        let Some(inner) = value.strip_prefix(delimiter) else {
+            continue;
+        };
+        // Older blocks put titles inside links; their literal asterisks do not close the outer emphasis.
+        let search_start = parse_markdown_link_prefix(inner).map_or(0, |link| link.consumed);
+        let Some(end) = inner[search_start..]
+            .find(delimiter)
+            .map(|end| search_start + end)
+            .filter(|end| *end > 0)
+        else {
+            continue;
+        };
+        return Some((&inner[..end], end + 2 * delimiter.len(), style));
     }
-
-    Some(MarkdownLink {
-        consumed: link.consumed + 4,
-        label: link.label,
-        url: link.url,
-    })
+    None
 }
 
 fn parse_markdown_link_prefix(value: &str) -> Option<MarkdownLink> {
@@ -176,10 +188,10 @@ fn parse_markdown_link_prefix(value: &str) -> Option<MarkdownLink> {
     })
 }
 
-fn markdown_escaped_bracket_prefix(value: &str) -> Option<(usize, char)> {
+fn markdown_escaped_punctuation_prefix(value: &str) -> Option<(usize, char)> {
     let rest = value.strip_prefix('\\')?;
     let ch = rest.chars().next()?;
-    matches!(ch, '[' | ']').then_some((1 + ch.len_utf8(), ch))
+    ch.is_ascii_punctuation().then_some((1 + ch.len_utf8(), ch))
 }
 
 fn markdown_link_label_end(value: &str) -> Option<usize> {
@@ -208,8 +220,7 @@ fn unescape_markdown_link_text(value: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('[') => rendered.push('['),
-                Some(']') => rendered.push(']'),
+                Some(next) if next.is_ascii_punctuation() => rendered.push(next),
                 Some(next) => {
                     rendered.push(ch);
                     rendered.push(next);

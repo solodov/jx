@@ -360,11 +360,11 @@ fn workspace_status_renderer_hides_stack_context_comment_markers() {
 }
 
 #[test]
-fn pull_request_preview_renders_generated_stack_context_as_terminal_links() {
-    // Verifies: stack publish previews project generated GitHub Markdown into terminal links.
+fn pull_request_preview_renders_legacy_stack_context_as_terminal_links() {
+    // Verifies: previously stored GitHub tree blocks remain readable until they are resynced.
     let mut plan = preview_plan();
     plan.title = "Child change".to_owned();
-    plan.body = "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->".to_owned();
+    plan.body = "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child **notes**](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->".to_owned();
 
     let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 160);
 
@@ -381,11 +381,46 @@ fn pull_request_preview_renders_generated_stack_context_as_terminal_links() {
     assert!(
         preview.contains(&osc8_link(
             "https://github.com/example-owner/example-repo/pull/7",
-            "#7 Child",
+            "#7 Child **notes**",
         )),
         "{preview:?}"
     );
     assert!(preview.contains("    └ ◌ "), "{preview:?}");
+}
+
+#[test]
+fn pull_request_preview_renders_nested_stack_lists_with_number_only_links() {
+    // Verifies: nested lists retain indentation, current/draft emphasis, and literal title punctuation.
+    let mut plan = preview_plan();
+    plan.title = "Child change".to_owned();
+    plan.body = concat!(
+        "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n",
+        "- [#6](https://github.com/example-owner/example-repo/pull/6) · Root\n",
+        "  - **[#7](https://github.com/example-owner/example-repo/pull/7) — this PR** · Child — *draft*\n",
+        "    - [#8](https://github.com/example-owner/example-repo/pull/8) · ",
+        r"\[ids\] \*stars\* \_name\_ \`code\` \<tag\> \&amp\; \\path \| \#42 — café",
+        "\n\n<!-- jx-stack:end -->",
+    ).to_owned();
+
+    let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 180);
+    let root_link = osc8_link("https://github.com/example-owner/example-repo/pull/6", "#6");
+    let child_link = osc8_link("https://github.com/example-owner/example-repo/pull/7", "#7");
+    let nested_link = osc8_link("https://github.com/example-owner/example-repo/pull/8", "#8");
+    assert!(
+        preview.contains(&format!("  - {root_link} · Root")),
+        "{preview:?}"
+    );
+    assert!(preview.contains(&format!("    - {BOLD_STYLE}{child_link} — this PR{RESET_STYLE} · Child — \x1b[3mdraft{RESET_STYLE}")), "{preview:?}");
+    assert!(
+        preview.contains(&format!(
+            "      - {nested_link} · [ids] *stars* _name_ `code` <tag> &amp; \\path | #42 — café"
+        )),
+        "{preview:?}"
+    );
+    assert!(!preview.contains("jx-stack"));
+    assert!(!preview.contains("]("));
+    assert!(!preview.contains("**"));
+    assert!(!preview.contains("*draft*"));
 }
 
 #[test]

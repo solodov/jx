@@ -192,6 +192,7 @@ pub fn pull_request_description_sections(
     sections
 }
 
+/// Renders the connected PR stack as a native Markdown list inside the managed body block.
 fn render_pull_request_stack_context(
     metadata: &StackMetadata,
     current: &PullRequestRecord,
@@ -215,48 +216,46 @@ fn render_pull_request_stack_context(
         output.push_str(&stack_context_row(row, repository_url));
         output.push('\n');
     }
+    output.push('\n');
     output.push_str(STACK_CONTEXT_END);
     Some(output)
 }
 
+/// Keeps titles plain and separates navigation, current selection, and lifecycle state.
 fn stack_context_row(row: PullRequestStackRow<'_>, repository_url: &str) -> String {
     let node = row.node;
-    let link = stack_context_link(node, repository_url);
-    let entry = if node.is_current {
-        format!("**{link}** — this PR")
-    } else if node.draft {
-        format!("{link} — draft")
-    } else {
-        link
-    };
-    format!(
-        "{}{status} {entry}",
-        markdown_stack_tree_prefix(&row.prefix),
-        status = row.status_symbol(),
-    )
-}
-
-fn markdown_stack_tree_prefix(prefix: &str) -> String {
-    compact_stack_tree_prefix(prefix)
-        .replace("│ ", "│&nbsp;")
-        .replace("  ", "&nbsp;&nbsp;")
-}
-
-fn stack_context_link(node: &PullRequestStackNode, repository_url: &str) -> String {
-    let label = match node.pull_request_number() {
-        Some(number) => format!("#{} {}", number, node.display_title()),
-        None => node.display_title().to_owned(),
-    };
-    match &node.pull_request {
+    let title = escape_stack_context_title(node.display_title());
+    let mut entry = match &node.pull_request {
         Some(pull_request) => {
-            let url = pull_request
-                .url
-                .clone()
-                .unwrap_or_else(|| format!("{repository_url}/pull/{}", pull_request.number));
-            format!("[{}]({url})", escape_markdown_link_text(&label))
+            let link = stack_context_link(pull_request, repository_url);
+            if node.is_current {
+                format!("**{link} — this PR** · {title}")
+            } else {
+                format!("{link} · {title}")
+            }
         }
-        None => escape_markdown_link_text(&label),
-    }
+        None => title,
+    };
+    let state = if node.merged {
+        " — *merged*"
+    } else if node.pull_request.is_none() {
+        " — *unpublished*"
+    } else if node.draft {
+        " — *draft*"
+    } else {
+        ""
+    };
+    entry.push_str(state);
+    format!("{}- {entry}", "  ".repeat(row.depth))
+}
+
+/// Links only the PR number so long titles do not become large underlined targets.
+fn stack_context_link(pull_request: &PullRequestStackPullRequest, repository_url: &str) -> String {
+    let url = pull_request
+        .url
+        .clone()
+        .unwrap_or_else(|| format!("{repository_url}/pull/{}", pull_request.number));
+    format!("[#{}]({url})", pull_request.number)
 }
 
 /// Removes generated stack delimiter comments for renderers that should show only visible PR content.
@@ -339,8 +338,20 @@ fn line_end_after(value: &str, offset: usize) -> usize {
     }
 }
 
-fn escape_markdown_link_text(value: &str) -> String {
-    value.replace('[', "\\[").replace(']', "\\]")
+/// Treats titles as one line of literal text, not Markdown, HTML, or additional list items.
+fn escape_stack_context_title(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\r' | '\n') {
+            escaped.push(' ');
+        } else {
+            if ch.is_ascii_punctuation() {
+                escaped.push('\\');
+            }
+            escaped.push(ch);
+        }
+    }
+    escaped
 }
 
 fn pull_request_body_matches(existing: Option<&str>, desired: &str) -> bool {

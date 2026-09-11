@@ -22,6 +22,8 @@ use crate::{
 
 use super::*;
 
+mod stack_context;
+
 #[test]
 fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {
     // Verifies: Snapshot nodes preserve durable stack edges while refreshing PR fields from GitHub.
@@ -3138,7 +3140,7 @@ fn sync_pull_requests_adds_stack_context_from_metadata() {
             PullRequestUpdate {
                 title: None,
                 body: Some(
-                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->"
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n- [#6](https://github.com/example-owner/example-repo/pull/6) · Root\n  - **[#7](https://github.com/example-owner/example-repo/pull/7) — this PR** · Child\n    - [#8](https://github.com/example-owner/example-repo/pull/8) · Draft — *draft*\n\n<!-- jx-stack:end -->"
                         .to_owned()
                 ),
                 base: None,
@@ -3232,7 +3234,7 @@ fn sync_pull_requests_falls_back_to_metadata_number_when_head_lookup_misses() {
             PullRequestUpdate {
                 title: None,
                 body: Some(
-                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child](https://github.com/example-owner/example-repo/pull/7)** — this PR\n<!-- jx-stack:end -->"
+                    "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n- [#6](https://github.com/example-owner/example-repo/pull/6) · Root\n  - **[#7](https://github.com/example-owner/example-repo/pull/7) — this PR** · Child\n\n<!-- jx-stack:end -->"
                         .to_owned()
                 ),
                 base: None,
@@ -3327,7 +3329,7 @@ fn sync_pull_requests_updates_merged_pr_stack_context_from_metadata_number() {
             PullRequestUpdate {
                 title: None,
                 body: Some(
-                    "Merged body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n✓ **[#6 Root](https://github.com/example-owner/example-repo/pull/6)** — this PR\n└ ◯ [#7 Child](https://github.com/example-owner/example-repo/pull/7)\n<!-- jx-stack:end -->"
+                    "Merged body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n- **[#6](https://github.com/example-owner/example-repo/pull/6) — this PR** · Root — *merged*\n  - [#7](https://github.com/example-owner/example-repo/pull/7) · Child\n\n<!-- jx-stack:end -->"
                         .to_owned()
                 ),
                 base: None,

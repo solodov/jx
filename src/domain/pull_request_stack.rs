@@ -462,10 +462,12 @@ impl PullRequestStackSnapshot {
     }
 }
 
-/// One stack row with its renderer-neutral tree prefix.
+/// One stack row with structural depth and a terminal tree prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestStackRow<'a> {
     pub node: &'a PullRequestStackNode,
+    /// Zero-based depth within the displayed stack component.
+    pub depth: usize,
     pub prefix: String,
 }
 
@@ -492,7 +494,7 @@ impl PullRequestStackRow<'_> {
         label
     }
 
-    /// Returns the compact tree prefix used by terminal and Markdown renderers.
+    /// Returns the compact tree prefix used by terminal renderers.
     pub fn compact_prefix(&self) -> String {
         compact_stack_tree_prefix(&self.prefix)
     }
@@ -606,7 +608,7 @@ impl PullRequestStackNode {
             .map(|pull_request| pull_request.number)
     }
 
-    /// Returns the stable status symbol shared by CLI and Markdown stack renderers.
+    /// Returns the stable status symbol shared by CLI stack renderers.
     pub fn status_symbol(&self) -> &'static str {
         if self.merged {
             "✓"
@@ -1450,6 +1452,7 @@ impl<'a> PullRequestStackTree<'a> {
 
         self.rows.push(PullRequestStackRow {
             node: &self.nodes[index],
+            depth,
             prefix: stack_tree_prefix(&self.ancestor_has_next, depth, has_next_sibling),
         });
 

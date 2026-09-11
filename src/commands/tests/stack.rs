@@ -3172,12 +3172,14 @@ fn stack_publish_existing_plans_include_projected_stack_context() {
     let mut plans = vec![root, child];
     add_projected_stack_context_to_existing_plans(&mut plans);
 
-    assert!(plans[0].body.contains("<!-- jx-stack:start -->"));
-    assert!(plans[0].body.contains("#1 Root change"));
-    assert!(plans[0].body.contains("#2 Child change"));
-    assert!(plans[1].body.contains("<!-- jx-stack:start -->"));
-    assert!(plans[1].body.contains("#1 Root change"));
-    assert!(plans[1].body.contains("#2 Child change"));
+    for plan in &plans {
+        assert!(plan.body.contains("<!-- jx-stack:start -->"));
+        assert!(plan.body.contains("[#1]("));
+        assert!(plan.body.contains(" · Root change"));
+        assert!(plan.body.contains("[#2]("));
+        assert!(plan.body.contains(" · Child change"));
+        assert!(!plan.body.contains("[#1 Root change]"));
+    }
 }
 
 #[test]
