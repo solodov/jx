@@ -209,12 +209,13 @@ label("root", "root()") ++ "\n"
 '''
 
 [colors]
+"change_id prefix" = { fg = "#303030", bg = "#d6ecec", bold = true }
 link = { underline = true }
 pull_request_commit = { bold = true }
 conflicted_commit = { fg = "red" }
 conflicted_pull_request_commit = { fg = "red", bold = true }
-bookmark_synced = { fg = "#5a32a3", bold = false }
-bookmark_unsynced = { fg = "#5a32a3", bg = "#efe8fb", bold = false }
+bookmark_synced = { fg = "#303030", bold = false }
+bookmark_unsynced = { fg = "#303030", bg = "#eed2b9", bold = false }
 "##,
         )
         .expect("jx default log template config is valid"),

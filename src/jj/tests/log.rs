@@ -265,6 +265,70 @@ fn workspace_log_omits_commit_ids_from_jx_default_header() {
 }
 
 #[test]
+fn log_change_id_prefix_uses_bold_ink_on_pastel_background() {
+    // Verifies: only the typeable prefix gets a pastel fill, including on the working-copy row.
+    for context in ["mutable", "immutable", "working_copy"] {
+        let rendered = render_log_change_id(context, "");
+
+        assert!(
+            rendered.starts_with("\x1b[1m\x1b[38;2;48;48;48m\x1b[48;2;214;236;236mvq"),
+            "{context}: {rendered:?}"
+        );
+        let suffix = if context == "working_copy" {
+            "\x1b[38;5;8m\x1b[49mowlvzq"
+        } else {
+            "\x1b[0m\x1b[38;5;8mowlvzq"
+        };
+        assert!(rendered.contains(suffix), "{context}: {rendered:?}");
+    }
+}
+
+#[test]
+fn log_change_id_prefix_respects_user_color_override() {
+    // Verifies: users can still replace the shortcut color and remove the pastel fill.
+    for context in ["mutable", "working_copy"] {
+        let rendered = render_log_change_id(
+            context,
+            r#"colors."change_id prefix" = { fg = "red", bg = "default" }"#,
+        );
+
+        assert!(
+            rendered.starts_with("\x1b[1m\x1b[38;5;1m\x1b[49mvq"),
+            "{context}: {rendered:?}"
+        );
+    }
+}
+
+/// Renders a sample change ID through the same color layers and labels as the log.
+fn render_log_change_id(context: &str, user_config: &str) -> String {
+    let mut config = StackedConfig::with_defaults();
+    config.extend_layers(jx_default_config_layers());
+    config.extend_layers([ConfigLayer::parse(
+        ConfigSource::User,
+        &format!("ui.color = 'always'\n{user_config}"),
+    )
+    .expect("color config parses")]);
+    let ui = Ui::with_config(&config).expect("UI config loads");
+    let mut output = Vec::new();
+    {
+        let mut formatter = ui.new_formatter(&mut output);
+        for label in ["log", "commit", context, "change_id"] {
+            formatter.push_label(label);
+        }
+        formatter.push_label("prefix");
+        formatter.write_all(b"vq").expect("prefix renders");
+        formatter.pop_label();
+        formatter.push_label("rest");
+        formatter.write_all(b"owlvzq").expect("suffix renders");
+        formatter.pop_label();
+        for _ in 0..4 {
+            formatter.pop_label();
+        }
+    }
+    String::from_utf8(output).expect("formatted ID is UTF-8")
+}
+
+#[test]
 fn workspace_log_renders_compact_commit_age() {
     // Verifies: jx's default log header renders age as a compact relative unit.
     let fixture = TestWorkspace::new("workspace-log-compact-age");
@@ -521,12 +585,16 @@ color = "always"
 
     assert!(log.contains("topic/current"), "{log}");
     assert!(!log.contains("topic/current*"), "{log}");
-    assert!(!log.contains("\x1b[48;2;239;232;251m"), "{log}");
+    assert!(
+        log.contains("\x1b[0m\x1b[38;2;48;48;48mtopic/current"),
+        "{log:?}"
+    );
+    assert!(!log.contains("\x1b[48;2;238;210;185m"), "{log:?}");
 }
 
 #[test]
 fn workspace_log_highlights_unsynced_local_bookmarks() {
-    // Verifies: jx log makes stale local bookmark state visible without relying on operator jj templates.
+    // Verifies: unsynced bookmarks use dark text on muted clay-orange, without coloring following text.
     let fixture = TestWorkspace::new("workspace-log-unsynced-bookmark");
     let mut config = StackedConfig::with_defaults();
     config.extend_layers(jx_default_config_layers());
@@ -567,7 +635,14 @@ color = "always"
 
     assert!(log.contains("topic/current"), "{log}");
     assert!(!log.contains("topic/current*"), "{log}");
-    assert!(log.contains("\x1b[48;2;239;232;251m"), "{log}");
+    assert!(
+        log.contains("\x1b[0m\x1b[38;2;48;48;48m\x1b[48;2;238;210;185mtopic/current"),
+        "{log:?}"
+    );
+    assert!(
+        log.contains("topic/current\x1b[1m\x1b[39m\x1b[49m"),
+        "{log:?}"
+    );
 }
 
 #[test]
