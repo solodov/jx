@@ -549,6 +549,22 @@ path = "{repo}"
 }
 
 #[test]
+fn work_add_project_accepts_short_and_long_options() {
+    for option in ["-p", "--project"] {
+        let matches = cli()
+            .try_get_matches_from(["jx", "work", "add", option, "github-navigation", "fix"])
+            .expect("project option parses");
+        let request = CommandRequest::from_matches(&matches).expect("request builds");
+        let CommandRequest::Work(WorkRequest::Add(request)) = request else {
+            panic!("expected work add request");
+        };
+
+        assert_eq!(request.project.as_deref(), Some("github-navigation"));
+        assert_eq!(request.name, "fix");
+    }
+}
+
+#[test]
 fn work_add_project_writes_metadata_without_changing_workspace_name() {
     // Verifies: Project context stays metadata-only so names remain focused on the local task workspace.
     let workspace = TestWorkspace::new_under("projects/jx");

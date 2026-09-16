@@ -1829,6 +1829,7 @@ fn task_id_arg() -> Arg {
 
 fn project_arg() -> Arg {
     Arg::new("project")
+        .short('p')
         .long("project")
         .value_name("PROJECT")
         .help("Store this project key in workspace metadata")
