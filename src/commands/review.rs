@@ -589,7 +589,10 @@ fn build_review_repository_view(
             dismissal: decision.dismissal,
         });
     }
-    rows.sort_by_key(|row| std::cmp::Reverse(row.status.number));
+    rows.sort_by_cached_key(|row| {
+        let since = review_request_lag_timestamp(row, viewer);
+        (since.is_none(), since, std::cmp::Reverse(row.status.number))
+    });
     if rows.is_empty() {
         return Ok(None);
     }

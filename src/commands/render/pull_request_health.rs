@@ -355,28 +355,6 @@ pub(in crate::commands) fn pull_request_stack_review_lag(
     )
 }
 
-pub(in crate::commands) fn pull_request_viewer_review_lag(
-    status: &PullRequestStatusRecord,
-    viewer: &str,
-    threshold_seconds: Option<u64>,
-    waiting_on_viewer: bool,
-) -> ReviewLagCell {
-    review_lag_cell(
-        viewer_review_lag_timestamp(status, viewer, waiting_on_viewer),
-        threshold_seconds,
-    )
-}
-
-pub(in crate::commands) fn pull_request_review_lag_since_unix(
-    since_unix: Option<i64>,
-    threshold_seconds: Option<u64>,
-) -> ReviewLagCell {
-    review_lag_cell(
-        since_unix.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
-        threshold_seconds,
-    )
-}
-
 pub(in crate::commands) fn render_review_lag_cell(
     cell: &ReviewLagCell,
     color: bool,
@@ -516,7 +494,8 @@ fn stack_review_lag_timestamp(
         .max()
 }
 
-fn viewer_review_lag_timestamp(
+/// Selects the viewer's review-wait timestamp when no inbox history timestamp is available.
+pub(in crate::commands) fn viewer_review_lag_timestamp(
     status: &PullRequestStatusRecord,
     viewer: &str,
     waiting_on_viewer: bool,
@@ -601,7 +580,8 @@ fn created_at(status: &PullRequestStatusRecord) -> Option<chrono::DateTime<chron
         .and_then(parse_review_lag_timestamp)
 }
 
-fn review_lag_cell(
+/// Formats the selected timestamp as a lag label and threshold signal.
+pub(in crate::commands) fn review_lag_cell(
     timestamp: Option<chrono::DateTime<chrono::Utc>>,
     threshold_seconds: Option<u64>,
 ) -> ReviewLagCell {

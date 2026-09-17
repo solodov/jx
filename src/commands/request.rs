@@ -1506,7 +1506,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("review")
                 .about("Show pull requests requesting your review")
                 .long_about(
-                    "Show open GitHub pull requests requesting review from the authenticated user.\n\nBy default the command fetches live GitHub review requests, refreshes local PR snapshots, groups them by repository, applies repo-specific status policy such as review-gate checks, and renders check status, review-request state, labels, and reviewer state using the same compact conventions as stack status. Use --cached to render the latest locally stored review inbox without contacting GitHub.",
+                    "Show open GitHub pull requests requesting review from the authenticated user.\n\nBy default the command fetches live GitHub review requests, refreshes local PR snapshots, groups them by repository, applies repo-specific status policy such as review-gate checks, and renders check status, review-request state, labels, and reviewer state using the same compact conventions as stack status. Repository groups keep their configured-first alphabetical order. Within each group, PRs with the longest review lag appear first, unknown lag comes last, and equal lag keeps descending PR-number order. Use --cached to render the latest locally stored review inbox without contacting GitHub.",
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())

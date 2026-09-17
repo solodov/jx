@@ -451,21 +451,9 @@ fn review_request_row(
         active_cell_color,
         row_style,
     );
-    let lag = row.lag_since_unix.map_or_else(
-        || {
-            pull_request_viewer_review_lag(
-                &row.status,
-                viewer,
-                repository.review_wait_threshold_seconds,
-                review_request_state_waits_on_viewer(row.state),
-            )
-        },
-        |since_unix| {
-            pull_request_review_lag_since_unix(
-                Some(since_unix),
-                repository.review_wait_threshold_seconds,
-            )
-        },
+    let lag = review_lag_cell(
+        review_request_lag_timestamp(row, viewer),
+        repository.review_wait_threshold_seconds,
     );
     let state = review_request_state_cell(
         &row.status,
@@ -506,6 +494,21 @@ fn review_request_row(
         line
     } else {
         format!("{row_style}{line}{RESET_STYLE}")
+    }
+}
+
+/// Returns the exact timestamp shared by review row ordering and the displayed lag.
+pub(in crate::commands) fn review_request_lag_timestamp(
+    row: &ReviewRequestRowView,
+    viewer: &str,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    match row.lag_since_unix {
+        Some(timestamp) => chrono::DateTime::from_timestamp(timestamp, 0),
+        None => viewer_review_lag_timestamp(
+            &row.status,
+            viewer,
+            review_request_state_waits_on_viewer(row.state),
+        ),
     }
 }
 

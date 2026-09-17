@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "review_order.rs"]
+mod order;
 use crate::github::{PullRequestMergeStatus, PullRequestReviewerMention};
 
 #[test]
