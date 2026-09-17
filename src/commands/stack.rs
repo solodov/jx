@@ -136,13 +136,13 @@ fn run_stack_status_dashboard(
     request: StackStatusRequest,
     environment: &RuntimeEnvironment,
 ) -> Result<CommandResult, CommandError> {
-    let environment = environment.clone();
+    let loader_environment = environment.clone();
     let loader_request = request.clone();
     let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
-        load_stack_status_dashboard_snapshot(loader_request.clone(), &environment)
+        load_stack_status_dashboard_snapshot(loader_request.clone(), &loader_environment)
             .map_err(|error| error.to_string())
     });
-    run_interactive_dashboard(request.refresh_seconds, loader)
+    run_interactive_dashboard(request.refresh_seconds, loader, environment)
 }
 
 fn load_stack_status_dashboard_snapshot(

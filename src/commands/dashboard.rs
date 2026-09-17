@@ -17,6 +17,18 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod menu;
+mod navigation;
+#[path = "dashboard/terminal.rs"]
+mod terminal_session;
+#[cfg(test)]
+#[path = "dashboard/tests/fixtures.rs"]
+pub(super) mod test_support;
+
+use menu::{MenuIntent, PrActionMenu};
+use navigation::DashboardNavigation;
+use terminal_session::DashboardTerminalSession;
+
 const DASHBOARD_EVENT_POLL: Duration = Duration::from_millis(100);
 const DASHBOARD_IDLE_POLL: Duration = Duration::from_millis(500);
 const DASHBOARD_REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -75,174 +87,162 @@ impl DashboardTerminalSize {
     }
 }
 
-/// Runs a live terminal dashboard in the alternate screen until the operator exits.
+/// Runs a live dashboard with stable PR selection and explicitly invoked foreground actions.
 pub(super) fn run_interactive_dashboard(
     refresh_seconds: u64,
     loader: DashboardFrameLoader,
+    environment: &RuntimeEnvironment,
 ) -> Result<CommandResult, CommandError> {
+    let interrupts = DashboardInterrupts::enter()?;
     let mut terminal = DashboardTerminalSession::enter()?;
     let mut terminal_size = dashboard_terminal_size()?;
     let mut watcher = ExecutableWatcher::from_process();
     let mut last_snapshot = None::<DashboardFrameSnapshot>;
     let mut last_frame = None::<PullRequestTableFrame>;
     let mut last_error = None::<String>;
+    let mut navigation = DashboardNavigation::default();
+    let mut menu = None::<PrActionMenu>;
+    let mut refresh = None::<DashboardRefresh>;
+    let mut deferred = None;
+    let mut next_refresh_at = None;
+    let mut spinner_index = 0usize;
 
     loop {
-        let receiver = spawn_dashboard_load(Arc::clone(&loader));
-        let refresh_started = Instant::now();
-        let mut spinner_index = 0usize;
-        let next_refresh_at: Option<DateTime<Local>>;
+        if interrupts.take_pending() {
+            return Ok(CommandResult::with_exit_code(String::new(), 130));
+        }
+        if menu.is_none() && watcher.changed() {
+            terminal.restore()?;
+            return restart_dashboard_process();
+        }
+        if refresh.is_none()
+            && deferred.is_none()
+            && menu.is_none()
+            && dashboard_wait_duration(Local::now(), next_refresh_at).is_none()
+        {
+            refresh = Some(DashboardRefresh::start(Arc::clone(&loader)));
+        }
+        if let Some(loading) = &mut refresh {
+            if let Some(result) = loading.poll() {
+                deferred = Some(result);
+                refresh = None;
+                next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
+            } else if !loading.timed_out && dashboard_refresh_timed_out(loading.started.elapsed()) {
+                loading.timed_out = true;
+                last_error = Some(dashboard_refresh_timeout_error());
+                // Retain the worker: abandoning it could race a foreground command or a new load.
+            }
+        }
+        if menu.is_none() {
+            if let Some(result) = deferred.take() {
+                match result.and_then(|snapshot| {
+                    snapshot
+                        .render(terminal_size.render_options())
+                        .map(|frame| (snapshot, frame))
+                }) {
+                    Ok((snapshot, frame)) => {
+                        last_snapshot = Some(snapshot);
+                        last_frame = Some(frame);
+                        last_error = None;
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+        }
+        navigation.reconcile(last_frame.as_ref());
         render_dashboard_frame(
             dashboard_frame_state(
                 last_frame.as_ref().map(|frame| frame.text.as_str()),
-                true,
+                refresh.as_ref().is_some_and(|refresh| !refresh.timed_out),
                 last_error.as_deref(),
                 spinner_index,
             ),
             terminal_size,
+            &mut navigation,
+            menu.as_mut(),
+            refresh.is_some(),
         )?;
-        loop {
-            if watcher.changed() {
-                terminal.restore()?;
-                return restart_dashboard_process();
+        let timeout = if refresh.is_some() {
+            DASHBOARD_EVENT_POLL
+        } else {
+            DASHBOARD_IDLE_POLL
+        };
+        match read_dashboard_event(timeout, &mut terminal_size)? {
+            DashboardEvent::Interrupt => {
+                return Ok(CommandResult::with_exit_code(String::new(), 130))
             }
-            match receiver.try_recv() {
-                Ok(Ok(snapshot)) => {
-                    let refreshed_at = Local::now();
-                    match snapshot.render(terminal_size.render_options()) {
-                        Ok(frame) => {
-                            last_frame = Some(frame);
-                            last_snapshot = Some(snapshot);
-                            next_refresh_at =
-                                next_dashboard_refresh_time(refreshed_at, refresh_seconds);
-                            last_error = None;
-                        }
-                        Err(error) => {
-                            last_error = Some(error);
-                            next_refresh_at =
-                                next_dashboard_refresh_time(Local::now(), refresh_seconds);
+            DashboardEvent::Resized => rerender_dashboard_snapshot(
+                last_snapshot.as_ref(),
+                terminal_size,
+                &mut last_frame,
+                &mut last_error,
+            ),
+            DashboardEvent::Key(key) => {
+                if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+                    continue;
+                }
+                if let Some(open_menu) = &mut menu {
+                    match open_menu.handle_key(key, refresh.is_some(), terminal_size) {
+                        MenuIntent::None => {}
+                        MenuIntent::Close => menu = None,
+                        MenuIntent::Run(action) => {
+                            menu = None;
+                            terminal.run_action(&action, &interrupts)?;
+                            terminal_size = dashboard_terminal_size()?;
+                            rerender_dashboard_snapshot(
+                                last_snapshot.as_ref(),
+                                terminal_size,
+                                &mut last_frame,
+                                &mut last_error,
+                            );
+                            deferred = None;
+                            next_refresh_at = None;
                         }
                     }
-                    render_dashboard_frame(
-                        dashboard_frame_state(
-                            last_frame.as_ref().map(|frame| frame.text.as_str()),
-                            false,
-                            last_error.as_deref(),
-                            spinner_index,
-                        ),
-                        terminal_size,
-                    )?;
-                    break;
-                }
-                Ok(Err(error)) => {
-                    last_error = Some(error);
-                    next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
-                    render_dashboard_frame(
-                        dashboard_frame_state(
-                            last_frame.as_ref().map(|frame| frame.text.as_str()),
-                            false,
-                            last_error.as_deref(),
-                            spinner_index,
-                        ),
-                        terminal_size,
-                    )?;
-                    break;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    last_error = Some("dashboard refresh worker stopped unexpectedly".to_owned());
-                    next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
-                    render_dashboard_frame(
-                        dashboard_frame_state(
-                            last_frame.as_ref().map(|frame| frame.text.as_str()),
-                            false,
-                            last_error.as_deref(),
-                            spinner_index,
-                        ),
-                        terminal_size,
-                    )?;
-                    break;
-                }
-            }
-
-            if dashboard_refresh_timed_out(refresh_started.elapsed()) {
-                last_error = Some(dashboard_refresh_timeout_error());
-                next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
-                render_dashboard_frame(
-                    dashboard_frame_state(
-                        last_frame.as_ref().map(|frame| frame.text.as_str()),
-                        false,
-                        last_error.as_deref(),
-                        spinner_index,
-                    ),
-                    terminal_size,
-                )?;
-                break;
-            }
-
-            match read_dashboard_event(DASHBOARD_EVENT_POLL, &mut terminal_size)? {
-                DashboardEvent::Exit => {
-                    terminal.restore()?;
+                } else if dashboard_exit_key(key) {
                     return Ok(CommandResult::success(String::new()));
-                }
-                DashboardEvent::Interrupt => {
-                    terminal.restore()?;
-                    return Ok(CommandResult::with_exit_code(String::new(), 130));
-                }
-                DashboardEvent::Resized => rerender_dashboard_snapshot(
-                    last_snapshot.as_ref(),
-                    terminal_size,
-                    &mut last_frame,
-                    &mut last_error,
-                ),
-                DashboardEvent::None => {
-                    spinner_index = spinner_index.wrapping_add(1);
+                } else if key.code == KeyCode::Enter && key.kind == KeyEventKind::Press {
+                    if let Some(context) = last_frame
+                        .as_ref()
+                        .and_then(|frame| navigation.selected(frame))
+                    {
+                        let entries = pr_actions::load_pr_actions(context.clone(), environment)
+                            .map_err(|error| error.to_string());
+                        menu = Some(PrActionMenu::new(context, entries));
+                    }
+                } else if key.code == KeyCode::Char('r') && key.kind == KeyEventKind::Press {
+                    next_refresh_at = None;
+                } else if let Some(frame) = &last_frame {
+                    navigation.handle_key(key.code, frame, terminal_size.height);
                 }
             }
-            render_dashboard_frame(
-                dashboard_frame_state(
-                    last_frame.as_ref().map(|frame| frame.text.as_str()),
-                    true,
-                    last_error.as_deref(),
-                    spinner_index,
-                ),
-                terminal_size,
-            )?;
+            DashboardEvent::None => spinner_index = spinner_index.wrapping_add(1),
         }
+    }
+}
 
-        while let Some(wait_duration) = dashboard_wait_duration(Local::now(), next_refresh_at) {
-            if watcher.changed() {
-                terminal.restore()?;
-                return restart_dashboard_process();
-            }
-            match read_dashboard_event(wait_duration, &mut terminal_size)? {
-                DashboardEvent::Exit => {
-                    terminal.restore()?;
-                    return Ok(CommandResult::success(String::new()));
-                }
-                DashboardEvent::Interrupt => {
-                    terminal.restore()?;
-                    return Ok(CommandResult::with_exit_code(String::new(), 130));
-                }
-                DashboardEvent::Resized => {
-                    rerender_dashboard_snapshot(
-                        last_snapshot.as_ref(),
-                        terminal_size,
-                        &mut last_frame,
-                        &mut last_error,
-                    );
-                    render_dashboard_frame(
-                        dashboard_frame_state(
-                            last_frame.as_ref().map(|frame| frame.text.as_str()),
-                            false,
-                            last_error.as_deref(),
-                            spinner_index,
-                        ),
-                        terminal_size,
-                    )?;
-                }
-                DashboardEvent::None => {}
-            }
+struct DashboardRefresh {
+    receiver: mpsc::Receiver<Result<DashboardFrameSnapshot, String>>,
+    started: Instant,
+    timed_out: bool,
+}
+
+impl DashboardRefresh {
+    fn start(loader: DashboardFrameLoader) -> Self {
+        Self {
+            receiver: spawn_dashboard_load(loader),
+            started: Instant::now(),
+            timed_out: false,
+        }
+    }
+
+    fn poll(&self) -> Option<Result<DashboardFrameSnapshot, String>> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                "dashboard refresh worker stopped unexpectedly".to_owned(),
+            )),
         }
     }
 }
@@ -276,7 +276,7 @@ fn rerender_dashboard_snapshot(
 enum DashboardEvent {
     None,
     Resized,
-    Exit,
+    Key(KeyEvent),
     Interrupt,
 }
 
@@ -294,7 +294,9 @@ fn read_dashboard_event(
             Ok(DashboardEvent::Resized)
         }
         Event::Key(key) if dashboard_interrupt_key(key) => Ok(DashboardEvent::Interrupt),
-        Event::Key(key) if dashboard_exit_key(key) => Ok(DashboardEvent::Exit),
+        Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+            Ok(DashboardEvent::Key(key))
+        }
         _ => Ok(DashboardEvent::None),
     }
 }
@@ -379,9 +381,17 @@ fn dashboard_frame_state<'a>(
 fn render_dashboard_frame(
     state: DashboardFrameState<'_>,
     terminal_size: DashboardTerminalSize,
+    navigation: &mut DashboardNavigation,
+    menu: Option<&mut PrActionMenu>,
+    busy: bool,
 ) -> io::Result<()> {
+    let prefix_lines = dashboard_frame_text(dashboard_frame_state(None, false, state.error, 0))
+        .lines()
+        .count();
     let output = dashboard_frame_text(state);
-    write_dashboard_screen(&output, terminal_size)
+    let (output, marker) = navigation.viewport(&output, prefix_lines, terminal_size.height);
+    let menu = menu.map(|menu| menu.screen(terminal_size, busy));
+    write_dashboard_screen(&output, terminal_size, marker, menu)
 }
 
 fn dashboard_frame_text(state: DashboardFrameState<'_>) -> String {
@@ -398,9 +408,19 @@ fn dashboard_frame_text(state: DashboardFrameState<'_>) -> String {
     output
 }
 
-fn write_dashboard_screen(output: &str, terminal_size: DashboardTerminalSize) -> io::Result<()> {
+fn write_dashboard_screen(
+    output: &str,
+    terminal_size: DashboardTerminalSize,
+    marker: Option<usize>,
+    menu: Option<menu::MenuScreen>,
+) -> io::Result<()> {
     let mut stdout = io::stdout();
-    queue!(stdout, MoveTo(0, 0), Clear(ClearType::All))?;
+    queue!(
+        stdout,
+        terminal::BeginSynchronizedUpdate,
+        MoveTo(0, 0),
+        Clear(ClearType::All)
+    )?;
     for (row, line) in clipped_dashboard_lines(output, terminal_size)
         .into_iter()
         .enumerate()
@@ -408,6 +428,18 @@ fn write_dashboard_screen(output: &str, terminal_size: DashboardTerminalSize) ->
         queue!(stdout, MoveTo(0, row as u16))?;
         stdout.write_all(line.as_bytes())?;
     }
+    if let Some(row) = marker.filter(|_| terminal_size.width > 0) {
+        queue!(stdout, MoveTo(0, row as u16))?;
+        // Paint only the existing left gutter; never rewrite a row's OSC8 link bytes.
+        stdout.write_all(b"\x1b[0;38;2;0;135;135m\xe2\x9d\xaf\x1b[0m")?;
+    }
+    if let Some(menu) = menu {
+        for (row, line) in menu.lines.iter().enumerate() {
+            queue!(stdout, MoveTo(menu.x as u16, (menu.y + row) as u16))?;
+            stdout.write_all(line.as_bytes())?;
+        }
+    }
+    queue!(stdout, terminal::EndSynchronizedUpdate)?;
     stdout.flush()
 }
 
@@ -417,46 +449,6 @@ fn clipped_dashboard_lines(output: &str, terminal_size: DashboardTerminalSize) -
         .take(terminal_size.height)
         .map(|line| ellipsize_rendered_line(line.trim_end_matches('\r'), Some(terminal_size.width)))
         .collect()
-}
-
-struct DashboardTerminalSession {
-    restored: bool,
-}
-
-impl DashboardTerminalSession {
-    fn enter() -> io::Result<Self> {
-        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-            return Err(io::Error::other(
-                "Cannot run an interactive dashboard without an interactive terminal",
-            ));
-        }
-
-        terminal::enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
-            let _ = terminal::disable_raw_mode();
-            return Err(error);
-        }
-        Ok(Self { restored: false })
-    }
-
-    fn restore(&mut self) -> io::Result<()> {
-        if self.restored {
-            return Ok(());
-        }
-        let mut stdout = io::stdout();
-        let display_result = execute!(stdout, Show, LeaveAlternateScreen);
-        let raw_result = terminal::disable_raw_mode();
-        self.restored = true;
-        display_result?;
-        raw_result
-    }
-}
-
-impl Drop for DashboardTerminalSession {
-    fn drop(&mut self) {
-        let _ = self.restore();
-    }
 }
 
 struct ExecutableWatcher {

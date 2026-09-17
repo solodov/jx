@@ -73,13 +73,13 @@ fn run_review_dashboard(
     request: ReviewRequest,
     environment: &RuntimeEnvironment,
 ) -> Result<CommandResult, CommandError> {
-    let environment = environment.clone();
+    let loader_environment = environment.clone();
     let loader_request = request.clone();
     let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
-        load_review_dashboard_snapshot(loader_request.clone(), &environment)
+        load_review_dashboard_snapshot(loader_request.clone(), &loader_environment)
             .map_err(|error| error.to_string())
     });
-    run_interactive_dashboard(request.refresh_seconds, loader)
+    run_interactive_dashboard(request.refresh_seconds, loader, environment)
 }
 
 fn load_review_dashboard_snapshot(

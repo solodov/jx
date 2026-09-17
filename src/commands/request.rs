@@ -2000,7 +2000,8 @@ fn dashboard_interactive_arg() -> Arg {
         .short('i')
         .long("interactive")
         .action(ArgAction::SetTrue)
-        .help("Continuously refresh this dashboard until interrupted (default: every 5 minutes)")
+        .help("Continuously refresh with keyboard PR actions (default: every 5 minutes)")
+        .long_help("Continuously refresh this dashboard. Up/Down (or j/k) selects a PR; Enter opens its configured action menu. Home/End and PageUp/PageDown navigate; r refreshes; q/Esc exits. Existing terminal hyperlinks remain clickable. Configure commands with [[repo.actions]] or [[repo.rules.actions]] in jx config files. The menu previews argv, working directory, and source; repository-local actions require an explicit y confirmation. Commands run in the foreground, then wait for acknowledgement before returning and refreshing. No actions run automatically.")
 }
 
 fn dashboard_refresh_seconds_arg() -> Arg {

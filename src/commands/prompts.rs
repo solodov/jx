@@ -902,35 +902,6 @@ fn reviewer_selection_summary(choices: &[ReviewerChoice], selected: &[usize]) ->
     }
 }
 
-/// Restores cursor visibility before the process exits from an interrupt.
-pub(super) fn install_interrupt_cursor_restore() -> io::Result<()> {
-    let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::signal::SIGINT])?;
-    std::thread::Builder::new()
-        .name("jx-signal-handler".to_owned())
-        .spawn(move || {
-            if signals.forever().next().is_some() {
-                restore_terminal_cursor();
-                std::process::exit(130);
-            }
-        })?;
-    Ok(())
-}
-
-/// Restores terminal state when an interactive command exits through an interrupt path.
-pub(super) fn restore_terminal_cursor() {
-    let _ = crossterm::terminal::disable_raw_mode();
-
-    if io::stdout().is_terminal() {
-        let mut stdout = io::stdout();
-        let _ = stdout.write_all(b"\x1b[?25h\x1b[?1049l");
-        let _ = stdout.flush();
-    }
-
-    let mut stderr = io::stderr();
-    let _ = stderr.write_all(b"\x1b[?25h");
-    let _ = stderr.flush();
-}
-
 pub(super) fn selection_from_choices<'a>(
     choices: impl IntoIterator<Item = &'a ReviewerChoice>,
 ) -> ReviewerSelection {

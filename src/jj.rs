@@ -87,6 +87,7 @@ mod fork;
 mod git_transport;
 mod log;
 mod navigation;
+mod pr_actions;
 mod push;
 mod rebase;
 mod stack;
@@ -108,6 +109,7 @@ use facts::*;
 use fetch::*;
 use git_transport::*;
 use log::*;
+pub use pr_actions::PrActionRevision;
 use push::*;
 #[cfg(test)]
 use status::*;

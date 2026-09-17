@@ -25,6 +25,73 @@ when another view should be the no-argument entrypoint:
 default_command = ["status"]
 ```
 
+## Manual PR actions
+
+`jx stack status -i` and `jx review -i` share keyboard actions. Up/Down (or
+j/k) moves the chevron; Enter opens the selected PR's menu. Home/End and
+PageUp/PageDown navigate the table, `r` refreshes, and q/Esc exits. Existing
+terminal hyperlinks remain clickable. No actions are installed by default.
+
+Define actions in global config or the selected repository's `.jx/config.toml`:
+
+```toml
+[[repo.actions]]
+id = "open"
+title = "Open PR"
+command = ["open", "{pr_url}"] # macOS; use your platform's URL opener
+cwd = "caller"
+
+[[repo.actions]]
+id = "diff"
+title = "Show PR head diff"
+command = ["jj", "diff", "-r", "{local_commit_id}"]
+
+[[repo.rules]]
+repo = "example-owner/example-repo"
+
+[[repo.rules.actions]]
+id = "open"
+title = "Open PR in Firefox"
+command = ["open", "-a", "Firefox", "{pr_url}"]
+cwd = "caller"
+
+[[repo.rules.actions]]
+id = "diff"
+enabled = false
+```
+
+Actions match the **selected PR's** `owner/repo`, not the caller's repository.
+They merge in this order: global defaults, matching global rules, repository-local
+defaults, then matching local rules. Global files retain lexical order within
+each phase. The same ID replaces the entire definition in its existing menu
+position; new IDs append. Duplicate IDs within one list are errors. An
+`enabled = false` entry removes an inherited action.
+
+`command` is an argv array, never an implicit shell command. Substitution happens
+once within each argument, without word splitting. Supported placeholders are
+`{repo}`, `{repo_root}`, `{pr_number}`, `{pr_url}`, `{title}`, `{branch}`,
+`{base_branch}`, `{head_oid}`, `{local_commit_id}`, and `{local_change_id}`.
+Use `{{` and `}}` for literal braces. Unknown placeholders are configuration
+errors; missing context disables the action with a reason. If explicitly invoking
+a shell, pass PR data as positional arguments rather than interpolating it into
+shell source.
+
+The default `cwd = "repository"` requires a checkout. Explicit `cwd = "caller"`
+also works for external PRs without a checkout. Local revision IDs refer only to
+the exact GitHub head already present in the selected jj repository; no fetch,
+checkout, or working-copy fallback occurs. A local change ID is unavailable if it
+now resolves to a rewritten or divergent commit rather than that exact head.
+
+The menu previews argv, working directory, and source file. PageUp/PageDown
+scrolls long previews. Every repository-local definition, including overrides of
+global IDs, requires a separate `y` confirmation; Esc returns without executing.
+Menus retain their target while refresh results wait in the background. Commands
+wait for any in-flight refresh to finish, then run one at a time with normal
+terminal input/output. After success, failure, or Ctrl-C cancellation, Enter/Esc
+acknowledges the result and returns to a freshly loading dashboard. These manual
+actions are separate from lifecycle hooks and never execute during loading or
+refreshing.
+
 ## Clone and workspace layout
 
 This section is the configuration reference. See the [code layout guide](code-layout.md)

@@ -26,6 +26,7 @@ mod fork;
 mod git_transport;
 mod log;
 mod navigation;
+mod pr_actions;
 mod pull_request;
 mod push;
 mod rebase;
