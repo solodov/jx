@@ -1669,7 +1669,7 @@ fn stack_command() -> ClapCommand {
                 .visible_alias("pub")
                 .about("Publish or update GitHub pull requests for a local stack")
                 .long_about(
-                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision commits, bookmarks, or revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection. With -A/--apply-to-stack and one -r/--revision, the revision becomes the stack anchor and jx publishes the full stack containing it. Task IDs, labels, reviewers, fix intent, and bare --ready/--draft apply only to the current commit or single selected revision by default; pass -A/--apply-to-stack to apply publish intent to every published revision. Use --ready=REVSET / --draft=REVSET for explicit readiness subsets.",
+                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision commits, bookmarks, or revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection. With -A/--apply-to-stack and one -r/--revision, the revision becomes the stack anchor and jx publishes the full stack containing it. Task IDs, labels, reviewer selection, fix intent, and bare --ready/--draft target the current commit or single selected revision by default; pass -A/--apply-to-stack to broaden that scope to every published revision. Use --ready=REVSET / --draft=REVSET for explicit readiness subsets.\n\nReviewer selection applies only to ready PRs, using their final state after --ready/--draft overrides. In a mixed ready/draft stack, both kinds are published, but drafts keep their existing reviewers and receive no automatic review requests. Draft PRs do not contribute reviewer candidates or past review activity to the shared picker. If no ready PRs are targeted, the picker is skipped.\n\n-A -R alice applies Alice only to ready PRs. Adding -r as a stack anchor (-A -r REVISION -R alice) still leaves draft reviewers unchanged. To request review on a draft, explicitly select exactly one PR with -r and provide -R, without -A: `jx stack pub -r REVISION -R alice`. This skips the picker and adds only the named reviewers while retaining that draft's existing reviewers. Repeat -R for multiple users or org/team reviewers.",
                 )
                 .arg(stack_publish_revision_arg())
                 .arg(task_id_arg())
@@ -2295,7 +2295,7 @@ fn reviewer_arg() -> Arg {
         .long("reviewer")
         .value_name("REVIEWER")
         .action(ArgAction::Append)
-        .help("Request a GitHub user or org/team reviewer for the current or single selected pull request; repeat for multiple reviewers")
+        .help("Select a user or org/team reviewer for ready PRs; repeat as needed. Drafts require exactly one PR selected with -r, without -A")
 }
 
 fn fixes_arg() -> Arg {
@@ -2345,7 +2345,7 @@ fn apply_to_stack_arg() -> Arg {
         .short('A')
         .long("apply-to-stack")
         .action(ArgAction::SetTrue)
-        .help("Apply task IDs, labels, reviewers, and bare readiness intent to every published pull request")
+        .help("Apply publish intent to every published PR; reviewer selection still applies only to ready PRs")
 }
 
 fn no_event_handlers_arg() -> Arg {

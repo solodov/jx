@@ -55,10 +55,15 @@ pub async fn pull_request_plan(
         .map(|pull_request| pull_request.reviewers.clone())
         .unwrap_or_default();
     add_existing_reviewers_to_candidates(&mut reviewer_candidates, &existing_reviewers);
-    let reviewers = merge_reviewer_selections(
-        reviewer_selection_from_candidates(&reviewer_candidates),
-        existing_reviewers,
-    );
+    let draft = readiness.desired_draft(existing_pull_request.as_ref());
+    let reviewers = if draft {
+        ReviewerSelection::default()
+    } else {
+        merge_reviewer_selections(
+            reviewer_selection_from_candidates(&reviewer_candidates),
+            existing_reviewers,
+        )
+    };
     let existing_review_activity = existing_review_activity_for_pull_request(
         github,
         &context.origin.github,
@@ -69,7 +74,6 @@ pub async fn pull_request_plan(
         &mut reviewer_candidates,
         existing_review_activity.as_ref(),
     );
-    let draft = readiness.desired_draft(existing_pull_request.as_ref());
     let suggested_reviewers = suggested_reviewers_for_ready_draft(
         github,
         &context.origin.github,
@@ -99,7 +103,6 @@ pub async fn pull_request_plan(
     })
 }
 
-/// Creates or updates a PR after the selected bookmark has been pushed.
 fn reviewer_selection_from_candidates(candidates: &[ReviewerCandidate]) -> ReviewerSelection {
     let mut users = Vec::new();
     let mut teams = Vec::new();
@@ -297,6 +300,7 @@ pub fn prepare_pull_request_change(
     }
 }
 
+/// Publishes PR metadata and synchronizes reviewers only when the plan requests a change.
 pub async fn publish_pull_request(
     context: &RepositoryContext,
     plan: PullRequestPlan,
@@ -365,7 +369,7 @@ pub async fn publish_pull_request(
         action,
         pull_request.clone(),
         plan.task_id.clone(),
-        plan.reviewers.clone(),
+        plan.effective_reviewers().clone(),
         merge_label_sets(existing_labels.clone(), plan.labels.clone()),
     );
 

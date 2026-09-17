@@ -22,6 +22,7 @@ use crate::{
 
 use super::*;
 
+mod draft_reviewers;
 mod stack_context;
 
 #[test]
@@ -2087,10 +2088,7 @@ fn pull_request_plan_derives_metadata_bookmark_stack_base_and_reviewers() {
             .collect::<Vec<_>>(),
         vec!["example-reviewer", "second-reviewer"]
     );
-    assert_eq!(
-        plan.reviewers.users,
-        ["example-reviewer".to_owned(), "second-reviewer".to_owned()]
-    );
+    assert!(plan.reviewers.is_empty());
 }
 
 #[test]
@@ -2382,8 +2380,8 @@ fn pull_request_description_accepts_title_only_descriptions() {
 }
 
 #[test]
-fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
-    // Verifies: Publish pull request creates PR and syncs matched path reviewers.
+fn publish_pull_request_creates_ready_pr_and_syncs_configured_reviewers() {
+    // Verifies: Publishing a ready PR still syncs matched path reviewers.
     let github = FakeGitHub {
         reviewer_result: ReviewerSyncResult {
             requested_users: vec!["example-reviewer".to_owned()],
@@ -2401,7 +2399,7 @@ fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
         "example-user",
         Some("ABC-123".to_owned()),
         Vec::new(),
-        PullRequestReadiness::Draft,
+        PullRequestReadiness::Ready,
     ))
     .expect("PR plan is derived");
 
@@ -2421,7 +2419,7 @@ fn publish_pull_request_creates_pr_and_syncs_configured_reviewers() {
     assert!(report.reviewers.is_some());
     let create_calls = create_calls.lock().expect("create calls");
     assert_eq!(create_calls.len(), 1);
-    assert!(create_calls[0].draft);
+    assert!(!create_calls[0].draft);
     drop(create_calls);
     assert_eq!(reviewer_calls.lock().expect("reviewer calls").len(), 1);
     assert_eq!(

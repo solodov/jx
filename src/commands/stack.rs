@@ -1,6 +1,8 @@
 use super::*;
 use crate::jj::{StackPublishMetrics, StackPublishNodeFacts};
 
+mod reviewers;
+
 #[cfg(test)]
 use crate::repository::StackMetadataNode;
 
@@ -787,45 +789,27 @@ impl StackPublishExecution<'_> {
         let confirmation_plan_positions =
             stack_publish_intent_plan_positions(&facts, &confirmation_indexes);
 
-        let reviewer_candidates = stack_reviewer_candidates(&plans, &intent_plan_positions);
-        let preselected_reviewers =
-            stack_preselected_reviewers(&plans, &intent_plan_positions, &request.reviewers);
-        let reviewers = span.measure(
-            "reviewer_selection",
-            [
-                perf_attr("candidate_count", reviewer_candidates.len()),
-                perf_attr("reviewer_arg_count", request.reviewers.len()),
-                perf_attr("preselected_reviewer_count", preselected_reviewers.len()),
-            ],
-            || match self
-                .prompts
-                .reviewer_selector
-                .select_reviewers(&reviewer_candidates, &preselected_reviewers)
-            {
-                Ok(reviewers) => Ok(Some(reviewers)),
-                Err(ReviewerSelectionError::Cancelled) => Ok(None),
-                Err(error) => Err(CommandError::from(error)),
-            },
-        )?;
-        let Some(reviewers) = reviewers else {
-            span.set([
-                perf_attr("cancelled", true),
-                perf_attr("cancel_stage", "reviewer_selection"),
-            ]);
-            return Ok(CommandResult::success("cancelled\n".to_owned()));
-        };
+        match reviewers::select_publish_reviewers(
+            &mut plans,
+            &intent_plan_positions,
+            &request,
+            self.prompts.reviewer_selector,
+            span,
+        ) {
+            Ok(()) => {}
+            Err(ReviewerSelectionError::Cancelled) => {
+                span.set([
+                    perf_attr("cancelled", true),
+                    perf_attr("cancel_stage", "reviewer_selection"),
+                ]);
+                return Ok(CommandResult::success("cancelled\n".to_owned()));
+            }
+            Err(error) => return Err(CommandError::from(error)),
+        }
         let intent_branches = stack_publish_intent_branches(&plans, &intent_plan_positions);
         let fix_intent_plan_positions =
             stack_publish_intent_plan_positions(&facts, &fix_intent_indexes);
         let fix_intent_branches = stack_publish_intent_branches(&plans, &fix_intent_plan_positions);
-        for (position, plan) in plans.iter_mut().enumerate() {
-            plan.reviewers = if intent_plan_positions.contains(&position) {
-                reviewers.clone()
-            } else {
-                ReviewerSelection::default()
-            };
-        }
-
         let plan_selection = span.measure(
             "confirm_pull_requests",
             [
@@ -1894,87 +1878,6 @@ fn stack_publish_base(
 
 fn stack_publish_node_has_changes(node: &StackPublishNodeFacts) -> bool {
     !node.workspace.target_change.is_empty && !node.workspace.changed_files.is_empty()
-}
-
-fn stack_reviewer_candidates(
-    plans: &[PullRequestPlan],
-    intent_plan_positions: &BTreeSet<usize>,
-) -> Vec<ReviewerCandidate> {
-    let mut candidates: Vec<ReviewerCandidate> = Vec::new();
-    for candidate in plans
-        .iter()
-        .enumerate()
-        .filter(|(position, _)| intent_plan_positions.contains(position))
-        .flat_map(|(_, plan)| plan.reviewer_candidates.iter().cloned())
-    {
-        if let Some(existing) = candidates
-            .iter_mut()
-            .find(|existing| existing.target.matches_identity(&candidate.target))
-        {
-            for reason in candidate.reasons {
-                if !existing.reasons.contains(&reason) {
-                    existing.reasons.push(reason);
-                }
-            }
-        } else {
-            candidates.push(candidate);
-        }
-    }
-    candidates
-}
-
-fn stack_preselected_reviewers(
-    plans: &[PullRequestPlan],
-    intent_plan_positions: &BTreeSet<usize>,
-    cli_reviewers: &[ReviewerTarget],
-) -> Vec<ReviewerTarget> {
-    let mut reviewers = Vec::new();
-    for reviewer in cli_reviewers {
-        push_reviewer_target(&mut reviewers, reviewer.clone());
-    }
-    for plan in plans
-        .iter()
-        .enumerate()
-        .filter(|(position, _)| intent_plan_positions.contains(position))
-        .map(|(_, plan)| plan)
-    {
-        if let Some(existing) = &plan.existing_pull_request {
-            for user in &existing.reviewers.users {
-                push_reviewer_target(&mut reviewers, ReviewerTarget::user(user.clone()));
-            }
-            for team in &existing.reviewers.teams {
-                push_reviewer_target(
-                    &mut reviewers,
-                    ReviewerTarget::team(team.clone(), team.clone()),
-                );
-            }
-        }
-        for candidate in &plan.reviewer_candidates {
-            if reviewer_candidate_keeps_existing_review_selection(candidate) {
-                push_reviewer_target(&mut reviewers, candidate.target.clone());
-            }
-        }
-    }
-    reviewers
-}
-
-/// Returns whether prior PR activity should keep a reviewer checked after GitHub clears a request.
-fn reviewer_candidate_keeps_existing_review_selection(candidate: &ReviewerCandidate) -> bool {
-    candidate.reasons.iter().any(|reason| {
-        matches!(
-            reason.as_str(),
-            "already requested" | "already approved" | "commented" | "comments addressed"
-        )
-    })
-}
-
-fn push_reviewer_target(reviewers: &mut Vec<ReviewerTarget>, reviewer: ReviewerTarget) {
-    if !reviewers
-        .iter()
-        .any(|existing| existing.matches_identity(&reviewer))
-    {
-        reviewers.push(reviewer);
-    }
 }
 
 fn render_stack_publish(

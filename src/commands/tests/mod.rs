@@ -49,6 +49,7 @@ mod render;
 mod review;
 mod shell;
 mod stack;
+mod stack_reviewers;
 mod sync;
 mod work;
 mod work_discovery;

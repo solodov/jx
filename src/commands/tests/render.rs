@@ -446,7 +446,7 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     assert_eq!(
         preview,
         format!(
-            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n  A src/lib.rs\n\nLabels: bug, help wanted\n",
+            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n  A src/lib.rs\n\nReviewers: none\nLabels: bug, help wanted\n",
             example_bookmark_link("example-user/02-zzzzzzzz"),
             example_pull_request_link(7),
         )
@@ -472,6 +472,24 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     );
     plan.existing_pull_request = Some(existing_pull_request(true));
     assert_eq!(pull_request_confirmation_prompt(&plan), "Update draft?");
+}
+
+#[test]
+fn pull_request_preview_distinguishes_draft_reviewer_outcomes() {
+    let mut plan = preview_plan();
+    plan.draft = true;
+    let preview = render_pull_request_preview(&plan, &workspace_status(), &[]);
+    assert!(preview.contains("Reviewers: none (draft)"));
+
+    let mut existing = existing_pull_request(true);
+    existing.reviewers = ReviewerSelection::new(["bob"], ["platform"]);
+    plan.existing_pull_request = Some(existing);
+    let preview = render_pull_request_preview(&plan, &workspace_status(), &[]);
+    assert!(preview.contains("Reviewers: bob, platform (team) (unchanged)"));
+
+    plan.reviewers = ReviewerSelection::new(["alice", "bob"], ["platform"]);
+    let preview = render_pull_request_preview(&plan, &workspace_status(), &[]);
+    assert!(preview.contains("Reviewers: alice, bob, platform (team) (explicit draft request)"));
 }
 
 #[test]

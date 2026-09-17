@@ -80,15 +80,35 @@ fn render_pull_request_preview_with_style_for_width(
         blocks.push(indent_non_empty_lines(&change_lines.join("\n")));
     }
 
-    let mut metadata = Vec::new();
+    let mut metadata = vec![pull_request_reviewer_preview(plan)];
     if !plan.labels.is_empty() {
         metadata.push(format!("Labels: {}", plan.labels.join(", ")));
     }
-    if !metadata.is_empty() {
-        blocks.push(metadata.join("\n"));
-    }
+    blocks.push(metadata.join("\n"));
 
     format!("{}\n", blocks.join("\n\n"))
+}
+
+/// Shows the effective reviewers and distinguishes preserved requests from explicit draft additions.
+fn pull_request_reviewer_preview(plan: &PullRequestPlan) -> String {
+    let reviewers = plan.effective_reviewers();
+    let mut names = reviewers.users.clone();
+    names.extend(reviewers.teams.iter().map(|team| format!("{team} (team)")));
+    let summary = if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join(", ")
+    };
+    let note = if plan.reviewers.is_empty() && !reviewers.is_empty() {
+        " (unchanged)"
+    } else if plan.draft && !plan.reviewers.is_empty() {
+        " (explicit draft request)"
+    } else if plan.draft {
+        " (draft)"
+    } else {
+        ""
+    };
+    format!("Reviewers: {summary}{note}")
 }
 
 const PREVIEW_CONTENT_INDENT: &str = "  ";

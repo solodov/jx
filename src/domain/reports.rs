@@ -72,7 +72,21 @@ pub struct PullRequestPlan {
     pub draft: bool,
     pub existing_pull_request: Option<PullRequestRecord>,
     pub reviewer_candidates: Vec<ReviewerCandidate>,
+    /// Desired review requests to synchronize; an empty selection leaves reviewers unchanged.
     pub(crate) reviewers: ReviewerSelection,
+}
+
+impl PullRequestPlan {
+    /// Returns planned reviewers, including preserved requests when no synchronization is planned.
+    pub(crate) fn effective_reviewers(&self) -> &ReviewerSelection {
+        if self.reviewers.is_empty() {
+            self.existing_pull_request
+                .as_ref()
+                .map_or(&self.reviewers, |existing| &existing.reviewers)
+        } else {
+            &self.reviewers
+        }
+    }
 }
 
 /// Operator intent for the final GitHub pull-request readiness state.

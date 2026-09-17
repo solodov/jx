@@ -751,7 +751,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
         eprintln!();
         let theme = PlainPromptTheme;
         let selected = MultiSelect::with_theme(&theme)
-            .with_prompt("Reviewers:")
+            .with_prompt("Reviewers for ready PRs:")
             .items(&labels)
             .defaults(&defaults)
             .clear(true)
@@ -765,7 +765,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
 
         let selected_reviewers = selection_from_indexes(&choices, &selected);
         eprintln!(
-            "Reviewers: {}",
+            "Reviewers for ready PRs: {}",
             reviewer_selection_summary(&choices, &selected)
         );
         Ok(selected_reviewers)

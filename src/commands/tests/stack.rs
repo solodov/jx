@@ -3620,13 +3620,7 @@ fn stack_publish_intent_flags_apply_to_current_commit_only() {
     assert_eq!(published_plans[0].reviewers, ReviewerSelection::default());
     assert!(!published_plans[0].draft);
     assert_eq!(published_plans[1].labels, ["needs-review".to_owned()]);
-    assert_eq!(
-        published_plans[1].reviewers,
-        ReviewerSelection::new(
-            ["manual-reviewer", "path-reviewer"],
-            std::iter::empty::<&str>()
-        )
-    );
+    assert!(published_plans[1].reviewers.is_empty());
     assert!(published_plans[1].draft);
 
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -3648,7 +3642,7 @@ fn stack_publish_intent_flags_apply_to_current_commit_only() {
 
 #[test]
 fn stack_publish_apply_to_stack_applies_intent_to_every_published_pr() {
-    // Verifies: explicit stack-wide intent restores uniform labels, reviewers, readiness, and task context.
+    // Verifies: stack-wide labels, readiness, and task context apply to drafts, but reviewers do not.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -3695,10 +3689,7 @@ fn stack_publish_apply_to_stack_applies_intent_to_every_published_pr() {
         expected_task_id: Some(Some("TASK-123".to_owned())),
         expected_labels: vec!["needs-review".to_owned()],
         expected_draft: Some(true),
-        expected_reviewers: Some(ReviewerSelection::new(
-            ["manual-reviewer", "path-reviewer"],
-            std::iter::empty::<&str>(),
-        )),
+        expected_reviewers: Some(ReviewerSelection::default()),
         sync_pull_requests: vec![
             pull_request_choice_record(
                 42,

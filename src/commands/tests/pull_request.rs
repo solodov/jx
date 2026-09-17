@@ -850,7 +850,7 @@ fn stack_publish_revision_flag_plans_that_commit() {
 
 #[test]
 fn pull_request_accepts_repeated_reviewer_flags() {
-    // Verifies: Explicit reviewer flags become the requested reviewers and skip prompting.
+    // Verifies: Explicit reviewer flags are preselected for ready PRs.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
