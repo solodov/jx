@@ -29,7 +29,7 @@ pub(in crate::commands) enum PullRequestTableLayout {
 
 const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 40;
 
-/// Fits a row to the terminal, reserving title space before labels and right-aligned metadata.
+/// Fits a row without a trailing margin, reserving title space before labels and right-aligned metadata.
 pub(in crate::commands) fn render_elastic_table_row(
     prefix: &str,
     title: &str,
@@ -49,12 +49,12 @@ pub(in crate::commands) fn render_elastic_table_row(
         rendered_visible_width(suffix).min(available_width.saturating_sub(minimum_title_width + 1));
     let title_suffix_gap = usize::from(suffix_width > 0);
     let right_gap = 2;
-    let right_margin = 1;
-    let right_width = rendered_visible_width(right).min(available_width.saturating_sub(
-        minimum_title_width + title_suffix_gap + suffix_width + right_gap + right_margin,
-    ));
+    let right_width = rendered_visible_width(right).min(
+        available_width
+            .saturating_sub(minimum_title_width + title_suffix_gap + suffix_width + right_gap),
+    );
     let right_space = if right_width > 0 {
-        right_gap + right_width + right_margin
+        right_gap + right_width
     } else {
         0
     };
@@ -68,13 +68,9 @@ pub(in crate::commands) fn render_elastic_table_row(
     }
 
     let right = ellipsize_rendered_line(right, Some(right_width));
-    let used_width = rendered_visible_width(&left) + right_width + right_margin;
+    let used_width = rendered_visible_width(&left) + right_width;
     let gap = terminal_width.saturating_sub(used_width);
-    let line = format!(
-        "{left}{}{right}{}",
-        " ".repeat(gap),
-        " ".repeat(right_margin)
-    );
+    let line = format!("{left}{}{right}", " ".repeat(gap));
     ellipsize_rendered_line(&line, Some(terminal_width))
 }
 

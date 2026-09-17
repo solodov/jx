@@ -11,7 +11,7 @@ fn elastic_table_row_shrinks_title_above_minimum_before_right_metadata() {
     );
 
     assert_eq!(rendered_visible_width(&row), 100);
-    assert!(row.ends_with("Example Reviewer "));
+    assert!(row.ends_with("Example Reviewer"));
     assert!(row.contains("… [workflow]"));
     assert!(!row.contains("request title"));
 }
@@ -27,7 +27,7 @@ fn elastic_table_row_right_aligns_metadata_when_title_fits() {
     );
 
     assert_eq!(rendered_visible_width(&row), 72);
-    assert!(row.ends_with("Example Reviewer "));
+    assert!(row.ends_with("Example Reviewer"));
     assert!(row.contains("Short title [workflow]"));
 }
 
@@ -41,7 +41,7 @@ fn elastic_table_row_reserves_forty_columns_before_crowded_metadata() {
     assert_eq!(
         row,
         format!(
-            "#12  {}… [bug]  Reviewer One, Reviewer Tw… ",
+            "#12  {}… [bug]  Reviewer One, Reviewer Two…",
             "t".repeat(39)
         ),
     );
@@ -57,7 +57,15 @@ fn elastic_table_row_reserves_only_the_actual_width_of_short_titles() {
         Some(40),
     );
 
-    assert_eq!(row, "#12  Short title  Reviewer One, Review… ");
+    assert_eq!(row, "#12  Short title  Reviewer One, Reviewe…");
+}
+
+#[test]
+fn elastic_table_row_uses_last_column_without_reducing_title_minimum() {
+    let row = render_elastic_table_row("#12  ", &"t".repeat(80), "", "Reviewer", Some(48));
+
+    assert_eq!(row, format!("#12  {}…  …", "t".repeat(39)));
+    assert_eq!(rendered_visible_width(&row), 48);
 }
 
 #[test]
@@ -126,7 +134,7 @@ fn elastic_table_row_truncates_styled_metadata_without_leaking_links_or_styles()
         "#12  {GREEN_STYLE}{}…{RESET_STYLE}  ",
         "t".repeat(39)
     )));
-    assert!(row.ends_with(&format!("ReviewerRev…\x1b]8;;\x1b\\{RESET_STYLE} ")));
+    assert!(row.ends_with(&format!("ReviewerRevi…\x1b]8;;\x1b\\{RESET_STYLE}")));
     assert_eq!(
         row.matches("\x1b]8;;https://github.com/reviewer").count(),
         1

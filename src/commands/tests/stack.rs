@@ -1404,6 +1404,9 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
                     assert!(row.contains(&title_excerpt), "{row:?}");
                     assert!(row.contains("Example Reviewer"), "{row:?}");
                     assert_eq!(row.matches('…').count(), 2, "{row:?}");
+                    if !color {
+                        assert!(row.ends_with('…'), "{row:?}");
+                    }
                     if number == 119 {
                         assert!(row.contains("fsl"), "{row:?}");
                     }

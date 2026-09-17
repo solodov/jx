@@ -374,7 +374,7 @@ fn review_interactive_layout_shrinks_titles_above_minimum_before_right_metadata(
         .expect("review row renders");
 
     assert_eq!(rendered_visible_width(row), 100);
-    assert!(row.ends_with("example-author "));
+    assert!(row.ends_with("example-author"));
     assert!(row.contains("… [workflow]"));
     assert!(!row.contains("should shrink first"));
 }
@@ -428,6 +428,9 @@ fn review_interactive_layout_preserves_titles_with_long_author_names() {
                 assert!(row.contains("Example Author"), "{row:?}");
                 assert!(!row.contains(&author));
                 assert_eq!(row.matches('…').count(), 2, "{row:?}");
+                if !color {
+                    assert!(row.ends_with('…'), "{row:?}");
+                }
                 if color && draft {
                     assert!(row.starts_with(DRAFT_ROW_STYLE));
                     assert!(row.ends_with(RESET_STYLE));
