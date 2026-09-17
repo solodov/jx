@@ -27,6 +27,9 @@ pub(in crate::commands) enum PullRequestTableLayout {
     FitTerminal,
 }
 
+const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 40;
+
+/// Fits a row to the terminal, reserving title space before labels and right-aligned metadata.
 pub(in crate::commands) fn render_elastic_table_row(
     prefix: &str,
     title: &str,
@@ -38,23 +41,33 @@ pub(in crate::commands) fn render_elastic_table_row(
         return flow_table_row(prefix, title, suffix, right);
     };
 
-    let prefix_width = rendered_visible_width(prefix);
-    let suffix_width = rendered_visible_width(suffix);
-    let title_suffix_gap = usize::from(!suffix.is_empty());
-    let right_gap = usize::from(!right.is_empty()) * 2;
-    let right_width = rendered_visible_width(right);
-    let right_margin = usize::from(!right.is_empty());
-    let title_width = terminal_width.saturating_sub(
-        prefix_width + title_suffix_gap + suffix_width + right_gap + right_width + right_margin,
-    );
+    let available_width = terminal_width.saturating_sub(rendered_visible_width(prefix));
+    let minimum_title_width = rendered_visible_width(title)
+        .min(PULL_REQUEST_MIN_TITLE_WIDTH)
+        .min(available_width);
+    let suffix_width =
+        rendered_visible_width(suffix).min(available_width.saturating_sub(minimum_title_width + 1));
+    let title_suffix_gap = usize::from(suffix_width > 0);
+    let right_gap = 2;
+    let right_margin = 1;
+    let right_width = rendered_visible_width(right).min(available_width.saturating_sub(
+        minimum_title_width + title_suffix_gap + suffix_width + right_gap + right_margin,
+    ));
+    let right_space = if right_width > 0 {
+        right_gap + right_width + right_margin
+    } else {
+        0
+    };
+    let title_width = available_width.saturating_sub(title_suffix_gap + suffix_width + right_space);
     let title = ellipsize_rendered_line(title, Some(title_width));
+    let suffix = ellipsize_rendered_line(suffix, Some(suffix_width));
 
-    let title_suffix_gap = if suffix.is_empty() { "" } else { " " };
-    let left = format!("{prefix}{title}{title_suffix_gap}{suffix}");
-    if right.is_empty() {
+    let left = format!("{prefix}{title}{}{suffix}", " ".repeat(title_suffix_gap));
+    if right_width == 0 {
         return ellipsize_rendered_line(&left, Some(terminal_width));
     }
 
+    let right = ellipsize_rendered_line(right, Some(right_width));
     let used_width = rendered_visible_width(&left) + right_width + right_margin;
     let gap = terminal_width.saturating_sub(used_width);
     let line = format!(
@@ -180,37 +193,5 @@ fn osc8_open_state(sequence: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn elastic_table_row_shrinks_title_before_right_metadata() {
-        let row = render_elastic_table_row(
-            "  #12      ✓    ?    <1h   ",
-            "Implement a very long synthetic pull request title",
-            "[workflow]",
-            "Example Reviewer",
-            Some(72),
-        );
-
-        assert_eq!(rendered_visible_width(&row), 72);
-        assert!(row.ends_with("Example Reviewer "));
-        assert!(row.contains("… [workflow]"));
-        assert!(!row.contains("request title"));
-    }
-
-    #[test]
-    fn elastic_table_row_right_aligns_metadata_when_title_fits() {
-        let row = render_elastic_table_row(
-            "  #12      ✓    ?    <1h   ",
-            "Short title",
-            "[workflow]",
-            "Example Reviewer",
-            Some(72),
-        );
-
-        assert_eq!(rendered_visible_width(&row), 72);
-        assert!(row.ends_with("Example Reviewer "));
-        assert!(row.contains("Short title [workflow]"));
-    }
-}
+#[path = "tests/common.rs"]
+mod tests;

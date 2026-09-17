@@ -324,8 +324,8 @@ fn review_renders_readable_pastel_labels_in_flow_and_terminal_layouts() {
 }
 
 #[test]
-fn review_interactive_layout_shrinks_titles_before_right_metadata() {
-    // Verifies: dashboard rows preserve labels and authors at the right edge before truncating metadata.
+fn review_interactive_layout_shrinks_titles_above_minimum_before_right_metadata() {
+    // Verifies: dashboard rows retain labels and authors when the title minimum still fits.
     let mut status = review_status_record(
         12,
         "Implement a very long synthetic review request title that should shrink first",
@@ -361,7 +361,7 @@ fn review_interactive_layout_shrinks_titles_before_right_metadata() {
     let output = render_review_requests(
         &view,
         false,
-        Some(88),
+        Some(100),
         PullRequestTableLayout::FitTerminal,
         &BTreeMap::new(),
     );
@@ -370,10 +370,68 @@ fn review_interactive_layout_shrinks_titles_before_right_metadata() {
         .find(|line| line.contains("#12"))
         .expect("review row renders");
 
-    assert_eq!(rendered_visible_width(row), 88);
+    assert_eq!(rendered_visible_width(row), 100);
     assert!(row.ends_with("example-author "));
     assert!(row.contains("… [workflow]"));
     assert!(!row.contains("should shrink first"));
+}
+
+#[test]
+fn review_interactive_layout_preserves_titles_with_long_author_names() {
+    // Verifies: author display names cannot crowd out titles, including styled draft rows.
+    let title = "Make crowded pull request titles readable while preserving metadata";
+    let title_excerpt = format!("{}…", title.chars().take(37).collect::<String>());
+    let author = "Example Author With A Very Long Display Name ".repeat(4);
+    let display_names = BTreeMap::from([("example-author".to_owned(), author.clone())]);
+    for draft in [false, true] {
+        let view = ReviewRequestsView {
+            viewer: "example-reviewer".to_owned(),
+            repositories: vec![ReviewRequestRepositoryView {
+                repository: GitHubRepository {
+                    owner: "example-owner".to_owned(),
+                    name: "api-alpha".to_owned(),
+                },
+                layout_key: None,
+                root: None,
+                display_root: None,
+                rows: vec![ReviewRequestRowView {
+                    status: review_status_record(12, title, "example-author", draft),
+                    state: crate::domain::ReviewRequestState::New,
+                    viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
+                    dismissal: None,
+                }],
+                external: false,
+                review_wait_threshold_seconds: None,
+            }],
+        };
+        for color in [false, true] {
+            for width in [100, 140] {
+                let output = render_review_requests(
+                    &view,
+                    color,
+                    Some(width),
+                    PullRequestTableLayout::FitTerminal,
+                    &display_names,
+                );
+                let row = output
+                    .lines()
+                    .find(|line| line.contains("#12"))
+                    .expect("review row renders");
+
+                assert_eq!(rendered_visible_width(row), width, "{row:?}");
+                assert!(row.contains(&title_excerpt), "{row:?}");
+                assert!(row.contains("backend"), "{row:?}");
+                assert!(row.contains("Example Author"), "{row:?}");
+                assert!(!row.contains(&author));
+                assert_eq!(row.matches('…').count(), 2, "{row:?}");
+                if color && draft {
+                    assert!(row.starts_with(DRAFT_ROW_STYLE));
+                    assert!(row.ends_with(RESET_STYLE));
+                }
+            }
+        }
+    }
 }
 
 #[test]

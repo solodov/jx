@@ -1316,6 +1316,108 @@ fn stack_status_ellipsizes_long_titles_before_labels_and_reviewers() {
 }
 
 #[test]
+fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
+    // Verifies: reviewer lists yield to titles in local/global tables, including draft and nested rows.
+    let title = "Make crowded pull request titles readable while preserving metadata";
+    let reviewers = ["alice", "bob", "carol", "dave", "erin", "frank"];
+    let display_names = reviewers
+        .iter()
+        .map(|login| (login.to_string(), format!("Example Reviewer {login}")))
+        .collect();
+    for draft in [false, true] {
+        let metadata = StackMetadata {
+            nodes: vec![
+                stack_status_node(119, "topic/root", "main", title, draft),
+                stack_status_node(120, "topic/child", "topic/root", title, draft),
+            ],
+            ..StackMetadata::default()
+        };
+        let statuses = metadata
+            .nodes
+            .iter()
+            .map(|node| {
+                let number = node.pull_request.expect("test node has a PR");
+                let mut status = stack_status_record(
+                    number,
+                    title,
+                    &node.branch,
+                    &node.base_branch,
+                    PullRequestCheckStatus::Passing,
+                    PullRequestReviewStatus::ReviewRequested,
+                    ReviewerSelection::new(reviewers, Vec::<String>::new()),
+                );
+                status.draft = draft;
+                if number == 119 {
+                    status.labels = vec![PullRequestLabel {
+                        name: "fsl".to_owned(),
+                        color: "5319e7".to_owned(),
+                    }];
+                }
+                (number, status)
+            })
+            .collect();
+        let report = PullRequestStackStatusReport {
+            repository: preview_plan().repository,
+            snapshot: PullRequestStackSnapshot::from_metadata(
+                &metadata,
+                &[],
+                &[],
+                PullRequestStackSelection::default(),
+            ),
+            statuses,
+            trunk: None,
+            review_wait_threshold_seconds: None,
+        };
+        for color in [false, true] {
+            let local = render_stack_status(
+                &report,
+                Path::new("/repo"),
+                color,
+                Some(100),
+                PullRequestTableLayout::FitTerminal,
+                &display_names,
+            )
+            .expect("local stack status renders");
+            let global = render_global_stack_status(
+                &[GlobalStackStatusEntry::current(
+                    PathBuf::from("/repo"),
+                    &report,
+                )],
+                1,
+                Path::new("/repo"),
+                color,
+                Some(100),
+                PullRequestTableLayout::FitTerminal,
+                &display_names,
+            )
+            .expect("global stack status renders");
+            for output in [local, global] {
+                for (number, title_chars) in [(119, 37), (120, 35)] {
+                    let row = output
+                        .lines()
+                        .find(|line| line.contains(&format!("#{number}")))
+                        .expect("stack row renders");
+                    let title_excerpt =
+                        format!("{}…", title.chars().take(title_chars).collect::<String>());
+
+                    assert_eq!(rendered_visible_width(row), 100, "{row:?}");
+                    assert!(row.contains(&title_excerpt), "{row:?}");
+                    assert!(row.contains("Example Reviewer"), "{row:?}");
+                    assert_eq!(row.matches('…').count(), 2, "{row:?}");
+                    if number == 119 {
+                        assert!(row.contains("fsl"), "{row:?}");
+                    }
+                    if color && draft {
+                        assert!(row.starts_with(DRAFT_ROW_STYLE));
+                        assert!(row.ends_with(RESET_STYLE));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn stack_status_ellipsizes_rows_to_terminal_width() {
     // Verifies: long stack-status rows stay within the detected terminal width.
     let workspace = TestWorkspace::new();
