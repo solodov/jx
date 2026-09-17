@@ -512,12 +512,12 @@ pub(in crate::commands) fn review_request_lag_timestamp(
 fn review_request_row_style(row: &ReviewRequestRowView, color: bool) -> &'static str {
     if !color {
         ""
-    } else if pull_request_has_merge_conflict(&row.status) {
-        CONFLICT_STYLE
     } else if review_request_is_on_ice(&row.status) {
         PASTEL_BLUE_STYLE
     } else if row.status.draft {
         DRAFT_ROW_STYLE
+    } else if pull_request_has_merge_conflict(&row.status) {
+        CONFLICT_STYLE
     } else {
         ""
     }
@@ -565,7 +565,7 @@ fn review_request_waits_on_viewer_with_peer_approval(
             .any(|reviewer| reviewer != viewer)
 }
 
-/// Renders the viewer's review signal in three columns, leaving draft reviews blank.
+/// Renders the viewer's review signal only when the PR has requested or actual reviewers.
 fn review_request_state_cell(
     status: &PullRequestStatusRecord,
     state: ReviewRequestState,
@@ -575,7 +575,7 @@ fn review_request_state_cell(
     review_lag_over_threshold: bool,
     restore_style: &str,
 ) -> String {
-    if status.draft {
+    if !pull_request_has_reviewers(status) {
         return render_pull_request_status_cell("Rev", None, color, restore_style);
     }
     if viewer_signal == ReviewRequestViewerSignal::DismissedApproval
@@ -649,7 +649,7 @@ fn review_request_title(
         };
     }
     let label_chips = review_request_label_chips(row, color);
-    let author = review_request_author_token(status, color, display_names);
+    let author = review_request_author_token(status, color && !status.draft, display_names);
     ReviewRequestTitleParts {
         title,
         suffix: label_chips.join(pull_request_label_separator(color)),

@@ -7,8 +7,7 @@ pub(in crate::commands) const BOLD_STYLE: &str = "\x1b[1m";
 const BLACK_BOLD_STYLE: &str = "\x1b[1m\x1b[30m";
 const BLACK_ITALIC_STYLE: &str = "\x1b[3m\x1b[30m";
 pub(in crate::commands) const DIM_STYLE: &str = "\x1b[2m";
-pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;190;184;176m";
-pub(in crate::commands) const DRAFT_CONFLICT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;218;128;132m";
+pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;184;184;184m";
 pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
 const GREEN_ITALIC_STYLE: &str = "\x1b[3m\x1b[32m";
 const MERGED_APPROVED_REVIEWER_STYLE: &str = "\x1b[38;2;118;108;96m";
@@ -26,7 +25,7 @@ pub(in crate::commands) fn ellipsize_pull_request_title(title: &str) -> String {
     ellipsize_rendered_line(title, Some(PULL_REQUEST_TITLE_MAX_WIDTH))
 }
 
-/// Renders pastel label chips, with quieter colors and row-style restoration for drafts.
+/// Renders pastel label chips for active PRs and monochrome chips that restore draft row styling.
 pub(in crate::commands) fn pull_request_label_chips(
     labels: &[PullRequestLabel],
     color: bool,
@@ -38,7 +37,7 @@ pub(in crate::commands) fn pull_request_label_chips(
         .collect()
 }
 
-/// Renders subdued label chips for completed PRs without applying draft row styling.
+/// Renders monochrome label chips for completed PRs without applying draft row styling.
 pub(in crate::commands) fn muted_pull_request_label_chips(
     labels: &[PullRequestLabel],
     color: bool,
@@ -72,12 +71,15 @@ fn pull_request_label_chip_with_restore(
     if !color {
         return plain_pull_request_label_chip(&label.name);
     }
-    let (red, green, blue) = github_label_rgb(&label.color)
-        .map(|color| pastel_github_label_rgb(color, muted))
-        .unwrap_or_else(|| fallback_label_rgb(muted));
-    // Both text colors retain at least 4.5:1 contrast against their darkest possible
-    // blended background (a black source). Muting must not make labels hard to read.
-    let (text_red, text_green, text_blue) = if muted { (98, 93, 86) } else { (52, 49, 46) };
+    let (red, green, blue) = if muted {
+        (232, 232, 232)
+    } else {
+        github_label_rgb(&label.color)
+            .map(pastel_github_label_rgb)
+            .unwrap_or((221, 221, 221))
+    };
+    // Both palettes retain at least 4.5:1 contrast, including the darkest active background.
+    let (text_red, text_green, text_blue) = if muted { (98, 98, 98) } else { (52, 49, 46) };
     let display_name = compact_label_name(&label.name);
     // SGR 22 clears inherited bold/dim intensity so terminal dimming cannot alter contrast.
     format!(
@@ -103,14 +105,13 @@ fn compact_label_name(name: &str) -> String {
     compacted
 }
 
-/// Blends toward warm off-white, retaining less source color for draft and merged PRs.
-fn pastel_github_label_rgb((red, green, blue): (u8, u8, u8), muted: bool) -> (u8, u8, u8) {
+/// Blends active PR label colors toward warm off-white.
+fn pastel_github_label_rgb((red, green, blue): (u8, u8, u8)) -> (u8, u8, u8) {
     const BLEND_TARGET: (u8, u8, u8) = (248, 246, 242);
-    let source_weight_percent = if muted { 12 } else { 25 };
     (
-        blend_color_channel(red, BLEND_TARGET.0, source_weight_percent),
-        blend_color_channel(green, BLEND_TARGET.1, source_weight_percent),
-        blend_color_channel(blue, BLEND_TARGET.2, source_weight_percent),
+        blend_color_channel(red, BLEND_TARGET.0, 25),
+        blend_color_channel(green, BLEND_TARGET.1, 25),
+        blend_color_channel(blue, BLEND_TARGET.2, 25),
     )
 }
 
@@ -119,14 +120,6 @@ fn blend_color_channel(source: u8, target: u8, source_weight_percent: u16) -> u8
     let value =
         u16::from(source) * source_weight_percent + u16::from(target) * target_weight_percent + 50;
     (value / 100) as u8
-}
-
-fn fallback_label_rgb(muted: bool) -> (u8, u8, u8) {
-    if muted {
-        (232, 228, 222)
-    } else {
-        (221, 221, 221)
-    }
 }
 
 fn github_label_rgb(color: &str) -> Option<(u8, u8, u8)> {
@@ -678,7 +671,7 @@ pub(in crate::commands) fn pull_request_node_symbol(
     symbol.to_owned()
 }
 
-/// Renders the PR lifecycle marker and title, emphasizing configured auto-merge gaps.
+/// Renders the lifecycle marker and title, emphasizing auto-merge gaps only on active PRs.
 pub(in crate::commands) fn pull_request_node_title_with_restore(
     status: Option<&PullRequestStatusRecord>,
     draft: bool,
@@ -690,13 +683,14 @@ pub(in crate::commands) fn pull_request_node_title_with_restore(
     let Some(status) = status else {
         return format!("{symbol} {title}");
     };
+    let active_color = color && !draft && !status.closed && !status.merged;
     match status.auto_merge_status {
         PullRequestAutoMergeStatus::Missing | PullRequestAutoMergeStatus::PrerequisitesRequired
-            if color =>
+            if active_color =>
         {
             format!("{ORANGE_STYLE}{symbol} {title}{RESET_STYLE}{restore_style}")
         }
-        PullRequestAutoMergeStatus::Armed if color && symbol == "◎" => {
+        PullRequestAutoMergeStatus::Armed if active_color && symbol == "◎" => {
             format!("{CYAN_STYLE}{symbol}{RESET_STYLE}{restore_style} {title}")
         }
         _ => format!("{symbol} {title}"),
@@ -723,7 +717,7 @@ pub(in crate::commands) fn pull_request_check_cell(
     render_pull_request_status_cell("Chk", signal, color, restore_style)
 }
 
-/// Renders a three-column stack review label, leaving undefined review state blank.
+/// Renders known stack review state only for PRs with requested or actual reviewers.
 pub(in crate::commands) fn pull_request_review_cell(
     status: Option<&PullRequestStatusRecord>,
     merged: bool,
@@ -744,14 +738,16 @@ fn stack_review_signal(
     merged: bool,
     review_lag_over_threshold: bool,
 ) -> Option<(&'static str, PullRequestStatusStyle)> {
+    let status = status?;
+    if !pull_request_has_reviewers(status) {
+        return None;
+    }
     if merged {
         return Some(("✓", PullRequestStatusStyle::Good));
     }
-    let status = status?;
-    if pull_request_review_state_is_undefined(status) {
-        return None;
-    }
-    if status.review_status == PullRequestReviewStatus::ChangesRequested {
+    if status.review_status == PullRequestReviewStatus::ChangesRequested
+        || !status.changes_requested_reviewers.is_empty()
+    {
         return Some(("!", PullRequestStatusStyle::Bad));
     }
     if status.review_status == PullRequestReviewStatus::Approved
@@ -780,12 +776,15 @@ fn stack_review_signal(
     None
 }
 
-fn pull_request_review_state_is_undefined(status: &PullRequestStatusRecord) -> bool {
-    status.draft
-        || status
-            .default_branch
-            .as_ref()
-            .is_some_and(|default_branch| status.base_branch != *default_branch)
+/// Counts requested users/teams and past review participants, but never suggested reviewers.
+pub(in crate::commands) fn pull_request_has_reviewers(status: &PullRequestStatusRecord) -> bool {
+    !status.requested_reviewers.is_empty()
+        || !status.approved_reviewers.is_empty()
+        || !status.changes_requested_reviewers.is_empty()
+        || !status.commented_reviewers.is_empty()
+        || !status.addressed_reviewers.is_empty()
+        || !status.dismissed_reviewers.is_empty()
+        || !status.review_activity.is_empty()
 }
 
 pub(in crate::commands) fn pull_request_review_wait_style(
@@ -807,7 +806,7 @@ pub(in crate::commands) enum PullRequestStatusStyle {
     Info,
 }
 
-/// Renders a three-letter colored label or a padded plain symbol, reserving space for absent signals.
+/// Renders a full-intensity status label or a padded plain symbol, then restores the row style.
 pub(in crate::commands) fn render_pull_request_status_cell(
     label: &str,
     signal: Option<(&str, PullRequestStatusStyle)>,
@@ -827,5 +826,5 @@ pub(in crate::commands) fn render_pull_request_status_cell(
         PullRequestStatusStyle::Warn => YELLOW_STYLE,
         PullRequestStatusStyle::Info => CYAN_STYLE,
     };
-    format!("{style}{label}{RESET_STYLE}{restore_style}")
+    format!("\x1b[22m{style}{label}{RESET_STYLE}{restore_style}")
 }

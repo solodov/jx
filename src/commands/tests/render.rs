@@ -1,16 +1,16 @@
 use super::*;
 
 #[test]
-fn pull_request_label_chips_use_readable_pastels_and_restore_row_style() {
-    // Verifies: saturated and neutral colors become pastel chips, never raw GitHub backgrounds.
-    for (source, active_rgb, muted_rgb) in [
-        ("d93f0b", [240, 200, 184], [244, 224, 214]),
-        ("5319e7", [207, 191, 239], [228, 219, 241]),
-        ("1d76db", [193, 214, 236], [222, 231, 239]),
-        ("0e8a16", [190, 219, 187], [220, 233, 216]),
-        ("fbca04", [249, 235, 183], [248, 241, 213]),
-        ("000000", [186, 185, 182], [218, 216, 213]),
-        ("ffffff", [250, 248, 245], [249, 247, 244]),
+fn pull_request_label_chips_use_pastels_or_monochrome_and_restore_row_style() {
+    // Verifies: active labels retain source hues; subdued labels are always neutral gray.
+    for (source, active_rgb) in [
+        ("d93f0b", [240, 200, 184]),
+        ("5319e7", [207, 191, 239]),
+        ("1d76db", [193, 214, 236]),
+        ("0e8a16", [190, 219, 187]),
+        ("fbca04", [249, 235, 183]),
+        ("000000", [186, 185, 182]),
+        ("ffffff", [250, 248, 245]),
     ] {
         let labels = [PullRequestLabel {
             name: "area: \tbackend".to_owned(),
@@ -25,14 +25,14 @@ fn pull_request_label_chips_use_readable_pastels_and_restore_row_style() {
             ),
             (
                 pull_request_label_chips(&labels, true, true),
-                muted_rgb,
-                "98;93;86",
+                [232, 232, 232],
+                "98;98;98",
                 DRAFT_ROW_STYLE,
             ),
             (
                 muted_pull_request_label_chips(&labels, true),
-                muted_rgb,
-                "98;93;86",
+                [232, 232, 232],
+                "98;98;98",
                 "",
             ),
         ] {
@@ -82,11 +82,11 @@ fn pull_request_label_chips_fall_back_to_readable_neutral_colors() {
             ),
             (
                 pull_request_label_chips(&labels, true, true),
-                [232, 228, 222],
+                [232, 232, 232],
             ),
             (
                 muted_pull_request_label_chips(&labels, true),
-                [232, 228, 222],
+                [232, 232, 232],
             ),
         ] {
             assert_eq!(label_chip_rgb(&chips[0], "\x1b[48;2;"), expected_background);

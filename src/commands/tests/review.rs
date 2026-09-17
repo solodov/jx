@@ -310,7 +310,7 @@ fn review_renders_readable_pastel_labels_in_flow_and_terminal_layouts() {
             }],
         };
         let (background, text, restore) = if draft {
-            ("228;219;241", "98;93;86", DRAFT_ROW_STYLE)
+            ("232;232;232", "98;98;98", DRAFT_ROW_STYLE)
         } else {
             ("207;191;239", "52;49;46", "")
         };

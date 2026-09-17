@@ -242,7 +242,7 @@ fn stack_status_renders_check_and_review_summary() {
         stack_status_pull_request_cell(101)
     )));
     assert!(result.stdout.contains(&format!(
-        "{} ◷       <1h  └ ◌ Child change [ui]  reviewer-one, team/platform, suggested-reviewer",
+        "{} ◷   ?   <1h  └ ◌ Child change [ui]  reviewer-one, team/platform, suggested-reviewer",
         stack_status_pull_request_cell(102)
     )));
     assert!(!result.stdout.contains("Legend:"));
@@ -293,7 +293,7 @@ fn stack_status_renders_review_decision_labels() {
         },
     )
     .expect("stack metadata writes");
-    let stacked_approved = stack_status_record(
+    let mut stacked_approved = stack_status_record(
         104,
         "Stacked approved",
         "topic/stacked-approved",
@@ -302,6 +302,7 @@ fn stack_status_renders_review_decision_labels() {
         PullRequestReviewStatus::Approved,
         ReviewerSelection::default(),
     );
+    stacked_approved.approved_reviewers = vec!["reviewer-approved".to_owned()];
     let mut approved_clean = stack_status_record(
         105,
         "Approved clean",
@@ -400,7 +401,7 @@ fn stack_status_renders_review_decision_labels() {
 
     assert!(result
         .stdout
-        .contains("\x1b[32mChk\x1b[0m     —    ◯ Stacked approved"));
+        .contains("\x1b[32mRev\x1b[0m —    ◯ Stacked approved"));
     assert!(result
         .stdout
         .contains("\x1b[32mRev\x1b[0m —    ◯ Approved clean"));
@@ -545,19 +546,19 @@ auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
         .expect("stack status succeeds");
 
     assert!(plain.stdout.contains(&format!(
-        "{} ◷   ✓   —    ◎ Armed auto-merge [kept]",
+        "{} ◷       —    ◎ Armed auto-merge [kept]",
         stack_status_pull_request_cell(111)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{} ✓   ✓   —    ◆ Missing auto-merge",
+        "{} ✓       —    ◆ Missing auto-merge",
         stack_status_pull_request_cell(112)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{} ◷   ✓   —    ◯ Waiting checks",
+        "{} ◷       —    ◯ Waiting checks",
         stack_status_pull_request_cell(113)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{} ✓   ✓   —    ◈ Settings required [kept]",
+        "{} ✓       —    ◈ Settings required [kept]",
         stack_status_pull_request_cell(114)
     )));
     assert!(!plain.stdout.contains("auto-merge]"));
@@ -799,6 +800,7 @@ review_wait_threshold = "4h"
         PullRequestReviewStatus::Approved,
         ReviewerSelection::default(),
     );
+    merged.approved_reviewers = vec!["reviewer-approved".to_owned()];
     merged.created_at = Some(timestamp(7));
     merged.merged = true;
     merged.closed = true;
@@ -839,9 +841,9 @@ review_wait_threshold = "4h"
     assert!(result
         .stdout
         .contains("\x1b[36mRev\x1b[0m \x1b[2m1h  \x1b[0m ◯ Fresh waiting"));
-    assert!(result
-        .stdout
-        .contains("     \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m ◌ Draft waiting"));
+    assert!(result.stdout.contains(&format!(
+        "\x1b[22m\x1b[1m\x1b[31mRev{RESET_STYLE}{DRAFT_ROW_STYLE} {DIM_STYLE}6h  {RESET_STYLE}{DRAFT_ROW_STYLE} ◌ Draft waiting"
+    )));
     assert!(result
         .stdout
         .contains("\x1b[32mRev\x1b[0m \x1b[32m7h  \x1b[0m \x1b[32m● Merged change\x1b[0m"));
@@ -1630,7 +1632,7 @@ review_gate_checks = ["^approval gate$", "^committer gate$"]
         "main",
         PullRequestCheckStatus::Passing,
         PullRequestReviewStatus::NotReviewed,
-        ReviewerSelection::default(),
+        ReviewerSelection::new(["reviewer-one"], Vec::<String>::new()),
     );
     status.checks = vec![
         PullRequestCheck {
@@ -1805,7 +1807,7 @@ fn stack_status_uses_latest_contexts_when_rollup_has_stale_failure() {
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{} ◷   ✓   —    ◯ Stale rollup change",
+        "{} ◷       —    ◯ Stale rollup change",
         stack_status_pull_request_cell(121)
     )));
 }
@@ -1879,7 +1881,7 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
         &[vec![451]]
     );
     assert!(result.stdout.contains(&format!(
-        "{} ✓       —    ◌ Example branch-only status  example-reviewer",
+        "{} ✓   ?   —    ◌ Example branch-only status  example-reviewer",
         stack_status_pull_request_cell(451)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -2036,7 +2038,7 @@ fn stack_status_resolves_merged_branch_only_stack_nodes() {
         &[vec![452]]
     );
     assert!(result.stdout.contains(&format!(
-        "{} ✓   ✓   —    ● Merged branch-only status",
+        "{} ✓       —    ● Merged branch-only status",
         stack_status_pull_request_cell(452)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -2234,12 +2236,12 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .stdout
         .contains("\x1b[3m\x1b[32mreviewer-commented-approved\x1b[0m"));
     assert!(result.stdout.contains(
-        "\x1b[22m\x1b[48;2;244;223;222m\x1b[38;2;98;93;86m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  draft-pending, draft-approved"
+        "\x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m ui \x1b[0m\x1b[2m\x1b[38;2;184;184;184m  draft-pending, draft-approved"
     ));
     assert!(result.stdout.contains("\x1b[32m#112\x1b[0m"));
     assert!(result.stdout.contains("\x1b[32m● Merged change\x1b[0m"));
     assert!(result.stdout.contains(
-        "\x1b[32m● Merged change\x1b[0m \x1b[22m\x1b[48;2;220;233;216m\x1b[38;2;98;93;86m done \x1b[0m"
+        "\x1b[32m● Merged change\x1b[0m \x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m done \x1b[0m"
     ));
     let merged_line = result
         .stdout
@@ -2556,7 +2558,7 @@ fn stack_status_subdues_draft_merge_conflict_rows() {
         .lines()
         .find(|line| line.contains("Draft conflict"))
         .expect("draft conflict row renders");
-    assert!(draft_line.starts_with(DRAFT_CONFLICT_ROW_STYLE));
+    assert!(draft_line.starts_with(DRAFT_ROW_STYLE));
     assert!(!draft_line.starts_with(CONFLICT_STYLE));
     assert!(draft_line.contains("⊘ Draft conflict  draft-reviewer"));
 }
