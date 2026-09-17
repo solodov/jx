@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::PrActionContext;
 
 const STACK_STATUS_PR_WIDTH: usize = PULL_REQUEST_STATUS_PR_WIDTH;
 
@@ -29,96 +30,87 @@ impl GlobalStackStatusEntry {
     }
 }
 
+/// Renders unchanged terminal rows alongside structured PR targets for keyboard actions.
 pub(in crate::commands) fn render_stack_status(
     report: &PullRequestStackStatusReport,
-    current_dir: &Path,
+    repository_root: &Path,
     color: bool,
     terminal_width: Option<usize>,
     layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
-) -> Result<String, JjError> {
-    Ok(render_plain_output(|formatter| {
-        writeln!(
-            formatter,
-            "{}",
-            stack_status_repository_header(
-                &report.repository.github_slug,
-                Some(&report.repository.github_url),
-                &current_dir.display().to_string(),
-                Some(report),
-                color,
-            )
-        )?;
-        let _ = write_stack_status_report(
-            formatter,
-            report,
+) -> PullRequestTableFrame {
+    let mut output = PullRequestTableFrame::default();
+    output.push_line(&stack_status_repository_header(
+        &report.repository.github_slug,
+        Some(&report.repository.github_url),
+        &repository_root.display().to_string(),
+        Some(report),
+        color,
+    ));
+    append_stack_status_report(
+        &mut output,
+        report,
+        repository_root,
+        StackStatusTableOptions {
             color,
-            0,
+            indent: 0,
             terminal_width,
             layout,
-            display_names,
-        )?;
-        Ok(())
-    }))
+        },
+        display_names,
+    );
+    output
 }
 
+/// Renders grouped PR targets using each entry's checkout, not the dashboard's launch directory.
 pub(in crate::commands) fn render_global_stack_status(
     entries: &[GlobalStackStatusEntry],
-    total_repositories: usize,
-    current_dir: &Path,
+    _total_repositories: usize,
+    _current_dir: &Path,
     color: bool,
     terminal_width: Option<usize>,
     layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
-) -> Result<String, JjError> {
-    let _ = current_dir;
-    Ok(render_plain_output(|formatter| {
-        let _ = total_repositories;
-
-        for (index, entry) in entries.iter().enumerate() {
-            if index > 0 {
-                writeln!(formatter)?;
-            }
-            let (label, url) = entry
-                .repository
-                .as_ref()
-                .map(|repository| (repository.slug(), Some(repository.https_url())))
-                .unwrap_or_else(|| {
-                    (
-                        entry.key.clone().unwrap_or_else(|| "repository".to_owned()),
-                        None,
-                    )
-                });
-            let report = entry.result.as_ref().ok();
-            writeln!(
-                formatter,
-                "{}",
-                stack_status_repository_header(
-                    &label,
-                    url.as_deref(),
-                    &entry.display_root,
-                    report,
-                    color
-                )
-            )?;
-            match &entry.result {
-                Ok(report) => {
-                    let _ = write_stack_status_report(
-                        formatter,
-                        report,
-                        color,
-                        2,
-                        terminal_width,
-                        layout,
-                        display_names,
-                    )?;
-                }
-                Err(error) => writeln!(formatter, "  error: {error}")?,
-            }
+) -> PullRequestTableFrame {
+    let mut output = PullRequestTableFrame::default();
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            output.push_line("");
         }
-
-        Ok(())
-    }))
+        let (label, url) = entry
+            .repository
+            .as_ref()
+            .map(|repository| (repository.slug(), Some(repository.https_url())))
+            .unwrap_or_else(|| {
+                (
+                    entry.key.clone().unwrap_or_else(|| "repository".to_owned()),
+                    None,
+                )
+            });
+        output.push_line(&stack_status_repository_header(
+            &label,
+            url.as_deref(),
+            &entry.display_root,
+            entry.result.as_ref().ok(),
+            color,
+        ));
+        match &entry.result {
+            Ok(report) => append_stack_status_report(
+                &mut output,
+                report,
+                &entry.root,
+                StackStatusTableOptions {
+                    color,
+                    indent: 2,
+                    terminal_width,
+                    layout,
+                },
+                display_names,
+            ),
+            Err(error) => output.push_line(&format!("  error: {error}")),
+        }
+    }
+    output
 }
 
 pub(in crate::commands) fn render_stack_status_json(entries: &[GlobalStackStatusEntry]) -> String {
@@ -136,23 +128,41 @@ pub(in crate::commands) fn render_stack_status_json(entries: &[GlobalStackStatus
     rendered
 }
 
-fn write_stack_status_report(
-    formatter: &mut dyn Formatter,
-    report: &PullRequestStackStatusReport,
+struct StackStatusTableOptions {
     color: bool,
     indent: usize,
     terminal_width: Option<usize>,
     layout: PullRequestTableLayout,
+}
+
+fn append_stack_status_report(
+    output: &mut PullRequestTableFrame,
+    report: &PullRequestStackStatusReport,
+    repository_root: &Path,
+    options: StackStatusTableOptions,
     display_names: &BTreeMap<String, String>,
-) -> io::Result<bool> {
+) {
+    let StackStatusTableOptions {
+        color,
+        indent,
+        terminal_width,
+        layout,
+    } = options;
     let indent = " ".repeat(indent);
     let visible_snapshot = visible_stack_status_snapshot(report);
     if visible_snapshot.nodes.is_empty() {
-        writeln!(formatter, "{indent}No stack state")?;
-        return Ok(false);
+        output.push_line(&format!("{indent}No stack state"));
+        return;
     }
 
-    let rows = stack_status_table_rows(report, &visible_snapshot, color, layout, display_names);
+    let rows = stack_status_table_rows(
+        report,
+        repository_root,
+        &visible_snapshot,
+        color,
+        layout,
+        display_names,
+    );
     let pr_width = rows
         .iter()
         .map(|row| row.pr_visible_width)
@@ -160,14 +170,13 @@ fn write_stack_status_report(
         .unwrap_or(0)
         .max(STACK_STATUS_PR_WIDTH);
     if !color {
-        writeln!(
-            formatter,
+        output.push_line(&format!(
             "{indent}{:<pr_width$} Chk Rev {:<lag_width$} Title",
             "PR",
             "Lag",
             pr_width = pr_width,
             lag_width = REVIEW_LAG_WIDTH,
-        )?;
+        ));
     }
     for row in rows {
         let pr_padding = " ".repeat(pr_width.saturating_sub(row.pr_visible_width));
@@ -195,12 +204,12 @@ fn write_stack_status_report(
                 terminal_width,
             ),
         };
-        writeln!(formatter, "{}", style_stack_status_row(line, row.style))?;
+        output.push_pr_line(&style_stack_status_row(line, row.style), row.action_context);
     }
-    Ok(true)
 }
 
 struct StackStatusTableRow {
+    action_context: Option<PrActionContext>,
     pr_cell: String,
     pr_visible_width: usize,
     check_cell: String,
@@ -217,6 +226,7 @@ struct StackStatusTableRow {
 
 fn stack_status_table_rows(
     report: &PullRequestStackStatusReport,
+    repository_root: &Path,
     snapshot: &PullRequestStackSnapshot,
     color: bool,
     layout: PullRequestTableLayout,
@@ -247,6 +257,12 @@ fn stack_status_table_rows(
                 display_names,
             });
             StackStatusTableRow {
+                action_context: stack_status_action_context(
+                    report,
+                    repository_root,
+                    row.node,
+                    status,
+                ),
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
                 check_cell: pull_request_check_cell(status, merged, color, style),
@@ -268,6 +284,37 @@ fn stack_status_table_rows(
             }
         })
         .collect()
+}
+
+/// Keeps full PR facts even when the corresponding rendered row is truncated or styled.
+fn stack_status_action_context(
+    report: &PullRequestStackStatusReport,
+    repository_root: &Path,
+    node: &PullRequestStackNode,
+    status: Option<&PullRequestStatusRecord>,
+) -> Option<PrActionContext> {
+    let number = node.pull_request_number()?;
+    Some(PrActionContext {
+        repository: GitHubRepository {
+            owner: report.repository.github_slug_owner().to_owned(),
+            name: report.repository.github_slug_name().to_owned(),
+        },
+        repository_root: Some(repository_root.to_path_buf()),
+        pr_number: number,
+        pr_url: stack_status_pull_request_url(report, node, status, number),
+        title: status
+            .map(|status| status.title.clone())
+            .unwrap_or_else(|| node.title.clone()),
+        branch: status
+            .map(|status| status.head_branch.clone())
+            .unwrap_or_else(|| node.branch.clone()),
+        base_branch: status
+            .map(|status| status.base_branch.clone())
+            .unwrap_or_else(|| node.base_branch.clone()),
+        head_oid: status.and_then(|status| status.latest_commit_oid.clone()),
+        local_commit_id: None,
+        local_change_id: None,
+    })
 }
 
 struct StackStatusPrCell {

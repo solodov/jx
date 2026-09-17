@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::ReviewRequestState;
+use crate::domain::{PrActionContext, ReviewRequestState};
 use crate::github::PullRequestReviewerMention;
 
 const JX_DISMISSAL_LABEL_COLOR: &str = "5319e7";
@@ -59,21 +59,20 @@ pub(in crate::commands) fn render_review_requests(
     terminal_width: Option<usize>,
     layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
-) -> String {
-    let mut output = String::new();
+) -> PullRequestTableFrame {
+    let mut output = PullRequestTableFrame::default();
     if view.repositories.is_empty() {
         return output;
     }
 
     for (index, repository) in view.repositories.iter().enumerate() {
         if index > 0 {
-            output.push('\n');
+            output.push_line("");
         }
-        output.push_str(&review_repository_header(repository, color));
-        output.push('\n');
+        output.push_line(&review_repository_header(repository, color));
         if !color {
-            output.push_str(&format!(
-                "  {pr:<pr_width$} Chk Rev {:<lag_width$} Title\n",
+            output.push_line(&format!(
+                "  {pr:<pr_width$} Chk Rev {:<lag_width$} Title",
                 "Lag",
                 pr = "PR",
                 pr_width = PULL_REQUEST_STATUS_PR_WIDTH,
@@ -81,16 +80,22 @@ pub(in crate::commands) fn render_review_requests(
             ));
         }
         for row in &repository.rows {
-            output.push_str(&review_request_row(
-                repository,
-                row,
-                &view.viewer,
-                color,
-                terminal_width,
-                layout,
-                display_names,
-            ));
-            output.push('\n');
+            output.push_pr_line(
+                &review_request_row(
+                    repository,
+                    row,
+                    &view.viewer,
+                    color,
+                    terminal_width,
+                    layout,
+                    display_names,
+                ),
+                Some(PrActionContext::from_status(
+                    repository.repository.clone(),
+                    repository.root.clone(),
+                    &row.status,
+                )),
+            );
         }
     }
 

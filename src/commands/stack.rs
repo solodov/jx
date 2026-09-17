@@ -197,21 +197,16 @@ fn load_global_stack_status_dashboard_snapshot(
 ) -> Result<DashboardFrameSnapshot, CommandError> {
     let loaded = load_global_stack_status_view(request, environment, services, progress, span)?;
     let current_dir = environment.current_dir().to_path_buf();
-    let format = request.format;
     Ok(DashboardFrameSnapshot::new(move |options| {
-        render_global_stack_status_output(
+        Ok(render_global_stack_status(
             &loaded.entries,
             loaded.total_repositories,
             &current_dir,
-            StackStatusOutputOptions {
-                color: options.color,
-                terminal_width: options.terminal_width,
-                layout: PullRequestTableLayout::FitTerminal,
-                format,
-            },
+            options.color,
+            options.terminal_width,
+            PullRequestTableLayout::FitTerminal,
             &loaded.display_names,
-        )
-        .map_err(|error| error.to_string())
+        ))
     }))
 }
 
@@ -226,7 +221,6 @@ fn load_current_stack_status_dashboard_snapshot(
 ) -> Result<DashboardFrameSnapshot, CommandError> {
     let context = RepositoryContext::discover(environment)?;
     let repository_root = context.repository_root.clone();
-    let format = request.format;
     let manager = PullRequestStackManager::new(&context, services, perf.clone(), environment);
     let execution = StackStatusExecution {
         services,
@@ -238,18 +232,14 @@ fn load_current_stack_status_dashboard_snapshot(
     };
     let loaded = execution.load_status_view(&request, span)?;
     Ok(DashboardFrameSnapshot::new(move |options| {
-        render_stack_status_output(
+        Ok(render_stack_status(
             &loaded.report,
             &repository_root,
-            StackStatusOutputOptions {
-                color: options.color,
-                terminal_width: options.terminal_width,
-                layout: PullRequestTableLayout::FitTerminal,
-                format,
-            },
+            options.color,
+            options.terminal_width,
+            PullRequestTableLayout::FitTerminal,
             &loaded.display_names,
-        )
-        .map_err(|error| error.to_string())
+        ))
     }))
 }
 
@@ -2083,7 +2073,7 @@ fn render_stack_status_output(
     display_names: &BTreeMap<String, String>,
 ) -> Result<String, CommandError> {
     match options.format {
-        StackStatusFormat::Human => render_stack_status(
+        StackStatusFormat::Human => Ok(render_stack_status(
             report,
             current_dir,
             options.color,
@@ -2091,7 +2081,7 @@ fn render_stack_status_output(
             options.layout,
             display_names,
         )
-        .map_err(Into::into),
+        .text),
         StackStatusFormat::Json => Ok(render_stack_status_json(&[
             GlobalStackStatusEntry::current(current_dir.to_path_buf(), report),
         ])),
@@ -2106,7 +2096,7 @@ fn render_global_stack_status_output(
     display_names: &BTreeMap<String, String>,
 ) -> Result<String, CommandError> {
     match options.format {
-        StackStatusFormat::Human => render_global_stack_status(
+        StackStatusFormat::Human => Ok(render_global_stack_status(
             entries,
             total_repositories,
             current_dir,
@@ -2115,7 +2105,7 @@ fn render_global_stack_status_output(
             options.layout,
             display_names,
         )
-        .map_err(Into::into),
+        .text),
         StackStatusFormat::Json => Ok(render_stack_status_json(entries)),
     }
 }

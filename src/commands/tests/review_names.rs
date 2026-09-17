@@ -42,7 +42,8 @@ fn author_first_names_and_login_fallbacks_work_in_both_table_layouts() {
                     PullRequestTableLayout::FitTerminal,
                 ] {
                     let output =
-                        render_review_requests(&view, color, Some(100), layout, &display_names);
+                        render_review_requests(&view, color, Some(100), layout, &display_names)
+                            .text;
                     let row = output
                         .lines()
                         .find(|line| line.contains("#12"))

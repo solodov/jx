@@ -34,6 +34,7 @@ use crate::{
 mod bookmark;
 mod errors;
 mod fork;
+mod pr_actions;
 mod pull_request;
 mod pull_request_stack;
 mod push;
@@ -46,6 +47,7 @@ mod sync;
 pub use bookmark::*;
 pub use errors::*;
 pub use fork::*;
+pub use pr_actions::*;
 pub use pull_request::*;
 pub use pull_request_stack::*;
 pub use push::*;

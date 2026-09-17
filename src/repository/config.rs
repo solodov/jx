@@ -1,11 +1,15 @@
 use super::*;
 
+mod actions;
 mod diff;
 mod layout;
 mod parse;
 mod repo_policy;
 mod shell;
 
+pub(crate) use actions::render_pr_action_argument;
+pub use actions::*;
+use actions::{parse_pr_action_layer, PrActionLayer};
 pub use diff::*;
 pub use layout::*;
 use parse::{config_file_label, parse_workflow_config_layer, WorkflowConfigLayer};
@@ -22,6 +26,7 @@ pub struct WorkflowConfig {
     pub paths: Vec<PathBuf>,
     pub layout: LayoutConfig,
     pub repo: RepoConfig,
+    pub actions: PrActionsConfig,
     pub diff: DiffConfig,
     pub auth: AuthConfig,
     pub shell: ShellConfig,
@@ -94,31 +99,42 @@ impl WorkflowConfig {
 
     fn apply_optional_global_configs(&mut self, dir: PathBuf) -> Result<(), RepositoryError> {
         for path in optional_global_config_files(dir)? {
-            self.apply_config_file(path)?;
+            self.apply_config_file(path, PrActionConfigScope::Global)?;
         }
         Ok(())
     }
 
     fn apply_optional_project_config(&mut self, path: PathBuf) -> Result<(), RepositoryError> {
         if path.is_file() {
-            self.apply_config_file(path)?;
+            self.apply_config_file(path, PrActionConfigScope::Repository)?;
         }
         Ok(())
     }
 
-    fn apply_config_file(&mut self, path: PathBuf) -> Result<(), RepositoryError> {
+    fn apply_config_file(
+        &mut self,
+        path: PathBuf,
+        scope: PrActionConfigScope,
+    ) -> Result<(), RepositoryError> {
         let file = config_file_label(&path);
         let contents = fs::read_to_string(&path)
             .map_err(|source| RepositoryError::ConfigRead { file, source })?;
         let layer = parse_workflow_config_layer(path, &contents)?;
 
-        self.apply_layer(layer);
+        self.apply_layer(layer, scope);
         Ok(())
     }
 
-    fn apply_layer(&mut self, layer: WorkflowConfigLayer) {
+    fn apply_layer(&mut self, layer: WorkflowConfigLayer, scope: PrActionConfigScope) {
         // List-valued sections compose across files; scalar sections use the
         // last configured value so later global/project files can refine defaults.
+        self.actions.push_layer(
+            PrActionSource {
+                path: layer.path.clone(),
+                scope,
+            },
+            layer.actions,
+        );
         self.paths.push(layer.path);
         if let Some(layout) = layer.layout {
             self.layout.apply_layer(layout);

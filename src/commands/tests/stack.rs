@@ -1380,8 +1380,7 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
                 Some(100),
                 PullRequestTableLayout::FitTerminal,
                 &display_names,
-            )
-            .expect("local stack status renders");
+            );
             let global = render_global_stack_status(
                 &[GlobalStackStatusEntry::current(
                     PathBuf::from("/repo"),
@@ -1393,9 +1392,27 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
                 Some(100),
                 PullRequestTableLayout::FitTerminal,
                 &display_names,
-            )
-            .expect("global stack status renders");
-            for output in [local, global] {
+            );
+            for frame in [local, global] {
+                assert_eq!(frame.rows.len(), 2);
+                for row in &frame.rows {
+                    assert_eq!(row.context.title, title);
+                    assert_eq!(
+                        row.context.repository_root.as_deref(),
+                        Some(Path::new("/repo"))
+                    );
+                    assert_eq!(row.context.local_commit_id, None);
+                    assert_eq!(row.context.local_change_id, None);
+                    let text = frame.text.lines().nth(row.line).expect("PR row has a line");
+                    assert!(
+                        text.contains(&osc8_link(
+                            &row.context.pr_url,
+                            &format!("#{}", row.context.pr_number)
+                        )),
+                        "{text:?}"
+                    );
+                }
+                let output = frame.text;
                 for (number, title_chars) in [(119, 37), (120, 35)] {
                     let row = output
                         .lines()

@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "action_frames.rs"]
+mod action_frames;
+
 #[path = "review_names.rs"]
 mod names;
 #[path = "review_order.rs"]
@@ -265,7 +268,8 @@ fn review_render_uses_viewer_review_state_labels() {
         None,
         PullRequestTableLayout::Flow,
         &BTreeMap::new(),
-    );
+    )
+    .text;
 
     assert!(output.contains("\x1b[36mRev\x1b[0m —    ◯ Waiting on me"));
     assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ I left comments"));
@@ -325,7 +329,8 @@ fn review_renders_readable_pastel_labels_in_flow_and_terminal_layouts() {
             PullRequestTableLayout::Flow,
             PullRequestTableLayout::FitTerminal,
         ] {
-            let output = render_review_requests(&view, true, Some(100), layout, &BTreeMap::new());
+            let output =
+                render_review_requests(&view, true, Some(100), layout, &BTreeMap::new()).text;
             assert!(output.contains(&expected_chips), "{output:?}");
         }
     }
@@ -372,7 +377,8 @@ fn review_interactive_layout_shrinks_titles_above_minimum_before_right_metadata(
         Some(100),
         PullRequestTableLayout::FitTerminal,
         &BTreeMap::new(),
-    );
+    )
+    .text;
     let row = output
         .lines()
         .find(|line| line.contains("#12"))
@@ -421,7 +427,8 @@ fn review_interactive_layout_preserves_titles_with_long_author_names() {
                     Some(width),
                     PullRequestTableLayout::FitTerminal,
                     &display_names,
-                );
+                )
+                .text;
                 let row = output
                     .lines()
                     .find(|line| line.contains("#12"))

@@ -293,9 +293,19 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                 Some(120),
                 layout,
                 &BTreeMap::new(),
-            )
-            .expect("global stack renders");
-            for output in [review, stack] {
+            );
+            for frame in [review, stack] {
+                assert_eq!(frame.rows.len(), 2 * row_count);
+                for row in &frame.rows {
+                    assert_eq!(row.context.title, "Aligned title");
+                    assert!(frame
+                        .text
+                        .lines()
+                        .nth(row.line)
+                        .expect("PR row has a line")
+                        .contains(&format!("#{}", row.context.pr_number)));
+                }
+                let output = frame.text;
                 assert_eq!(
                     output.matches("Chk Rev Lag").count(),
                     if color { 0 } else { 2 }

@@ -186,13 +186,16 @@ fn handle_review_traced(
 
     span.measure("review.render", Vec::new(), || {
         Ok::<_, CommandError>(match format {
-            ReviewFormat::Human => render_review_requests(
-                &loaded.view,
-                output.color,
-                output.terminal_width,
-                PullRequestTableLayout::Flow,
-                &loaded.display_names,
-            ),
+            ReviewFormat::Human => {
+                render_review_requests(
+                    &loaded.view,
+                    output.color,
+                    output.terminal_width,
+                    PullRequestTableLayout::Flow,
+                    &loaded.display_names,
+                )
+                .text
+            }
             ReviewFormat::Json => render_review_requests_json(&loaded.view, &loaded.display_names),
         })
     })

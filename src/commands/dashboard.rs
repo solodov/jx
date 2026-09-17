@@ -32,19 +32,23 @@ pub(super) struct DashboardRenderOptions {
 }
 
 pub(super) struct DashboardFrameSnapshot {
-    renderer: Box<dyn Fn(DashboardRenderOptions) -> Result<String, String> + Send + Sync>,
+    renderer:
+        Box<dyn Fn(DashboardRenderOptions) -> Result<PullRequestTableFrame, String> + Send + Sync>,
 }
 
 impl DashboardFrameSnapshot {
     pub(super) fn new(
-        renderer: impl Fn(DashboardRenderOptions) -> Result<String, String> + Send + Sync + 'static,
+        renderer: impl Fn(DashboardRenderOptions) -> Result<PullRequestTableFrame, String>
+            + Send
+            + Sync
+            + 'static,
     ) -> Self {
         Self {
             renderer: Box::new(renderer),
         }
     }
 
-    fn render(&self, options: DashboardRenderOptions) -> Result<String, String> {
+    fn render(&self, options: DashboardRenderOptions) -> Result<PullRequestTableFrame, String> {
         (self.renderer)(options)
     }
 }
@@ -80,7 +84,7 @@ pub(super) fn run_interactive_dashboard(
     let mut terminal_size = dashboard_terminal_size()?;
     let mut watcher = ExecutableWatcher::from_process();
     let mut last_snapshot = None::<DashboardFrameSnapshot>;
-    let mut last_frame = None::<String>;
+    let mut last_frame = None::<PullRequestTableFrame>;
     let mut last_error = None::<String>;
 
     loop {
@@ -90,7 +94,7 @@ pub(super) fn run_interactive_dashboard(
         let next_refresh_at: Option<DateTime<Local>>;
         render_dashboard_frame(
             dashboard_frame_state(
-                last_frame.as_deref(),
+                last_frame.as_ref().map(|frame| frame.text.as_str()),
                 true,
                 last_error.as_deref(),
                 spinner_index,
@@ -121,7 +125,7 @@ pub(super) fn run_interactive_dashboard(
                     }
                     render_dashboard_frame(
                         dashboard_frame_state(
-                            last_frame.as_deref(),
+                            last_frame.as_ref().map(|frame| frame.text.as_str()),
                             false,
                             last_error.as_deref(),
                             spinner_index,
@@ -135,7 +139,7 @@ pub(super) fn run_interactive_dashboard(
                     next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                     render_dashboard_frame(
                         dashboard_frame_state(
-                            last_frame.as_deref(),
+                            last_frame.as_ref().map(|frame| frame.text.as_str()),
                             false,
                             last_error.as_deref(),
                             spinner_index,
@@ -150,7 +154,7 @@ pub(super) fn run_interactive_dashboard(
                     next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                     render_dashboard_frame(
                         dashboard_frame_state(
-                            last_frame.as_deref(),
+                            last_frame.as_ref().map(|frame| frame.text.as_str()),
                             false,
                             last_error.as_deref(),
                             spinner_index,
@@ -166,7 +170,7 @@ pub(super) fn run_interactive_dashboard(
                 next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
                 render_dashboard_frame(
                     dashboard_frame_state(
-                        last_frame.as_deref(),
+                        last_frame.as_ref().map(|frame| frame.text.as_str()),
                         false,
                         last_error.as_deref(),
                         spinner_index,
@@ -197,7 +201,7 @@ pub(super) fn run_interactive_dashboard(
             }
             render_dashboard_frame(
                 dashboard_frame_state(
-                    last_frame.as_deref(),
+                    last_frame.as_ref().map(|frame| frame.text.as_str()),
                     true,
                     last_error.as_deref(),
                     spinner_index,
@@ -229,7 +233,7 @@ pub(super) fn run_interactive_dashboard(
                     );
                     render_dashboard_frame(
                         dashboard_frame_state(
-                            last_frame.as_deref(),
+                            last_frame.as_ref().map(|frame| frame.text.as_str()),
                             false,
                             last_error.as_deref(),
                             spinner_index,
@@ -256,7 +260,7 @@ fn spawn_dashboard_load(
 fn rerender_dashboard_snapshot(
     snapshot: Option<&DashboardFrameSnapshot>,
     terminal_size: DashboardTerminalSize,
-    frame: &mut Option<String>,
+    frame: &mut Option<PullRequestTableFrame>,
     error: &mut Option<String>,
 ) {
     let Some(snapshot) = snapshot else {
@@ -651,10 +655,12 @@ mod tests {
     #[test]
     fn dashboard_snapshot_rerenders_with_current_terminal_width() {
         let snapshot = DashboardFrameSnapshot::new(|options| {
-            Ok(format!(
+            let mut frame = PullRequestTableFrame::default();
+            frame.push_line(&format!(
                 "width={}",
                 options.terminal_width.unwrap_or_default()
-            ))
+            ));
+            Ok(frame)
         });
         let mut frame = None;
         let mut error = None;
@@ -669,7 +675,10 @@ mod tests {
             &mut error,
         );
 
-        assert_eq!(frame.as_deref(), Some("width=42"));
+        assert_eq!(
+            frame.as_ref().map(|frame| frame.text.as_str()),
+            Some("width=42\n")
+        );
         assert_eq!(error, None);
     }
 

@@ -3532,6 +3532,7 @@ fn context() -> RepositoryContext {
             paths: Vec::new(),
             layout: Default::default(),
             repo: RepoConfig::default(),
+            actions: Default::default(),
             diff: Default::default(),
             auth: Default::default(),
             shell: Default::default(),
