@@ -1147,8 +1147,8 @@ command = ["sh", "-c", "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$1\" \"$2
 }
 
 #[test]
-fn stack_status_renders_reviewer_display_names() {
-    // Verifies: stack status keeps login-based facts but renders cached public names for humans.
+fn stack_status_renders_reviewer_first_names() {
+    // Verifies: stack status keeps login-based facts but renders first names from cached profiles.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1196,7 +1196,8 @@ fn stack_status_renders_reviewer_display_names() {
     let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
         .expect("stack status succeeds");
 
-    assert!(result.stdout.contains("Human Reviewer"));
+    assert!(result.stdout.contains("Display names  Human"));
+    assert!(!result.stdout.contains("Human Reviewer"));
     assert!(!result.stdout.contains("human-reviewer"));
 }
 
@@ -1405,7 +1406,8 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
 
                     assert_eq!(rendered_visible_width(row), 100, "{row:?}");
                     assert!(row.contains(&title_excerpt), "{row:?}");
-                    assert!(row.contains("Example Reviewer"), "{row:?}");
+                    assert!(row.contains("Example"), "{row:?}");
+                    assert!(!row.contains("Reviewer"), "{row:?}");
                     assert_eq!(row.matches('…').count(), 2, "{row:?}");
                     if !color {
                         assert!(row.ends_with('…'), "{row:?}");

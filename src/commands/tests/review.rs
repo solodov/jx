@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "review_names.rs"]
+mod names;
 #[path = "review_order.rs"]
 mod order;
 #[path = "status_cells.rs"]
@@ -384,10 +386,10 @@ fn review_interactive_layout_shrinks_titles_above_minimum_before_right_metadata(
 
 #[test]
 fn review_interactive_layout_preserves_titles_with_long_author_names() {
-    // Verifies: author display names cannot crowd out titles, including styled draft rows.
+    // Verifies: even long first names cannot crowd out titles, including styled draft rows.
     let title = "Make crowded pull request titles readable while preserving metadata";
     let title_excerpt = format!("{}…", title.chars().take(37).collect::<String>());
-    let author = "Example Author With A Very Long Display Name ".repeat(4);
+    let author = format!("{} Surname", "Alexandria".repeat(20));
     let display_names = BTreeMap::from([("example-author".to_owned(), author.clone())]);
     for draft in [false, true] {
         let view = ReviewRequestsView {
@@ -428,7 +430,8 @@ fn review_interactive_layout_preserves_titles_with_long_author_names() {
                 assert_eq!(rendered_visible_width(row), width, "{row:?}");
                 assert!(row.contains(&title_excerpt), "{row:?}");
                 assert!(row.contains("backend"), "{row:?}");
-                assert!(row.contains("Example Author"), "{row:?}");
+                assert!(row.contains("Alexandria"), "{row:?}");
+                assert!(!row.contains("Surname"), "{row:?}");
                 assert!(!row.contains(&author));
                 assert_eq!(row.matches('…').count(), 2, "{row:?}");
                 if !color {
@@ -832,8 +835,8 @@ fn review_auto_dismisses_already_approved_pull_requests_from_prior_activity() {
 }
 
 #[test]
-fn review_renders_author_display_names() {
-    // Verifies: review inbox keeps login-based state but renders cached author names for humans.
+fn review_renders_author_first_names() {
+    // Verifies: review inbox keeps login-based state but renders first names from cached profiles.
     let workspace = review_workspace();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let status = review_status_record(12, "Update alpha endpoint", "example-author", false);
@@ -852,8 +855,9 @@ fn review_renders_author_display_names() {
         .expect("review inbox renders");
 
     assert!(!result.stdout.contains("Review requests for"));
-    assert!(result.stdout.contains("Example Author"));
-    assert!(!result.stdout.contains("by Example Author"));
+    assert!(result.stdout.contains("[backend]  Example"));
+    assert!(!result.stdout.contains("Example Author"));
+    assert!(!result.stdout.contains("by Example"));
     assert!(!result.stdout.contains("example-author"));
 }
 
@@ -881,6 +885,7 @@ fn review_renders_json_provider_output() {
         pull_request_statuses: BTreeMap::from([(12, status)]),
         github_user_display_names: BTreeMap::from([
             ("example-reviewer".to_owned(), "Example Reviewer".to_owned()),
+            ("example-author".to_owned(), "Example Author".to_owned()),
             (
                 "commenting-reviewer".to_owned(),
                 "Commenting Reviewer".to_owned(),
@@ -903,6 +908,7 @@ fn review_renders_json_provider_output() {
     assert_eq!(value["version"], 1);
     assert_eq!(value["viewer"]["login"], "example-reviewer");
     assert_eq!(value["viewer"]["displayName"], "Example Reviewer");
+    assert_eq!(value["displayNames"]["example-author"], "Example Author");
     assert_eq!(
         value["displayNames"]["commenting-reviewer"],
         "Commenting Reviewer"

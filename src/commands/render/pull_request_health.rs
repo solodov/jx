@@ -454,7 +454,7 @@ fn pull_request_reviewer_token(
     color: bool,
     display_names: &BTreeMap<String, String>,
 ) -> String {
-    let name = pull_request_user_display_name(login, display_names);
+    let name = pull_request_user_short_name(login, display_names);
     let label = match age {
         Some(age) => format!("{name} {age}"),
         None => name.to_owned(),
@@ -619,13 +619,17 @@ fn review_lag_label_since(
     format!("{days}d")
 }
 
-pub(in crate::commands) fn pull_request_user_display_name<'a>(
+/// Uses the first word of a person's display name in human tables, preserving login fallbacks and teams.
+pub(in crate::commands) fn pull_request_user_short_name<'a>(
     login: &'a str,
     display_names: &'a BTreeMap<String, String>,
 ) -> &'a str {
+    if login.starts_with("team/") {
+        return login;
+    }
     display_names
         .get(login)
-        .map(String::as_str)
+        .and_then(|name| name.split_whitespace().next())
         .unwrap_or(login)
 }
 
@@ -828,3 +832,7 @@ pub(in crate::commands) fn render_pull_request_status_cell(
     };
     format!("\x1b[22m{style}{label}{RESET_STYLE}{restore_style}")
 }
+
+#[cfg(test)]
+#[path = "tests/pull_request_health.rs"]
+mod tests;

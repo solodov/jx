@@ -657,6 +657,7 @@ fn review_request_title(
     }
 }
 
+/// Renders an author's first name with a login fallback and optional emphasis.
 fn review_request_author_token(
     status: &PullRequestStatusRecord,
     color: bool,
@@ -666,10 +667,7 @@ fn review_request_author_token(
     if author.is_empty() {
         return None;
     }
-    let author = display_names
-        .get(author)
-        .map(String::as_str)
-        .unwrap_or(author);
+    let author = pull_request_user_short_name(author, display_names);
     if color {
         Some(format!("{BOLD_STYLE}{author}{RESET_STYLE}"))
     } else {
