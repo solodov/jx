@@ -159,14 +159,16 @@ fn write_stack_status_report(
         .max()
         .unwrap_or(0)
         .max(STACK_STATUS_PR_WIDTH);
-    writeln!(
-        formatter,
-        "{indent}{:<pr_width$}  Chk  Rev  {:<lag_width$}  Title",
-        "PR",
-        "Lag",
-        pr_width = pr_width,
-        lag_width = REVIEW_LAG_WIDTH,
-    )?;
+    if !color {
+        writeln!(
+            formatter,
+            "{indent}{:<pr_width$} Chk Rev {:<lag_width$} Title",
+            "PR",
+            "Lag",
+            pr_width = pr_width,
+            lag_width = REVIEW_LAG_WIDTH,
+        )?;
+    }
     for row in rows {
         let pr_padding = " ".repeat(pr_width.saturating_sub(row.pr_visible_width));
         let review_lag = render_review_lag_cell(
@@ -177,8 +179,8 @@ fn write_stack_status_report(
             row.draft,
         );
         let prefix = format!(
-            "{indent}{}{}  {}    {}    {}  ",
-            row.pr_cell, pr_padding, row.check_symbol, row.review_symbol, review_lag,
+            "{indent}{}{} {} {} {} ",
+            row.pr_cell, pr_padding, row.check_cell, row.review_cell, review_lag,
         );
         let line = match layout {
             PullRequestTableLayout::Flow => ellipsize_rendered_line(
@@ -201,8 +203,8 @@ fn write_stack_status_report(
 struct StackStatusTableRow {
     pr_cell: String,
     pr_visible_width: usize,
-    check_symbol: String,
-    review_symbol: String,
+    check_cell: String,
+    review_cell: String,
     review_lag: ReviewLagCell,
     title: String,
     suffix: String,
@@ -231,7 +233,6 @@ fn stack_status_table_rows(
             let draft = stack_status_row_is_draft(row.node, status, merged, closed);
             let conflict = status.is_some_and(pull_request_has_merge_conflict);
             let style = stack_status_row_style(conflict, closed, draft, color);
-            let active_cell_color = color && !draft && !closed;
             let pr_cell = stack_status_pr_cell(report, &row, status, merged, color);
             let review_lag =
                 pull_request_stack_review_lag(status, report.review_wait_threshold_seconds);
@@ -248,16 +249,11 @@ fn stack_status_table_rows(
             StackStatusTableRow {
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
-                check_symbol: pull_request_check_symbol_with_restore(
+                check_cell: pull_request_check_cell(status, merged, color, style),
+                review_cell: pull_request_review_cell(
                     status,
                     merged,
-                    active_cell_color,
-                    style,
-                ),
-                review_symbol: pull_request_review_symbol_with_restore(
-                    status,
-                    merged,
-                    active_cell_color,
+                    color,
                     review_lag.over_threshold,
                     style,
                 ),

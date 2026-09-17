@@ -52,6 +52,7 @@ pub(in crate::commands) struct ReviewRequestDismissalView {
     pub(in crate::commands) reason: String,
 }
 
+/// Renders repository groups with self-labeling colored cells or headings and plain symbols.
 pub(in crate::commands) fn render_review_requests(
     view: &ReviewRequestsView,
     color: bool,
@@ -70,13 +71,15 @@ pub(in crate::commands) fn render_review_requests(
         }
         output.push_str(&review_repository_header(repository, color));
         output.push('\n');
-        output.push_str(&format!(
-            "  {pr:<pr_width$}  Chk  Rev  {:<lag_width$}  Title\n",
-            "Lag",
-            pr = "PR",
-            pr_width = PULL_REQUEST_STATUS_PR_WIDTH,
-            lag_width = REVIEW_LAG_WIDTH,
-        ));
+        if !color {
+            output.push_str(&format!(
+                "  {pr:<pr_width$} Chk Rev {:<lag_width$} Title\n",
+                "Lag",
+                pr = "PR",
+                pr_width = PULL_REQUEST_STATUS_PR_WIDTH,
+                lag_width = REVIEW_LAG_WIDTH,
+            ));
+        }
         for row in &repository.rows {
             output.push_str(&review_request_row(
                 repository,
@@ -442,15 +445,9 @@ fn review_request_row(
 ) -> String {
     let row_color = color;
     let on_ice = review_request_is_on_ice(&row.status);
-    let active_cell_color = row_color && !row.status.draft && !on_ice;
     let row_style = review_request_row_style(row, color);
     let pr = review_request_pr_cell(&repository.repository, &row.status, row_color);
-    let check = pull_request_check_symbol_with_restore(
-        Some(&row.status),
-        row.status.merged,
-        active_cell_color,
-        row_style,
-    );
+    let check = pull_request_check_cell(Some(&row.status), row.status.merged, row_color, row_style);
     let lag = review_lag_cell(
         review_request_lag_timestamp(row, viewer),
         repository.review_wait_threshold_seconds,
@@ -460,7 +457,7 @@ fn review_request_row(
         row.state,
         row.viewer_signal,
         viewer,
-        active_cell_color,
+        row_color,
         lag.over_threshold,
         row_style,
     );
@@ -470,7 +467,7 @@ fn review_request_row(
         PULL_REQUEST_STATUS_PR_WIDTH.saturating_sub(format!("#{}", row.status.number).len()),
     );
     let prefix = format!(
-        "  {pr}{pr_padding}  {check}    {state}    {lag}  ",
+        "  {pr}{pr_padding} {check} {state} {lag} ",
         pr = pr,
         pr_padding = pr_padding,
         check = check,
@@ -568,6 +565,7 @@ fn review_request_waits_on_viewer_with_peer_approval(
             .any(|reviewer| reviewer != viewer)
 }
 
+/// Renders the viewer's review signal in three columns, leaving draft reviews blank.
 fn review_request_state_cell(
     status: &PullRequestStatusRecord,
     state: ReviewRequestState,
@@ -577,29 +575,26 @@ fn review_request_state_cell(
     review_lag_over_threshold: bool,
     restore_style: &str,
 ) -> String {
-    if viewer_signal == ReviewRequestViewerSignal::DismissedApproval {
-        return styled_pull_request_symbol_with_restore(
-            "✓",
-            PullRequestSymbolStyle::Comment,
+    if status.draft {
+        return render_pull_request_status_cell("Rev", None, color, restore_style);
+    }
+    if viewer_signal == ReviewRequestViewerSignal::DismissedApproval
+        || review_request_waits_on_viewer_with_peer_approval(status, state, viewer)
+    {
+        return render_pull_request_status_cell(
+            "Rev",
+            Some(("✓", PullRequestStatusStyle::Comment)),
             color,
             restore_style,
         );
     }
-    if review_request_waits_on_viewer_with_peer_approval(status, state, viewer) {
-        return styled_pull_request_symbol_with_restore(
-            "✓",
-            PullRequestSymbolStyle::Comment,
-            color,
-            restore_style,
-        );
-    }
-    let (symbol, style) = match state {
+    let signal = match state {
         ReviewRequestState::New | ReviewRequestState::Answered | ReviewRequestState::Again => (
             "?",
             pull_request_review_wait_style(review_lag_over_threshold),
         ),
-        ReviewRequestState::ChangesRequested => ("!", PullRequestSymbolStyle::Bad),
-        ReviewRequestState::Commented => ("!", PullRequestSymbolStyle::Comment),
+        ReviewRequestState::ChangesRequested => ("!", PullRequestStatusStyle::Bad),
+        ReviewRequestState::Commented => ("!", PullRequestStatusStyle::Comment),
         ReviewRequestState::Approved => (
             "✓",
             if status
@@ -607,13 +602,13 @@ fn review_request_state_cell(
                 .iter()
                 .any(|reviewer| reviewer == viewer)
             {
-                PullRequestSymbolStyle::Comment
+                PullRequestStatusStyle::Comment
             } else {
-                PullRequestSymbolStyle::Good
+                PullRequestStatusStyle::Good
             },
         ),
     };
-    styled_pull_request_symbol_with_restore(symbol, style, color, restore_style)
+    render_pull_request_status_cell("Rev", Some(signal), color, restore_style)
 }
 
 fn review_request_label_chips(row: &ReviewRequestRowView, color: bool) -> Vec<String> {

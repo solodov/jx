@@ -74,20 +74,23 @@ pub(in crate::commands) fn render_elastic_table_row(
     ellipsize_rendered_line(&line, Some(terminal_width))
 }
 
+/// Joins row content with one space before labels and two before reviewer or author metadata.
 pub(in crate::commands) fn flow_table_row(
     prefix: &str,
     title: &str,
     suffix: &str,
     right: &str,
 ) -> String {
-    let mut parts = vec![title.to_owned()];
+    let mut line = format!("{prefix}{title}");
     if !suffix.is_empty() {
-        parts.push(suffix.to_owned());
+        line.push(' ');
+        line.push_str(suffix);
     }
     if !right.is_empty() {
-        parts.push(right.to_owned());
+        line.push_str("  ");
+        line.push_str(right);
     }
-    format!("{prefix}{}", parts.join(" "))
+    line
 }
 
 pub(in crate::commands) fn ellipsize_rendered_line(line: &str, max_width: Option<usize>) -> String {

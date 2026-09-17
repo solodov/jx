@@ -117,7 +117,24 @@ fn elastic_table_row_preserves_flow_when_terminal_width_is_unknown() {
     let title = "t".repeat(80);
     let row = render_elastic_table_row("#12  ", &title, "[bug]", "Reviewer", None);
 
-    assert_eq!(row, format!("#12  {title} [bug] Reviewer"));
+    assert_eq!(row, format!("#12  {title} [bug]  Reviewer"));
+}
+
+#[test]
+fn flow_rows_keep_two_spaces_before_reviewers_without_adding_trailing_padding() {
+    assert_eq!(
+        flow_table_row("#12 ", "Title", "", "Reviewer"),
+        "#12 Title  Reviewer"
+    );
+    assert_eq!(
+        flow_table_row("#12 ", "Title", "[bug]", "Reviewer"),
+        "#12 Title [bug]  Reviewer"
+    );
+    assert_eq!(
+        flow_table_row("#12 ", "Title", "[bug]", ""),
+        "#12 Title [bug]"
+    );
+    assert_eq!(flow_table_row("#12 ", "Title", "", ""), "#12 Title");
 }
 
 #[test]

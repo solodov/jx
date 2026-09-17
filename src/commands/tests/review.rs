@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "review_order.rs"]
 mod order;
+#[path = "status_cells.rs"]
+mod status_cells;
 use crate::github::{PullRequestMergeStatus, PullRequestReviewerMention};
 
 #[test]
@@ -167,7 +169,7 @@ fn review_cached_rejects_interactive_dashboard() {
 }
 
 #[test]
-fn review_render_uses_viewer_review_state_symbols() {
+fn review_render_uses_viewer_review_state_labels() {
     // Verifies: review rows summarize the viewer's own wait, comment, change-request, and approval states.
     let mut waiting = review_status_record(12, "Waiting on me", "example-author", false);
     waiting.requested_reviewers =
@@ -263,13 +265,14 @@ fn review_render_uses_viewer_review_state_symbols() {
         &BTreeMap::new(),
     );
 
-    assert!(output.contains("\x1b[36m?\x1b[0m    —     ◯ Waiting on me"));
-    assert!(output.contains("\x1b[38;2;194;95;0m!\x1b[0m    —     ◯ I left comments"));
-    assert!(output.contains("\x1b[1m\x1b[31m!\x1b[0m    —     ◯ I requested changes"));
-    assert!(output.contains("\x1b[32m✓\x1b[0m    —     ◯ I approved"));
-    assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ I approved with comments"));
-    assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ A peer approved before me"));
-    assert!(output.contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ My approval was dismissed"));
+    assert!(output.contains("\x1b[36mRev\x1b[0m —    ◯ Waiting on me"));
+    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ I left comments"));
+    assert!(output.contains("\x1b[1m\x1b[31mRev\x1b[0m —    ◯ I requested changes"));
+    assert!(output.contains("\x1b[32mRev\x1b[0m —    ◯ I approved"));
+    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ I approved with comments"));
+    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ A peer approved before me"));
+    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ My approval was dismissed"));
+    assert!(!output.contains("Chk Rev Lag"));
     assert!(output.contains("\x1b[1mexample-author\x1b[0m"));
     assert!(!output.contains("Legend:"));
 }
@@ -473,13 +476,13 @@ fn review_groups_layout_and_external_repositories() {
 
     assert!(!result.stdout.contains("Review requests for"));
     assert!(result.stdout.contains("api-alpha"));
-    assert!(result.stdout.contains("  PR       Chk  Rev  Lag   Title"));
+    assert!(result.stdout.contains("  PR      Chk Rev Lag  Title"));
     assert!(result
         .stdout
-        .contains("✓    ✓    —     ◯ Update alpha endpoint"));
+        .contains("✓   ✓   —    ◯ Update alpha endpoint"));
     assert!(result
         .stdout
-        .contains("◯ Update alpha endpoint [backend] example-author"));
+        .contains("◯ Update alpha endpoint [backend]  example-author"));
     assert!(!result.stdout.contains("by example-author"));
     assert!(!result.stdout.contains("peer-reviewer"));
     assert!(!result.stdout.contains("commenting-reviewer"));
@@ -530,7 +533,7 @@ fn review_links_external_repository_pull_request_rows() {
     assert!(result
         .stdout
         .contains("\x1b]8;;https://github.com/outside-owner/tooling-lib/pull/44\x1b\\#44"));
-    assert!(result.stdout.contains("\x1b[32m✓\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[32mChk\x1b[0m"));
 }
 
 #[test]
@@ -586,7 +589,7 @@ fn review_uses_pull_request_creation_age_before_viewer_review() {
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("review inbox renders creation age");
 
-    assert!(result.stdout.contains("?    <1h   ◯ Needs first review"));
+    assert!(result.stdout.contains("?   <1h  ◯ Needs first review"));
 }
 
 #[test]
@@ -701,7 +704,7 @@ fn review_lag_uses_visible_epoch_from_history() {
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("review inbox renders history lag");
 
-    assert!(result.stdout.contains("?    <1h   ◯ History driven lag"));
+    assert!(result.stdout.contains("?   <1h  ◯ History driven lag"));
 }
 
 #[test]
@@ -763,10 +766,10 @@ review_wait_threshold = "4h"
 
     assert!(result
         .stdout
-        .contains("\x1b[1m\x1b[31m?\x1b[0m    \x1b[1m\x1b[31m5h  \x1b[0m  ◯ Old review"));
+        .contains("\x1b[1m\x1b[31mRev\x1b[0m \x1b[1m\x1b[31m5h  \x1b[0m ◯ Old review"));
     assert!(result
         .stdout
-        .contains("\x1b[36m?\x1b[0m    \x1b[2m1h  \x1b[0m  ◯ Fresh review"));
+        .contains("\x1b[36mRev\x1b[0m \x1b[2m1h  \x1b[0m ◯ Fresh review"));
 }
 
 #[test]
@@ -1806,7 +1809,7 @@ fn review_does_not_auto_dismiss_commented_pull_requests_requested_again() {
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("review inbox renders re-requested comment");
 
-    assert!(result.stdout.contains("?    —     ◯ Requested again"));
+    assert!(result.stdout.contains("?   —    ◯ Requested again"));
     assert!(!workspace
         .home
         .join(".local/state/jx/review-dismissals.toml")
@@ -1975,7 +1978,7 @@ fn review_dismissed_renders_currently_hidden_pull_requests() {
         .expect("dismissed review output renders");
 
     assert!(!result.stdout.contains("Review requests for"));
-    assert!(result.stdout.contains("  PR       Chk  Rev  Lag   Title"));
+    assert!(result.stdout.contains("  PR      Chk Rev Lag  Title"));
     assert!(result.stdout.contains("Stale approved PR"));
     assert!(result.stdout.contains("[jx:dismissed:approved]"));
     assert!(result.stdout.contains("Manual dismissal"));
@@ -2486,7 +2489,7 @@ fn review_ellipsizes_long_titles_before_labels_and_author() {
     assert!(result
         .stdout
         .contains("Implement a very long synthetic review title that demonstrates the comp…"));
-    assert!(result.stdout.contains("[backend] example-author"));
+    assert!(result.stdout.contains("[backend]  example-author"));
     assert!(!result.stdout.contains("compact subject width convention"));
 }
 
@@ -2670,7 +2673,7 @@ ignored_labels = ["review-only-noise"]
         .expect("review inbox applies policy");
 
     assert!(result.stdout.contains("Needs approval [useful-label]"));
-    assert!(result.stdout.contains("—    ?    —     ◯ Needs approval"));
+    assert!(result.stdout.contains("    ?   —    ◯ Needs approval"));
     assert!(!result.stdout.contains("generated-noise"));
     assert!(!result.stdout.contains("review-only-noise"));
     assert!(!result.stdout.contains("ignored-bot"));

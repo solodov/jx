@@ -703,127 +703,81 @@ pub(in crate::commands) fn pull_request_node_title_with_restore(
     }
 }
 
-pub(in crate::commands) fn pull_request_check_symbol_with_restore(
+/// Renders a three-column check label, or a plain symbol; unavailable checks leave a blank cell.
+pub(in crate::commands) fn pull_request_check_cell(
     status: Option<&PullRequestStatusRecord>,
     merged: bool,
     color: bool,
     restore_style: &str,
 ) -> String {
-    if merged {
-        return styled_pull_request_symbol_with_restore(
-            "✓",
-            PullRequestSymbolStyle::Good,
-            color,
-            restore_style,
-        );
-    }
-    match status.map(|status| status.check_status) {
-        Some(PullRequestCheckStatus::Passing) => styled_pull_request_symbol_with_restore(
-            "✓",
-            PullRequestSymbolStyle::Good,
-            color,
-            restore_style,
-        ),
-        Some(PullRequestCheckStatus::Failing) => styled_pull_request_symbol_with_restore(
-            "✗",
-            PullRequestSymbolStyle::Bad,
-            color,
-            restore_style,
-        ),
-        Some(PullRequestCheckStatus::Pending) => styled_pull_request_symbol_with_restore(
-            "◷",
-            PullRequestSymbolStyle::Warn,
-            color,
-            restore_style,
-        ),
-        Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => {
-            styled_pull_request_symbol_with_restore(
-                "—",
-                PullRequestSymbolStyle::Muted,
-                color,
-                restore_style,
-            )
+    let signal = if merged {
+        Some(("✓", PullRequestStatusStyle::Good))
+    } else {
+        match status.map(|status| status.check_status) {
+            Some(PullRequestCheckStatus::Passing) => Some(("✓", PullRequestStatusStyle::Good)),
+            Some(PullRequestCheckStatus::Failing) => Some(("✗", PullRequestStatusStyle::Bad)),
+            Some(PullRequestCheckStatus::Pending) => Some(("◷", PullRequestStatusStyle::Warn)),
+            Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => None,
         }
-    }
+    };
+    render_pull_request_status_cell("Chk", signal, color, restore_style)
 }
 
-pub(in crate::commands) fn pull_request_review_symbol_with_restore(
+/// Renders a three-column stack review label, leaving undefined review state blank.
+pub(in crate::commands) fn pull_request_review_cell(
     status: Option<&PullRequestStatusRecord>,
     merged: bool,
     color: bool,
     review_lag_over_threshold: bool,
     restore_style: &str,
 ) -> String {
+    render_pull_request_status_cell(
+        "Rev",
+        stack_review_signal(status, merged, review_lag_over_threshold),
+        color,
+        restore_style,
+    )
+}
+
+fn stack_review_signal(
+    status: Option<&PullRequestStatusRecord>,
+    merged: bool,
+    review_lag_over_threshold: bool,
+) -> Option<(&'static str, PullRequestStatusStyle)> {
     if merged {
-        return styled_pull_request_symbol_with_restore(
-            "✓",
-            PullRequestSymbolStyle::Good,
-            color,
-            restore_style,
-        );
+        return Some(("✓", PullRequestStatusStyle::Good));
     }
-    let Some(status) = status else {
-        return styled_pull_request_symbol_with_restore(
-            "-",
-            PullRequestSymbolStyle::Muted,
-            color,
-            restore_style,
-        );
-    };
+    let status = status?;
     if pull_request_review_state_is_undefined(status) {
-        return styled_pull_request_symbol_with_restore(
-            "-",
-            PullRequestSymbolStyle::Muted,
-            color,
-            restore_style,
-        );
+        return None;
     }
     if status.review_status == PullRequestReviewStatus::ChangesRequested {
-        return styled_pull_request_symbol_with_restore(
-            "!",
-            PullRequestSymbolStyle::Bad,
-            color,
-            restore_style,
-        );
+        return Some(("!", PullRequestStatusStyle::Bad));
     }
     if status.review_status == PullRequestReviewStatus::Approved
         || !status.approved_reviewers.is_empty()
     {
-        return styled_pull_request_symbol_with_restore(
+        return Some((
             "✓",
             if status.review_status == PullRequestReviewStatus::Approved
                 && status.commented_reviewers.is_empty()
             {
-                PullRequestSymbolStyle::Good
+                PullRequestStatusStyle::Good
             } else {
-                PullRequestSymbolStyle::Comment
+                PullRequestStatusStyle::Comment
             },
-            color,
-            restore_style,
-        );
+        ));
     }
     if !status.commented_reviewers.is_empty() {
-        return styled_pull_request_symbol_with_restore(
-            "!",
-            PullRequestSymbolStyle::Comment,
-            color,
-            restore_style,
-        );
+        return Some(("!", PullRequestStatusStyle::Comment));
     }
     if !status.requested_reviewers.is_empty() {
-        return styled_pull_request_symbol_with_restore(
+        return Some((
             "?",
             pull_request_review_wait_style(review_lag_over_threshold),
-            color,
-            restore_style,
-        );
+        ));
     }
-    styled_pull_request_symbol_with_restore(
-        "-",
-        PullRequestSymbolStyle::Muted,
-        color,
-        restore_style,
-    )
+    None
 }
 
 fn pull_request_review_state_is_undefined(status: &PullRequestStatusRecord) -> bool {
@@ -836,40 +790,42 @@ fn pull_request_review_state_is_undefined(status: &PullRequestStatusRecord) -> b
 
 pub(in crate::commands) fn pull_request_review_wait_style(
     review_lag_over_threshold: bool,
-) -> PullRequestSymbolStyle {
+) -> PullRequestStatusStyle {
     if review_lag_over_threshold {
-        PullRequestSymbolStyle::Bad
+        PullRequestStatusStyle::Bad
     } else {
-        PullRequestSymbolStyle::Info
+        PullRequestStatusStyle::Info
     }
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::commands) enum PullRequestSymbolStyle {
+pub(in crate::commands) enum PullRequestStatusStyle {
     Good,
     Bad,
     Comment,
     Warn,
     Info,
-    Muted,
 }
 
-pub(in crate::commands) fn styled_pull_request_symbol_with_restore(
-    symbol: &str,
-    style: PullRequestSymbolStyle,
+/// Renders a three-letter colored label or a padded plain symbol, reserving space for absent signals.
+pub(in crate::commands) fn render_pull_request_status_cell(
+    label: &str,
+    signal: Option<(&str, PullRequestStatusStyle)>,
     color: bool,
     restore_style: &str,
 ) -> String {
+    let Some((symbol, style)) = signal else {
+        return "   ".to_owned();
+    };
     if !color {
-        return symbol.to_owned();
+        return format!("{symbol:<3}");
     }
     let style = match style {
-        PullRequestSymbolStyle::Good => GREEN_STYLE,
-        PullRequestSymbolStyle::Bad => RED_BOLD_STYLE,
-        PullRequestSymbolStyle::Comment => ORANGE_STYLE,
-        PullRequestSymbolStyle::Warn => YELLOW_STYLE,
-        PullRequestSymbolStyle::Info => CYAN_STYLE,
-        PullRequestSymbolStyle::Muted => DIM_STYLE,
+        PullRequestStatusStyle::Good => GREEN_STYLE,
+        PullRequestStatusStyle::Bad => RED_BOLD_STYLE,
+        PullRequestStatusStyle::Comment => ORANGE_STYLE,
+        PullRequestStatusStyle::Warn => YELLOW_STYLE,
+        PullRequestStatusStyle::Info => CYAN_STYLE,
     };
-    format!("{style}{symbol}{RESET_STYLE}{restore_style}")
+    format!("{style}{label}{RESET_STYLE}{restore_style}")
 }

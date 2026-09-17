@@ -234,23 +234,23 @@ fn stack_status_renders_check_and_review_summary() {
         .iter()
         .position(|line| line.contains("example-owner/example-repo"))
         .expect("repository header renders");
-    assert!(status_lines[repository_header_index + 1].starts_with("PR       Chk"));
+    assert!(status_lines[repository_header_index + 1].starts_with("PR      Chk"));
     assert!(result.stdout.contains("(origin/main behind)"));
-    assert!(result.stdout.contains("PR       Chk  Rev  Lag   Title"));
+    assert!(result.stdout.contains("PR      Chk Rev Lag  Title"));
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ✓    <1h   ◯ Root change [bug] [help wanted] [area:backend] reviewer-approved",
+        "{} ✓   ✓   <1h  ◯ Root change [bug] [help wanted] [area:backend]  reviewer-approved",
         stack_status_pull_request_cell(101)
     )));
     assert!(result.stdout.contains(&format!(
-        "{}  ◷    -    <1h   └ ◌ Child change [ui] reviewer-one, team/platform, suggested-reviewer",
+        "{} ◷       <1h  └ ◌ Child change [ui]  reviewer-one, team/platform, suggested-reviewer",
         stack_status_pull_request_cell(102)
     )));
     assert!(!result.stdout.contains("Legend:"));
 }
 
 #[test]
-fn stack_status_renders_review_decision_symbols() {
-    // Verifies: review state summarizes approval, unresolved comments, changes, and active reviewer waits without a legend.
+fn stack_status_renders_review_decision_labels() {
+    // Verifies: colored review labels explain the column without headings or a legend.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -400,25 +400,26 @@ fn stack_status_renders_review_decision_symbols() {
 
     assert!(result
         .stdout
-        .contains("\x1b[32m✓\x1b[0m    \x1b[2m-\x1b[0m    —     ◯ Stacked approved"));
+        .contains("\x1b[32mChk\x1b[0m     —    ◯ Stacked approved"));
     assert!(result
         .stdout
-        .contains("\x1b[32m✓\x1b[0m    —     ◯ Approved clean"));
+        .contains("\x1b[32mRev\x1b[0m —    ◯ Approved clean"));
     assert!(result
         .stdout
-        .contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ Approved with comments"));
+        .contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ Approved with comments"));
     assert!(result
         .stdout
-        .contains("\x1b[38;2;194;95;0m!\x1b[0m    —     ◯ Comments pending"));
+        .contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ Comments pending"));
     assert!(result
         .stdout
-        .contains("\x1b[1m\x1b[31m!\x1b[0m    —     ◯ Changes requested"));
+        .contains("\x1b[1m\x1b[31mRev\x1b[0m —    ◯ Changes requested"));
     assert!(result
         .stdout
-        .contains("\x1b[36m?\x1b[0m    —     ◯ Waiting reviewer"));
+        .contains("\x1b[36mRev\x1b[0m —    ◯ Waiting reviewer"));
     assert!(result
         .stdout
-        .contains("\x1b[38;2;194;95;0m✓\x1b[0m    —     ◯ Approval pending gate"));
+        .contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ Approval pending gate"));
+    assert!(!result.stdout.contains("Chk Rev Lag"));
 }
 
 #[test]
@@ -544,19 +545,19 @@ auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
         .expect("stack status succeeds");
 
     assert!(plain.stdout.contains(&format!(
-        "{}  ◷    ✓    —     ◎ Armed auto-merge [kept]",
+        "{} ◷   ✓   —    ◎ Armed auto-merge [kept]",
         stack_status_pull_request_cell(111)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{}  ✓    ✓    —     ◆ Missing auto-merge",
+        "{} ✓   ✓   —    ◆ Missing auto-merge",
         stack_status_pull_request_cell(112)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{}  ◷    ✓    —     ◯ Waiting checks",
+        "{} ◷   ✓   —    ◯ Waiting checks",
         stack_status_pull_request_cell(113)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{}  ✓    ✓    —     ◈ Settings required [kept]",
+        "{} ✓   ✓   —    ◈ Settings required [kept]",
         stack_status_pull_request_cell(114)
     )));
     assert!(!plain.stdout.contains("auto-merge]"));
@@ -653,7 +654,7 @@ fn stack_status_marks_unreviewed_review_cell() {
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    -    —     ◯ No review yet",
+        "{} ✓       —    ◯ No review yet",
         stack_status_pull_request_cell(104)
     )));
 }
@@ -708,7 +709,7 @@ fn stack_status_renders_dismissed_reviewers_without_active_requests() {
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    -    —     ◯ Dismissed reviewers reviewer-one, reviewer-two, reviewer-three",
+        "{} ✓       —    ◯ Dismissed reviewers  reviewer-one, reviewer-two, reviewer-three",
         stack_status_pull_request_cell(103)
     )));
 }
@@ -834,16 +835,16 @@ review_wait_threshold = "4h"
 
     assert!(result
         .stdout
-        .contains("\x1b[1m\x1b[31m?\x1b[0m    \x1b[1m\x1b[31m5h  \x1b[0m  ◯ Old waiting"));
+        .contains("\x1b[1m\x1b[31mRev\x1b[0m \x1b[1m\x1b[31m5h  \x1b[0m ◯ Old waiting"));
     assert!(result
         .stdout
-        .contains("\x1b[36m?\x1b[0m    \x1b[2m1h  \x1b[0m  ◯ Fresh waiting"));
+        .contains("\x1b[36mRev\x1b[0m \x1b[2m1h  \x1b[0m ◯ Fresh waiting"));
     assert!(result
         .stdout
-        .contains("-    \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  ◌ Draft waiting"));
+        .contains("     \x1b[2m6h  \x1b[0m\x1b[2m\x1b[38;2;190;184;176m ◌ Draft waiting"));
     assert!(result
         .stdout
-        .contains("\x1b[32m✓\x1b[0m    \x1b[32m7h  \x1b[0m  \x1b[32m● Merged change\x1b[0m"));
+        .contains("\x1b[32mRev\x1b[0m \x1b[32m7h  \x1b[0m \x1b[32m● Merged change\x1b[0m"));
 }
 
 #[test]
@@ -1311,7 +1312,7 @@ fn stack_status_ellipsizes_long_titles_before_labels_and_reviewers() {
     assert!(result
         .stdout
         .contains("Implement a very long synthetic stack title that demonstrates the compa…"));
-    assert!(result.stdout.contains("[backend] human-reviewer"));
+    assert!(result.stdout.contains("[backend]  human-reviewer"));
     assert!(!result.stdout.contains("compact subject width convention"));
 }
 
@@ -1580,7 +1581,7 @@ name = "^ignored-.*$"
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ?    —     ◯ Review gate change [useful-label] human-reviewer",
+        "{} ✓   ?   —    ◯ Review gate change [useful-label]  human-reviewer",
         stack_status_pull_request_cell(120)
     )));
     assert!(!result.stdout.contains("generated-noise"));
@@ -1659,7 +1660,7 @@ review_gate_checks = ["^approval gate$", "^committer gate$"]
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ✓    —     ◯ Review gate approved",
+        "{} ✓   ✓   —    ◯ Review gate approved",
         stack_status_pull_request_cell(121)
     )));
 }
@@ -1737,7 +1738,7 @@ review_gate_checks = ["^approval gate$", "^committer gate$"]
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ?    —     ◯ Review required human-reviewer",
+        "{} ✓   ?   —    ◯ Review required  human-reviewer",
         stack_status_pull_request_cell(122)
     )));
 }
@@ -1804,7 +1805,7 @@ fn stack_status_uses_latest_contexts_when_rollup_has_stale_failure() {
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{}  ◷    ✓    —     ◯ Stale rollup change",
+        "{} ◷   ✓   —    ◯ Stale rollup change",
         stack_status_pull_request_cell(121)
     )));
 }
@@ -1878,7 +1879,7 @@ fn stack_status_resolves_branch_only_stack_nodes_before_fetching_status() {
         &[vec![451]]
     );
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    -    —     ◌ Example branch-only status example-reviewer",
+        "{} ✓       —    ◌ Example branch-only status  example-reviewer",
         stack_status_pull_request_cell(451)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -2035,7 +2036,7 @@ fn stack_status_resolves_merged_branch_only_stack_nodes() {
         &[vec![452]]
     );
     assert!(result.stdout.contains(&format!(
-        "{}  ✓    ✓    —     ● Merged branch-only status",
+        "{} ✓   ✓   —    ● Merged branch-only status",
         stack_status_pull_request_cell(452)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -2233,7 +2234,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .stdout
         .contains("\x1b[3m\x1b[32mreviewer-commented-approved\x1b[0m"));
     assert!(result.stdout.contains(
-        "\x1b[22m\x1b[48;2;244;223;222m\x1b[38;2;98;93;86m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m draft-pending, draft-approved"
+        "\x1b[22m\x1b[48;2;244;223;222m\x1b[38;2;98;93;86m ui \x1b[0m\x1b[2m\x1b[38;2;190;184;176m  draft-pending, draft-approved"
     ));
     assert!(result.stdout.contains("\x1b[32m#112\x1b[0m"));
     assert!(result.stdout.contains("\x1b[32m● Merged change\x1b[0m"));
@@ -2557,7 +2558,7 @@ fn stack_status_subdues_draft_merge_conflict_rows() {
         .expect("draft conflict row renders");
     assert!(draft_line.starts_with(DRAFT_CONFLICT_ROW_STYLE));
     assert!(!draft_line.starts_with(CONFLICT_STYLE));
-    assert!(draft_line.contains("⊘ Draft conflict draft-reviewer"));
+    assert!(draft_line.contains("⊘ Draft conflict  draft-reviewer"));
 }
 
 #[test]
@@ -2768,7 +2769,7 @@ path = "{repo}"
         .iter()
         .position(|line| line.contains("api-alpha"))
         .expect("repository header renders");
-    assert!(status_lines[repository_header_index + 1].starts_with("  PR       Chk"));
+    assert!(status_lines[repository_header_index + 1].starts_with("  PR      Chk"));
     assert!(result.stdout.contains("Alpha change"));
     assert!(!result.stdout.contains("web-beta"));
     assert_eq!(
@@ -2788,11 +2789,11 @@ path = "{repo}"
         .iter()
         .position(|line| line.contains("web-beta"))
         .expect("beta repository header renders");
-    assert!(status_lines[alpha_header_index + 1].starts_with("  PR       Chk"));
+    assert!(status_lines[alpha_header_index + 1].starts_with("  PR      Chk"));
     assert!(status_lines[alpha_header_index + 2].contains("Alpha change"));
     assert_eq!(status_lines[alpha_header_index + 3], "");
     assert_eq!(beta_header_index, alpha_header_index + 4);
-    assert!(status_lines[beta_header_index + 1].starts_with("  PR       Chk"));
+    assert!(status_lines[beta_header_index + 1].starts_with("  PR      Chk"));
     assert!(status_lines[beta_header_index + 2].contains("Beta change"));
 }
 

@@ -81,7 +81,7 @@ fn review_orders_exact_lag_within_unchanged_repository_groups() {
     );
     for (number, row) in &rows[..8] {
         if [90, 99].contains(number) {
-            assert!(row.contains("—     ◯"), "{row}");
+            assert!(row.contains("—    ◯"), "{row}");
         } else {
             assert!(row.contains("7h"), "{row}");
         }
