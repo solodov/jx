@@ -170,7 +170,7 @@ fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
         .collect();
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(entries));
     let screen = menu.screen(size(), false, Some(5));
-    assert_eq!((screen.x, screen.y), (2, 5));
+    assert_eq!((screen.x, screen.y), (2, 6));
     assert_eq!(unstyled(&screen.lines.join("\n")), "┌────────────┐\n│ put        │\n│ send       │\n│ look       │\n│ definition │\n│ cancel     │\n└────────────┘");
     assert_eq!(
         screen.lines[1],
@@ -209,18 +209,20 @@ fn long_action_lists_scroll_and_stay_inside_the_terminal() {
     for _ in 0..29 {
         menu.handle_key(key(KeyCode::Down), false, size);
     }
-    let screen = menu.screen(size, true, Some(9));
-    assert_eq!(screen.lines.len(), 10);
-    assert_eq!(screen.y, 0);
-    assert!(screen
-        .lines
-        .iter()
-        .any(|line| line.contains("action 29") && line.contains(SELECTED)));
-    assert!(screen
-        .lines
-        .iter()
-        .all(|line| unstyled(line).width() + screen.x <= size.width));
-    assert!(screen.lines.iter().any(|line| line.contains("refreshing")));
+    for (anchor, top, height) in [(9, 0, 9), (4, 5, 5), (0, 1, 9)] {
+        let screen = menu.screen(size, true, Some(anchor));
+        assert_eq!((screen.y, screen.lines.len()), (top, height));
+        assert!(screen.y > anchor || screen.y + screen.lines.len() <= anchor);
+        assert!(screen
+            .lines
+            .iter()
+            .any(|line| line.contains("action 29") && line.contains(SELECTED)));
+        assert!(screen
+            .lines
+            .iter()
+            .all(|line| unstyled(line).width() + screen.x <= size.width));
+        assert!(screen.lines.iter().any(|line| line.contains("refreshing")));
+    }
 }
 
 #[test]
@@ -228,13 +230,14 @@ fn empty_menu_only_shows_no_actions_configured() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(Vec::new()));
     for busy in [false, true] {
         let screen = menu.screen(size(), busy, Some(5));
-        assert_eq!((screen.x, screen.y), (2, 5));
+        assert_eq!((screen.x, screen.y), (2, 6));
         assert_eq!(
             unstyled(&screen.lines.join("\n")),
             "┌───────────────────────┐\n│ no actions configured │\n└───────────────────────┘"
         );
     }
     let small = DashboardTerminalSize::new(21, 1);
+    assert!(menu.screen(small, false, Some(0)).lines.is_empty());
     assert_eq!(
         unstyled(&menu.screen(small, false, None).lines.join("\n")),
         "no actions configured"
@@ -243,6 +246,29 @@ fn empty_menu_only_shows_no_actions_configured() {
         menu.handle_key(key(KeyCode::Enter), false, small),
         MenuIntent::Close
     ));
+}
+
+#[test]
+fn compact_and_empty_menus_prefer_below_then_above_the_pr_row() {
+    let mut empty = PrActionMenu::new(&context(12, "owner/repo"), Ok(Vec::new()));
+    let mut actions = PrActionMenu::new(
+        &context(12, "owner/repo"),
+        Ok(vec![entry(false, &["open"])]),
+    );
+    for (anchor, empty_top, actions_top) in [
+        (0, 1, 1),
+        (5, 6, 6),
+        (25, 26, 26),
+        (26, 27, 22),
+        (28, 25, 24),
+        (29, 26, 25),
+    ] {
+        for (menu, top, height) in [(&mut empty, empty_top, 3), (&mut actions, actions_top, 4)] {
+            let screen = menu.screen(size(), false, Some(anchor));
+            assert_eq!((screen.y, screen.lines.len()), (top, height));
+            assert!(screen.y > anchor || screen.y + height <= anchor);
+        }
+    }
 }
 
 #[test]

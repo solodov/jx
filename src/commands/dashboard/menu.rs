@@ -144,28 +144,35 @@ impl PrActionMenu {
         if self.entries.is_empty() && self.error.is_none() {
             let message = "no actions configured";
             let width = (message.width() + 4).min(size.width);
-            let lines = if width >= 4 && size.height >= 3 {
+            let desired_height = if width >= 4 && size.height >= 3 { 3 } else { 1 };
+            let (y, height) = menu_placement(size.height, desired_height, anchor_row);
+            let lines = if height >= 3 {
                 bordered_lines(&[(message, BODY)], width)
-            } else {
+            } else if height > 0 {
                 vec![panel_line(message, width, BODY)]
+            } else {
+                Vec::new()
             };
             return MenuScreen {
                 x: 2.min(size.width - width),
-                y: anchor_row
-                    .unwrap_or((size.height - lines.len()) / 2)
-                    .min(size.height - lines.len()),
+                y,
                 lines,
             };
         }
         if size.width < 24 || size.height < 10 {
+            let (y, height) = menu_placement(size.height, 1, anchor_row);
             return MenuScreen {
                 x: 0,
-                y: 0,
-                lines: vec![panel_line(
-                    "Enlarge terminal; Esc closes actions",
-                    size.width,
-                    BODY,
-                )],
+                y,
+                lines: if height > 0 {
+                    vec![panel_line(
+                        "Enlarge terminal; Esc closes actions",
+                        size.width,
+                        BODY,
+                    )]
+                } else {
+                    Vec::new()
+                },
             };
         }
         if self.confirming || self.showing_details || self.entries.is_empty() {
@@ -206,7 +213,12 @@ impl PrActionMenu {
             .unwrap_or(0)
             .saturating_add(4)
             .min(size.width);
-        let count = labels.len().min(size.height - 2 - usize::from(busy));
+        let (y, height) = menu_placement(
+            size.height,
+            labels.len() + 2 + usize::from(busy),
+            anchor_row,
+        );
+        let count = labels.len().min(height - 2 - usize::from(busy));
         let start = self.selected.saturating_add(1).saturating_sub(count);
         let mut rows = labels
             .iter()
@@ -230,9 +242,7 @@ impl PrActionMenu {
         let lines = bordered_lines(&rows, width);
         MenuScreen {
             x: 2.min(size.width - width),
-            y: anchor_row
-                .unwrap_or((size.height - lines.len()) / 2)
-                .min(size.height - lines.len()),
+            y,
             lines,
         }
     }
@@ -337,6 +347,30 @@ pub(super) struct MenuScreen {
     pub(super) x: usize,
     pub(super) y: usize,
     pub(super) lines: Vec<String>,
+}
+
+/// Returns the menu's top row and height without covering its PR row.
+/// Prefer below, then above; if neither fits, use the roomier side and let the list scroll.
+fn menu_placement(
+    screen_height: usize,
+    desired_height: usize,
+    anchor_row: Option<usize>,
+) -> (usize, usize) {
+    if screen_height == 0 {
+        return (0, 0);
+    }
+    let Some(row) = anchor_row else {
+        let height = desired_height.min(screen_height);
+        return ((screen_height - height) / 2, height);
+    };
+    let above = row.min(screen_height - 1);
+    let below = screen_height - above - 1;
+    if desired_height <= below || (desired_height > above && below >= above) {
+        (above + 1, desired_height.min(below))
+    } else {
+        let height = desired_height.min(above);
+        (above - height, height)
+    }
 }
 
 // Match Zellij's Acme right-click menu: pale green, dark green, and reversed bold selection.
