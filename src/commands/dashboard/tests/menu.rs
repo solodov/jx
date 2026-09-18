@@ -224,17 +224,35 @@ fn long_action_lists_scroll_and_stay_inside_the_terminal() {
 }
 
 #[test]
-fn empty_and_invalid_configuration_are_explanatory_not_executable() {
-    for result in [Ok(Vec::new()), Err("invalid config".to_owned())] {
-        let mut menu = PrActionMenu::new(&context(12, "owner/repo"), result);
-        assert!(menu
-            .screen(size(), false, None)
-            .lines
-            .iter()
-            .any(|line| line.contains("Configure") || line.contains("Cannot load")));
-        assert!(matches!(
-            menu.handle_key(key(KeyCode::Enter), false, size()),
-            MenuIntent::Close
-        ));
+fn empty_menu_only_shows_no_actions_configured() {
+    let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(Vec::new()));
+    for busy in [false, true] {
+        let screen = menu.screen(size(), busy, Some(5));
+        assert_eq!((screen.x, screen.y), (2, 5));
+        assert_eq!(
+            unstyled(&screen.lines.join("\n")),
+            "┌───────────────────────┐\n│ no actions configured │\n└───────────────────────┘"
+        );
     }
+    let small = DashboardTerminalSize::new(21, 1);
+    assert_eq!(
+        unstyled(&menu.screen(small, false, None).lines.join("\n")),
+        "no actions configured"
+    );
+    assert!(matches!(
+        menu.handle_key(key(KeyCode::Enter), false, small),
+        MenuIntent::Close
+    ));
+}
+
+#[test]
+fn invalid_configuration_is_not_misreported_as_no_actions() {
+    let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Err("invalid config".to_owned()));
+    let screen = unstyled(&menu.screen(size(), false, None).lines.join("\n"));
+    assert!(screen.contains("Cannot load actions: invalid config"));
+    assert!(!screen.contains("no actions configured"));
+    assert!(matches!(
+        menu.handle_key(key(KeyCode::Enter), false, size()),
+        MenuIntent::Close
+    ));
 }

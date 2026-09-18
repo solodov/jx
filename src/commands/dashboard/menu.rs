@@ -60,6 +60,10 @@ impl PrActionMenu {
             }
             return MenuIntent::Close;
         }
+        if self.entries.is_empty() && key.code == KeyCode::Enter && key.kind == KeyEventKind::Press
+        {
+            return MenuIntent::Close;
+        }
         if size.width < 24 || size.height < 10 {
             return MenuIntent::None;
         }
@@ -123,7 +127,7 @@ impl PrActionMenu {
         MenuIntent::None
     }
 
-    /// Shows only action names by default; previews and confirmation use a separate detail view.
+    /// Shows action names or a minimal empty notice; previews and confirmation use a separate view.
     pub(super) fn screen(
         &mut self,
         size: DashboardTerminalSize,
@@ -135,6 +139,22 @@ impl PrActionMenu {
                 x: 0,
                 y: 0,
                 lines: Vec::new(),
+            };
+        }
+        if self.entries.is_empty() && self.error.is_none() {
+            let message = "no actions configured";
+            let width = (message.width() + 4).min(size.width);
+            let lines = if width >= 4 && size.height >= 3 {
+                bordered_lines(&[(message, BODY)], width)
+            } else {
+                vec![panel_line(message, width, BODY)]
+            };
+            return MenuScreen {
+                x: 2.min(size.width - width),
+                y: anchor_row
+                    .unwrap_or((size.height - lines.len()) / 2)
+                    .min(size.height - lines.len()),
+                lines,
             };
         }
         if size.width < 24 || size.height < 10 {
@@ -279,13 +299,11 @@ impl PrActionMenu {
 
     fn details(&self) -> Vec<String> {
         let Some(entry) = self.entries.get(self.selected) else {
-            return vec![
-                self.error
-                    .as_ref()
-                    .map(|error| format!("Cannot load actions: {}", plain_text(error)))
-                    .unwrap_or_else(|| "No actions configured for this repository.".to_owned()),
-                "Configure [[repo.actions]] in ~/.config/jx/*.toml or .jx/config.toml.".to_owned(),
-            ];
+            return self
+                .error
+                .iter()
+                .map(|error| format!("Cannot load actions: {}", plain_text(error)))
+                .collect();
         };
         let mut lines = vec![format!(
             "Source: {} ({:?})",
