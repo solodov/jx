@@ -91,8 +91,10 @@ impl PrActionMenu {
                 self.detail_offset = 0;
             }
             KeyCode::Down | KeyCode::Char('j') if !self.confirming => {
-                self.selected = self.selected.saturating_add(1).min(self.entries.len());
-                self.showing_details &= self.selected < self.entries.len();
+                self.selected = self
+                    .selected
+                    .saturating_add(1)
+                    .min(self.entries.len().saturating_sub(1));
                 self.detail_offset = 0;
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press && !self.confirming => {
@@ -127,7 +129,7 @@ impl PrActionMenu {
         MenuIntent::None
     }
 
-    /// Shows action names or a minimal empty notice; previews and confirmation use a separate view.
+    /// Shows only configured actions or an empty notice; previews and confirmation use a separate view.
     pub(super) fn screen(
         &mut self,
         size: DashboardTerminalSize,
@@ -188,7 +190,7 @@ impl PrActionMenu {
         busy: bool,
         anchor_row: Option<usize>,
     ) -> MenuScreen {
-        let mut labels = self
+        let labels = self
             .entries
             .iter()
             .map(|entry| {
@@ -203,7 +205,6 @@ impl PrActionMenu {
                 )
             })
             .collect::<Vec<_>>();
-        labels.push("cancel".to_owned());
         let notice = busy.then_some("refreshing…");
         let width = labels
             .iter()

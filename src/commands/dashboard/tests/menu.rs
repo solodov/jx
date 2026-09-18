@@ -171,7 +171,7 @@ fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(entries));
     let screen = menu.screen(size(), false, Some(5));
     assert_eq!((screen.x, screen.y), (2, 6));
-    assert_eq!(unstyled(&screen.lines.join("\n")), "┌────────────┐\n│ put        │\n│ send       │\n│ look       │\n│ definition │\n│ cancel     │\n└────────────┘");
+    assert_eq!(unstyled(&screen.lines.join("\n")), "┌────────────┐\n│ put        │\n│ send       │\n│ look       │\n│ definition │\n└────────────┘");
     assert_eq!(
         screen.lines[1],
         format!("{BODY}│{SELECTED} put        {BODY}│\x1b[0m")
@@ -189,8 +189,13 @@ fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
     for _ in 0..4 {
         menu.handle_key(key(KeyCode::Down), false, size());
     }
+    assert_eq!(menu.selected, 3);
     assert!(matches!(
         menu.handle_key(key(KeyCode::Enter), false, size()),
+        MenuIntent::Run(_)
+    ));
+    assert!(matches!(
+        menu.handle_key(key(KeyCode::Esc), false, size()),
         MenuIntent::Close
     ));
 }
@@ -255,18 +260,11 @@ fn compact_and_empty_menus_prefer_below_then_above_the_pr_row() {
         &context(12, "owner/repo"),
         Ok(vec![entry(false, &["open"])]),
     );
-    for (anchor, empty_top, actions_top) in [
-        (0, 1, 1),
-        (5, 6, 6),
-        (25, 26, 26),
-        (26, 27, 22),
-        (28, 25, 24),
-        (29, 26, 25),
-    ] {
-        for (menu, top, height) in [(&mut empty, empty_top, 3), (&mut actions, actions_top, 4)] {
+    for (anchor, top) in [(0, 1), (5, 6), (25, 26), (26, 27), (28, 25), (29, 26)] {
+        for menu in [&mut empty, &mut actions] {
             let screen = menu.screen(size(), false, Some(anchor));
-            assert_eq!((screen.y, screen.lines.len()), (top, height));
-            assert!(screen.y > anchor || screen.y + height <= anchor);
+            assert_eq!((screen.y, screen.lines.len()), (top, 3));
+            assert!(screen.y > anchor || screen.y + screen.lines.len() <= anchor);
         }
     }
 }
