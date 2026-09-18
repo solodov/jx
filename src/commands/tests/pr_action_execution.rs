@@ -17,49 +17,127 @@ fn invocation(command: &[&str], cwd: &Path) -> PreparedPrAction {
     }
 }
 
+fn action_environment(root: &Path) -> RuntimeEnvironment {
+    RuntimeEnvironment::new(root, [("HOME".to_owned(), root.display().to_string())])
+}
+
 #[cfg(unix)]
-#[test]
-fn execution_preserves_argv_cwd_and_exit_status_without_an_implicit_shell() {
-    let temp = tempfile::tempdir().unwrap();
-    let action = invocation(
-        &[
-            "sh",
-            "-c",
-            "printf '%s\\n' \"$1\" \"$2\" > result; exit 7",
-            "action",
-            "$(touch injected) ; {title}",
-            "two words",
-        ],
-        temp.path(),
-    );
-    let status = execute_pr_action(&action).unwrap();
-    assert_eq!(status.code(), Some(7));
-    assert_eq!(
-        fs::read_to_string(temp.path().join("result")).unwrap(),
-        "$(touch injected) ; {title}\ntwo words\n"
-    );
-    assert!(!temp.path().join("injected").exists());
-    assert!(
-        execute_pr_action(&invocation(&["/definitely/missing/jx-action"], temp.path())).is_err()
-    );
+fn wait_for_action(running: &mut RunningPrAction) -> Result<(), PrActionFailure> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(result) = running.poll() {
+            return result;
+        }
+        assert!(std::time::Instant::now() < deadline, "action timed out");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(unix)]
 #[test]
-fn foreground_sigint_does_not_exit_parent_or_leak_into_resumed_dashboard() {
-    use std::os::unix::process::ExitStatusExt;
-    let interrupts = DashboardInterrupts::enter().unwrap();
+fn quiet_execution_logs_both_streams_argv_and_status_without_a_terminal() {
     let temp = tempfile::tempdir().unwrap();
     let action = invocation(
-        &["sh", "-c", "kill -INT \"$PPID\"; kill -INT $$"],
+        &["sh", "-c", "! test -t 0 && ! test -t 1 && ! test -t 2 || exit 9; read value && exit 8; printf '%s\\n' \"$1\" \"$2\"; printf 'stderr marker' >&2; printf 'cwd marker' > cwd-marker; exit 7", "action", "$(touch injected) ; {title}", "two words"],
         temp.path(),
     );
-    let status = execute_pr_action(&action).unwrap();
-    assert_eq!(status.signal(), Some(signal_hook::consts::signal::SIGINT));
-    assert!(interrupts.take_pending());
-    // The signal worker may wake later, but synchronous receipt was already acknowledged.
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(!interrupts.take_pending());
+    let environment = action_environment(temp.path());
+    let mut running =
+        RunningPrAction::start(action, &environment, PrActionSet::StackStatus).unwrap();
+    let failure = wait_for_action(&mut running).unwrap_err();
+    assert_eq!(failure.message, "Test failed");
+    let path = failure.log_path.unwrap();
+    assert_eq!(path, temp.path().join(".local/state/jx/jx-actions.log"));
+    let log = fs::read_to_string(&path).unwrap();
+    assert!(log.contains("$(touch injected) ; {title}\ntwo words\n"));
+    assert!(log.contains("stderr marker"));
+    assert!(log.contains(&temp.path().display().to_string()));
+    assert!(log.contains("exit status: 7"));
+    assert!(log.contains("\"dashboard\":\"stack-status\""));
+    assert!(log.contains("\"repo\":\"owner/repo\""));
+    assert!(!temp.path().join("injected").exists());
+    assert_eq!(
+        fs::read_to_string(temp.path().join("cwd-marker")).unwrap(),
+        "cwd marker"
+    );
+    let mut success = RunningPrAction::start(
+        invocation(&["sh", "-c", "echo success marker"], temp.path()),
+        &environment,
+        PrActionSet::Review,
+    )
+    .unwrap();
+    wait_for_action(&mut success).unwrap();
+    let log = fs::read_to_string(&path).unwrap();
+    assert!(log.contains("success marker"));
+    assert!(log.contains("\"status\":\"success\""));
+    assert!(
+        log.contains("stderr marker"),
+        "the log must append rather than truncate"
+    );
+}
+
+#[test]
+fn spawn_failures_are_logged_and_unwritable_logs_prevent_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let environment = action_environment(temp.path());
+    let missing = invocation(&["/definitely/missing/jx-action"], temp.path());
+    let error = RunningPrAction::start(missing.clone(), &environment, PrActionSet::Review)
+        .err()
+        .unwrap();
+    let log = fs::read_to_string(error.log_path.unwrap()).unwrap();
+    assert!(log.contains("could not start"));
+    assert!(log.contains("\"status\":\"failed\""));
+    let blocked = RuntimeEnvironment::new(
+        temp.path(),
+        [(
+            "JX_ACTION_LOG".to_owned(),
+            temp.path().display().to_string(),
+        )],
+    );
+    let error = RunningPrAction::start(missing, &blocked, PrActionSet::Review)
+        .err()
+        .unwrap();
+    assert!(error.message.contains("cannot open log"));
+    assert_eq!(error.log_path, None);
+    #[cfg(unix)]
+    {
+        let action = invocation(&["sh", "-c", "touch must-not-run"], temp.path());
+        assert!(RunningPrAction::start(action, &blocked, PrActionSet::Review).is_err());
+        assert!(!temp.path().join("must-not-run").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn pending_actions_can_be_cancelled_and_dropped_without_terminal_prompts() {
+    let temp = tempfile::tempdir().unwrap();
+    let environment = RuntimeEnvironment::new(
+        temp.path(),
+        [("JX_ACTION_LOG".to_owned(), "action.log".to_owned())],
+    );
+    let mut running = RunningPrAction::start(
+        invocation(&["sh", "-c", "sleep 30"], temp.path()),
+        &environment,
+        PrActionSet::Review,
+    )
+    .unwrap();
+    assert!(running.poll().is_none());
+    let failure = running.cancel();
+    assert_eq!(failure.message, "Test cancelled");
+    assert_eq!(
+        failure.log_path.as_deref(),
+        Some(temp.path().join("action.log").as_path())
+    );
+    let running = RunningPrAction::start(
+        invocation(&["sh", "-c", "sleep 30"], temp.path()),
+        &environment,
+        PrActionSet::Review,
+    )
+    .unwrap();
+    drop(running);
+    let log = fs::read_to_string(temp.path().join("action.log")).unwrap();
+    assert!(log.contains("cancelled by operator"));
+    assert!(log.contains("dashboard closed"));
 }
 
 #[test]

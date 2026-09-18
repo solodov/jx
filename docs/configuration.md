@@ -99,11 +99,18 @@ scrolls long previews. Every repository-local definition, including overrides of
 shows those details and requires a separate `y` confirmation before execution.
 Esc returns to the action list without executing.
 Menus retain their target while refresh results wait in the background. Commands
-wait for any in-flight refresh to finish, then run one at a time with normal
-terminal input/output. After success, failure, or Ctrl-C cancellation, Enter/Esc
-acknowledges the result and returns to a freshly loading dashboard. These manual
-actions are separate from lifecycle hooks and never execute during loading or
-refreshing.
+wait for any in-flight refresh to finish, then run one at a time without taking
+over the terminal. Actions are non-interactive: stdin is closed and stdout/stderr
+append to `~/.local/state/jx/jx-actions.log` (or `$XDG_STATE_HOME/jx/jx-actions.log`).
+Set `JX_ACTION_LOG` to override the path; relative paths use the caller's directory.
+The log includes command argv, PR identity, working directory, configuration
+source, and completion status alongside raw output. If the log cannot be opened,
+the action does not run.
+
+Success refreshes the dashboard quietly, with no completion prompt. Failures show
+a small popup pointing to the log; Enter/Esc dismisses it. Esc or Ctrl-C cancels a
+running action. These manual actions are separate from lifecycle hooks and never
+execute during loading or refreshing.
 
 ## Clone and workspace layout
 

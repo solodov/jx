@@ -344,6 +344,58 @@ impl PrActionMenu {
     }
 }
 
+/// A compact failure notice; command output stays in the log rather than the dashboard.
+pub(super) fn action_failure_screen(
+    failure: &pr_actions::PrActionFailure,
+    size: DashboardTerminalSize,
+    anchor_row: Option<usize>,
+) -> MenuScreen {
+    if size.width == 0 || size.height == 0 {
+        return MenuScreen {
+            x: 0,
+            y: 0,
+            lines: Vec::new(),
+        };
+    }
+    let mut messages = vec![plain_text(&failure.message)];
+    if let Some(path) = &failure.log_path {
+        messages.push("See log for details:".to_owned());
+        messages.push(plain_text(&path.display().to_string()));
+    }
+    let width = messages
+        .iter()
+        .map(|line| line.width())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(4)
+        .min(size.width)
+        .min(92);
+    let content = messages
+        .iter()
+        .flat_map(|line| wrap_plain(line, width.saturating_sub(4).max(1)))
+        .collect::<Vec<_>>();
+    let (y, height) = menu_placement(size.height, content.len() + 2, anchor_row);
+    let lines = if width >= 5 && height >= 3 {
+        let rows = content
+            .iter()
+            .take(height - 2)
+            .map(|line| (line.as_str(), BODY))
+            .collect::<Vec<_>>();
+        bordered_lines(&rows, width)
+    } else {
+        messages
+            .iter()
+            .take(height)
+            .map(|line| panel_line(line, width, BODY))
+            .collect()
+    };
+    MenuScreen {
+        x: 2.min(size.width - width),
+        y,
+        lines,
+    }
+}
+
 pub(super) struct MenuScreen {
     pub(super) x: usize,
     pub(super) y: usize,

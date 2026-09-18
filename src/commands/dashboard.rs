@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod actions;
 mod menu;
 mod navigation;
 #[path = "dashboard/terminal.rs"]
@@ -25,6 +26,7 @@ mod terminal_session;
 #[path = "dashboard/tests/fixtures.rs"]
 pub(super) mod test_support;
 
+use actions::DashboardActions;
 use menu::{MenuIntent, PrActionMenu};
 use navigation::DashboardNavigation;
 use terminal_session::DashboardTerminalSession;
@@ -87,7 +89,7 @@ impl DashboardTerminalSize {
     }
 }
 
-/// Runs a live dashboard with stable PR selection and its own configured foreground action set.
+/// Runs a live dashboard with stable PR selection, quiet actions, and persistent failure notices.
 pub(super) fn run_interactive_dashboard(
     refresh_seconds: u64,
     loader: DashboardFrameLoader,
@@ -103,6 +105,7 @@ pub(super) fn run_interactive_dashboard(
     let mut last_error = None::<String>;
     let mut navigation = DashboardNavigation::default();
     let mut menu = None::<PrActionMenu>;
+    let mut actions = DashboardActions::default();
     let mut refresh = None::<DashboardRefresh>;
     let mut deferred = None;
     let mut next_refresh_at = None;
@@ -110,13 +113,23 @@ pub(super) fn run_interactive_dashboard(
 
     loop {
         if interrupts.take_pending() {
-            return Ok(CommandResult::with_exit_code(String::new(), 130));
+            if !actions.cancel() {
+                return Ok(CommandResult::with_exit_code(String::new(), 130));
+            }
+            deferred = None;
+            next_refresh_at = None;
         }
-        if menu.is_none() && watcher.changed() {
+        if actions.poll() {
+            deferred = None;
+            next_refresh_at = None;
+        }
+        if menu.is_none() && !actions.is_running() && actions.failure.is_none() && watcher.changed()
+        {
             terminal.restore()?;
             return restart_dashboard_process();
         }
         if refresh.is_none()
+            && !actions.is_running()
             && deferred.is_none()
             && menu.is_none()
             && dashboard_wait_duration(Local::now(), next_refresh_at).is_none()
@@ -131,7 +144,7 @@ pub(super) fn run_interactive_dashboard(
             } else if !loading.timed_out && dashboard_refresh_timed_out(loading.started.elapsed()) {
                 loading.timed_out = true;
                 last_error = Some(dashboard_refresh_timeout_error());
-                // Retain the worker: abandoning it could race a foreground command or a new load.
+                // Retain the worker: abandoning it could race an action or a new load.
             }
         }
         if menu.is_none() {
@@ -162,15 +175,21 @@ pub(super) fn run_interactive_dashboard(
             &mut navigation,
             menu.as_mut(),
             refresh.is_some(),
+            actions.failure.as_ref(),
         )?;
-        let timeout = if refresh.is_some() {
+        let timeout = if refresh.is_some() || actions.is_running() {
             DASHBOARD_EVENT_POLL
         } else {
             DASHBOARD_IDLE_POLL
         };
         match read_dashboard_event(timeout, &mut terminal_size)? {
             DashboardEvent::Interrupt => {
-                return Ok(CommandResult::with_exit_code(String::new(), 130))
+                if actions.cancel() {
+                    deferred = None;
+                    next_refresh_at = None;
+                } else {
+                    return Ok(CommandResult::with_exit_code(String::new(), 130));
+                }
             }
             DashboardEvent::Resized => rerender_dashboard_snapshot(
                 last_snapshot.as_ref(),
@@ -182,27 +201,31 @@ pub(super) fn run_interactive_dashboard(
                 if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
                     continue;
                 }
+                if actions.handle_failure_key(key) {
+                    continue;
+                }
+                if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press && actions.cancel() {
+                    deferred = None;
+                    next_refresh_at = None;
+                    continue;
+                }
                 if let Some(open_menu) = &mut menu {
                     match open_menu.handle_key(key, refresh.is_some(), terminal_size) {
                         MenuIntent::None => {}
                         MenuIntent::Close => menu = None,
                         MenuIntent::Run(action) => {
                             menu = None;
-                            terminal.run_action(&action, &interrupts)?;
-                            terminal_size = dashboard_terminal_size()?;
-                            rerender_dashboard_snapshot(
-                                last_snapshot.as_ref(),
-                                terminal_size,
-                                &mut last_frame,
-                                &mut last_error,
-                            );
+                            actions.start(action, environment, action_set);
                             deferred = None;
                             next_refresh_at = None;
                         }
                     }
                 } else if dashboard_exit_key(key) {
                     return Ok(CommandResult::success(String::new()));
-                } else if key.code == KeyCode::Enter && key.kind == KeyEventKind::Press {
+                } else if key.code == KeyCode::Enter
+                    && key.kind == KeyEventKind::Press
+                    && !actions.is_running()
+                {
                     if let Some(context) = last_frame
                         .as_ref()
                         .and_then(|frame| navigation.selected(frame))
@@ -386,13 +409,16 @@ fn render_dashboard_frame(
     navigation: &mut DashboardNavigation,
     menu: Option<&mut PrActionMenu>,
     busy: bool,
+    failure: Option<&pr_actions::PrActionFailure>,
 ) -> io::Result<()> {
     let prefix_lines = dashboard_frame_text(dashboard_frame_state(None, false, state.error, 0))
         .lines()
         .count();
     let output = dashboard_frame_text(state);
     let (output, marker) = navigation.viewport(&output, prefix_lines, terminal_size.height);
-    let menu = menu.map(|menu| menu.screen(terminal_size, busy, marker));
+    let menu = failure
+        .map(|failure| menu::action_failure_screen(failure, terminal_size, marker))
+        .or_else(|| menu.map(|menu| menu.screen(terminal_size, busy, marker)));
     write_dashboard_screen(&output, terminal_size, marker, menu)
 }
 
@@ -523,10 +549,6 @@ fn restart_dashboard_process() -> Result<CommandResult, CommandError> {
     let Some(executable) = restart_executable_path() else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "jx executable was not found").into());
     };
-    let mut stdout = io::stdout();
-    let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
-    let _ = writeln!(stdout, "jx updated; restarting...");
-    let _ = stdout.flush();
     restart_process(&executable, &argv)
 }
 

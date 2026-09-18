@@ -9,7 +9,7 @@ pub(super) fn install_interrupt_cursor_restore() -> io::Result<()> {
     interrupt_state().map(|_| ())
 }
 
-/// Keeps the parent dashboard alive while a foreground child receives terminal signals normally.
+/// Lets the dashboard handle interrupts and clean up its terminal and running action.
 pub(super) struct DashboardInterrupts(&'static Arc<InterruptState>);
 
 impl DashboardInterrupts {
@@ -43,8 +43,8 @@ fn interrupt_state() -> io::Result<&'static Arc<InterruptState>> {
                 pending: Arc::new(AtomicBool::new(false)),
                 dashboard: AtomicBool::new(false),
             });
-            // Record at signal delivery, not when the worker wakes: a late wakeup must not
-            // turn an already acknowledged child cancellation into a dashboard exit.
+            // Record at signal delivery so a late worker wakeup cannot replay an interrupt
+            // the dashboard has already handled.
             signal_hook::flag::register(
                 signal_hook::consts::signal::SIGINT,
                 state.pending.clone(),

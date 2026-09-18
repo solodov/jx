@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain::{prepare_pr_action, PrActionContext, PrActionUnavailable, PreparedPrAction};
 use crate::repository::ResolvedPrAction;
-use std::process::ExitStatus;
+mod execution;
+pub(super) use execution::{PrActionFailure, RunningPrAction};
 
 pub(super) struct AvailablePrAction {
     pub(super) definition: ResolvedPrAction,
@@ -54,22 +55,6 @@ pub(super) fn load_pr_actions(
 pub(super) enum PrActionSet {
     Review,
     StackStatus,
-}
-
-/// Runs precisely the prepared argv in the foreground, inheriting the normal terminal streams.
-/// The dashboard owns suspension, confirmation, acknowledgement, and refresh around this boundary.
-pub(super) fn execute_pr_action(action: &PreparedPrAction) -> io::Result<ExitStatus> {
-    let (program, arguments) = action
-        .command
-        .split_first()
-        .ok_or_else(|| io::Error::other("action has no executable"))?;
-    ProcessCommand::new(program)
-        .args(arguments)
-        .current_dir(&action.cwd)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
 }
 
 #[cfg(test)]

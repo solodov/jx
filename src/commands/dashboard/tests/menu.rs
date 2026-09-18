@@ -270,6 +270,32 @@ fn compact_and_empty_menus_prefer_below_then_above_the_pr_row() {
 }
 
 #[test]
+fn action_failures_show_a_small_log_notice_not_command_output() {
+    let failure = pr_actions::PrActionFailure {
+        message: "open failed".to_owned(),
+        log_path: Some(PathBuf::from("/logs/jx-actions.log")),
+    };
+    let screen = action_failure_screen(&failure, size(), Some(5));
+    assert_eq!(screen.lines.len(), 5);
+    assert_eq!(screen.y, 6);
+    let text = unstyled(&screen.lines.join("\n"));
+    assert!(text.contains("open failed"));
+    assert!(text.contains("See log for details:"));
+    assert!(text.contains("/logs/jx-actions.log"));
+    let failure = pr_actions::PrActionFailure {
+        message: "Cannot open log: permission denied".to_owned(),
+        log_path: None,
+    };
+    let text = unstyled(
+        &action_failure_screen(&failure, size(), None)
+            .lines
+            .join("\n"),
+    );
+    assert!(text.contains("Cannot open log: permission denied"));
+    assert!(!text.contains("See log"));
+}
+
+#[test]
 fn invalid_configuration_is_not_misreported_as_no_actions() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Err("invalid config".to_owned()));
     let screen = unstyled(&menu.screen(size(), false, None).lines.join("\n"));
