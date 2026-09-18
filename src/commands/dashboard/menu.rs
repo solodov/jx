@@ -111,7 +111,8 @@ impl PrActionMenu {
                             return MenuIntent::Run(action.clone());
                         }
                     }
-                    _ => self.showing_details = true,
+                    Ok(_) => {}
+                    Err(_) => self.showing_details = true,
                 }
             }
             KeyCode::Char('y' | 'Y')
@@ -129,11 +130,10 @@ impl PrActionMenu {
         MenuIntent::None
     }
 
-    /// Shows only configured actions or an empty notice; previews and confirmation use a separate view.
+    /// Renders the frozen action set without transient dashboard refresh state.
     pub(super) fn screen(
         &mut self,
         size: DashboardTerminalSize,
-        busy: bool,
         anchor_row: Option<usize>,
     ) -> MenuScreen {
         if size.width == 0 || size.height == 0 {
@@ -178,18 +178,13 @@ impl PrActionMenu {
             };
         }
         if self.confirming || self.showing_details || self.entries.is_empty() {
-            self.detail_screen(size, busy)
+            self.detail_screen(size)
         } else {
-            self.list_screen(size, busy, anchor_row)
+            self.list_screen(size, anchor_row)
         }
     }
 
-    fn list_screen(
-        &self,
-        size: DashboardTerminalSize,
-        busy: bool,
-        anchor_row: Option<usize>,
-    ) -> MenuScreen {
+    fn list_screen(&self, size: DashboardTerminalSize, anchor_row: Option<usize>) -> MenuScreen {
         let labels = self
             .entries
             .iter()
@@ -205,23 +200,17 @@ impl PrActionMenu {
                 )
             })
             .collect::<Vec<_>>();
-        let notice = busy.then_some("refreshing…");
         let width = labels
             .iter()
             .map(|label| label.width())
-            .chain(notice.map(str::width))
             .max()
             .unwrap_or(0)
             .saturating_add(4)
             .min(size.width);
-        let (y, height) = menu_placement(
-            size.height,
-            labels.len() + 2 + usize::from(busy),
-            anchor_row,
-        );
-        let count = labels.len().min(height - 2 - usize::from(busy));
+        let (y, height) = menu_placement(size.height, labels.len() + 2, anchor_row);
+        let count = labels.len().min(height - 2);
         let start = self.selected.saturating_add(1).saturating_sub(count);
-        let mut rows = labels
+        let rows = labels
             .iter()
             .enumerate()
             .skip(start)
@@ -237,9 +226,6 @@ impl PrActionMenu {
                 )
             })
             .collect::<Vec<_>>();
-        if let Some(notice) = notice {
-            rows.push((notice, BODY));
-        }
         let lines = bordered_lines(&rows, width);
         MenuScreen {
             x: 2.min(size.width - width),
@@ -248,7 +234,7 @@ impl PrActionMenu {
         }
     }
 
-    fn detail_screen(&mut self, size: DashboardTerminalSize, busy: bool) -> MenuScreen {
+    fn detail_screen(&mut self, size: DashboardTerminalSize) -> MenuScreen {
         let mut details = vec![self.target.clone(), plain_text(&self.title), String::new()];
         if let Some(entry) = self.entries.get(self.selected) {
             details.push(plain_text(&entry.definition.action.title));
@@ -257,9 +243,6 @@ impl PrActionMenu {
             details.push("Repository-local command: run this exact invocation?".to_owned());
         }
         details.extend(self.details());
-        if busy {
-            details.push("Refresh running; execution waits.".to_owned());
-        }
         let footer = if self.confirming {
             "y: run   n/Esc: back"
         } else if self.entries.is_empty() {

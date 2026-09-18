@@ -51,7 +51,7 @@ fn local_overrides_require_explicit_confirmation_of_frozen_invocation() {
         MenuIntent::None
     ));
     assert!(menu.confirming);
-    let preview = menu.screen(size(), false, None).lines.join("\n");
+    let preview = menu.screen(size(), None).lines.join("\n");
     assert!(preview.contains("/source/config.toml"));
     assert!(preview.contains("cwd: /caller"));
     assert!(preview.contains("argv[0]: \"open\""));
@@ -135,7 +135,7 @@ fn menu_is_bounded_sanitized_and_preview_is_pageable() {
     );
     menu.handle_key(key(KeyCode::Tab), false, size());
     for (width, height) in [(100, 30), (30, 10), (10, 5), (0, 0)] {
-        let screen = menu.screen(DashboardTerminalSize::new(width, height), false, None);
+        let screen = menu.screen(DashboardTerminalSize::new(width, height), None);
         assert!(screen.lines.len() <= usize::from(height));
         for line in screen.lines {
             let plain = unstyled(&line);
@@ -145,7 +145,7 @@ fn menu_is_bounded_sanitized_and_preview_is_pageable() {
     }
     assert!(plain_text(&ctx.title).contains("\\u{1b}"));
     menu.handle_key(key(KeyCode::PageDown), false, size());
-    let screen = menu.screen(size(), false, None);
+    let screen = menu.screen(size(), None);
     assert!(menu.detail_offset > 0);
     assert!(screen.lines.iter().any(|line| line.contains("漢字")));
     assert!(menu.details().join("\n").contains("argv[2]: \"\""));
@@ -169,7 +169,7 @@ fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
         .into_iter()
         .collect();
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(entries));
-    let screen = menu.screen(size(), false, Some(5));
+    let screen = menu.screen(size(), Some(5));
     assert_eq!((screen.x, screen.y), (2, 6));
     assert_eq!(unstyled(&screen.lines.join("\n")), "┌────────────┐\n│ put        │\n│ send       │\n│ look       │\n│ definition │\n└────────────┘");
     assert_eq!(
@@ -180,7 +180,7 @@ fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
     assert_eq!(SELECTED, "\x1b[0;1;38;2;228;246;211;48;2;31;91;42m");
     menu.handle_key(key(KeyCode::Char('?')), false, size());
     assert!(menu
-        .screen(size(), false, None)
+        .screen(size(), None)
         .lines
         .join("\n")
         .contains("argv[0]"));
@@ -215,7 +215,7 @@ fn long_action_lists_scroll_and_stay_inside_the_terminal() {
         menu.handle_key(key(KeyCode::Down), false, size);
     }
     for (anchor, top, height) in [(9, 0, 9), (4, 5, 5), (0, 1, 9)] {
-        let screen = menu.screen(size, true, Some(anchor));
+        let screen = menu.screen(size, Some(anchor));
         assert_eq!((screen.y, screen.lines.len()), (top, height));
         assert!(screen.y > anchor || screen.y + screen.lines.len() <= anchor);
         assert!(screen
@@ -226,25 +226,49 @@ fn long_action_lists_scroll_and_stay_inside_the_terminal() {
             .lines
             .iter()
             .all(|line| unstyled(line).width() + screen.x <= size.width));
-        assert!(screen.lines.iter().any(|line| line.contains("refreshing")));
+        assert!(!screen.lines.iter().any(|line| line.contains("refreshing")));
     }
+}
+
+#[test]
+fn refresh_completion_does_not_change_menu_layout_or_entries() {
+    let mut menu = PrActionMenu::new(
+        &context(12, "owner/repo"),
+        Ok(vec![entry(false, &["open", "{pr_url}"])]),
+    );
+    let before = menu.screen(size(), Some(5));
+    assert!(matches!(
+        menu.handle_key(key(KeyCode::Enter), true, size()),
+        MenuIntent::None
+    ));
+    let after = menu.screen(size(), Some(5));
+    assert_eq!(
+        (before.x, before.y, before.lines),
+        (after.x, after.y, after.lines)
+    );
+    let MenuIntent::Run(action) = menu.handle_key(key(KeyCode::Enter), false, size()) else {
+        panic!("action runs once refresh finishes");
+    };
+    assert_eq!(action.target.number, 12);
+    assert_eq!(
+        action.command,
+        ["open", "https://github.com/owner/repo/pull/12"]
+    );
 }
 
 #[test]
 fn empty_menu_only_shows_no_actions_configured() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(Vec::new()));
-    for busy in [false, true] {
-        let screen = menu.screen(size(), busy, Some(5));
-        assert_eq!((screen.x, screen.y), (2, 6));
-        assert_eq!(
-            unstyled(&screen.lines.join("\n")),
-            "┌───────────────────────┐\n│ no actions configured │\n└───────────────────────┘"
-        );
-    }
-    let small = DashboardTerminalSize::new(21, 1);
-    assert!(menu.screen(small, false, Some(0)).lines.is_empty());
+    let screen = menu.screen(size(), Some(5));
+    assert_eq!((screen.x, screen.y), (2, 6));
     assert_eq!(
-        unstyled(&menu.screen(small, false, None).lines.join("\n")),
+        unstyled(&screen.lines.join("\n")),
+        "┌───────────────────────┐\n│ no actions configured │\n└───────────────────────┘"
+    );
+    let small = DashboardTerminalSize::new(21, 1);
+    assert!(menu.screen(small, Some(0)).lines.is_empty());
+    assert_eq!(
+        unstyled(&menu.screen(small, None).lines.join("\n")),
         "no actions configured"
     );
     assert!(matches!(
@@ -262,7 +286,7 @@ fn compact_and_empty_menus_prefer_below_then_above_the_pr_row() {
     );
     for (anchor, top) in [(0, 1), (5, 6), (25, 26), (26, 27), (28, 25), (29, 26)] {
         for menu in [&mut empty, &mut actions] {
-            let screen = menu.screen(size(), false, Some(anchor));
+            let screen = menu.screen(size(), Some(anchor));
             assert_eq!((screen.y, screen.lines.len()), (top, 3));
             assert!(screen.y > anchor || screen.y + screen.lines.len() <= anchor);
         }
@@ -298,7 +322,7 @@ fn action_failures_show_a_small_log_notice_not_command_output() {
 #[test]
 fn invalid_configuration_is_not_misreported_as_no_actions() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Err("invalid config".to_owned()));
-    let screen = unstyled(&menu.screen(size(), false, None).lines.join("\n"));
+    let screen = unstyled(&menu.screen(size(), None).lines.join("\n"));
     assert!(screen.contains("Cannot load actions: invalid config"));
     assert!(!screen.contains("no actions configured"));
     assert!(matches!(
