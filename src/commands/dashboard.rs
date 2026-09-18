@@ -87,11 +87,12 @@ impl DashboardTerminalSize {
     }
 }
 
-/// Runs a live dashboard with stable PR selection and explicitly invoked foreground actions.
+/// Runs a live dashboard with stable PR selection and its own configured foreground action set.
 pub(super) fn run_interactive_dashboard(
     refresh_seconds: u64,
     loader: DashboardFrameLoader,
     environment: &RuntimeEnvironment,
+    action_set: pr_actions::PrActionSet,
 ) -> Result<CommandResult, CommandError> {
     let interrupts = DashboardInterrupts::enter()?;
     let mut terminal = DashboardTerminalSession::enter()?;
@@ -206,8 +207,9 @@ pub(super) fn run_interactive_dashboard(
                         .as_ref()
                         .and_then(|frame| navigation.selected(frame))
                     {
-                        let entries = pr_actions::load_pr_actions(context.clone(), environment)
-                            .map_err(|error| error.to_string());
+                        let entries =
+                            pr_actions::load_pr_actions(context.clone(), environment, action_set)
+                                .map_err(|error| error.to_string());
                         menu = Some(PrActionMenu::new(context, entries));
                     }
                 } else if key.code == KeyCode::Char('r') && key.kind == KeyEventKind::Press {

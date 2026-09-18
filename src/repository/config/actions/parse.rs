@@ -1,14 +1,15 @@
 use super::*;
 
-/// Parses actions without flattening base definitions into repository rules.
+/// Parses one independent action set without flattening defaults into repository rules.
 pub(in crate::repository::config) fn parse_pr_action_layer(
     file: &str,
     repo: Option<&toml::Value>,
+    action_set: &str,
 ) -> Result<PrActionLayer, RepositoryError> {
     let Some(repo) = repo.and_then(toml::Value::as_table) else {
         return Ok(PrActionLayer::default());
     };
-    let base = parse_actions(file, "repo.actions", repo.get("actions"))?;
+    let base = parse_actions(file, &format!("repo.{action_set}"), repo.get(action_set))?;
     let mut rules = Vec::new();
     if let Some(values) = repo.get("rules").and_then(toml::Value::as_array) {
         for (index, value) in values.iter().enumerate() {
@@ -16,8 +17,8 @@ pub(in crate::repository::config) fn parse_pr_action_layer(
             let table = value.as_table().expect("validated repository rule");
             let actions = parse_actions(
                 file,
-                &format!("repo.rules[{index}].actions"),
-                table.get("actions"),
+                &format!("repo.rules[{index}].{action_set}"),
+                table.get(action_set),
             )?;
             if !actions.is_empty() {
                 rules.push(PrActionRule {

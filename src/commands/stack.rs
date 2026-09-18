@@ -142,7 +142,12 @@ fn run_stack_status_dashboard(
         load_stack_status_dashboard_snapshot(loader_request.clone(), &loader_environment)
             .map_err(|error| error.to_string())
     });
-    run_interactive_dashboard(request.refresh_seconds, loader, environment)
+    run_interactive_dashboard(
+        request.refresh_seconds,
+        loader,
+        environment,
+        pr_actions::PrActionSet::StackStatus,
+    )
 }
 
 fn load_stack_status_dashboard_snapshot(

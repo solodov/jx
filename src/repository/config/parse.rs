@@ -5,7 +5,8 @@ pub(super) struct WorkflowConfigLayer {
     pub(super) path: PathBuf,
     pub(super) layout: Option<LayoutConfigLayer>,
     pub(super) repo: Option<RepoConfig>,
-    pub(super) actions: PrActionLayer,
+    pub(super) review_actions: PrActionLayer,
+    pub(super) stack_status_actions: PrActionLayer,
     pub(super) diff: Option<DiffConfig>,
     pub(super) auth: Option<AuthConfig>,
     pub(super) shell: Option<ShellConfigLayer>,
@@ -43,7 +44,9 @@ pub(super) fn parse_workflow_config_layer(
         .get("repo")
         .map(|value| parse_repo_config(&file, value))
         .transpose()?;
-    let actions = parse_pr_action_layer(&file, table.get("repo"))?;
+    let review_actions = parse_pr_action_layer(&file, table.get("repo"), "review_actions")?;
+    let stack_status_actions =
+        parse_pr_action_layer(&file, table.get("repo"), "stack_status_actions")?;
     let diff = table
         .get("diff")
         .map(|value| parse_diff_config(&file, value))
@@ -65,7 +68,8 @@ pub(super) fn parse_workflow_config_layer(
         path,
         layout,
         repo,
-        actions,
+        review_actions,
+        stack_status_actions,
         diff,
         auth,
         shell,
@@ -516,7 +520,8 @@ fn parse_repo_config(file: &str, value: &toml::Value) -> Result<RepoConfig, Repo
                 | "workspace_shared_paths"
                 | "stack_status"
                 | "review"
-                | "actions"
+                | "review_actions"
+                | "stack_status_actions"
                 | "rules"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
@@ -584,7 +589,8 @@ fn parse_repo_rule(
                 | "workspace_shared_paths"
                 | "stack_status"
                 | "review"
-                | "actions"
+                | "review_actions"
+                | "stack_status_actions"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),

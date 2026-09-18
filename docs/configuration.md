@@ -27,21 +27,31 @@ default_command = ["status"]
 
 ## Manual PR actions
 
-`jx stack status -i` and `jx review -i` share keyboard actions. Up/Down (or
-j/k) moves the chevron; Enter opens the selected PR's menu. Home/End and
-PageUp/PageDown navigate the table, `r` refreshes, and q/Esc exits. Existing
-terminal hyperlinks remain clickable. No actions are installed by default.
+`jx stack status -i` and `jx review -i` use independent action sets with the same
+keyboard controls. Up/Down (or j/k) moves the chevron; Enter opens the selected
+PR's menu. Home/End and PageUp/PageDown navigate the table, `r` refreshes, and
+q/Esc exits. Existing terminal hyperlinks remain clickable. No actions are
+installed by default.
 
-Define actions in global config or the selected repository's `.jx/config.toml`:
+Define `repo.review_actions` for `jx review` and `repo.stack_status_actions` for
+`jx stack status`, in global config or the selected repository's `.jx/config.toml`.
+Neither set inherits from the other. To offer an action in both menus, define it
+in both lists explicitly; identical IDs across the two sets are unrelated:
 
 ```toml
-[[repo.actions]]
+[[repo.review_actions]]
 id = "open"
 title = "Open PR"
 command = ["open", "{pr_url}"] # macOS; use your platform's URL opener
 cwd = "caller"
 
-[[repo.actions]]
+[[repo.stack_status_actions]]
+id = "open"
+title = "Open PR"
+command = ["open", "{pr_url}"]
+cwd = "caller"
+
+[[repo.stack_status_actions]]
 id = "diff"
 title = "Show PR head diff"
 command = ["jj", "diff", "-r", "{local_commit_id}"]
@@ -49,23 +59,24 @@ command = ["jj", "diff", "-r", "{local_commit_id}"]
 [[repo.rules]]
 repo = "example-owner/example-repo"
 
-[[repo.rules.actions]]
+[[repo.rules.review_actions]]
 id = "open"
 title = "Open PR in Firefox"
 command = ["open", "-a", "Firefox", "{pr_url}"]
 cwd = "caller"
 
-[[repo.rules.actions]]
+[[repo.rules.stack_status_actions]]
 id = "diff"
 enabled = false
 ```
 
 Actions match the **selected PR's** `owner/repo`, not the caller's repository.
-They merge in this order: global defaults, matching global rules, repository-local
-defaults, then matching local rules. Global files retain lexical order within
-each phase. The same ID replaces the entire definition in its existing menu
-position; new IDs append. Duplicate IDs within one list are errors. An
-`enabled = false` entry removes an inherited action.
+Each set merges independently in this order: its global defaults, matching global
+rules, repository-local defaults, then matching local rules. Global files retain
+lexical order within each phase. Within a set, the same ID replaces the entire
+definition in its existing menu position; new IDs append. Duplicate IDs within
+one list are errors. An `enabled = false` entry removes an inherited action only
+from that set. An unconfigured set stays empty.
 
 `command` is an argv array, never an implicit shell command. Substitution happens
 once within each argument, without word splitting. Supported placeholders are

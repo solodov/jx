@@ -8,10 +8,11 @@ pub(super) struct AvailablePrAction {
     pub(super) prepared: Result<PreparedPrAction, PrActionUnavailable>,
 }
 
-/// Loads policy for the selected repository, never the caller's unrelated checkout.
+/// Loads only the invoking dashboard's action set for the selected repository.
 pub(super) fn load_pr_actions(
     mut context: PrActionContext,
     environment: &RuntimeEnvironment,
+    action_set: PrActionSet,
 ) -> Result<Vec<AvailablePrAction>, CommandError> {
     let config = if let Some(root) = &context.repository_root {
         WorkflowConfig::discover_for_uninitialized(&environment.with_current_dir(root))?
@@ -31,8 +32,11 @@ pub(super) fn load_pr_actions(
             }
         }
     }
-    Ok(config
-        .actions
+    let actions = match action_set {
+        PrActionSet::Review => &config.review_actions,
+        PrActionSet::StackStatus => &config.stack_status_actions,
+    };
+    Ok(actions
         .for_repository(&context.repository)
         .into_iter()
         .map(|definition| {
@@ -43,6 +47,13 @@ pub(super) fn load_pr_actions(
             }
         })
         .collect())
+}
+
+/// Independent configuration namespace chosen by the invoking command, not by PR ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrActionSet {
+    Review,
+    StackStatus,
 }
 
 /// Runs precisely the prepared argv in the foreground, inheriting the normal terminal streams.

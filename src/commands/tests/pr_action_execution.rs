@@ -75,17 +75,12 @@ fn action_loading_uses_selected_checkout_not_caller_and_external_prs_use_global_
     fs::create_dir_all(&global).unwrap();
     fs::write(
         global.join("actions.toml"),
-        "[[repo.actions]]\nid='open'\ntitle='Global'\ncommand=['open','{pr_url}']\ncwd='caller'\n",
+        "[[repo.review_actions]]\nid='open'\ntitle='Global review'\ncommand=['review','{pr_url}']\ncwd='caller'\n[[repo.stack_status_actions]]\nid='open'\ntitle='Global stack'\ncommand=['stack','{pr_url}']\ncwd='caller'\n",
     )
     .unwrap();
     fs::write(
         caller.join(".jx/config.toml"),
-        "[[repo.actions]]\nid='open'\ntitle='Wrong caller'\ncommand=['wrong']\n",
-    )
-    .unwrap();
-    fs::write(
-        selected.join(".jx/config.toml"),
-        "[[repo.actions]]\nid='open'\ntitle='Selected'\ncommand=['selected']\n",
+        "[[repo.review_actions]]\nid='open'\ntitle='Wrong caller review'\ncommand=['wrong']\n[[repo.stack_status_actions]]\nid='open'\ntitle='Wrong caller stack'\ncommand=['wrong']\n",
     )
     .unwrap();
     let environment = RuntimeEnvironment::new(
@@ -93,15 +88,47 @@ fn action_loading_uses_selected_checkout_not_caller_and_external_prs_use_global_
         [("HOME".to_owned(), temp.path().display().to_string())],
     );
     let mut ctx = context(12, "owner/repo");
-    let external = load_pr_actions(ctx.clone(), &environment).unwrap();
-    let action = external[0].prepared.as_ref().unwrap();
-    assert_eq!(action.title, "Global");
-    assert_eq!(action.cwd, caller);
-    assert!(!action.requires_confirmation());
+    for (set, title, program) in [
+        (PrActionSet::Review, "Global review", "review"),
+        (PrActionSet::StackStatus, "Global stack", "stack"),
+    ] {
+        let external = load_pr_actions(ctx.clone(), &environment, set).unwrap();
+        assert_eq!(external.len(), 1);
+        let action = external[0].prepared.as_ref().unwrap();
+        assert_eq!(action.title, title);
+        assert_eq!(action.command, [program, ctx.pr_url.as_str()]);
+        assert_eq!(action.cwd, caller);
+        assert!(!action.requires_confirmation());
+    }
     ctx.repository_root = Some(selected.clone());
-    let local = load_pr_actions(ctx, &environment).unwrap();
-    let action = local[0].prepared.as_ref().unwrap();
-    assert_eq!(action.title, "Selected");
-    assert_eq!(action.cwd, selected);
-    assert!(action.requires_confirmation());
+    for (local_set, other_set, key, global_title) in [
+        (
+            PrActionSet::Review,
+            PrActionSet::StackStatus,
+            "review_actions",
+            "Global stack",
+        ),
+        (
+            PrActionSet::StackStatus,
+            PrActionSet::Review,
+            "stack_status_actions",
+            "Global review",
+        ),
+    ] {
+        fs::write(
+            selected.join(".jx/config.toml"),
+            format!("[[repo.{key}]]\nid='open'\ntitle='Selected'\ncommand=['selected']\n"),
+        )
+        .unwrap();
+        let local = load_pr_actions(ctx.clone(), &environment, local_set).unwrap();
+        let action = local[0].prepared.as_ref().unwrap();
+        assert_eq!(action.title, "Selected");
+        assert_eq!(action.cwd, selected);
+        assert!(action.requires_confirmation());
+        let other = load_pr_actions(ctx.clone(), &environment, other_set).unwrap();
+        let action = other[0].prepared.as_ref().unwrap();
+        assert_eq!(action.title, global_title);
+        assert_eq!(action.cwd, caller);
+        assert!(!action.requires_confirmation());
+    }
 }

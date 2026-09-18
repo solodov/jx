@@ -26,7 +26,8 @@ pub struct WorkflowConfig {
     pub paths: Vec<PathBuf>,
     pub layout: LayoutConfig,
     pub repo: RepoConfig,
-    pub actions: PrActionsConfig,
+    pub review_actions: PrActionsConfig,
+    pub stack_status_actions: PrActionsConfig,
     pub diff: DiffConfig,
     pub auth: AuthConfig,
     pub shell: ShellConfig,
@@ -128,13 +129,14 @@ impl WorkflowConfig {
     fn apply_layer(&mut self, layer: WorkflowConfigLayer, scope: PrActionConfigScope) {
         // List-valued sections compose across files; scalar sections use the
         // last configured value so later global/project files can refine defaults.
-        self.actions.push_layer(
-            PrActionSource {
-                path: layer.path.clone(),
-                scope,
-            },
-            layer.actions,
-        );
+        let action_source = PrActionSource {
+            path: layer.path.clone(),
+            scope,
+        };
+        self.review_actions
+            .push_layer(action_source.clone(), layer.review_actions);
+        self.stack_status_actions
+            .push_layer(action_source, layer.stack_status_actions);
         self.paths.push(layer.path);
         if let Some(layout) = layer.layout {
             self.layout.apply_layer(layout);

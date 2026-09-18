@@ -79,7 +79,12 @@ fn run_review_dashboard(
         load_review_dashboard_snapshot(loader_request.clone(), &loader_environment)
             .map_err(|error| error.to_string())
     });
-    run_interactive_dashboard(request.refresh_seconds, loader, environment)
+    run_interactive_dashboard(
+        request.refresh_seconds,
+        loader,
+        environment,
+        pr_actions::PrActionSet::Review,
+    )
 }
 
 fn load_review_dashboard_snapshot(

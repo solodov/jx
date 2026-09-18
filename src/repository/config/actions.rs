@@ -44,14 +44,14 @@ pub struct ResolvedPrAction {
     pub source: PrActionSource,
 }
 
-/// Source-preserving action layers, kept separate from flattened repository policy.
+/// Source-preserving layers for one action set, isolated from other dashboards and repo policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrActionsConfig {
     layers: Vec<(PrActionSource, PrActionLayer)>,
 }
 
 impl PrActionsConfig {
-    /// Resolves global defaults, matching global rules, then repository-local definitions and rules.
+    /// Resolves this set's global defaults, matching global rules, then local definitions and rules.
     /// Replacements keep their position; removals disappear and newly introduced IDs append.
     pub fn for_repository(&self, repository: &GitHubRepository) -> Vec<ResolvedPrAction> {
         let mut actions = Vec::new();
