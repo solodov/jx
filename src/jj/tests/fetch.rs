@@ -173,8 +173,9 @@ fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
             .write()
             .await
             .expect("write updated trunk with preserved change id");
-        let trunk_children = collect_trunk_child_changes(tx.repo(), old_trunk.id())
-            .expect("collect trunk child changes");
+        let trunk_children =
+            collect_trunk_child_changes(tx.repo(), old_trunk.id(), &RevsetExpression::none())
+                .expect("collect trunk child changes");
 
         tx.repo_mut()
             .set_rewritten_commit(old_trunk.id().clone(), updated_trunk.id().clone());
@@ -220,8 +221,9 @@ fn fetch_rebase_skips_protected_trunk_child_subtree() {
         let protected_descendant =
             write_child(tx.repo_mut(), &protected_child, "protected descendant").await;
         let updated_trunk = write_child(tx.repo_mut(), &root, "updated main trunk").await;
-        let trunk_children = collect_trunk_child_changes(tx.repo(), old_trunk.id())
-            .expect("collect trunk child changes");
+        let trunk_children =
+            collect_trunk_child_changes(tx.repo(), old_trunk.id(), &RevsetExpression::none())
+                .expect("collect trunk child changes");
         let protected_rebase_roots =
             BTreeMap::from([(protected_child.change_id().clone(), "topic/root".to_owned())]);
 
@@ -277,8 +279,9 @@ fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
         let follow_up = write_child(tx.repo_mut(), &empty_default, "hypothetical follow-up").await;
         let updated_trunk =
             write_child(tx.repo_mut(), &landed_child, "updated hypothetical trunk").await;
-        let trunk_children = collect_trunk_child_changes(tx.repo(), old_trunk.id())
-            .expect("collect trunk child changes");
+        let trunk_children =
+            collect_trunk_child_changes(tx.repo(), old_trunk.id(), &RevsetExpression::none())
+                .expect("collect trunk child changes");
         let protected_rebase_roots = BTreeMap::from([(
             landed_child.change_id().clone(),
             "hypothetical/root".to_owned(),
@@ -329,6 +332,272 @@ fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
             Some(default.id())
         );
     });
+}
+
+#[test]
+fn fetch_rebase_recovers_previously_protected_historical_stacks() {
+    // Verifies: force sync rediscovers protected stacks after trunk advanced, even without a new fetch.
+    let fixture = TestWorkspace::new("fetch-historical-protected-stacks");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
+        let merged_root = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "will land",
+            &[("landed.txt", b"landed")],
+        )
+        .await;
+        let merged_follow_up = write_child_with_files(
+            tx.repo_mut(),
+            &merged_root,
+            "unmerged follow-up",
+            &[("follow-up.txt", b"follow-up")],
+        )
+        .await;
+        let unmerged_root = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "still open",
+            &[("open.txt", b"open")],
+        )
+        .await;
+        let unmerged_follow_up = write_child_with_files(
+            tx.repo_mut(),
+            &unmerged_root,
+            "open follow-up",
+            &[("other-follow-up.txt", b"other follow-up")],
+        )
+        .await;
+        let protected = BTreeMap::from([
+            (merged_root.change_id().clone(), "topic/merged".to_owned()),
+            (unmerged_root.change_id().clone(), "topic/open".to_owned()),
+        ]);
+        let immutable = ResolvedRevsetExpression::commit(old_trunk.id().clone()).ancestors();
+        let children = collect_trunk_child_changes(tx.repo(), old_trunk.id(), &immutable)
+            .expect("collect original roots");
+        let advanced_trunk = write_child_with_files(
+            tx.repo_mut(),
+            &old_trunk,
+            "advanced trunk",
+            &[("upstream.txt", b"upstream")],
+        )
+        .await;
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &children,
+            &advanced_trunk,
+            &immutable,
+            &protected,
+        )
+        .await
+        .expect("protected stacks stay on old trunk");
+        assert_eq!(stats.skipped_trunk_children, 2);
+        assert_eq!(
+            visible_fetch_commit(tx.repo(), &merged_root).id(),
+            merged_root.id()
+        );
+        assert_eq!(
+            visible_fetch_commit(tx.repo(), &unmerged_root).id(),
+            unmerged_root.id()
+        );
+
+        let children = collect_trunk_child_changes(tx.repo(), advanced_trunk.id(), &immutable)
+            .expect("rediscover historical roots");
+        assert_eq!(children.len(), 2);
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &children,
+            &advanced_trunk,
+            &immutable,
+            &protected,
+        )
+        .await
+        .expect("normal sync still protects historical roots");
+        assert_eq!(stats.skipped_trunk_children, 2);
+        assert_eq!(stats.rebased_trunk_children, 0);
+
+        // The squash merge is already fetched, and the old PR root has no bookmark.
+        let landed_trunk = write_child_with_files(
+            tx.repo_mut(),
+            &advanced_trunk,
+            "squash merge",
+            &[("landed.txt", b"landed")],
+        )
+        .await;
+        let children = collect_trunk_child_changes(tx.repo(), landed_trunk.id(), &immutable)
+            .expect("collect roots with unchanged trunk");
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &children,
+            &landed_trunk,
+            &immutable,
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("force sync recovers both stacks");
+
+        assert_eq!(stats.abandoned_empty_commits, 1);
+        assert_eq!(stats.rebased_trunk_children, 1);
+        assert_eq!(stats.rebased_descendants, 2);
+        let visible_merged = tx
+            .repo()
+            .resolve_change_id(merged_root.change_id())
+            .expect("merged change resolves")
+            .and_then(|targets| targets.into_visible())
+            .unwrap_or_default();
+        assert!(visible_merged.is_empty());
+        let merged_follow_up = visible_fetch_commit(tx.repo(), &merged_follow_up);
+        let unmerged_root = visible_fetch_commit(tx.repo(), &unmerged_root);
+        let unmerged_follow_up = visible_fetch_commit(tx.repo(), &unmerged_follow_up);
+        assert_eq!(merged_follow_up.parent_ids(), &[landed_trunk.id().clone()]);
+        assert_eq!(unmerged_root.parent_ids(), &[landed_trunk.id().clone()]);
+        assert_eq!(
+            unmerged_follow_up.parent_ids(),
+            &[unmerged_root.id().clone()]
+        );
+        assert!(!merged_follow_up.has_conflict());
+        assert!(!unmerged_root.has_conflict());
+        assert!(!unmerged_follow_up.has_conflict());
+    });
+}
+
+#[test]
+fn fetch_root_selection_excludes_immutable_unrelated_and_nested_changes() {
+    // Verifies: historical discovery neither moves other histories nor selects a stack twice.
+    let fixture = TestWorkspace::new("fetch-historical-root-selection");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
+        let historical = write_child(tx.repo_mut(), &old_trunk, "historical root").await;
+        let nested = write_child(tx.repo_mut(), &historical, "nested change").await;
+        let immutable_root = write_child(tx.repo_mut(), &old_trunk, "immutable branch").await;
+        let immutable_child =
+            write_child(tx.repo_mut(), &immutable_root, "other branch child").await;
+        let unrelated = write_child(tx.repo_mut(), &root, "unrelated history").await;
+        let unrelated_child = write_child(tx.repo_mut(), &unrelated, "unrelated child").await;
+        let trunk = write_child(tx.repo_mut(), &old_trunk, "current trunk").await;
+        let current = write_child(tx.repo_mut(), &trunk, "current root").await;
+        let merge = tx
+            .repo_mut()
+            .new_commit(vec![nested.id().clone(), trunk.id().clone()], nested.tree())
+            .set_description("merge trunk into historical stack")
+            .write()
+            .await
+            .expect("write merge child");
+        let immutable = ResolvedRevsetExpression::commits(vec![
+            trunk.id().clone(),
+            immutable_root.id().clone(),
+        ])
+        .ancestors();
+
+        let children = collect_trunk_child_changes(tx.repo(), trunk.id(), &immutable)
+            .expect("collect mutable stack roots");
+        assert_eq!(
+            children
+                .iter()
+                .map(|child| child.commit_id.clone())
+                .collect::<HashSet<_>>(),
+            HashSet::from([historical.id().clone(), current.id().clone()]),
+        );
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &children,
+            &trunk,
+            &immutable,
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("only historical stack rebases");
+        assert_eq!(stats.rebased_trunk_children, 1);
+        assert_eq!(stats.rebased_descendants, 2);
+        assert_eq!(stats.skipped_trunk_children, 1);
+        for unchanged in [
+            &immutable_root,
+            &immutable_child,
+            &unrelated,
+            &unrelated_child,
+            &current,
+        ] {
+            assert_eq!(
+                visible_fetch_commit(tx.repo(), unchanged).id(),
+                unchanged.id()
+            );
+        }
+        let historical = visible_fetch_commit(tx.repo(), &historical);
+        let nested = visible_fetch_commit(tx.repo(), &nested);
+        let merge = visible_fetch_commit(tx.repo(), &merge);
+        assert_eq!(historical.parent_ids(), &[trunk.id().clone()]);
+        assert_eq!(nested.parent_ids(), &[historical.id().clone()]);
+        assert_eq!(
+            merge.parent_ids(),
+            &[nested.id().clone(), trunk.id().clone()]
+        );
+    });
+}
+
+#[test]
+fn fetch_rebase_recovers_descendants_when_landed_root_is_already_in_trunk() {
+    // Verifies: historical discovery also handles a previously fetched non-squash merge.
+    let fixture = TestWorkspace::new("fetch-historical-landed-root");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
+        let landed = write_child(tx.repo_mut(), &old_trunk, "landed root").await;
+        let follow_up = write_child_with_files(
+            tx.repo_mut(),
+            &landed,
+            "unmerged follow-up",
+            &[("follow-up.txt", b"follow-up")],
+        )
+        .await;
+        let trunk = write_child(tx.repo_mut(), &landed, "current trunk").await;
+        let immutable = ResolvedRevsetExpression::commit(trunk.id().clone()).ancestors();
+        let children = collect_trunk_child_changes(tx.repo(), trunk.id(), &immutable)
+            .expect("collect historical follow-up");
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &children,
+            &trunk,
+            &immutable,
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("follow-up rebases");
+        assert_eq!(stats.rebased_trunk_children, 1);
+        assert_eq!(visible_fetch_commit(tx.repo(), &landed).id(), landed.id());
+        assert_eq!(
+            visible_fetch_commit(tx.repo(), &follow_up).parent_ids(),
+            &[trunk.id().clone()]
+        );
+    });
+}
+
+/// Resolves a test change after fetch has rewritten its commit.
+fn visible_fetch_commit(repo: &dyn jj_lib::repo::Repo, original: &Commit) -> Commit {
+    let visible = repo
+        .resolve_change_id(original.change_id())
+        .expect("change resolves")
+        .expect("change remains visible")
+        .into_visible()
+        .expect("visible commits");
+    assert_eq!(visible.len(), 1);
+    load_commit_from_repo(repo, &visible[0]).expect("load visible commit")
 }
 
 #[test]

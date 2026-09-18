@@ -2,7 +2,7 @@ use super::*;
 use std::time::{Duration, Instant};
 
 impl JjWorkspace {
-    /// Fetches tracked `origin` refs plus trunk, then rebases mutable pre-fetch trunk children.
+    /// Fetches tracked `origin` refs plus trunk, then rebases mutable stacks off trunk history.
     /// Commits whose changes are already present upstream are abandoned so remaining local work
     /// sits directly on the updated trunk.
     pub fn fetch_origin(&mut self) -> Result<FetchOutcome, JjError> {
@@ -73,6 +73,7 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
+        let immutable_expression = self.fetch_immutable_expression()?;
         let trunk_children_before = measure_fetch_step(
             trace,
             "collect_trunk_children",
@@ -80,7 +81,13 @@ impl JjWorkspace {
                 fetch_trace_attr("branch", &fetch_trunk.branch),
                 fetch_trace_attr("trunk_commit", fetch_trunk.commit.id().hex()),
             ],
-            || collect_trunk_child_changes(self.repo.as_ref(), fetch_trunk.commit.id()),
+            || {
+                collect_trunk_child_changes(
+                    self.repo.as_ref(),
+                    fetch_trunk.commit.id(),
+                    &immutable_expression,
+                )
+            },
             |result| match result {
                 Ok(children) => vec![fetch_trace_attr("child_count", children.len())],
                 Err(_) => Vec::new(),
@@ -109,7 +116,6 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
-        let immutable_expression = self.fetch_immutable_expression()?;
 
         let mut tx = self.repo.start_transaction();
         let import_stats = fetch_origin_refs(
@@ -497,11 +503,35 @@ pub(super) struct TrunkChildChange {
     pub(super) change_id: ChangeId,
 }
 
+/// Snapshots mutable stack roots off any trunk ancestor, including previously protected stacks.
 pub(super) fn collect_trunk_child_changes(
     repo: &dyn jj_lib::repo::Repo,
     trunk_id: &CommitId,
+    immutable_expression: &Arc<ResolvedRevsetExpression>,
 ) -> Result<Vec<TrunkChildChange>, JjError> {
-    collect_child_ids(repo, trunk_id)?
+    let trunk_history = ResolvedRevsetExpression::commit(trunk_id.clone()).ancestors();
+    // Sharing jj's synthetic root alone does not make an unrelated history a trunk stack.
+    let bases = if trunk_id == repo.store().root_commit_id() {
+        trunk_history.clone()
+    } else {
+        trunk_history.minus(&ResolvedRevsetExpression::root())
+    };
+    let roots = bases
+        .children()
+        .minus(&trunk_history)
+        .roots()
+        .minus(immutable_expression)
+        .evaluate(repo)
+        .map_err(|error| JjError::Backend {
+            message: error.into_backend_error().to_string(),
+        })?;
+    let commit_ids =
+        pollster::block_on(roots.stream().try_collect::<Vec<_>>()).map_err(|error| {
+            JjError::Backend {
+                message: error.into_backend_error().to_string(),
+            }
+        })?;
+    commit_ids
         .into_iter()
         .map(|commit_id| {
             let commit = load_commit_from_repo(repo, &commit_id)?;
