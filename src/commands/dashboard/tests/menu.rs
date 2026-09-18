@@ -51,6 +51,10 @@ fn local_overrides_require_explicit_confirmation_of_frozen_invocation() {
         MenuIntent::None
     ));
     assert!(menu.confirming);
+    let preview = menu.screen(size(), false, None).lines.join("\n");
+    assert!(preview.contains("/source/config.toml"));
+    assert!(preview.contains("cwd: /caller"));
+    assert!(preview.contains("argv[0]: \"open\""));
     assert!(matches!(
         menu.handle_key(key(KeyCode::Enter), false, size()),
         MenuIntent::None
@@ -129,27 +133,94 @@ fn menu_is_bounded_sanitized_and_preview_is_pageable() {
         &ctx,
         Ok(vec![entry(true, &["program", &long, "", "literal\nvalue"])]),
     );
+    menu.handle_key(key(KeyCode::Tab), false, size());
     for (width, height) in [(100, 30), (30, 10), (10, 5), (0, 0)] {
-        let screen = menu.screen(DashboardTerminalSize::new(width, height), false);
+        let screen = menu.screen(DashboardTerminalSize::new(width, height), false, None);
         assert!(screen.lines.len() <= usize::from(height));
         for line in screen.lines {
-            let plain = line
-                .split_once('m')
-                .unwrap()
-                .1
-                .strip_suffix("\x1b[0m")
-                .unwrap();
+            let plain = unstyled(&line);
             assert!(!plain.contains('\x1b'));
             assert!(plain.width() <= usize::from(width));
         }
     }
     assert!(plain_text(&ctx.title).contains("\\u{1b}"));
     menu.handle_key(key(KeyCode::PageDown), false, size());
-    let screen = menu.screen(size(), false);
+    let screen = menu.screen(size(), false, None);
     assert!(menu.detail_offset > 0);
     assert!(screen.lines.iter().any(|line| line.contains("漢字")));
     assert!(menu.details().join("\n").contains("argv[2]: \"\""));
     assert!(menu.details().join("\n").contains("/source/config.toml"));
+}
+
+fn unstyled(text: &str) -> String {
+    text.replace(BODY, "")
+        .replace(SELECTED, "")
+        .replace("\x1b[0m", "")
+}
+
+#[test]
+fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
+    let entries = ["put", "send", "look", "definition"]
+        .map(|title| {
+            let mut action = entry(false, &["open"]);
+            action.definition.action.title = title.to_owned();
+            action
+        })
+        .into_iter()
+        .collect();
+    let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(entries));
+    let screen = menu.screen(size(), false, Some(5));
+    assert_eq!((screen.x, screen.y), (2, 5));
+    assert_eq!(unstyled(&screen.lines.join("\n")), "┌────────────┐\n│ put        │\n│ send       │\n│ look       │\n│ definition │\n│ cancel     │\n└────────────┘");
+    assert_eq!(
+        screen.lines[1],
+        format!("{BODY}│{SELECTED} put        {BODY}│\x1b[0m")
+    );
+    assert_eq!(BODY, "\x1b[0;38;2;31;91;42;48;2;228;246;211m");
+    assert_eq!(SELECTED, "\x1b[0;1;38;2;228;246;211;48;2;31;91;42m");
+    menu.handle_key(key(KeyCode::Char('?')), false, size());
+    assert!(menu
+        .screen(size(), false, None)
+        .lines
+        .join("\n")
+        .contains("argv[0]"));
+    menu.handle_key(key(KeyCode::Esc), false, size());
+    assert!(!menu.showing_details);
+    for _ in 0..4 {
+        menu.handle_key(key(KeyCode::Down), false, size());
+    }
+    assert!(matches!(
+        menu.handle_key(key(KeyCode::Enter), false, size()),
+        MenuIntent::Close
+    ));
+}
+
+#[test]
+fn long_action_lists_scroll_and_stay_inside_the_terminal() {
+    let entries = (0..30)
+        .map(|index| {
+            let mut action = entry(false, &["open"]);
+            action.definition.action.title = format!("action {index}");
+            action
+        })
+        .collect();
+    let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(entries));
+    let size = DashboardTerminalSize::new(24, 10);
+    for _ in 0..29 {
+        menu.handle_key(key(KeyCode::Down), false, size);
+    }
+    let screen = menu.screen(size, true, Some(9));
+    assert_eq!(screen.lines.len(), 10);
+    assert_eq!(screen.y, 0);
+    assert!(screen
+        .lines
+        .iter()
+        .any(|line| line.contains("action 29") && line.contains(SELECTED)));
+    assert!(screen
+        .lines
+        .iter()
+        .all(|line| unstyled(line).width() + screen.x <= size.width));
+    assert!(screen.lines.iter().any(|line| line.contains("refreshing")));
 }
 
 #[test]
@@ -157,7 +228,7 @@ fn empty_and_invalid_configuration_are_explanatory_not_executable() {
     for result in [Ok(Vec::new()), Err("invalid config".to_owned())] {
         let mut menu = PrActionMenu::new(&context(12, "owner/repo"), result);
         assert!(menu
-            .screen(size(), false)
+            .screen(size(), false, None)
             .lines
             .iter()
             .any(|line| line.contains("Configure") || line.contains("Cannot load")));

@@ -10,6 +10,7 @@ pub(super) struct PrActionMenu {
     error: Option<String>,
     selected: usize,
     confirming: bool,
+    showing_details: bool,
     detail_offset: usize,
 }
 
@@ -35,6 +36,7 @@ impl PrActionMenu {
             error,
             selected: 0,
             confirming: false,
+            showing_details: false,
             detail_offset: 0,
         }
     }
@@ -50,8 +52,10 @@ impl PrActionMenu {
             key.code,
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
         ) {
-            if self.confirming {
+            if self.confirming || self.showing_details {
                 self.confirming = false;
+                self.showing_details = false;
+                self.detail_offset = 0;
                 return MenuIntent::None;
             }
             return MenuIntent::Close;
@@ -60,32 +64,48 @@ impl PrActionMenu {
             return MenuIntent::None;
         }
         match key.code {
-            KeyCode::PageDown => self.detail_offset = self.detail_offset.saturating_add(5),
-            KeyCode::PageUp => self.detail_offset = self.detail_offset.saturating_sub(5),
+            KeyCode::Tab | KeyCode::Char('?')
+                if !self.confirming
+                    && key.kind == KeyEventKind::Press
+                    && self.selected < self.entries.len() =>
+            {
+                self.showing_details = !self.showing_details;
+                self.detail_offset = 0;
+            }
+            KeyCode::PageDown
+                if self.showing_details || self.confirming || self.entries.is_empty() =>
+            {
+                self.detail_offset = self.detail_offset.saturating_add(5);
+            }
+            KeyCode::PageUp
+                if self.showing_details || self.confirming || self.entries.is_empty() =>
+            {
+                self.detail_offset = self.detail_offset.saturating_sub(5);
+            }
             KeyCode::Up | KeyCode::Char('k') if !self.confirming => {
                 self.selected = self.selected.saturating_sub(1);
                 self.detail_offset = 0;
             }
             KeyCode::Down | KeyCode::Char('j') if !self.confirming => {
-                self.selected = self
-                    .selected
-                    .saturating_add(1)
-                    .min(self.entries.len().saturating_sub(1));
+                self.selected = self.selected.saturating_add(1).min(self.entries.len());
+                self.showing_details &= self.selected < self.entries.len();
                 self.detail_offset = 0;
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press && !self.confirming => {
                 let Some(entry) = self.entries.get(self.selected) else {
                     return MenuIntent::Close;
                 };
-                if !busy {
-                    if let Ok(action) = &entry.prepared {
+                match &entry.prepared {
+                    Ok(action) if !busy => {
                         if action.requires_confirmation() {
                             self.confirming = true;
+                            self.showing_details = false;
                             self.detail_offset = 0;
                         } else {
                             return MenuIntent::Run(action.clone());
                         }
                     }
+                    _ => self.showing_details = true,
                 }
             }
             KeyCode::Char('y' | 'Y')
@@ -103,8 +123,13 @@ impl PrActionMenu {
         MenuIntent::None
     }
 
-    /// Renders a bounded Plan 9-colored panel. Long previews page without hiding argv boundaries.
-    pub(super) fn screen(&mut self, size: DashboardTerminalSize, busy: bool) -> MenuScreen {
+    /// Shows only action names by default; previews and confirmation use a separate detail view.
+    pub(super) fn screen(
+        &mut self,
+        size: DashboardTerminalSize,
+        busy: bool,
+        anchor_row: Option<usize>,
+    ) -> MenuScreen {
         if size.width == 0 || size.height == 0 {
             return MenuScreen {
                 x: 0,
@@ -112,103 +137,139 @@ impl PrActionMenu {
                 lines: Vec::new(),
             };
         }
-        let width = size.width.min(92);
-        let height = size.height.min(28);
-        if width < 24 || height < 10 {
+        if size.width < 24 || size.height < 10 {
             return MenuScreen {
                 x: 0,
                 y: 0,
                 lines: vec![panel_line(
                     "Enlarge terminal; Esc closes actions",
-                    width,
-                    HEADER,
+                    size.width,
+                    BODY,
                 )],
             };
         }
-        let inner = width - 4;
-        let mut body = vec![
-            (format!("PR actions — {}", self.target), HEADER),
-            (plain_text(&self.title), BODY),
-        ];
-        if self.confirming {
-            body.push((
-                "Repository-local command: run this exact invocation?".to_owned(),
-                HEADER,
-            ));
-        } else if !self.entries.is_empty() {
-            let count = self
-                .entries
-                .len()
-                .min(6)
-                .min(height.saturating_sub(9).max(1));
-            let start = self.selected.saturating_add(1).saturating_sub(count);
-            for (index, entry) in self.entries.iter().enumerate().skip(start).take(count) {
-                let selected = index == self.selected;
-                body.push((
-                    format!(
-                        "{} {}{}",
-                        if selected { "❯" } else { " " },
-                        plain_text(&entry.definition.action.title),
-                        if entry.prepared.is_err() {
-                            " (unavailable)"
-                        } else {
-                            ""
-                        }
-                    ),
-                    if selected { SELECTED } else { BODY },
-                ));
-            }
+        if self.confirming || self.showing_details || self.entries.is_empty() {
+            self.detail_screen(size, busy)
+        } else {
+            self.list_screen(size, busy, anchor_row)
         }
-        body.push((String::new(), BODY));
-        let detail_height = height.saturating_sub(body.len() + 4).max(1);
-        let details = self
-            .details()
-            .into_iter()
-            .flat_map(|line| wrap_plain(&line, inner))
+    }
+
+    fn list_screen(
+        &self,
+        size: DashboardTerminalSize,
+        busy: bool,
+        anchor_row: Option<usize>,
+    ) -> MenuScreen {
+        let mut labels = self
+            .entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}{}",
+                    plain_text(&entry.definition.action.title),
+                    if entry.prepared.is_err() {
+                        " (unavailable)"
+                    } else {
+                        ""
+                    }
+                )
+            })
             .collect::<Vec<_>>();
+        labels.push("cancel".to_owned());
+        let notice = busy.then_some("refreshing…");
+        let width = labels
+            .iter()
+            .map(|label| label.width())
+            .chain(notice.map(str::width))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(4)
+            .min(size.width);
+        let count = labels.len().min(size.height - 2 - usize::from(busy));
+        let start = self.selected.saturating_add(1).saturating_sub(count);
+        let mut rows = labels
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(count)
+            .map(|(index, label)| {
+                (
+                    label.as_str(),
+                    if index == self.selected {
+                        SELECTED
+                    } else {
+                        BODY
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(notice) = notice {
+            rows.push((notice, BODY));
+        }
+        let lines = bordered_lines(&rows, width);
+        MenuScreen {
+            x: 2.min(size.width - width),
+            y: anchor_row
+                .unwrap_or((size.height - lines.len()) / 2)
+                .min(size.height - lines.len()),
+            lines,
+        }
+    }
+
+    fn detail_screen(&mut self, size: DashboardTerminalSize, busy: bool) -> MenuScreen {
+        let mut details = vec![self.target.clone(), plain_text(&self.title), String::new()];
+        if let Some(entry) = self.entries.get(self.selected) {
+            details.push(plain_text(&entry.definition.action.title));
+        }
+        if self.confirming {
+            details.push("Repository-local command: run this exact invocation?".to_owned());
+        }
+        details.extend(self.details());
+        if busy {
+            details.push("Refresh running; execution waits.".to_owned());
+        }
+        let footer = if self.confirming {
+            "y: run   n/Esc: back"
+        } else if self.entries.is_empty() {
+            "Enter/Esc: close"
+        } else {
+            "Enter: run   Tab/Esc: back"
+        };
+        let width = details
+            .iter()
+            .map(|line| line.width())
+            .chain([footer.width()])
+            .max()
+            .unwrap_or(0)
+            .saturating_add(4)
+            .min(size.width)
+            .min(92);
+        let details = details
+            .iter()
+            .flat_map(|line| wrap_plain(line, width - 4))
+            .collect::<Vec<_>>();
+        let capacity = size.height.min(28) - 4;
         self.detail_offset = self
             .detail_offset
-            .min(details.len().saturating_sub(detail_height));
-        body.extend(
-            details
-                .iter()
-                .skip(self.detail_offset)
-                .take(detail_height)
-                .cloned()
-                .map(|line| (line, BODY)),
+            .min(details.len().saturating_sub(capacity));
+        let mut rows = details
+            .iter()
+            .skip(self.detail_offset)
+            .take(capacity)
+            .map(|line| (line.as_str(), BODY))
+            .collect::<Vec<_>>();
+        let pagination = format!(
+            "PgUp/PgDn  {}–{}/{}",
+            self.detail_offset + 1,
+            (self.detail_offset + capacity).min(details.len()),
+            details.len()
         );
-        while body.len() < height - 4 {
-            body.push((String::new(), BODY));
+        if details.len() > capacity {
+            rows.push((&pagination, BODY));
         }
-        body.push((
-            format!(
-                "PgUp/PgDn details  {}–{}/{}{}",
-                self.detail_offset + 1,
-                (self.detail_offset + detail_height).min(details.len()),
-                details.len(),
-                if busy {
-                    "  • refreshing; execution waits"
-                } else {
-                    ""
-                }
-            ),
-            HEADER,
-        ));
-        body.push((
-            (if self.confirming {
-                "y: run   n/Esc: back"
-            } else {
-                "↑↓: choose   Enter: run   Esc: close"
-            })
-            .to_owned(),
-            HEADER,
-        ));
-        let border = format!("+{}+", "-".repeat(width - 2));
-        let mut lines = vec![panel_line(&border, width, HEADER)];
-        lines.extend(body.into_iter().map(|(text, style)| {
-            panel_line(&format!("| {} |", pad_plain(&text, inner)), width, style)
-        }));
-        lines.push(panel_line(&border, width, HEADER));
+        rows.push((footer, BODY));
+        let lines = bordered_lines(&rows, width);
         MenuScreen {
             x: (size.width - width) / 2,
             y: (size.height - lines.len()) / 2,
@@ -260,9 +321,29 @@ pub(super) struct MenuScreen {
     pub(super) lines: Vec<String>,
 }
 
-const BODY: &str = "\x1b[0;38;2;0;0;0;48;2;255;255;234m";
-const HEADER: &str = "\x1b[0;38;2;0;85;85;48;2;234;255;255m";
-const SELECTED: &str = "\x1b[0;38;2;0;0;0;48;2;158;238;238m";
+// Match Zellij's Acme right-click menu: pale green, dark green, and reversed bold selection.
+const BODY: &str = "\x1b[0;38;2;31;91;42;48;2;228;246;211m";
+const SELECTED: &str = "\x1b[0;1;38;2;228;246;211;48;2;31;91;42m";
+
+fn bordered_lines(rows: &[(&str, &str)], width: usize) -> Vec<String> {
+    let mut lines = vec![panel_line(
+        &format!("┌{}┐", "─".repeat(width - 2)),
+        width,
+        BODY,
+    )];
+    lines.extend(rows.iter().map(|(label, style)| {
+        format!(
+            "{BODY}│{style} {} {BODY}│\x1b[0m",
+            pad_plain(label, width - 4)
+        )
+    }));
+    lines.push(panel_line(
+        &format!("└{}┘", "─".repeat(width - 2)),
+        width,
+        BODY,
+    ));
+    lines
+}
 
 fn panel_line(text: &str, width: usize, style: &str) -> String {
     format!("{style}{}\x1b[0m", pad_plain(text, width))

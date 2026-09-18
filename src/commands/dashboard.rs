@@ -390,7 +390,7 @@ fn render_dashboard_frame(
         .count();
     let output = dashboard_frame_text(state);
     let (output, marker) = navigation.viewport(&output, prefix_lines, terminal_size.height);
-    let menu = menu.map(|menu| menu.screen(terminal_size, busy));
+    let menu = menu.map(|menu| menu.screen(terminal_size, busy, marker));
     write_dashboard_screen(&output, terminal_size, marker, menu)
 }
 

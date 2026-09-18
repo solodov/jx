@@ -82,9 +82,11 @@ the exact GitHub head already present in the selected jj repository; no fetch,
 checkout, or working-copy fallback occurs. A local change ID is unavailable if it
 now resolves to a rewritten or divergent commit rather than that exact head.
 
-The menu previews argv, working directory, and source file. PageUp/PageDown
-scrolls long previews. Every repository-local definition, including overrides of
-global IDs, requires a separate `y` confirmation; Esc returns without executing.
+The compact menu lists actions and a cancel item. Tab or `?` shows the selected
+action's argv, working directory, and source file; PageUp/PageDown scrolls long
+previews. Every repository-local definition, including overrides of global IDs,
+shows those details and requires a separate `y` confirmation before execution.
+Esc returns to the action list without executing.
 Menus retain their target while refresh results wait in the background. Commands
 wait for any in-flight refresh to finish, then run one at a time with normal
 terminal input/output. After success, failure, or Ctrl-C cancellation, Enter/Esc
