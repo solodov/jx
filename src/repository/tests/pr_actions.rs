@@ -239,6 +239,55 @@ fn an_unconfigured_action_set_stays_empty() {
 }
 
 #[test]
+fn review_actions_can_request_local_refresh_and_overrides_replace_the_policy() {
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let repo = GitHubRepository::parse("https://github.com/owner/repo").unwrap();
+    workspace.write_file(".config/jx/actions.toml", "[[repo.review_actions]]\nid='dismiss'\ntitle='Dismiss'\ncommand=['jx', 'review', '--cached', 'dismiss', '{pr_url}']\non_success='refresh-local'\n");
+    let config = WorkflowConfig::discover(&environment).unwrap();
+    assert_eq!(
+        config.review_actions.for_repository(&repo)[0]
+            .action
+            .on_success,
+        PrActionOnSuccess::RefreshLocal
+    );
+
+    workspace.write_file(".jx/config.toml", "[[repo.rules]]\nrepo='owner/*'\n[[repo.rules.review_actions]]\nid='dismiss'\ntitle='Dismiss live'\ncommand=['jx', 'review', 'dismiss', '{pr_url}']\n");
+    let config = WorkflowConfig::discover(&environment).unwrap();
+    assert_eq!(
+        config.review_actions.for_repository(&repo)[0]
+            .action
+            .on_success,
+        PrActionOnSuccess::Refresh
+    );
+}
+
+#[test]
+fn local_refresh_is_rejected_for_stack_actions_in_defaults_and_rules() {
+    let workspace = TestWorkspace::new();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    for (prefix, key) in [
+        ("", "repo.stack_status_actions"),
+        (
+            "[[repo.rules]]\nrepo='owner/*'\n",
+            "repo.rules.stack_status_actions",
+        ),
+    ] {
+        workspace.write_file(
+            ".jx/config.toml",
+            &format!(
+                "{prefix}[[{key}]]\nid='x'\ntitle='X'\ncommand=['x']\non_success='refresh-local'\n"
+            ),
+        );
+        let error = WorkflowConfig::discover(&environment)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("on_success"));
+        assert!(error.contains("review actions"));
+    }
+}
+
+#[test]
 fn action_config_rejects_invalid_definitions_and_duplicate_ids_in_each_list() {
     let workspace = TestWorkspace::new();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
@@ -252,6 +301,9 @@ fn action_config_rejects_invalid_definitions_and_duplicate_ids_in_each_list() {
             "id = 'x'\ntitle = 'X'\ncommand = ['echo', '{title']",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo', 'title}']",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo']\ncwd = 'other'",
+            "id = 'x'\ntitle = 'X'\ncommand = ['echo']\non_success = 'other'",
+            "id = 'x'\ntitle = 'X'\ncommand = ['echo']\non_success = true",
+            "id = 'x'\nenabled = false\non_success = 'refresh'",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo']\nenabled = 'no'",
             "id = 'x'\nenabled = false\ncommand = ['echo']",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo']\nextra = true",

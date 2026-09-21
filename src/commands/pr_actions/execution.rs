@@ -165,6 +165,7 @@ impl ActionLog {
             "command": action.command,
             "cwd": action.cwd.display().to_string(),
             "source": action.source.path.display().to_string(),
+            "on_success": action.on_success.as_str(),
         });
         Ok(Self {
             file,

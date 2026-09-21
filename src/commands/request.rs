@@ -824,10 +824,10 @@ fn review_request(matches: &ArgMatches) -> Result<ReviewRequest, clap::Error> {
             "jx review --cached cannot be used with --interactive",
         ));
     }
-    if cached && action != ReviewAction::Show {
+    if cached && !matches!(action, ReviewAction::Show | ReviewAction::Dismiss { .. }) {
         return Err(clap::Error::raw(
             ErrorKind::ArgumentConflict,
-            "jx review --cached cannot be used with review subcommands",
+            "jx review --cached supports only the inbox and dismiss subcommand",
         ));
     }
     Ok(ReviewRequest {
@@ -1516,6 +1516,7 @@ pub(super) fn cli() -> ClapCommand {
                 .subcommand(
                     ClapCommand::new("dismiss")
                         .about("Hide a reviewed pull request until it needs your attention again")
+                        .long_about("Hide a pull request locally until it needs your attention again. With `jx review --cached dismiss PR`, use the stored inbox and PR snapshot without contacting GitHub; a cached inbox and matching PR snapshot must already exist.")
                         .arg(review_dismiss_pull_request_arg())
                         .arg(review_dismiss_until_arg()),
                 )
@@ -1984,7 +1985,7 @@ fn review_cached_arg() -> Arg {
     Arg::new("cached")
         .long("cached")
         .action(ArgAction::SetTrue)
-        .help("Render the latest locally stored review inbox without contacting GitHub")
+        .help("Use the locally stored review inbox for display or dismissal without contacting GitHub")
 }
 
 fn stack_status_repo_filter_arg() -> Arg {
@@ -2001,7 +2002,7 @@ fn dashboard_interactive_arg() -> Arg {
         .long("interactive")
         .action(ArgAction::SetTrue)
         .help("Continuously refresh with keyboard PR actions (default: every 5 minutes)")
-        .long_help("Continuously refresh this dashboard. Up/Down (or j/k) selects a PR; Enter opens its configured action menu. Home/End and PageUp/PageDown navigate; r refreshes; q/Esc exits. Existing terminal hyperlinks remain clickable. Configure review actions with [[repo.review_actions]] and stack status actions with [[repo.stack_status_actions]], also supported under repo.rules. These sets are independent; actions are never implicitly shared. Tab or ? in the menu previews argv, working directory, and source; repository-local actions show those details and require an explicit y confirmation. Commands run quietly with stdin closed and stdout/stderr logged to ~/.local/state/jx/jx-actions.log (XDG_STATE_HOME and JX_ACTION_LOG are supported). Success refreshes silently; failures show a dismissible popup pointing to the log. Esc or Ctrl-C cancels a running action. No actions run automatically.")
+        .long_help("Continuously refresh this dashboard. Up/Down (or j/k) selects a PR; Enter opens its configured action menu. Home/End and PageUp/PageDown navigate; r refreshes; q/Esc exits. Existing terminal hyperlinks remain clickable. Configure review actions with [[repo.review_actions]] and stack status actions with [[repo.stack_status_actions]], also supported under repo.rules. These sets are independent; actions are never implicitly shared. Tab or ? in the menu previews argv, working directory, and source; repository-local actions show those details and require an explicit y confirmation. Commands run quietly with stdin closed and stdout/stderr logged to ~/.local/state/jx/jx-actions.log (XDG_STATE_HOME and JX_ACTION_LOG are supported). Success refreshes silently; review actions with on_success = \"refresh-local\" reload only local inbox state without changing the live refresh schedule. Failures retain the current rows and show a dismissible popup pointing to the log. Esc or Ctrl-C cancels a running action. No actions run automatically.")
 }
 
 fn dashboard_refresh_seconds_arg() -> Arg {

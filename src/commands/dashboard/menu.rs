@@ -304,6 +304,10 @@ impl PrActionMenu {
             plain_text(&entry.definition.source.path.display().to_string()),
             entry.definition.source.scope
         )];
+        lines.push(format!(
+            "On success: {}",
+            entry.definition.action.on_success.as_str()
+        ));
         let command = match &entry.prepared {
             Ok(action) => {
                 lines.push(format!(

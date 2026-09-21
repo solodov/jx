@@ -138,7 +138,10 @@ fn run_stack_status_dashboard(
 ) -> Result<CommandResult, CommandError> {
     let loader_environment = environment.clone();
     let loader_request = request.clone();
-    let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
+    let loader: DashboardFrameLoader = std::sync::Arc::new(move |kind| {
+        if kind == DashboardRefreshKind::Local {
+            return Err("local refresh is only supported by the review dashboard".to_owned());
+        }
         load_stack_status_dashboard_snapshot(loader_request.clone(), &loader_environment)
             .map_err(|error| error.to_string())
     });

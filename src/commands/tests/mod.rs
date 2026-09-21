@@ -431,8 +431,10 @@ struct FakeServices {
     pull_requests_with_history: BTreeMap<u64, PullRequestWithHistory>,
     pull_request_status_calls: std::cell::RefCell<Vec<Vec<u64>>>,
     review_requests: Vec<PullRequestReviewRequest>,
+    review_request_calls: std::cell::Cell<usize>,
     review_requests_saml_enforced: bool,
     github_user_display_names: BTreeMap<String, String>,
+    github_user_display_name_calls: std::cell::Cell<usize>,
     opened_urls: std::cell::RefCell<Vec<String>>,
     global_fetch_ready_roots: Option<BTreeSet<PathBuf>>,
     origin_push_access_roots: Option<BTreeSet<PathBuf>>,
@@ -641,8 +643,10 @@ impl Default for FakeServices {
             pull_requests_with_history: BTreeMap::new(),
             pull_request_status_calls: std::cell::RefCell::new(Vec::new()),
             review_requests: Vec::new(),
+            review_request_calls: std::cell::Cell::new(0),
             review_requests_saml_enforced: false,
             github_user_display_names: BTreeMap::new(),
+            github_user_display_name_calls: std::cell::Cell::new(0),
             opened_urls: std::cell::RefCell::new(Vec::new()),
             global_fetch_ready_roots: None,
             origin_push_access_roots: None,
@@ -1395,6 +1399,8 @@ impl CommandServices for FakeServices {
         &self,
         _token_source: &TokenSource,
     ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        self.review_request_calls
+            .set(self.review_request_calls.get() + 1);
         if self.review_requests_saml_enforced {
             return Err(WorkflowError::GitHub(GitHubError::GraphQl {
                 operation: "search review requests",
@@ -1415,6 +1421,8 @@ impl CommandServices for FakeServices {
         _token_source: &TokenSource,
         repositories: &[GitHubRepository],
     ) -> Result<PullRequestReviewRequests, WorkflowError> {
+        self.review_request_calls
+            .set(self.review_request_calls.get() + 1);
         let repositories = repositories.iter().collect::<BTreeSet<_>>();
         Ok(PullRequestReviewRequests {
             viewer: AuthenticatedUser {
@@ -1434,6 +1442,8 @@ impl CommandServices for FakeServices {
         _token_source: &TokenSource,
         logins: &[String],
     ) -> BTreeMap<String, String> {
+        self.github_user_display_name_calls
+            .set(self.github_user_display_name_calls.get() + 1);
         logins
             .iter()
             .filter_map(|login| {

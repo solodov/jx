@@ -96,10 +96,12 @@ fn prepared_actions_distinguish_local_revisions_and_retain_override_provenance()
         context.repository_root.as_ref().unwrap().to_str().unwrap()
     );
     assert!(!prepared.requires_confirmation());
+    definition.action.on_success = PrActionOnSuccess::RefreshLocal;
     definition.source.scope = PrActionConfigScope::Repository;
     definition.source.path = std::env::temp_dir().join("checkout/.jx/config.toml");
     let replaced = prepare_pr_action(&definition, &context, &std::env::temp_dir()).unwrap();
     assert_eq!(replaced.source, definition.source);
+    assert_eq!(replaced.on_success, PrActionOnSuccess::RefreshLocal);
     assert!(replaced.requires_confirmation());
 }
 
@@ -163,6 +165,7 @@ fn action(command: &[&str]) -> ResolvedPrAction {
             title: "Inspect".to_owned(),
             command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             cwd: PrActionWorkingDirectory::Repository,
+            on_success: PrActionOnSuccess::default(),
         },
         source: PrActionSource {
             path: PathBuf::from("/config/jx/actions.toml"),

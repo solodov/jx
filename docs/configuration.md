@@ -107,10 +107,33 @@ The log includes command argv, PR identity, working directory, configuration
 source, and completion status alongside raw output. If the log cannot be opened,
 the action does not run.
 
-Success refreshes the dashboard quietly, with no completion prompt. Failures show
-a small popup pointing to the log; Enter/Esc dismisses it. Esc or Ctrl-C cancels a
-running action. These manual actions are separate from lifecycle hooks and never
-execute during loading or refreshing.
+By default, successful actions quietly trigger a live refresh (`on_success = "refresh"`).
+Review actions can instead set `on_success = "refresh-local"` to rebuild the inbox
+from local storage without contacting GitHub or postponing the next scheduled
+live refresh. This setting is not supported for stack status actions. Manual `r`
+and scheduled refreshes still fetch live state.
+
+For a local-only dismissal, use both cached command execution and local refresh:
+
+```toml
+[[repo.review_actions]]
+id = "dismiss"
+title = "Dismiss"
+command = ["jx", "review", "--cached", "dismiss", "{pr_url}"]
+cwd = "caller"
+on_success = "refresh-local"
+```
+
+The dashboard's live load supplies the cached inbox and PR snapshots. Cached
+dismissal fails if the target snapshot is unavailable; it never falls back to
+GitHub. After success, the local reload applies the usual dismissal rules and
+updates rows and repository groups. Selection stays on the same PR when possible,
+or moves to a neighboring row if the selected PR disappears.
+
+Failed or cancelled actions do not trigger a reload; the current rows stay visible
+and a small popup explains the failure or points to the log. Enter/Esc dismisses
+the popup. Esc or Ctrl-C cancels a running action. These manual actions are separate
+from lifecycle hooks and never execute during loading or refreshing.
 
 ## Clone and workspace layout
 

@@ -10,6 +10,7 @@ fn invocation(command: &[&str], cwd: &Path) -> PreparedPrAction {
         target: context(12, "owner/repo").key(),
         command: command.iter().map(|arg| (*arg).to_owned()).collect(),
         cwd: cwd.to_path_buf(),
+        on_success: crate::repository::PrActionOnSuccess::default(),
         source: PrActionSource {
             path: cwd.join("config.toml"),
             scope: PrActionConfigScope::Global,

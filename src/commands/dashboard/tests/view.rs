@@ -114,6 +114,39 @@ fn failed_snapshot_render_preserves_previous_rows_until_and_after_menu_close() {
     assert_eq!(view.error.as_deref(), Some("render failed"));
 }
 
+#[test]
+fn removing_a_pr_preserves_selection_or_selects_the_next_row_across_resizes() {
+    let size = DashboardTerminalSize::new(100, 30);
+    for (selected, remaining, expected) in [
+        (2, vec![2, 3], Some(2)),
+        (2, vec![1, 3], Some(3)),
+        (3, vec![1, 2], Some(2)),
+        (1, vec![], None),
+    ] {
+        let mut view = DashboardView {
+            pending: Some(Ok(snapshot(&[1, 2, 3]))),
+            ..DashboardView::default()
+        };
+        view.update(false, false, size);
+        let mut navigation = DashboardNavigation::default();
+        navigation.reconcile(view.frame.as_ref());
+        for _ in 1..selected {
+            navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+        }
+        view.pending = Some(Ok(snapshot(&remaining)));
+        for width in [100, 42] {
+            view.update(false, false, DashboardTerminalSize::new(width, 30));
+            navigation.reconcile(view.frame.as_ref());
+            let frame = view.frame.as_ref().unwrap();
+            assert_eq!(
+                navigation.selected(frame).map(|row| row.pr_number),
+                expected
+            );
+            assert_eq!(frame.rows.len(), remaining.len());
+        }
+    }
+}
+
 fn snapshot(numbers: &[u64]) -> DashboardFrameSnapshot {
     let numbers = numbers.to_vec();
     DashboardFrameSnapshot::new(move |options| {

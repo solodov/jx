@@ -3,6 +3,8 @@ use super::*;
 #[path = "action_frames.rs"]
 mod action_frames;
 
+#[path = "review_cache.rs"]
+mod cache;
 #[path = "review_names.rs"]
 mod names;
 #[path = "review_order.rs"]

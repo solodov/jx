@@ -75,8 +75,12 @@ fn run_review_dashboard(
 ) -> Result<CommandResult, CommandError> {
     let loader_environment = environment.clone();
     let loader_request = request.clone();
-    let loader: DashboardFrameLoader = std::sync::Arc::new(move || {
-        load_review_dashboard_snapshot(loader_request.clone(), &loader_environment)
+    let loader: DashboardFrameLoader = std::sync::Arc::new(move |kind| {
+        let mut request = loader_request.clone();
+        request.cached = kind == DashboardRefreshKind::Local;
+        let services =
+            ProductionServices::new(&loader_environment).map_err(|error| error.to_string())?;
+        load_review_dashboard_snapshot(request, &loader_environment, &services)
             .map_err(|error| error.to_string())
     });
     run_interactive_dashboard(
@@ -87,22 +91,26 @@ fn run_review_dashboard(
     )
 }
 
-fn load_review_dashboard_snapshot(
+/// Loads a complete renderable inbox from GitHub or local storage according to the request.
+pub(super) fn load_review_dashboard_snapshot(
     request: ReviewRequest,
     environment: &RuntimeEnvironment,
+    services: &dyn CommandServices,
 ) -> Result<DashboardFrameSnapshot, CommandError> {
-    let services = ProductionServices::new(environment)?;
     let progress = SilentProgress;
     let perf = PerfLog::from_environment(environment);
     let mut span = perf.start(
         "review.dashboard_frame",
-        [perf_attr("filter_count", request.repo_filters.len())],
+        [
+            perf_attr("filter_count", request.repo_filters.len()),
+            perf_attr("cached", request.cached),
+        ],
     );
     let result = (|| {
         let loaded = load_review_requests_view(
             &request,
             environment,
-            &services,
+            services,
             &progress,
             &mut span,
             ReviewDismissalMode::Apply,
@@ -133,7 +141,14 @@ pub(super) fn handle_review(
 ) -> Result<String, CommandError> {
     match &request.action {
         ReviewAction::Dismiss { selector, until } => {
-            return handle_review_dismiss(selector, until, environment, services, progress);
+            return handle_review_dismiss(
+                selector,
+                until,
+                request.cached,
+                environment,
+                services,
+                progress,
+            );
         }
         ReviewAction::Undismiss { selector } => {
             return handle_review_undismiss(selector, environment, services, progress);
@@ -845,14 +860,22 @@ fn has_glob_meta(value: &str) -> bool {
 fn handle_review_dismiss(
     selector: &str,
     until: &ReviewDismissUntil,
+    cached: bool,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
 ) -> Result<String, CommandError> {
     let mut span = PerfLog::from_environment(environment)
         .start("review.dismiss", [perf_attr("selector", selector)]);
-    let result =
-        handle_review_dismiss_traced(selector, until, environment, services, progress, &mut span);
+    let result = handle_review_dismiss_traced(
+        selector,
+        until,
+        cached,
+        environment,
+        services,
+        progress,
+        &mut span,
+    );
     if let Err(error) = &result {
         span.record_error(error);
     }
@@ -860,9 +883,11 @@ fn handle_review_dismiss(
     result
 }
 
+/// Records dismissal against the selected snapshot; cached mode never fetches newer PR facts.
 fn handle_review_dismiss_traced(
     selector: &str,
     until: &ReviewDismissUntil,
+    cached: bool,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
     progress: &dyn ProgressSink,
@@ -874,7 +899,7 @@ fn handle_review_dismiss_traced(
         interactive: false,
         refresh_seconds: 300,
         format: ReviewFormat::Human,
-        cached: false,
+        cached,
     };
     let loaded = load_review_requests_view(
         &request,

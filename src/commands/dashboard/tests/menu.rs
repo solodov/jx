@@ -12,6 +12,7 @@ fn entry(local: bool, command: &[&str]) -> AvailablePrAction {
             title: "Test action".to_owned(),
             command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             cwd: PrActionWorkingDirectory::Caller,
+            on_success: crate::repository::PrActionOnSuccess::default(),
         },
         source: PrActionSource {
             path: PathBuf::from("/source/config.toml"),

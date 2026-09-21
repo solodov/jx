@@ -2,12 +2,15 @@ use super::*;
 use crate::{
     commands::pr_actions::{PrActionFailure, PrActionSet, RunningPrAction},
     domain::PreparedPrAction,
+    repository::PrActionOnSuccess,
 };
 
 /// One running action and a failure notice that survives refreshes until acknowledged.
 #[derive(Default)]
 pub(super) struct DashboardActions {
     running: Option<RunningPrAction>,
+    on_success: PrActionOnSuccess,
+    completed: Option<PrActionOnSuccess>,
     pub(super) failure: Option<PrActionFailure>,
 }
 
@@ -21,6 +24,7 @@ impl DashboardActions {
         if self.running.is_some() || self.failure.is_some() {
             return;
         }
+        self.on_success = action.on_success;
         match RunningPrAction::start(action, environment, action_set) {
             Ok(running) => self.running = Some(running),
             Err(error) => self.complete(Err(error)),
@@ -31,17 +35,14 @@ impl DashboardActions {
         self.running.is_some()
     }
 
-    /// A completed action triggers refresh, but only a failure opens a popup.
-    pub(super) fn poll(&mut self) -> bool {
-        let Some(result) = self.running.as_mut().and_then(RunningPrAction::poll) else {
-            return false;
-        };
-        self.complete(result);
-        true
+    /// Returns the reload policy once after success; failures leave the current rows intact.
+    pub(super) fn poll(&mut self) -> Option<PrActionOnSuccess> {
+        self.poll_running();
+        self.completed.take()
     }
 
     pub(super) fn cancel(&mut self) -> bool {
-        if self.poll() {
+        if self.poll_running() {
             return true;
         }
         let Some(running) = self.running.take() else {
@@ -67,8 +68,17 @@ impl DashboardActions {
         true
     }
 
+    fn poll_running(&mut self) -> bool {
+        let Some(result) = self.running.as_mut().and_then(RunningPrAction::poll) else {
+            return false;
+        };
+        self.complete(result);
+        true
+    }
+
     fn complete(&mut self, result: Result<(), PrActionFailure>) {
         self.running = None;
+        self.completed = result.is_ok().then_some(self.on_success);
         self.failure = result.err();
     }
 }

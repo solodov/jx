@@ -9,7 +9,13 @@ pub(in crate::repository::config) fn parse_pr_action_layer(
     let Some(repo) = repo.and_then(toml::Value::as_table) else {
         return Ok(PrActionLayer::default());
     };
-    let base = parse_actions(file, &format!("repo.{action_set}"), repo.get(action_set))?;
+    let allow_local_refresh = action_set == "review_actions";
+    let base = parse_actions(
+        file,
+        &format!("repo.{action_set}"),
+        repo.get(action_set),
+        allow_local_refresh,
+    )?;
     let mut rules = Vec::new();
     if let Some(values) = repo.get("rules").and_then(toml::Value::as_array) {
         for (index, value) in values.iter().enumerate() {
@@ -19,6 +25,7 @@ pub(in crate::repository::config) fn parse_pr_action_layer(
                 file,
                 &format!("repo.rules[{index}].{action_set}"),
                 table.get(action_set),
+                allow_local_refresh,
             )?;
             if !actions.is_empty() {
                 rules.push(PrActionRule {
@@ -39,6 +46,7 @@ fn parse_actions(
     file: &str,
     key: &str,
     value: Option<&toml::Value>,
+    allow_local_refresh: bool,
 ) -> Result<Vec<PrActionOverride>, RepositoryError> {
     let Some(value) = value else {
         return Ok(Vec::new());
@@ -56,7 +64,7 @@ fn parse_actions(
         for name in table.keys() {
             if !matches!(
                 name.as_str(),
-                "id" | "title" | "command" | "cwd" | "enabled"
+                "id" | "title" | "command" | "cwd" | "enabled" | "on_success"
             ) {
                 return Err(RepositoryError::UnsupportedConfigKey {
                     file: file.to_owned(),
@@ -142,11 +150,25 @@ fn parse_actions(
                 ))
             }
         };
+        let on_success = match table.get("on_success") {
+            None => PrActionOnSuccess::Refresh,
+            Some(value) if value.as_str() == Some("refresh") => PrActionOnSuccess::Refresh,
+            Some(value) if value.as_str() == Some("refresh-local") && allow_local_refresh => {
+                PrActionOnSuccess::RefreshLocal
+            }
+            Some(_) => {
+                return Err(invalid(
+                    file,
+                    format!("`{key}.on_success` must be `refresh`, or `refresh-local` for review actions"),
+                ));
+            }
+        };
         actions.push(PrActionOverride::Define(PrAction {
             id,
             title,
             command,
             cwd,
+            on_success,
         }));
     }
     Ok(actions)

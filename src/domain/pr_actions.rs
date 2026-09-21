@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::{
     github::PullRequestStatusRecord,
     repository::{
-        render_pr_action_argument, GitHubRepository, PrActionConfigScope, PrActionSource,
-        PrActionWorkingDirectory, ResolvedPrAction,
+        render_pr_action_argument, GitHubRepository, PrActionConfigScope, PrActionOnSuccess,
+        PrActionSource, PrActionWorkingDirectory, ResolvedPrAction,
     },
 };
 
@@ -72,6 +72,7 @@ pub struct PreparedPrAction {
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub source: PrActionSource,
+    pub on_success: PrActionOnSuccess,
 }
 
 impl PreparedPrAction {
@@ -129,6 +130,7 @@ pub fn prepare_pr_action(
         command,
         cwd: cwd.to_path_buf(),
         source: definition.source.clone(),
+        on_success: action.on_success,
     })
 }
 

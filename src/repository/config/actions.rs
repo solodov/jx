@@ -13,6 +13,25 @@ pub struct PrAction {
     pub title: String,
     pub command: Vec<String>,
     pub cwd: PrActionWorkingDirectory,
+    pub on_success: PrActionOnSuccess,
+}
+
+/// How a dashboard reloads after a successful action; local reloads are review-only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PrActionOnSuccess {
+    #[default]
+    Refresh,
+    RefreshLocal,
+}
+
+impl PrActionOnSuccess {
+    /// Returns the configuration spelling for previews and action logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Refresh => "refresh",
+            Self::RefreshLocal => "refresh-local",
+        }
+    }
 }
 
 /// Whether an action requires the selected PR's checkout or explicitly uses the caller's directory.

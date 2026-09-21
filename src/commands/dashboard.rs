@@ -12,14 +12,14 @@ use std::{
     fs,
     path::Path,
     process::Command as ProcessCommand,
-    sync::{mpsc, Arc},
-    thread,
-    time::{Duration, Instant, SystemTime},
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 mod actions;
 mod menu;
 mod navigation;
+mod refresh;
 #[path = "dashboard/terminal.rs"]
 mod terminal_session;
 #[cfg(test)]
@@ -30,6 +30,8 @@ mod view;
 use actions::DashboardActions;
 use menu::{MenuIntent, PrActionMenu};
 use navigation::DashboardNavigation;
+pub(super) use refresh::DashboardRefreshKind;
+use refresh::{DashboardRefresh, DashboardRefreshSchedule};
 use terminal_session::DashboardTerminalSession;
 use view::DashboardView;
 
@@ -39,7 +41,7 @@ const DASHBOARD_REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub(super) type DashboardFrameLoader =
-    Arc<dyn Fn() -> Result<DashboardFrameSnapshot, String> + Send + Sync>;
+    Arc<dyn Fn(DashboardRefreshKind) -> Result<DashboardFrameSnapshot, String> + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DashboardRenderOptions {
@@ -64,7 +66,10 @@ impl DashboardFrameSnapshot {
         }
     }
 
-    fn render(&self, options: DashboardRenderOptions) -> Result<PullRequestTableFrame, String> {
+    pub(super) fn render(
+        &self,
+        options: DashboardRenderOptions,
+    ) -> Result<PullRequestTableFrame, String> {
         (self.renderer)(options)
     }
 }
@@ -107,7 +112,7 @@ pub(super) fn run_interactive_dashboard(
     let mut menu = None::<PrActionMenu>;
     let mut actions = DashboardActions::default();
     let mut refresh = None::<DashboardRefresh>;
-    let mut next_refresh_at = None;
+    let mut schedule = DashboardRefreshSchedule::default();
     let mut spinner_index = 0usize;
 
     loop {
@@ -116,30 +121,26 @@ pub(super) fn run_interactive_dashboard(
                 return Ok(CommandResult::with_exit_code(String::new(), 130));
             }
             view.pending = None;
-            next_refresh_at = None;
         }
-        if actions.poll() {
+        if let Some(policy) = actions.poll() {
             view.pending = None;
-            next_refresh_at = None;
+            schedule.after_action(policy);
         }
         if menu.is_none() && !actions.is_running() && actions.failure.is_none() && watcher.changed()
         {
             terminal.restore()?;
             return restart_dashboard_process();
         }
-        if refresh.is_none()
-            && !actions.is_running()
-            && view.pending.is_none()
-            && menu.is_none()
-            && dashboard_wait_duration(Local::now(), next_refresh_at).is_none()
-        {
-            refresh = Some(DashboardRefresh::start(Arc::clone(&loader)));
+        if refresh.is_none() && !actions.is_running() && view.pending.is_none() && menu.is_none() {
+            if let Some(kind) = schedule.next(Local::now()) {
+                refresh = Some(DashboardRefresh::start(Arc::clone(&loader), kind));
+            }
         }
         if let Some(loading) = &mut refresh {
             if let Some(result) = loading.poll() {
                 view.pending = Some(result);
+                schedule.loaded(loading.kind, Local::now(), refresh_seconds);
                 refresh = None;
-                next_refresh_at = next_dashboard_refresh_time(Local::now(), refresh_seconds);
             } else if !loading.timed_out && dashboard_refresh_timed_out(loading.started.elapsed()) {
                 loading.timed_out = true;
                 // Retain the worker: abandoning it could race an action or a new load.
@@ -172,7 +173,6 @@ pub(super) fn run_interactive_dashboard(
             DashboardEvent::Interrupt => {
                 if actions.cancel() {
                     view.pending = None;
-                    next_refresh_at = None;
                 } else {
                     return Ok(CommandResult::with_exit_code(String::new(), 130));
                 }
@@ -187,7 +187,6 @@ pub(super) fn run_interactive_dashboard(
                 }
                 if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press && actions.cancel() {
                     view.pending = None;
-                    next_refresh_at = None;
                     continue;
                 }
                 if let Some(open_menu) = &mut menu {
@@ -198,7 +197,6 @@ pub(super) fn run_interactive_dashboard(
                             menu = None;
                             actions.start(action, environment, action_set);
                             view.pending = None;
-                            next_refresh_at = None;
                         }
                     }
                 } else if dashboard_exit_key(key) {
@@ -218,7 +216,7 @@ pub(super) fn run_interactive_dashboard(
                         menu = Some(PrActionMenu::new(context, entries));
                     }
                 } else if key.code == KeyCode::Char('r') && key.kind == KeyEventKind::Press {
-                    next_refresh_at = None;
+                    schedule.request_live();
                 } else if let Some(frame) = &view.frame {
                     navigation.handle_key(key.code, frame, terminal_size.height);
                 }
@@ -226,42 +224,6 @@ pub(super) fn run_interactive_dashboard(
             DashboardEvent::None => spinner_index = spinner_index.wrapping_add(1),
         }
     }
-}
-
-struct DashboardRefresh {
-    receiver: mpsc::Receiver<Result<DashboardFrameSnapshot, String>>,
-    started: Instant,
-    timed_out: bool,
-}
-
-impl DashboardRefresh {
-    fn start(loader: DashboardFrameLoader) -> Self {
-        Self {
-            receiver: spawn_dashboard_load(loader),
-            started: Instant::now(),
-            timed_out: false,
-        }
-    }
-
-    fn poll(&self) -> Option<Result<DashboardFrameSnapshot, String>> {
-        match self.receiver.try_recv() {
-            Ok(result) => Some(result),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(
-                "dashboard refresh worker stopped unexpectedly".to_owned(),
-            )),
-        }
-    }
-}
-
-fn spawn_dashboard_load(
-    loader: DashboardFrameLoader,
-) -> mpsc::Receiver<Result<DashboardFrameSnapshot, String>> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(loader());
-    });
-    receiver
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
