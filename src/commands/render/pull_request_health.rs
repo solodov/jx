@@ -134,6 +134,7 @@ fn github_label_rgb(color: &str) -> Option<(u8, u8, u8)> {
     ))
 }
 
+/// Collects dashboard authors and actual reviewers for display-name lookup, excluding suggestions.
 pub(in crate::commands) fn pull_request_status_user_logins<'a>(
     statuses: impl IntoIterator<Item = &'a PullRequestStatusRecord>,
 ) -> Vec<String> {
@@ -156,7 +157,6 @@ fn pull_request_status_user_login_iter(
         .author
         .iter()
         .chain(status.requested_reviewers.users.iter())
-        .chain(status.suggested_reviewers.iter())
         .chain(status.approved_reviewers.iter())
         .chain(status.changes_requested_reviewers.iter())
         .chain(status.commented_reviewers.iter())
@@ -165,6 +165,7 @@ fn pull_request_status_user_login_iter(
         .map(String::as_str)
 }
 
+/// Renders requested reviewers and review participants, never suggestion-only users.
 pub(in crate::commands) fn pull_request_reviewer_tokens(
     status: &PullRequestStatusRecord,
     color: bool,
@@ -190,18 +191,8 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let dismissed = status
-        .dismissed_reviewers
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
     let requested_names = requested_reviewer_names(&status.requested_reviewers);
     let requested = requested_names.iter().cloned().collect::<BTreeSet<_>>();
-    let suggested_names = if status.draft {
-        status.suggested_reviewers.clone()
-    } else {
-        Vec::new()
-    };
 
     let mut tokens = Vec::new();
     for name in &requested_names {
@@ -301,24 +292,6 @@ pub(in crate::commands) fn pull_request_reviewer_tokens(
                 )
             }),
     );
-    tokens.extend(suggested_names.iter().filter_map(|name| {
-        let name = name.as_str();
-        (!approved.contains(name)
-            && !changes_requested.contains(name)
-            && !commented.contains(name)
-            && !addressed.contains(name)
-            && !dismissed.contains(name)
-            && !requested.contains(name))
-        .then(|| {
-            pull_request_reviewer_token(
-                name,
-                ReviewerTokenState::Requested,
-                None,
-                color,
-                display_names,
-            )
-        })
-    }));
     tokens.extend(status.approved_reviewers.iter().map(|name| {
         let state = if commented.contains(name.as_str()) {
             ReviewerTokenState::ApprovedWithComments

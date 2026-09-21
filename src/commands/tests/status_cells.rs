@@ -108,6 +108,67 @@ fn reviewer_presence_counts_requests_and_past_reviews_but_not_suggestions() {
 }
 
 #[test]
+fn reviewer_tokens_ignore_suggestions_but_keep_actual_reviewers() {
+    let display_names = BTreeMap::new();
+    for draft in [false, true] {
+        for color in [false, true] {
+            let mut status = review_status_record(12, "Title", "author", draft);
+            status.requested_reviewers = ReviewerSelection::default();
+            status.suggested_reviewers = vec!["suggested-reviewer".to_owned()];
+            assert!(pull_request_reviewer_tokens(&status, color, &display_names).is_empty());
+
+            status.requested_reviewers = ReviewerSelection::new(["requested"], ["platform"]);
+            status.approved_reviewers = vec!["approved".to_owned()];
+            status.suggested_reviewers.clear();
+            let actual_reviewers = pull_request_reviewer_tokens(&status, color, &display_names);
+            assert_eq!(actual_reviewers.len(), 3);
+            if !color {
+                assert_eq!(actual_reviewers, ["requested", "team/platform", "approved"]);
+            }
+
+            status.suggested_reviewers = vec![
+                "suggested-reviewer".to_owned(),
+                "requested".to_owned(),
+                "approved".to_owned(),
+            ];
+            assert_eq!(
+                pull_request_reviewer_tokens(&status, color, &display_names),
+                actual_reviewers
+            );
+        }
+    }
+}
+
+#[test]
+fn dashboard_profile_lookups_exclude_suggestion_only_users() {
+    let mut status = review_status_record(12, "Title", "author", true);
+    status.requested_reviewers = ReviewerSelection::new(["requested"], ["platform"]);
+    status.approved_reviewers = vec!["approved".to_owned()];
+    status.changes_requested_reviewers = vec!["changes-requested".to_owned()];
+    status.commented_reviewers = vec!["commented".to_owned()];
+    status.addressed_reviewers = vec!["addressed".to_owned()];
+    status.dismissed_reviewers = vec!["dismissed".to_owned()];
+    status.suggested_reviewers = vec![
+        "suggested-reviewer".to_owned(),
+        "requested".to_owned(),
+        "approved".to_owned(),
+    ];
+
+    assert_eq!(
+        pull_request_status_user_logins([&status, &status]),
+        [
+            "author",
+            "requested",
+            "approved",
+            "changes-requested",
+            "commented",
+            "addressed",
+            "dismissed",
+        ]
+    );
+}
+
+#[test]
 fn stack_review_cells_preserve_review_state_colors_and_plain_symbols() {
     let mut status = review_status_record(12, "Title", "author", false);
     for (review_status, overdue, symbol, style) in [
@@ -306,6 +367,7 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                         .contains(&format!("#{}", row.context.pr_number)));
                 }
                 let output = frame.text;
+                assert!(!output.contains("suggested-reviewer"));
                 assert_eq!(
                     output.matches("Chk Rev Lag").count(),
                     if color { 0 } else { 2 }

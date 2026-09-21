@@ -242,9 +242,10 @@ fn stack_status_renders_check_and_review_summary() {
         stack_status_pull_request_cell(101)
     )));
     assert!(result.stdout.contains(&format!(
-        "{} ◷   ?   <1h  └ ◌ Child change [ui]  reviewer-one, team/platform, suggested-reviewer",
+        "{} ◷   ?   <1h  └ ◌ Child change [ui]  reviewer-one, team/platform",
         stack_status_pull_request_cell(102)
     )));
+    assert!(!result.stdout.contains("suggested-reviewer"));
     assert!(!result.stdout.contains("Legend:"));
 }
 
