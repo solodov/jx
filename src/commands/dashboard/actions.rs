@@ -1,33 +1,41 @@
 use super::*;
 use crate::{
     commands::pr_actions::{PrActionFailure, PrActionSet, RunningPrAction},
-    domain::PreparedPrAction,
+    domain::{PrActionKey, PreparedPrAction},
     repository::PrActionOnSuccess,
 };
+use std::time::Instant;
 
-/// One running action and a failure notice that survives refreshes until acknowledged.
+/// Runs one action and delivers its outcome once; notifications never block the next action.
 #[derive(Default)]
 pub(super) struct DashboardActions {
     running: Option<RunningPrAction>,
+    info: Option<DashboardActionInfo>,
     on_success: PrActionOnSuccess,
-    completed: Option<PrActionOnSuccess>,
-    pub(super) failure: Option<PrActionFailure>,
+    completed: Option<DashboardActionCompletion>,
 }
 
 impl DashboardActions {
+    /// Freezes the action identity for feedback even if the selected PR later moves or disappears.
     pub(super) fn start(
         &mut self,
         action: PreparedPrAction,
         environment: &RuntimeEnvironment,
         action_set: PrActionSet,
     ) {
-        if self.running.is_some() || self.failure.is_some() {
+        if self.running.is_some() {
             return;
         }
+        self.info = Some(DashboardActionInfo {
+            id: action.id.clone(),
+            title: action.title.clone(),
+            target: action.target.clone(),
+            started: Instant::now(),
+        });
         self.on_success = action.on_success;
         match RunningPrAction::start(action, environment, action_set) {
             Ok(running) => self.running = Some(running),
-            Err(error) => self.complete(Err(error)),
+            Err(error) => self.complete(DashboardActionOutcome::Failed(error)),
         }
     }
 
@@ -35,12 +43,17 @@ impl DashboardActions {
         self.running.is_some()
     }
 
-    /// Returns the reload policy once after success; failures leave the current rows intact.
-    pub(super) fn poll(&mut self) -> Option<PrActionOnSuccess> {
+    pub(super) fn running_info(&self) -> Option<&DashboardActionInfo> {
+        self.info.as_ref()
+    }
+
+    /// Delivers completion after polling, including failures that happened during spawn.
+    pub(super) fn poll(&mut self) -> Option<DashboardActionCompletion> {
         self.poll_running();
         self.completed.take()
     }
 
+    /// Cancels active work without losing a success that raced with the cancel key.
     pub(super) fn cancel(&mut self) -> bool {
         if self.poll_running() {
             return true;
@@ -48,23 +61,7 @@ impl DashboardActions {
         let Some(running) = self.running.take() else {
             return false;
         };
-        self.complete(Err(running.cancel()));
-        true
-    }
-
-    /// Consumes keys while the failure popup is visible; dismissing never runs another action.
-    pub(super) fn handle_failure_key(&mut self, key: KeyEvent) -> bool {
-        if self.failure.is_none() {
-            return false;
-        }
-        if key.kind == KeyEventKind::Press
-            && matches!(
-                key.code,
-                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q' | 'Q')
-            )
-        {
-            self.failure = None;
-        }
+        self.complete(DashboardActionOutcome::Cancelled(running.cancel()));
         true
     }
 
@@ -72,15 +69,39 @@ impl DashboardActions {
         let Some(result) = self.running.as_mut().and_then(RunningPrAction::poll) else {
             return false;
         };
-        self.complete(result);
+        self.complete(match result {
+            Ok(()) => DashboardActionOutcome::Succeeded(self.on_success),
+            Err(error) => DashboardActionOutcome::Failed(error),
+        });
         true
     }
 
-    fn complete(&mut self, result: Result<(), PrActionFailure>) {
+    fn complete(&mut self, outcome: DashboardActionOutcome) {
         self.running = None;
-        self.completed = result.is_ok().then_some(self.on_success);
-        self.failure = result.err();
+        self.completed = self
+            .info
+            .take()
+            .map(|action| DashboardActionCompletion { action, outcome });
     }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DashboardActionInfo {
+    pub(super) id: String,
+    pub(super) title: String,
+    pub(super) target: PrActionKey,
+    pub(super) started: Instant,
+}
+
+pub(super) struct DashboardActionCompletion {
+    pub(super) action: DashboardActionInfo,
+    pub(super) outcome: DashboardActionOutcome,
+}
+
+pub(super) enum DashboardActionOutcome {
+    Succeeded(PrActionOnSuccess),
+    Failed(PrActionFailure),
+    Cancelled(PrActionFailure),
 }
 
 #[cfg(test)]

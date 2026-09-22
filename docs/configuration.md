@@ -130,10 +130,28 @@ GitHub. After success, the local reload applies the usual dismissal rules and
 updates rows and repository groups. Selection stays on the same PR when possible,
 or moves to a neighboring row if the selected PR disappears.
 
-Failed or cancelled actions do not trigger a reload; the current rows stay visible
-and a small popup explains the failure or points to the log. Enter/Esc dismisses
-the popup. Esc or Ctrl-C cancels a running action. These manual actions are separate
-from lifecycle hooks and never execute during loading or refreshing.
+The bottom terminal row becomes a status line while work is running or a notice
+is visible. Running actions show only their name and elapsed time. Initial loading,
+manual refreshes, and live refreshes after actions show `Refreshing pull requests…`
+with elapsed time. Cached reloads and routine periodic refreshes stay quiet unless
+they fail. Successful actions show a three-second completion notice after the list
+updates. When the line clears, that row returns to the scrolling PR list.
+
+Errors disappear after ten seconds; success and cancellation notices last three
+seconds. The next keyboard interaction also clears notices without consuming the
+key or hiding ongoing work. Action failures show `"<action name>" failed, see <path>`,
+shortening the log's home directory to `~`. Errors without a recorded log
+show their cause directly; status messages have no details popup. A successful
+retry clears only the matching error.
+
+All status messages share a warm-gray background. Normal notices use black text;
+errors use brighter red across the whole message, keeping the strip quiet and
+distinct from pastel terminal dividers and scroll indicators.
+
+Failed or cancelled actions do not trigger a reload; the current rows stay visible.
+Esc closes the action menu or its command preview first, otherwise cancels a running
+action or exits. Ctrl-C cancels a running action or exits. These manual actions are
+separate from lifecycle hooks and never execute during loading or refreshing.
 
 ## Clone and workspace layout
 

@@ -1,0 +1,266 @@
+use super::*;
+use crate::commands::dashboard::test_support::context;
+
+#[test]
+fn action_feedback_is_short_and_local_reloads_stay_silent() {
+    let now = Instant::now();
+    let action = action(now);
+    let mut status = DashboardStatus::default();
+    let later = now + ERROR_DURATION;
+    status.clear_notice();
+    status.tick(later);
+    let line = status.line(Some(&action), later, 120).unwrap();
+    assert!(line.contains("Running dismiss/fix tests… 10s"));
+    assert!(line.contains("48;2;236;233;219m"));
+    assert!(line.contains("38;2;0;0;0m"));
+    assert!(!line.contains("owner/repo"));
+    assert!(line.contains("Esc cancel"));
+    assert!(!line.contains('?'));
+    assert_eq!(
+        complete(
+            &mut status,
+            DashboardActionOutcome::Succeeded(PrActionOnSuccess::RefreshLocal),
+            later,
+        ),
+        Some(PrActionOnSuccess::RefreshLocal)
+    );
+    assert!(status.line(None, later, 120).is_none());
+    status.refresh_started(DashboardRefreshKind::Local, false, later);
+    status.clear_notice();
+    status.tick(later + ERROR_DURATION);
+    assert!(status.line(None, later, 120).is_none());
+    let later = later + ERROR_DURATION;
+    status.refreshed(Ok(()), later);
+    assert!(status
+        .line(None, later, 120)
+        .unwrap()
+        .contains("\"dismiss/fix tests\" completed"));
+    status.tick(later + NOTICE_DURATION);
+    assert!(status.line(None, later, 120).is_none());
+}
+
+#[test]
+fn initial_and_post_action_live_refreshes_show_elapsed_time() {
+    let now = Instant::now();
+    for initial in [true, false] {
+        let mut status = DashboardStatus::default();
+        if !initial {
+            complete(
+                &mut status,
+                DashboardActionOutcome::Succeeded(PrActionOnSuccess::Refresh),
+                now,
+            );
+        }
+        status.refresh_started(DashboardRefreshKind::Live, initial, now);
+        status.clear_notice();
+        let line = status
+            .line(None, now + Duration::from_secs(2), 120)
+            .unwrap();
+        assert!(line.contains("Refreshing pull requests… 2s"));
+        assert!(!line.contains("dismiss/fix tests"));
+    }
+}
+
+#[test]
+fn manual_refresh_during_a_cached_reload_only_shows_feedback_when_live_loading_starts() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    status.refresh_started(DashboardRefreshKind::Local, false, now);
+    status.request_refresh();
+    assert!(status.line(None, now, 120).is_none());
+    status.refreshed(Ok(()), now);
+    status.refresh_started(DashboardRefreshKind::Live, false, now);
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("Refreshing pull requests… 0s"));
+}
+
+#[test]
+fn logged_errors_show_the_actual_log_path_and_expire_after_ten_seconds() {
+    let now = Instant::now();
+    for (path, display) in [
+        (
+            "/home/operator/.local/state/jx/jx-actions.log",
+            "~/.local/state/jx/jx-actions.log",
+        ),
+        ("/state/custom-actions.log", "/state/custom-actions.log"),
+    ] {
+        let mut status = DashboardStatus::default();
+        complete(
+            &mut status,
+            DashboardActionOutcome::Failed(PrActionFailure {
+                message: "action failed".to_owned(),
+                log_path: Some(PathBuf::from(path)),
+            }),
+            now,
+        );
+        status.refreshed(Ok(()), now);
+        let line = status.line(None, now, 80).unwrap();
+        assert!(line.contains(&format!("\"dismiss/fix tests\" failed, see {display}")));
+        assert!(!line.contains("owner/repo"));
+        assert!(!line.contains("Error:"));
+        assert!(!line.contains("Esc"));
+        assert!(!line.contains('?'));
+        status.tick(now + ERROR_DURATION - Duration::from_secs(1));
+        assert!(
+            status.has_error(),
+            "unrelated success does not hide an error"
+        );
+        status.tick(now + ERROR_DURATION);
+        assert!(status.line(None, now, 80).is_none());
+    }
+}
+
+#[test]
+fn unlogged_errors_show_the_cause_and_interaction_clears_all_notices() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    complete(
+        &mut status,
+        DashboardActionOutcome::Failed(PrActionFailure {
+            message: "cannot open log: disk full".to_owned(),
+            log_path: None,
+        }),
+        now,
+    );
+    let line = status.line(None, now, 120).unwrap();
+    assert!(line.contains("cannot open log: disk full"));
+    assert!(!line.contains("see "));
+    complete(
+        &mut status,
+        DashboardActionOutcome::Cancelled(PrActionFailure {
+            message: "cancelled".to_owned(),
+            log_path: Some(PathBuf::from("/logs/actions.log")),
+        }),
+        now,
+    );
+    status.clear_notice();
+    assert!(status.line(None, now, 120).is_none());
+}
+
+#[test]
+fn cancellation_notice_expires_after_three_seconds() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    complete(
+        &mut status,
+        DashboardActionOutcome::Cancelled(PrActionFailure {
+            message: "cancelled".to_owned(),
+            log_path: Some(PathBuf::from("/logs/actions.log")),
+        }),
+        now,
+    );
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("\"dismiss/fix tests\" cancelled"));
+    status.tick(now + NOTICE_DURATION);
+    assert!(status.line(None, now, 120).is_none());
+}
+
+#[test]
+fn refresh_timeout_expires_without_resuming_busy_feedback_and_can_recover() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    complete(
+        &mut status,
+        DashboardActionOutcome::Succeeded(PrActionOnSuccess::RefreshLocal),
+        now,
+    );
+    status.refresh_started(DashboardRefreshKind::Local, false, now);
+    status.refresh_timed_out(now);
+    let line = status.line(None, now, 200).unwrap();
+    assert!(line.contains("\"dismiss/fix tests\" completed; refresh failed"));
+    assert!(line.contains(&dashboard_refresh_timeout_error()));
+    let later = now + ERROR_DURATION;
+    status.tick(later);
+    assert!(status.line(None, later, 160).is_none());
+    status.refreshed(Ok(()), later);
+    assert!(status
+        .line(None, later, 160)
+        .unwrap()
+        .contains("\"dismiss/fix tests\" completed"));
+
+    let later = later + NOTICE_DURATION;
+    status.tick(later);
+    status.refresh_started(DashboardRefreshKind::Live, false, later);
+    assert!(
+        status.line(None, later, 120).is_none(),
+        "periodic refresh stays quiet"
+    );
+    status.request_refresh();
+    assert!(status
+        .line(None, later, 120)
+        .unwrap()
+        .contains("Refreshing"));
+    status.refreshed(Err("network down".to_owned()), later);
+    assert!(status
+        .line(None, later, 120)
+        .unwrap()
+        .contains("Refresh failed: network down"));
+    status.refreshed(Ok(()), later);
+    assert!(!status.has_error());
+}
+
+#[test]
+fn redraw_errors_also_show_the_cause_and_expire() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    status.reflowed(Err("bad row".to_owned()), now);
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("Cannot redraw list: bad row"));
+    status.tick(now + ERROR_DURATION);
+    assert!(status.line(None, now, 120).is_none());
+}
+
+#[test]
+fn status_line_sanitizes_and_clips_text_while_painting_the_full_width() {
+    for (kind, foreground) in [
+        (StatusKind::Working, "38;2;0;0;0m"),
+        (StatusKind::Success, "38;2;0;0;0m"),
+        (StatusKind::Warning, "38;2;0;0;0m"),
+        (StatusKind::Error, "38;2;192;48;40m"),
+    ] {
+        let message = StatusMessage::new(kind, "bad\nmessage\x1b[2J 漢字".repeat(5));
+        for width in [1, 20, 100] {
+            let line = message.render(width);
+            assert!(!line.contains('\n'));
+            assert!(!line.contains("\x1b[2J"));
+            assert_eq!(rendered_visible_width(&line), width);
+            assert!(line.contains("48;2;236;233;219m"));
+            assert!(line.contains(foreground));
+            assert!(line.ends_with(" \x1b[0m"));
+        }
+    }
+}
+
+fn complete(
+    status: &mut DashboardStatus,
+    outcome: DashboardActionOutcome,
+    now: Instant,
+) -> Option<PrActionOnSuccess> {
+    let environment = RuntimeEnvironment::new(
+        "/caller",
+        [("HOME".to_owned(), "/home/operator".to_owned())],
+    );
+    status.action_completed(
+        DashboardActionCompletion {
+            action: action(now),
+            outcome,
+        },
+        &environment,
+        now,
+    )
+}
+
+fn action(now: Instant) -> DashboardActionInfo {
+    DashboardActionInfo {
+        id: "fix-tests".to_owned(),
+        title: "dismiss/fix tests".to_owned(),
+        target: context(12, "owner/repo").key(),
+        started: now,
+    }
+}

@@ -25,7 +25,12 @@ impl DashboardTerminalSession {
         if self.restored {
             return Ok(());
         }
-        let display_result = execute!(io::stdout(), Show, LeaveAlternateScreen);
+        let display_result = execute!(
+            io::stdout(),
+            terminal::EnableLineWrap,
+            Show,
+            LeaveAlternateScreen
+        );
         let raw_result = terminal::disable_raw_mode();
         self.restored = display_result.is_ok() && raw_result.is_ok();
         display_result?;

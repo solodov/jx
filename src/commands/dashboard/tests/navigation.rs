@@ -66,16 +66,15 @@ fn viewport_skips_non_pr_lines_for_selection_and_preserves_osc8_bytes() {
     let mut nav = DashboardNavigation::default();
     nav.reconcile(Some(&frame));
     nav.handle_key(KeyCode::End, &frame, 3);
-    let output = format!("failure\nmore detail\n\n{}", frame.text);
-    let (text, marker) = nav.viewport(&output, 3, 3);
+    let (text, marker) = nav.viewport(&frame.text, 3);
     assert_eq!(marker, Some(2));
     assert_eq!(text.lines().last(), frame.text.lines().last());
     assert!(text.contains(&osc8_link("https://github.com/owner/repo/pull/5", "#5")));
     nav.handle_key(KeyCode::Home, &frame, 3);
-    let (_, marker) = nav.viewport(&frame.text, 0, 20);
+    let (_, marker) = nav.viewport(&frame.text, 20);
     assert_eq!(marker, Some(2));
     assert_eq!(nav.scroll_top, 0);
-    let (text, marker) = nav.viewport(&frame.text, 0, 0);
+    let (text, marker) = nav.viewport(&frame.text, 0);
     assert!(text.is_empty());
     assert_eq!(marker, None);
 }

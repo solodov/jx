@@ -65,14 +65,9 @@ impl DashboardNavigation {
     }
 
     /// Keeps the selected logical line visible without removing headers or altering row text.
-    pub(super) fn viewport(
-        &mut self,
-        output: &str,
-        prefix_lines: usize,
-        height: usize,
-    ) -> (String, Option<usize>) {
+    pub(super) fn viewport(&mut self, output: &str, height: usize) -> (String, Option<usize>) {
         let lines = output.lines().collect::<Vec<_>>();
-        let selected = self.selected_line.map(|line| line + prefix_lines);
+        let selected = self.selected_line;
         if let Some(line) = selected {
             if line < self.scroll_top {
                 self.scroll_top = line;
