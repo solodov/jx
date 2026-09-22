@@ -18,12 +18,13 @@ pub struct PrAction {
     pub on_success: PrActionOnSuccess,
 }
 
-/// How a dashboard reloads after a successful action; local reloads are review-only.
+/// Whether and how a dashboard reloads after success; local reloads are review-only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PrActionOnSuccess {
     #[default]
     Refresh,
     RefreshLocal,
+    None,
 }
 
 impl PrActionOnSuccess {
@@ -32,6 +33,7 @@ impl PrActionOnSuccess {
         match self {
             Self::Refresh => "refresh",
             Self::RefreshLocal => "refresh-local",
+            Self::None => "none",
         }
     }
 }

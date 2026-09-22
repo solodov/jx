@@ -159,13 +159,14 @@ fn parse_actions(
         let on_success = match table.get("on_success") {
             None => PrActionOnSuccess::Refresh,
             Some(value) if value.as_str() == Some("refresh") => PrActionOnSuccess::Refresh,
+            Some(value) if value.as_str() == Some("none") => PrActionOnSuccess::None,
             Some(value) if value.as_str() == Some("refresh-local") && allow_local_refresh => {
                 PrActionOnSuccess::RefreshLocal
             }
             Some(_) => {
                 return Err(invalid(
                     file,
-                    format!("`{key}.on_success` must be `refresh`, or `refresh-local` for review actions"),
+                    format!("`{key}.on_success` must be `none`, `refresh`, or `refresh-local` for review actions"),
                 ));
             }
         };

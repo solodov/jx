@@ -31,6 +31,27 @@ fn local_reload_precedes_an_overdue_live_refresh_without_cancelling_it() {
 }
 
 #[test]
+fn no_refresh_actions_leave_the_periodic_deadline_and_pending_requests_unchanged() {
+    let now = Local::now();
+    let mut schedule = DashboardRefreshSchedule::default();
+    schedule.loaded(DashboardRefreshKind::Live, now, 300);
+    let deadline = schedule.next_live_at.unwrap();
+    schedule.after_action(PrActionOnSuccess::None);
+    assert_eq!(schedule.next_live_at, Some(deadline));
+    assert_eq!(schedule.next(now), None);
+    assert_eq!(schedule.next(deadline), Some(DashboardRefreshKind::Live));
+
+    schedule.after_action(PrActionOnSuccess::RefreshLocal);
+    schedule.after_action(PrActionOnSuccess::None);
+    assert_eq!(schedule.next(now), Some(DashboardRefreshKind::Local));
+    assert_eq!(schedule.next_live_at, Some(deadline));
+
+    schedule.request_live();
+    schedule.after_action(PrActionOnSuccess::None);
+    assert_eq!(schedule.next(now), Some(DashboardRefreshKind::Live));
+}
+
+#[test]
 fn ordinary_actions_keep_the_existing_live_refresh_behavior() {
     let now = Local::now();
     let mut schedule = DashboardRefreshSchedule::default();

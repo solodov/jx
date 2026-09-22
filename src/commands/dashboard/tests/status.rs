@@ -40,6 +40,58 @@ fn action_feedback_is_short_and_local_reloads_stay_silent() {
 }
 
 #[test]
+fn no_refresh_success_is_immediate_and_not_repeated_by_the_next_periodic_refresh() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    assert_eq!(
+        complete(
+            &mut status,
+            DashboardActionOutcome::Succeeded(PrActionOnSuccess::None),
+            now
+        ),
+        None
+    );
+    assert!(status.updating_action.is_none());
+    assert!(status.refresh_started.is_none());
+    let line = status.line(None, now, 120).unwrap();
+    assert!(line.contains("\"dismiss/fix tests\" completed"));
+    assert!(!line.contains("Refreshing"));
+
+    let later = now + NOTICE_DURATION;
+    status.tick(later);
+    assert!(status.line(None, later, 120).is_none());
+    status.refresh_started(DashboardRefreshKind::Live, false, later);
+    assert!(status.line(None, later, 120).is_none());
+    status.refreshed(Ok(()), later);
+    assert!(status.line(None, later, 120).is_none());
+}
+
+#[test]
+fn no_refresh_success_clears_its_own_previous_error() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    complete(
+        &mut status,
+        DashboardActionOutcome::Failed(PrActionFailure {
+            message: "failed".to_owned(),
+            log_path: None,
+        }),
+        now,
+    );
+    assert!(status.has_error());
+    assert_eq!(
+        complete(
+            &mut status,
+            DashboardActionOutcome::Succeeded(PrActionOnSuccess::None),
+            now
+        ),
+        None
+    );
+    assert!(!status.has_error());
+    assert!(status.line(None, now, 120).unwrap().contains("completed"));
+}
+
+#[test]
 fn initial_and_post_action_live_refreshes_show_elapsed_time() {
     let now = Instant::now();
     for initial in [true, false] {

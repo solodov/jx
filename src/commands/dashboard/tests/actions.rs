@@ -15,6 +15,9 @@ fn actions_report_success_failure_and_cancellation_once_without_blocking_the_nex
         ("exit 1", PrActionOnSuccess::RefreshLocal, false),
         ("exit 0", PrActionOnSuccess::RefreshLocal, false),
         ("exit 0", PrActionOnSuccess::Refresh, false),
+        ("exit 0", PrActionOnSuccess::None, false),
+        ("exit 1", PrActionOnSuccess::None, false),
+        ("sleep 30", PrActionOnSuccess::None, true),
         ("sleep 30", PrActionOnSuccess::RefreshLocal, true),
     ] {
         actions.start(

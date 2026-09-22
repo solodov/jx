@@ -120,11 +120,16 @@ The log includes command argv, PR identity, working directory, configuration
 source, and completion status alongside raw output. If the log cannot be opened,
 the action does not run.
 
-By default, successful actions quietly trigger a live refresh (`on_success = "refresh"`).
+By default, successful actions trigger a live refresh (`on_success = "refresh"`).
 Review actions can instead set `on_success = "refresh-local"` to rebuild the inbox
 from local storage without contacting GitHub or postponing the next scheduled
 live refresh. This setting is not supported for stack status actions. Manual `r`
 and scheduled refreshes still fetch live state.
+
+Both menus support `on_success = "none"` for actions that only queue background
+work or do not change PR state. Success shows the completion notice immediately,
+without a live fetch or cached reload. The visible rows and periodic refresh
+deadline stay unchanged; any pending manual or scheduled refresh still runs.
 
 For a local-only dismissal, use both cached command execution and local refresh:
 
@@ -149,7 +154,8 @@ is visible. Running actions show only their name and elapsed time. Initial loadi
 manual refreshes, and live refreshes after actions show `Refreshing pull requests…`
 with elapsed time. Cached reloads and routine periodic refreshes stay quiet unless
 they fail. Successful actions show a three-second completion notice after the list
-updates. When the line clears, that row returns to the scrolling PR list.
+updates, or immediately for `on_success = "none"`. When the line clears, that row
+returns to the scrolling PR list.
 
 Errors disappear after ten seconds; success and cancellation notices last three
 seconds. The next keyboard interaction also clears notices without consuming the

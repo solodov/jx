@@ -20,7 +20,7 @@ pub(super) struct DashboardStatus {
 }
 
 impl DashboardStatus {
-    /// Starts the list-update phase only after the command has successfully completed.
+    /// Reports success immediately for no-refresh actions, otherwise waits for the list update.
     pub(super) fn action_completed(
         &mut self,
         completion: DashboardActionCompletion,
@@ -33,8 +33,13 @@ impl DashboardStatus {
         match outcome {
             DashboardActionOutcome::Succeeded(policy) => {
                 self.clear_error(&source);
-                self.updating_action = Some(action);
-                Some(policy)
+                if policy == PrActionOnSuccess::None {
+                    self.show_action_success(action, now);
+                    None
+                } else {
+                    self.updating_action = Some(action);
+                    Some(policy)
+                }
             }
             DashboardActionOutcome::Failed(failure) => {
                 let mut message =
@@ -94,13 +99,7 @@ impl DashboardStatus {
                 self.clear_error(&ErrorSource::Refresh);
                 self.clear_error(&ErrorSource::Render);
                 if let Some(action) = self.updating_action.take() {
-                    self.transient = Some((
-                        now + NOTICE_DURATION,
-                        StatusMessage::new(
-                            StatusKind::Success,
-                            format!("\"{}\" completed", action.title),
-                        ),
-                    ));
+                    self.show_action_success(action, now);
                 }
             }
             Err(error) => {
@@ -158,6 +157,16 @@ impl DashboardStatus {
     ) -> Option<String> {
         self.message(running, now)
             .map(|message| message.render(width))
+    }
+
+    fn show_action_success(&mut self, action: DashboardActionInfo, now: Instant) {
+        self.transient = Some((
+            now + NOTICE_DURATION,
+            StatusMessage::new(
+                StatusKind::Success,
+                format!("\"{}\" completed", action.title),
+            ),
+        ));
     }
 
     fn report_refresh_error(&mut self, error: String, now: Instant) {

@@ -21,6 +21,7 @@ impl DashboardRefreshSchedule {
         match policy {
             PrActionOnSuccess::Refresh => self.request_live(),
             PrActionOnSuccess::RefreshLocal => self.local_requested = true,
+            PrActionOnSuccess::None => {}
         }
     }
 
