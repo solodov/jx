@@ -10,6 +10,7 @@ fn entry(local: bool, command: &[&str]) -> AvailablePrAction {
         action: PrAction {
             id: "test".to_owned(),
             title: "Test action".to_owned(),
+            order: 0,
             command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             cwd: PrActionWorkingDirectory::Caller,
             on_success: crate::repository::PrActionOnSuccess::default(),

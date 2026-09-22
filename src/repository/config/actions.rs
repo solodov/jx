@@ -11,6 +11,8 @@ pub(crate) use template::render_pr_action_argument;
 pub struct PrAction {
     pub id: String,
     pub title: String,
+    /// Sort priority before the title; lower values come first and omitted values default to zero.
+    pub order: i64,
     pub command: Vec<String>,
     pub cwd: PrActionWorkingDirectory,
     pub on_success: PrActionOnSuccess,
@@ -71,7 +73,7 @@ pub struct PrActionsConfig {
 
 impl PrActionsConfig {
     /// Resolves this set's global defaults, matching global rules, then local definitions and rules.
-    /// Replacements keep their position; removals disappear and newly introduced IDs append.
+    /// Whole-definition overrides and removals apply before sorting by ascending (order, title).
     pub fn for_repository(&self, repository: &GitHubRepository) -> Vec<ResolvedPrAction> {
         let mut actions = Vec::new();
         let slug = repository.slug();
@@ -99,6 +101,12 @@ impl PrActionsConfig {
                 }
             }
         }
+        actions.sort_by(|left, right| {
+            left.action
+                .order
+                .cmp(&right.action.order)
+                .then_with(|| left.action.title.cmp(&right.action.title))
+        });
         actions
     }
 

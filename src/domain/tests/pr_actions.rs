@@ -163,6 +163,7 @@ fn action(command: &[&str]) -> ResolvedPrAction {
         action: PrAction {
             id: "inspect".to_owned(),
             title: "Inspect".to_owned(),
+            order: 0,
             command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             cwd: PrActionWorkingDirectory::Repository,
             on_success: PrActionOnSuccess::default(),

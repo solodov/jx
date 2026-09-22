@@ -1,7 +1,9 @@
 use super::*;
 
+mod ordering;
+
 #[test]
-fn action_layers_preserve_order_replace_whole_definitions_and_keep_local_overrides_last() {
+fn action_layers_replace_whole_definitions_and_apply_local_overrides_before_sorting() {
     let workspace = TestWorkspace::new();
     workspace.write_file(
         ".config/jx/10-base.toml",
@@ -91,13 +93,25 @@ command = ["local-rule"]
     let repo = GitHubRepository::parse("https://github.com/owner/repo").unwrap();
     let global = WorkflowConfig::discover_global(&environment).unwrap();
     let actions = global.stack_status_actions.for_repository(&repo);
-    assert_eq!(actions[0].action.title, "Specific open");
-    assert_eq!(actions[0].source.scope, PrActionConfigScope::Global);
-    assert!(actions[0].source.path.ends_with("20-overrides.toml"));
+    let open = actions
+        .iter()
+        .find(|entry| entry.action.id == "open")
+        .unwrap();
+    assert_eq!(open.action.title, "Specific open");
+    assert_eq!(open.source.scope, PrActionConfigScope::Global);
+    assert!(open.source.path.ends_with("20-overrides.toml"));
     let other = global
         .stack_status_actions
         .for_repository(&GitHubRepository::parse("https://github.com/owner/other").unwrap());
-    assert_eq!(other[0].action.title, "Wildcard open");
+    assert_eq!(
+        other
+            .iter()
+            .find(|entry| entry.action.id == "open")
+            .unwrap()
+            .action
+            .title,
+        "Wildcard open"
+    );
 
     let config = WorkflowConfig::discover(&environment).unwrap();
     let actions = config.stack_status_actions.for_repository(&repo);
@@ -106,21 +120,21 @@ command = ["local-rule"]
             .iter()
             .map(|resolved| resolved.action.id.as_str())
             .collect::<Vec<_>>(),
-        ["open", "diff", "global-only", "local-added", "local-rule"]
+        ["global-only", "local-added", "diff", "open", "local-rule"]
     );
-    assert_eq!(actions[0].action.title, "Local open");
-    assert_eq!(actions[0].action.command, ["local", "{pr_number}"]);
-    assert_eq!(actions[0].action.cwd, PrActionWorkingDirectory::Repository);
-    assert_eq!(actions[1].action.title, "Local diff");
-    for index in [0, 1, 3, 4] {
+    assert_eq!(actions[3].action.title, "Local open");
+    assert_eq!(actions[3].action.command, ["local", "{pr_number}"]);
+    assert_eq!(actions[3].action.cwd, PrActionWorkingDirectory::Repository);
+    assert_eq!(actions[2].action.title, "Local diff");
+    for index in [1, 2, 3, 4] {
         assert_eq!(actions[index].source.scope, PrActionConfigScope::Repository);
         assert_eq!(
             actions[index].source.path,
             workspace.path().join(".jx/config.toml")
         );
     }
-    assert_eq!(actions[2].source.scope, PrActionConfigScope::Global);
-    assert!(actions[2].source.path.ends_with("10-base.toml"));
+    assert_eq!(actions[0].source.scope, PrActionConfigScope::Global);
+    assert!(actions[0].source.path.ends_with("10-base.toml"));
     assert_eq!(config.stack_status_actions.for_repository(&repo), actions);
     assert!(config.review_actions.for_repository(&repo).is_empty());
 }
@@ -188,8 +202,8 @@ cwd = "caller"
     let global = WorkflowConfig::discover_global(&environment).unwrap();
     let review = global.review_actions.for_repository(&repo);
     assert_eq!(review.len(), 2);
-    assert_eq!(review[0].action.command, ["rule-review"]);
-    assert_eq!(review[1].action.command, ["keep-review"]);
+    assert_eq!(review[0].action.command, ["keep-review"]);
+    assert_eq!(review[1].action.command, ["rule-review"]);
     let stack = global.stack_status_actions.for_repository(&repo);
     assert_eq!(stack.len(), 1);
     assert_eq!(stack[0].action.command, ["global-stack"]);
@@ -205,11 +219,11 @@ cwd = "caller"
             .iter()
             .map(|entry| entry.action.id.as_str())
             .collect::<Vec<_>>(),
-        ["open", "keep"]
+        ["keep", "open"]
     );
-    assert_eq!(stack[0].action.command, ["local-stack"]);
-    assert_eq!(stack[0].action.cwd, PrActionWorkingDirectory::Caller);
-    assert_eq!(stack[1].action.command, ["local-keep-stack"]);
+    assert_eq!(stack[1].action.command, ["local-stack"]);
+    assert_eq!(stack[1].action.cwd, PrActionWorkingDirectory::Caller);
+    assert_eq!(stack[0].action.command, ["local-keep-stack"]);
     for action in review.iter().chain(&stack) {
         assert_eq!(action.source.scope, PrActionConfigScope::Repository);
         assert_eq!(action.source.path, workspace.path().join(".jx/config.toml"));
@@ -301,6 +315,11 @@ fn action_config_rejects_invalid_definitions_and_duplicate_ids_in_each_list() {
             "id = 'x'\ntitle = 'X'\ncommand = ['echo', '{title']",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo', 'title}']",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo']\ncwd = 'other'",
+            "id = 'x'\ntitle = 'X'\ncommand = ['echo']\norder = '100'",
+            "id = 'x'\ntitle = 'X'\ncommand = ['echo']\norder = 1.5",
+            "id = 'x'\ntitle = 'X'\ncommand = ['echo']\norder = true",
+            "id = 'x'\ntitle = 'X'\ncommand = ['echo']\norder = []",
+            "id = 'x'\nenabled = false\norder = 100",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo']\non_success = 'other'",
             "id = 'x'\ntitle = 'X'\ncommand = ['echo']\non_success = true",
             "id = 'x'\nenabled = false\non_success = 'refresh'",

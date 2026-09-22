@@ -42,12 +42,14 @@ in both lists explicitly; identical IDs across the two sets are unrelated:
 [[repo.review_actions]]
 id = "open"
 title = "Open PR"
+order = -100
 command = ["open", "{pr_url}"] # macOS; use your platform's URL opener
 cwd = "caller"
 
 [[repo.stack_status_actions]]
 id = "open"
 title = "Open PR"
+order = -100
 command = ["open", "{pr_url}"]
 cwd = "caller"
 
@@ -62,6 +64,7 @@ repo = "example-owner/example-repo"
 [[repo.rules.review_actions]]
 id = "open"
 title = "Open PR in Firefox"
+order = -100
 command = ["open", "-a", "Firefox", "{pr_url}"]
 cwd = "caller"
 
@@ -74,9 +77,19 @@ Actions match the **selected PR's** `owner/repo`, not the caller's repository.
 Each set merges independently in this order: its global defaults, matching global
 rules, repository-local defaults, then matching local rules. Global files retain
 lexical order within each phase. Within a set, the same ID replaces the entire
-definition in its existing menu position; new IDs append. Duplicate IDs within
-one list are errors. An `enabled = false` entry removes an inherited action only
-from that set. An unconfigured set stays empty.
+definition. Duplicate IDs within one list are errors. An `enabled = false` entry
+removes an inherited action only from that set. An unconfigured set stays empty.
+
+After merging, each menu sorts by ascending `(order, title)`, not by config-file
+position or action ID. `order` is an optional signed integer, defaulting to `0`;
+titles break ties using case-sensitive string ordering. Without order hints,
+actions sort alphabetically by title. Use `order = -100` for open actions and
+`order = 100` for dismissal actions to put them at opposite ends, with ordinary
+actions in between. Dismissal actions with the same order stay together even when
+defined in different config layers; more specific values let you fine-tune placement.
+
+Because overrides replace the whole definition, an overriding action must repeat
+its `order` to retain it. Omitting `order` in an override resets it to `0`.
 
 `command` is an argv array, never an implicit shell command. Substitution happens
 once within each argument, without word splitting. Supported placeholders are
@@ -119,6 +132,7 @@ For a local-only dismissal, use both cached command execution and local refresh:
 [[repo.review_actions]]
 id = "dismiss"
 title = "Dismiss"
+order = 100
 command = ["jx", "review", "--cached", "dismiss", "{pr_url}"]
 cwd = "caller"
 on_success = "refresh-local"

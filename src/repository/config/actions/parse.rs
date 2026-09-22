@@ -64,7 +64,7 @@ fn parse_actions(
         for name in table.keys() {
             if !matches!(
                 name.as_str(),
-                "id" | "title" | "command" | "cwd" | "enabled" | "on_success"
+                "id" | "title" | "order" | "command" | "cwd" | "enabled" | "on_success"
             ) {
                 return Err(RepositoryError::UnsupportedConfigKey {
                     file: file.to_owned(),
@@ -102,6 +102,12 @@ fn parse_actions(
             continue;
         }
         let title = required_string(file, &key, table, "title")?;
+        let order = match table.get("order") {
+            None => 0,
+            Some(value) => value
+                .as_integer()
+                .ok_or_else(|| invalid(file, format!("`{key}.order` must be an integer")))?,
+        };
         let command = table
             .get("command")
             .and_then(toml::Value::as_array)
@@ -166,6 +172,7 @@ fn parse_actions(
         actions.push(PrActionOverride::Define(PrAction {
             id,
             title,
+            order,
             command,
             cwd,
             on_success,
