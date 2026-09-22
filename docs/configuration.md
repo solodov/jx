@@ -338,11 +338,13 @@ auto-merge state, hide pre-merge-only labels after merge, and rewrite title
 prefixes or label names before display rendering. Review views can also omit
 review-only labels without affecting stack status, and ignore command-style
 author comments that should not resurface dismissed reviews.
-Matching review-gate checks are removed from the `Chk` aggregate and drive the
-review state instead:
-all configured gate regexes must have passing matching checks for the PR to render
-approved unless GitHub still reports a protected review requirement, while
-missing, pending, unknown, or failing gate checks render as waiting review. The
+Approval requires at least one approver remaining after `ignored_reviewers`
+filtering, even when GitHub reports an aggregate approval. Matching review-gate
+checks are removed from the `Chk` aggregate and constrain the review state:
+all configured gate regexes must have passing matching checks. Passing gates
+cannot substitute for reviewer approval. GitHub's changes-requested and protected
+review-required decisions still block approval, while missing, pending, unknown,
+or failing gate checks keep review pending. The
 review column is undefined for drafts and PRs targeting a non-default base branch
 because those PRs are not independently mergeable into trunk yet.
 Ignored checks are removed without affecting check or review state. Configured

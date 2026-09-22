@@ -24,7 +24,7 @@ pub fn pull_request_stack_status_report(
     }
 }
 
-/// Applies repository-specific PR status policy to raw GitHub check and review facts.
+/// Applies repository-specific PR status policy, requiring a non-ignored approver for approval.
 pub fn apply_pull_request_status_policy(
     status: PullRequestStatusRecord,
     config: &RepoStackStatusConfig,
@@ -50,10 +50,7 @@ fn apply_pull_request_status_policy_inner(
         if had_checks {
             status.check_status = aggregate_check_status(&[]);
         }
-        if !config.review_gate_checks.is_empty() {
-            status.review_status =
-                review_status_with_review_gate(status.review_status, &[], config);
-        }
+        status.review_status = effective_review_status(&status, &[], config);
         status.auto_merge_status =
             pull_request_auto_merge_status(&status, config, &label_names, false);
         if rewrite_labels {
@@ -76,10 +73,7 @@ fn apply_pull_request_status_policy_inner(
     status.check_status = aggregate_required_check_status(&remaining_checks);
     status.checks = remaining_checks;
 
-    if !config.review_gate_checks.is_empty() {
-        status.review_status =
-            review_status_with_review_gate(status.review_status, &checks, config);
-    }
+    status.review_status = effective_review_status(&status, &checks, config);
     status.auto_merge_status = pull_request_auto_merge_status(
         &status,
         config,
@@ -309,16 +303,28 @@ fn auto_merge_prerequisite_checks_require_action(
     })
 }
 
-fn review_status_with_review_gate(
-    status: PullRequestReviewStatus,
+/// Combines GitHub's decision and configured gates with approvals left after reviewer filtering.
+fn effective_review_status(
+    status: &PullRequestStatusRecord,
     checks: &[PullRequestCheck],
     config: &RepoStackStatusConfig,
 ) -> PullRequestReviewStatus {
-    match status {
-        PullRequestReviewStatus::ChangesRequested => PullRequestReviewStatus::ChangesRequested,
-        PullRequestReviewStatus::ReviewRequired => PullRequestReviewStatus::ReviewRequired,
-        _ if review_gate_checks_approve(checks, config) => PullRequestReviewStatus::Approved,
-        _ => PullRequestReviewStatus::ReviewRequested,
+    let has_approval = !status.approved_reviewers.is_empty();
+    match status.review_status {
+        PullRequestReviewStatus::ChangesRequested | PullRequestReviewStatus::ReviewRequired => {
+            status.review_status
+        }
+        _ if !config.review_gate_checks.is_empty() => {
+            if has_approval && review_gate_checks_approve(checks, config) {
+                PullRequestReviewStatus::Approved
+            } else {
+                PullRequestReviewStatus::ReviewRequested
+            }
+        }
+        PullRequestReviewStatus::Approved if !has_approval => {
+            PullRequestReviewStatus::ReviewRequested
+        }
+        other => other,
     }
 }
 

@@ -477,7 +477,7 @@ auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
             color: "5319e7".to_owned(),
         },
     ];
-    let missing = stack_status_record(
+    let mut missing = stack_status_record(
         112,
         "Missing auto-merge",
         "topic/missing",
@@ -486,6 +486,7 @@ auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
         PullRequestReviewStatus::Approved,
         ReviewerSelection::default(),
     );
+    missing.approved_reviewers = vec!["reviewer-approved".to_owned()];
     let waiting = stack_status_record(
         113,
         "Waiting checks",
@@ -551,7 +552,7 @@ auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
         stack_status_pull_request_cell(111)
     )));
     assert!(plain.stdout.contains(&format!(
-        "{} ✓       —    ◆ Missing auto-merge",
+        "{} ✓   ✓   —    ◆ Missing auto-merge",
         stack_status_pull_request_cell(112)
     )));
     assert!(plain.stdout.contains(&format!(
@@ -1611,8 +1612,8 @@ name = "^ignored-.*$"
 }
 
 #[test]
-fn stack_status_counts_passing_review_gate_checks_as_approved() {
-    // Verifies: repo-defined gate checks can make the review column green without encoding repo-specific names in code.
+fn stack_status_requires_approval_alongside_passing_review_gate_checks() {
+    // Verifies: passing gates supplement an actual approval without repo-specific names in code.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -1654,6 +1655,7 @@ review_gate_checks = ["^approval gate$", "^committer gate$"]
         PullRequestReviewStatus::NotReviewed,
         ReviewerSelection::new(["reviewer-one"], Vec::<String>::new()),
     );
+    status.approved_reviewers = vec!["reviewer-one".to_owned()];
     status.checks = vec![
         PullRequestCheck {
             name: "approval gate".to_owned(),

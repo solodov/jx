@@ -446,7 +446,7 @@ impl RepoStackStatusConfig {
             .any(|rule| rule.matches(label))
     }
 
-    /// Returns whether a reviewer token should be omitted from stack/review status views.
+    /// Returns whether a reviewer should be excluded from status views and counted approvals.
     pub fn ignores_reviewer(&self, reviewer: &str) -> bool {
         self.ignored_reviewers
             .iter()
@@ -713,7 +713,7 @@ fn regex_replace(pattern: &str, replace: &str, value: &str) -> String {
         .unwrap_or_else(|| value.to_owned())
 }
 
-/// Reviewer-name regex hidden from stack/review status presentation.
+/// Reviewer-name regex excluded from status presentation and counted approvals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgnoredReviewerConfig {
     pub name: String,

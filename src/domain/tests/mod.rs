@@ -22,6 +22,7 @@ use crate::{
 
 use super::*;
 
+mod approval_policy;
 mod draft_reviewers;
 mod stack_context;
 
@@ -838,9 +839,8 @@ fn pull_request_status_policy_filters_snapshot_conditioned_labels() {
 }
 
 #[test]
-fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
-    // Verifies: repo-defined gate checks decide approval unless GitHub still
-    // requires protected review.
+fn pull_request_status_policy_requires_review_gate_checks_for_effective_approval() {
+    // Verifies: repo-defined gates allow a reviewer's approval unless GitHub still requires review.
     let config = crate::repository::RepoStackStatusConfig {
         review_gate_checks: vec![
             crate::repository::ReviewGateCheckConfig {
@@ -854,6 +854,7 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
     };
     let mut gate_approved = pull_request_status(32, "Gate approved", false);
     gate_approved.review_status = crate::github::PullRequestReviewStatus::NotReviewed;
+    gate_approved.approved_reviewers = vec!["reviewer".to_owned()];
     gate_approved.checks = vec![
         crate::github::PullRequestCheck {
             name: "approval gate".to_owned(),
@@ -873,9 +874,11 @@ fn pull_request_status_policy_uses_review_gate_checks_as_effective_approval() {
     ];
     let mut github_required_review = pull_request_status(34, "Requires review", false);
     github_required_review.review_status = crate::github::PullRequestReviewStatus::ReviewRequired;
+    github_required_review.approved_reviewers = vec!["reviewer".to_owned()];
     github_required_review.checks = gate_approved.checks.clone();
     let mut stale_github_approval = pull_request_status(33, "Stale approval", false);
     stale_github_approval.review_status = crate::github::PullRequestReviewStatus::Approved;
+    stale_github_approval.approved_reviewers = vec!["reviewer".to_owned()];
     stale_github_approval.checks = vec![
         crate::github::PullRequestCheck {
             name: "approval gate".to_owned(),
@@ -1053,10 +1056,13 @@ fn pull_request_status_policy_reports_configured_auto_merge_state() {
             color: "5319e7".to_owned(),
         },
     ];
-    let ready_missing = pull_request_status(35, "Ready missing", false);
+    let mut ready_missing = pull_request_status(35, "Ready missing", false);
+    ready_missing.approved_reviewers = vec!["reviewer".to_owned()];
     let mut pending_missing = pull_request_status(36, "Pending missing", false);
+    pending_missing.approved_reviewers = ready_missing.approved_reviewers.clone();
     pending_missing.check_status = crate::github::PullRequestCheckStatus::Pending;
     let mut review_required_missing = pull_request_status(37, "Review pending missing", false);
+    review_required_missing.approved_reviewers = ready_missing.approved_reviewers.clone();
     review_required_missing.review_status = crate::github::PullRequestReviewStatus::ReviewRequired;
 
     let armed = apply_pull_request_status_policy(armed, &config);
