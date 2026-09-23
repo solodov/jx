@@ -146,8 +146,10 @@ on_success = "refresh-local"
 The dashboard's live load supplies the cached inbox and PR snapshots. Cached
 dismissal fails if the target snapshot is unavailable; it never falls back to
 GitHub. After success, the local reload applies the usual dismissal rules and
-updates rows and repository groups. Selection stays on the same PR when possible,
-or moves to a neighboring row if the selected PR disappears.
+updates rows and repository groups. Selection stays on the same PR when possible.
+If it disappears, focus keeps its position within the same repository and checkout,
+falling back to that group's last remaining PR. Focus moves to another group only
+when the selected group becomes empty.
 
 The bottom terminal row becomes a status line while work is running or a notice
 is visible. Running actions show only their name and elapsed time. Initial loading,

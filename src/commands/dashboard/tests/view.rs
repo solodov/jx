@@ -96,6 +96,64 @@ fn removing_a_pr_preserves_selection_or_selects_the_next_row_across_resizes() {
     }
 }
 
+#[test]
+fn grouped_dismissal_keeps_focus_in_the_repository_after_menu_close_and_resize() {
+    let grouped_snapshot = |numbers: &[u64]| {
+        let repository = snapshot(numbers);
+        DashboardFrameSnapshot::new(move |options| {
+            let mut frame = repository.render(options)?;
+            frame.push_line("another repository");
+            for number in [4, 5] {
+                frame.push_pr_line(
+                    &format!("PR {number}"),
+                    Some(context(number, "owner/other")),
+                );
+            }
+            Ok(frame)
+        })
+    };
+    let size = DashboardTerminalSize::new(100, 30);
+    let mut view = DashboardView {
+        pending: Some(Ok(grouped_snapshot(&[1, 2, 3]))),
+        ..DashboardView::default()
+    };
+    view.update(false, size);
+    let mut navigation = DashboardNavigation::default();
+    navigation.reconcile(view.frame.as_ref());
+    for _ in 0..2 {
+        navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+    }
+    view.pending = Some(Ok(grouped_snapshot(&[1, 2])));
+    assert!(view.update(true, size).is_none());
+    navigation.reconcile(view.frame.as_ref());
+    assert_eq!(
+        navigation
+            .selected(view.frame.as_ref().unwrap())
+            .unwrap()
+            .pr_number,
+        3
+    );
+    for width in [100, 42] {
+        view.update(false, DashboardTerminalSize::new(width, 30));
+        navigation.reconcile(view.frame.as_ref());
+        assert_eq!(
+            navigation
+                .selected(view.frame.as_ref().unwrap())
+                .unwrap()
+                .pr_number,
+            2
+        );
+    }
+    navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+    assert_eq!(
+        navigation
+            .selected(view.frame.as_ref().unwrap())
+            .unwrap()
+            .pr_number,
+        4
+    );
+}
+
 fn snapshot(numbers: &[u64]) -> DashboardFrameSnapshot {
     let numbers = numbers.to_vec();
     DashboardFrameSnapshot::new(move |options| {

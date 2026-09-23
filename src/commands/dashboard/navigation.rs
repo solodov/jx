@@ -6,11 +6,13 @@ use crate::domain::{PrActionContext, PrActionKey};
 pub(super) struct DashboardNavigation {
     target: Option<(PrActionKey, Option<PathBuf>)>,
     index: usize,
+    repository_index: usize,
     pub(super) selected_line: Option<usize>,
     pub(super) scroll_top: usize,
 }
 
 impl DashboardNavigation {
+    /// Falls back within the selected repository and checkout before moving to another group.
     pub(super) fn reconcile(&mut self, frame: Option<&PullRequestTableFrame>) {
         let Some(frame) = frame.filter(|frame| !frame.rows.is_empty()) else {
             *self = Self::default();
@@ -22,10 +24,11 @@ impl DashboardNavigation {
                 .iter()
                 .position(|row| row.context.key() == *key && row.context.repository_root == *root)
         });
-        self.select(
-            frame,
-            retained.unwrap_or(self.index).min(frame.rows.len() - 1),
-        );
+        let index = retained
+            .or_else(|| self.repository_fallback_index(frame))
+            .unwrap_or(self.index)
+            .min(frame.rows.len() - 1);
+        self.select(frame, index);
     }
 
     pub(super) fn selected<'a>(
@@ -57,11 +60,35 @@ impl DashboardNavigation {
         self.select(frame, index);
     }
 
+    /// Retains both table-wide and repository-local positions for the next refresh.
     fn select(&mut self, frame: &PullRequestTableFrame, index: usize) {
         let row = &frame.rows[index];
         self.index = index;
+        self.repository_index = frame.rows[..index]
+            .iter()
+            .filter(|candidate| {
+                candidate.context.repository == row.context.repository
+                    && candidate.context.repository_root == row.context.repository_root
+            })
+            .count();
         self.target = Some((row.context.key(), row.context.repository_root.clone()));
         self.selected_line = Some(row.line);
+    }
+
+    /// Keeps the group's ordinal, clamping to its last row when the selected tail disappears.
+    fn repository_fallback_index(&self, frame: &PullRequestTableFrame) -> Option<usize> {
+        let (key, root) = self.target.as_ref()?;
+        frame
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.context.repository.slug() == key.repository
+                    && row.context.repository_root == *root
+            })
+            .take(self.repository_index.saturating_add(1))
+            .last()
+            .map(|(index, _)| index)
     }
 
     /// Keeps the selected logical line visible without removing headers or altering row text.
