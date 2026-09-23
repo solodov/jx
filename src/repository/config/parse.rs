@@ -910,6 +910,7 @@ fn parse_review_config(
                 | "ignored_label_patterns"
                 | "hidden_labels"
                 | "ignored_author_response_comments"
+                | "hide_pending_checks"
         ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
@@ -935,6 +936,10 @@ fn parse_review_config(
         .map(|value| parse_hidden_labels(file, &format!("{key}.hidden_labels"), value))
         .transpose()?
         .unwrap_or_default();
+    let hide_pending_checks = table
+        .get("hide_pending_checks")
+        .map(|value| parse_bool_value(file, &format!("{key}.hide_pending_checks"), value))
+        .transpose()?;
     let ignored_author_response_comments = table
         .get("ignored_author_response_comments")
         .map(|value| {
@@ -948,6 +953,7 @@ fn parse_review_config(
         .unwrap_or_default();
 
     Ok(RepoReviewConfig {
+        hide_pending_checks,
         ignored_labels,
         ignored_label_patterns,
         hidden_labels,

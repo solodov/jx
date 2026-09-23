@@ -24,6 +24,7 @@ use super::*;
 
 mod approval_policy;
 mod draft_reviewers;
+mod review_checks;
 mod stack_context;
 
 #[test]
@@ -761,6 +762,7 @@ fn review_request_status_policy_filters_review_only_labels() {
                     pattern: "^/automation merge$".to_owned(),
                 },
             ],
+            ..Default::default()
         },
     );
 

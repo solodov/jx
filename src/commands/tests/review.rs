@@ -5,6 +5,8 @@ mod action_frames;
 
 #[path = "review_cache.rs"]
 mod cache;
+#[path = "review_checks.rs"]
+mod checks;
 #[path = "review_names.rs"]
 mod names;
 #[path = "review_order.rs"]

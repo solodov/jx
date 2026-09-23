@@ -458,6 +458,31 @@ pattern = "^workflow-setting-change$"
 replace = "workflow"
 ```
 
+Set `repo.review.hide_pending_checks = true` to omit PRs from the review inbox
+while any relevant required check is queued or running, even if another check has
+already failed. It defaults to false. To enable it only for Faire repositories,
+add the setting to the existing `Faire/*` rule, or define that rule as follows:
+
+```toml
+[[repo.rules]]
+repo = "Faire/*"
+
+[repo.rules.review]
+hide_pending_checks = true
+```
+
+The filter uses the latest checks after shared status policy removes ignored
+checks, review gates, and auto-merge prerequisites. Optional checks do not block
+visibility. Missing or unknown results alone do not hide a PR. Once no relevant
+required checks are pending, the next refresh shows the PR again if existing
+review and dismissal rules allow it, whether CI passed or failed.
+
+This is an inbox filter, not a recorded dismissal. It applies to human, JSON,
+and interactive review output; `--cached` uses the stored check states. It does
+not change stack status or dismissal-management commands. An explicit
+`hide_pending_checks = false` in a later matching rule opts a repository back in
+to seeing pending PRs.
+
 Event handlers run configured PR automation while `jx stack publish` prepares,
 creates, or updates pull requests. Handlers can update the selected commit title, add
 labels, or ask the command layer to open the PR in an operator browser. `when`

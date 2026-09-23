@@ -1,5 +1,8 @@
 use super::*;
-use crate::domain::{apply_review_request_status_policy, review_request_state, ReviewRequestState};
+use crate::domain::{
+    apply_review_request_status_policy, review_request_has_pending_checks, review_request_state,
+    ReviewRequestState,
+};
 use clap::error::ErrorKind;
 use globset::{Glob, GlobMatcher};
 use std::{
@@ -543,6 +546,7 @@ fn group_review_candidates(
     (candidate_keys, grouped)
 }
 
+/// Builds rows after status policy, dismissal rules, and temporary inbox-only CI filtering.
 fn build_review_repository_view(
     context: &ReviewViewContext<'_>,
     repository: &GitHubRepository,
@@ -601,7 +605,10 @@ fn build_review_repository_view(
                 )?;
             }
         }
-        if !decision.visible {
+        let waiting_for_checks = context.dismissal_mode == ReviewDismissalMode::Apply
+            && review_policy.hide_pending_checks.unwrap_or(false)
+            && review_request_has_pending_checks(&status);
+        if !decision.visible || waiting_for_checks {
             continue;
         }
         rows.push(ReviewRequestRowView {

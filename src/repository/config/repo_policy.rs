@@ -468,9 +468,11 @@ impl RepoStackStatusConfig {
     }
 }
 
-/// Review-request presentation behavior layered on top of shared PR status policy.
+/// Review-request visibility and presentation layered on top of shared PR status policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoReviewConfig {
+    /// Hides inbox rows while required CI checks run; unset inherits and defaults to false.
+    pub hide_pending_checks: Option<bool>,
     pub ignored_labels: Vec<IgnoredLabelConfig>,
     pub ignored_label_patterns: Vec<IgnoredLabelPatternConfig>,
     pub hidden_labels: Vec<HiddenLabelConfig>,
@@ -479,6 +481,9 @@ pub struct RepoReviewConfig {
 
 impl RepoReviewConfig {
     fn apply_layer(&mut self, layer: RepoReviewConfig) {
+        if layer.hide_pending_checks.is_some() {
+            self.hide_pending_checks = layer.hide_pending_checks;
+        }
         merge_ignored_labels(&mut self.ignored_labels, layer.ignored_labels);
         merge_ignored_label_patterns(
             &mut self.ignored_label_patterns,
