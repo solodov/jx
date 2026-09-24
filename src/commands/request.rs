@@ -1506,7 +1506,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("review")
                 .about("Show pull requests requesting your review")
                 .long_about(
-                    "Show open GitHub pull requests requesting review from the authenticated user.\n\nBy default the command fetches live GitHub review requests, refreshes local PR snapshots, groups them by repository, applies repo-specific status policy such as review-gate checks, and renders check status, review-request state, labels, and reviewer state using the same compact conventions as stack status. Repository groups keep their configured-first alphabetical order. Within each group, PRs with the longest review lag appear first, unknown lag comes last, and equal lag keeps descending PR-number order. Repository review policy can set hide_pending_checks = true to omit inbox PRs while any relevant required CI check is queued or running, including mixed pending/failed results. Ignored checks and review gates do not block visibility; missing or unknown results alone remain visible. This temporary filter does not create dismissals. Use --cached to render the latest locally stored review inbox without contacting GitHub.",
+                    "Show GitHub pull requests needing your attention, grouped by repository with longest-waiting reviews first.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())
@@ -1611,7 +1611,7 @@ fn stack_command() -> ClapCommand {
         .visible_alias("sk")
         .about("Show, move, publish, or refresh repo-local pull request stack state")
         .long_about(
-            "Show, move, publish, status-check, or refresh repo-local pull request stack state.\n\nStack state is stored in .jx/stack.toml so stack-aware commands can keep parent/child PR relationships even when a parent PR has merged or its local bookmark disappeared. Without a subcommand or move option, jx stack shows the stored local stack without contacting GitHub. Use status to discover your authored open PRs and fetch GitHub check and review summaries for them and the stored stack, or status -a with optional repository filters such as `example-owner/*` or `service-*` to scan configured repositories. Use plan to preview the local stack neighbourhood for the working copy or selected revsets. Use publish to create or update pull requests for a local stack; pass -r/--revision to publish selected revisions, bookmarks, or revsets. Use repeatable -r/--revision with -o/--onto or -t/--trunk to move exact selected revisions; without an explicit target, selected revisions move onto trunk. Without -r, stack moves use the current change and descendants. Stack moves sync affected PR branches by default unless --no-sync is set. Use refresh to rebuild metadata from local bookmarks and open GitHub PRs authored by you. Use -i/--interactive to choose a stored PR and open it.",
+            "Show, move, publish, or refresh pull-request stacks.\n\nWithout a subcommand or move option, show the stack stored in .jx/stack.toml without contacting GitHub.\n\nMoves use the current change and descendants unless --revision selects exact targets. Selected revisions default to trunk when no destination is given. Moves also sync affected PR branches unless --no-sync is set.",
         )
         .args_conflicts_with_subcommands(true)
         .group(
@@ -1641,14 +1641,14 @@ fn stack_command() -> ClapCommand {
             ClapCommand::new("refresh")
                 .about("Rebuild stack state from local bookmarks and authored open PRs")
                 .long_about(
-                    "Rebuild repo-local stack state from local PR bookmarks and open GitHub pull requests authored by you.\n\nThe command searches open GitHub PRs authored by the authenticated login, also checks local PR bookmark heads for matching authored PRs, refreshes durable PR-number metadata for stored ancestors, applies local jj ancestry, writes .jx/stack.toml, syncs affected PR bases/descriptions, and prints the resulting stack. It does not push branches or create, close, or delete pull requests.",
+                    "Rebuild stack metadata from local bookmarks and your authored open GitHub PRs.\n\nUpdate .jx/stack.toml and affected PR bases and descriptions. Does not push branches or create, close, or delete pull requests.",
                 ),
         )
         .subcommand(
             ClapCommand::new("status")
                 .about("Show trunk, check, and review status for pull request stacks")
                 .long_about(
-                    "Show origin trunk freshness plus GitHub check and review status for pull request stacks while keeping remote state unchanged.\n\njx automatically discovers same-repository open PRs authored by the authenticated user, including PRs without local bookmarks or commits. It combines those PRs with the stored .jx/stack.toml stack, fetches batched GitHub status, checks origin trunk freshness, and updates the local cache. Existing stack ancestry is preserved, and expired closed or fully merged stack entries are pruned. Discovery does not sync PR bases or descriptions, push branches, or create PRs.\n\nUse -a/--all to scan configured primary repositories even without existing stack metadata; repositories with no remaining PRs are omitted. Optional positional filters match repository keys and provider/owner/repo identities, for example `example-owner/*` or `service-*`.",
+                    "Show trunk freshness, checks, and reviews for your open PRs and stored stacks, including PRs without local bookmarks.\n\nRefresh the local cache without changing GitHub PRs or pushing branches. With --all, scan configured repositories even without existing stack metadata.",
                 )
                 .arg(stack_status_all_arg())
                 .arg(stack_status_jobs_arg())
@@ -1670,7 +1670,7 @@ fn stack_command() -> ClapCommand {
                 .visible_alias("pub")
                 .about("Publish or update GitHub pull requests for a local stack")
                 .long_about(
-                    "Publish or update GitHub pull requests for a local stack.\n\nWithout -r/--revision, jx publishes every change in the linear stack containing the working copy. With one or more -r/--revision commits, bookmarks, or revsets, jx publishes exactly the selected changes, which must belong to one linear stack. A single selected revision reproduces the old one-PR workflow while preserving stack-aware base selection. With -A/--apply-to-stack and one -r/--revision, the revision becomes the stack anchor and jx publishes the full stack containing it. Task IDs, labels, reviewer selection, fix intent, and bare --ready/--draft target the current commit or single selected revision by default; pass -A/--apply-to-stack to broaden that scope to every published revision. Use --ready=REVSET / --draft=REVSET for explicit readiness subsets.\n\nReviewer selection applies only to ready PRs, using their final state after --ready/--draft overrides. In a mixed ready/draft stack, both kinds are published, but drafts keep their existing reviewers and receive no automatic review requests. Draft PRs do not contribute reviewer candidates or past review activity to the shared picker. If no ready PRs are targeted, the picker is skipped.\n\n-A -R alice applies Alice only to ready PRs. Adding -r as a stack anchor (-A -r REVISION -R alice) still leaves draft reviewers unchanged. To request review on a draft, explicitly select exactly one PR with -r and provide -R, without -A: `jx stack pub -r REVISION -R alice`. This skips the picker and adds only the named reviewers while retaining that draft's existing reviewers. Repeat -R for multiple users or org/team reviewers.",
+                    "Publish or update GitHub pull requests for a local stack.\n\nPublish the working copy's linear stack by default. Use --revision for exact selections within one linear stack; with --apply-to-stack, one selected revision instead anchors the full stack. Publish options affect the current or single selected PR unless --apply-to-stack broadens their scope. Stack-wide fix intent belongs to the final PR.\n\nReviewer selection applies only to ready PRs after readiness overrides. Drafts retain their reviewers; an all-draft selection skips the picker. To add reviewers to one draft, select it explicitly without --apply-to-stack: `jx stack pub -r REVISION -R alice`.",
                 )
                 .arg(stack_publish_revision_arg())
                 .arg(task_id_arg())
@@ -2001,8 +2001,8 @@ fn dashboard_interactive_arg() -> Arg {
         .short('i')
         .long("interactive")
         .action(ArgAction::SetTrue)
-        .help("Continuously refresh with keyboard PR actions (default: every 5 minutes)")
-        .long_help("Continuously refresh this dashboard. Default keys: Up/Down or j/k selects a PR; Enter opens its action menu. Home/gg goes to the first PR, End/G to the last; PageUp/PageDown navigate. g r refreshes; ? shows the effective bindings; q exits. Esc cancels a key prefix, closes help or a menu/preview, or cancels a running action; it never exits. Configure shared main-list bindings in global [ui.dashboard.keys]; repository-local keymaps are rejected. Each entry replaces that operation's bindings. Esc and Ctrl-C are reserved; duplicate and prefix-overlapping sequences are rejected. Existing terminal hyperlinks remain clickable. Configure review actions with [[repo.review_actions]] and stack status actions with [[repo.stack_status_actions]], also supported under repo.rules. These sets are independent; actions are never implicitly shared. Tab or ? in the menu previews argv, working directory, and source; repository-local actions show those details and require an explicit y confirmation. Commands run quietly with stdin closed and stdout/stderr logged to ~/.local/state/jx/jx-actions.log (XDG_STATE_HOME and JX_ACTION_LOG are supported). The pinned bottom status line shows running action names or pull-request refreshes with elapsed time, without PR identifiers or cached-reload messages. Successful actions show a brief completion notice after the list updates. Actions with on_success = \"none\" show success immediately without reloading or changing the periodic refresh schedule. Review actions with on_success = \"refresh-local\" quietly reload only local inbox state without changing the live refresh schedule. Failures retain the current rows and show a status message for ten seconds; success and cancellation notices last three seconds. Keyboard interaction clears notices without consuming the key. Pending key prefixes show available continuations in the bottom row. Action failures show the action name followed by 'failed, see <path>', with the log's home directory shortened to ~; errors without a recorded log show their cause directly. Status messages have no details popup. There is no persistent help line; the bottom row returns to the PR list when no work, notice, or key prefix is displayed. Esc never exits the dashboard. Ctrl-C cancels a running action or exits. No actions run automatically.")
+        .help("Open a live dashboard (? for keybindings)")
+        .long_help("Keep the live PR list open and refresh periodically. Press ? for current keybindings.\n\nCustomize keys in global [ui.dashboard.keys] and manual actions in repo.review_actions or repo.stack_status_actions. Actions are non-interactive; repository-local actions require confirmation. Output is logged to ~/.local/state/jx/jx-actions.log (XDG_STATE_HOME and JX_ACTION_LOG are supported).")
 }
 
 fn dashboard_refresh_seconds_arg() -> Arg {
@@ -2011,7 +2011,7 @@ fn dashboard_refresh_seconds_arg() -> Arg {
         .value_name("SECONDS")
         .default_value("300")
         .value_parser(clap::value_parser!(u64).range(1..))
-        .help("Seconds between interactive dashboard refreshes (default: 300)")
+        .help("Seconds between interactive dashboard refreshes")
 }
 
 fn dashboard_refresh_seconds(matches: &ArgMatches) -> Result<u64, clap::Error> {

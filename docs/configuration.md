@@ -1,271 +1,33 @@
-# Configuration options
+# Configuration
 
-`jx` has two configuration surfaces:
+`jx` uses optional TOML files for layout, repository policy, and user preferences.
+Command usage lives in `jx <command> --help`; dashboard keybindings live in `?`.
+This guide covers configuration structure and composition, not every option.
 
-- `jx` TOML config for clone layout and workflow behavior.
-- jj config for command aliases and terminal styling.
+## Files and scope
 
-## `jx` config files
+Files load in this order:
 
-Config files compose in this order:
+1. `~/.config/jx/*.toml`, in lexical filename order.
+2. Workspace-root `.jx/config.toml`, when the command loads workspace config.
 
-1. `~/.config/jx/*.toml`, lexically sorted
-2. workspace-root `.jx/config.toml`
+Use global files for personal defaults and cross-repository rules. Use the
+workspace file for project policy. Layout-wide discovery uses global config;
+repository operations can then load the selected workspace's config.
 
-Later scalar values override earlier ones. Lists such as reviewers are normalized
-and deduplicated where the workflow expects sets.
+Dashboard keybindings are user-global and cannot be set in workspace config.
+Jujutsu aliases and terminal styling belong in jj's own configuration, not these
+files.
 
-## UI behavior
+## File shape
 
-Bare `jx` runs `log` by default. Set `ui.default_command` to a subcommand path
-when another view should be the no-argument entrypoint:
-
-```toml
-[ui]
-default_command = ["status"]
-```
-
-## Dashboard keys
-
-`jx stack status -i` and `jx review -i` share the same main-list bindings:
-
-| Operation | Default keys |
-| --- | --- |
-| Refresh live state | `g r` |
-| Previous / next PR | `k` / `j`, Up / Down |
-| Page up / down | PageUp / PageDown |
-| First / last PR | `g g` / `G`, Home / End |
-| Open action menu | Enter |
-| Show effective bindings | `?` |
-| Exit | `q` |
-
-Spaces denote successive keystrokes, not keys held together. `g` waits for a
-continuation without moving selection; the bottom hint shows the available
-continuations. There is no prefix timeout. An invalid continuation clears the
-prefix without executing another operation. Esc cancels the prefix, closes help
-or the menu/preview, or cancels a running action. **Esc never exits the dashboard**;
-it does nothing on an idle list. Ctrl-C remains the interrupt key: cancel a
-running action, otherwise exit.
-
-Customize main-list bindings in `~/.config/jx/*.toml`:
-
-```toml
-[ui.dashboard.keys]
-refresh = ["g r"]
-first = ["Home", "g g"]
-last = ["End", "G"]
-quit = ["q"]
-```
-
-Available operations are `refresh`, `up`, `down`, `page_up`, `page_down`, `first`,
-`last`, `menu`, `help`, and `quit`. Each entry replaces that operation's inherited
-sequences; unspecified operations keep their defaults and `[]` unbinds one.
-Global files compose in lexical order. These preferences are user-global;
-repository-local `[ui.dashboard.keys]` is rejected.
-
-Keys may be single characters (case-sensitive), arrows, Home, End, PageUp,
-PageDown, Enter, Tab, BackTab, Backspace, Delete, Space, or F1–F12, with optional
-`Ctrl-`, `Alt-`, and `Shift-` prefixes. Uppercase letters already encode Shift;
-Ctrl-letter case is normalized because terminals do not reliably distinguish it.
-Esc and Ctrl-C are reserved and cannot appear in configured sequences. Duplicate
-bindings and ambiguous prefixes (such as `g` and `g r`) are rejected after merging
-all global layers. Holding a key repeats only single-key navigation, not refresh,
-exit, or multi-key sequences.
-
-Prefix hints and main-list help use the effective keymap; there is no persistent
-help line. Help scrolls with
-j/k, arrows, or PageUp/PageDown and closes with Esc, Enter, or q. Action-menu
-navigation, preview, and confirmation controls remain fixed and separate from
-these preferences; remapping list keys cannot change the confirmation keys.
-
-## Manual PR actions
-
-`jx stack status -i` and `jx review -i` use independent action sets. Enter opens the
-selected PR's menu by default. Existing terminal hyperlinks remain clickable.
-No actions are installed by default.
-
-Define `repo.review_actions` for `jx review` and `repo.stack_status_actions` for
-`jx stack status`, in global config or the selected repository's `.jx/config.toml`.
-Neither set inherits from the other. To offer an action in both menus, define it
-in both lists explicitly; identical IDs across the two sets are unrelated:
-
-```toml
-[[repo.review_actions]]
-id = "open"
-title = "Open PR"
-order = -100
-command = ["open", "{pr_url}"] # macOS; use your platform's URL opener
-cwd = "caller"
-
-[[repo.stack_status_actions]]
-id = "open"
-title = "Open PR"
-order = -100
-command = ["open", "{pr_url}"]
-cwd = "caller"
-
-[[repo.stack_status_actions]]
-id = "diff"
-title = "Show PR head diff"
-command = ["jj", "diff", "-r", "{local_commit_id}"]
-
-[[repo.rules]]
-repo = "example-owner/example-repo"
-
-[[repo.rules.review_actions]]
-id = "open"
-title = "Open PR in Firefox"
-order = -100
-command = ["open", "-a", "Firefox", "{pr_url}"]
-cwd = "caller"
-
-[[repo.rules.stack_status_actions]]
-id = "diff"
-enabled = false
-```
-
-Actions match the **selected PR's** `owner/repo`, not the caller's repository.
-Each set merges independently in this order: its global defaults, matching global
-rules, repository-local defaults, then matching local rules. Global files retain
-lexical order within each phase. Within a set, the same ID replaces the entire
-definition. Duplicate IDs within one list are errors. An `enabled = false` entry
-removes an inherited action only from that set. An unconfigured set stays empty.
-
-After merging, each menu sorts by ascending `(order, title)`, not by config-file
-position or action ID. `order` is an optional signed integer, defaulting to `0`;
-titles break ties using case-sensitive string ordering. Without order hints,
-actions sort alphabetically by title. Use `order = -100` for open actions and
-`order = 100` for dismissal actions to put them at opposite ends, with ordinary
-actions in between. Dismissal actions with the same order stay together even when
-defined in different config layers; more specific values let you fine-tune placement.
-
-Because overrides replace the whole definition, an overriding action must repeat
-its `order` to retain it. Omitting `order` in an override resets it to `0`.
-
-`command` is an argv array, never an implicit shell command. Substitution happens
-once within each argument, without word splitting. Supported placeholders are
-`{repo}`, `{repo_root}`, `{pr_number}`, `{pr_url}`, `{title}`, `{branch}`,
-`{base_branch}`, `{head_oid}`, `{local_commit_id}`, and `{local_change_id}`.
-Use `{{` and `}}` for literal braces. Unknown placeholders are configuration
-errors; missing context disables the action with a reason. If explicitly invoking
-a shell, pass PR data as positional arguments rather than interpolating it into
-shell source.
-
-The default `cwd = "repository"` requires a checkout. Explicit `cwd = "caller"`
-also works for external PRs without a checkout. Local revision IDs refer only to
-the exact GitHub head already present in the selected jj repository; no fetch,
-checkout, or working-copy fallback occurs. A local change ID is unavailable if it
-now resolves to a rewritten or divergent commit rather than that exact head.
-
-The compact menu lists only configured actions; Esc closes it. Tab or `?` shows
-the selected action's argv, working directory, and source file; PageUp/PageDown
-scrolls long previews. Every repository-local definition, including overrides of global IDs,
-shows those details and requires a separate `y` confirmation before execution.
-Esc returns to the action list without executing.
-Menus retain their target while refresh results wait in the background. Commands
-wait for any in-flight refresh to finish, then run one at a time without taking
-over the terminal. Actions are non-interactive: stdin is closed and stdout/stderr
-append to `~/.local/state/jx/jx-actions.log` (or `$XDG_STATE_HOME/jx/jx-actions.log`).
-Set `JX_ACTION_LOG` to override the path; relative paths use the caller's directory.
-The log includes command argv, PR identity, working directory, configuration
-source, and completion status alongside raw output. If the log cannot be opened,
-the action does not run.
-
-By default, successful actions trigger a live refresh (`on_success = "refresh"`).
-Review actions can instead set `on_success = "refresh-local"` to rebuild the inbox
-from local storage without contacting GitHub or postponing the next scheduled
-live refresh. This setting is not supported for stack status actions. Manual `r`
-and scheduled refreshes still fetch live state.
-
-Both menus support `on_success = "none"` for actions that only queue background
-work or do not change PR state. Success shows the completion notice immediately,
-without a live fetch or cached reload. The visible rows and periodic refresh
-deadline stay unchanged; any pending manual or scheduled refresh still runs.
-
-For a local-only dismissal, use both cached command execution and local refresh:
-
-```toml
-[[repo.review_actions]]
-id = "dismiss"
-title = "Dismiss"
-order = 100
-command = ["jx", "review", "--cached", "dismiss", "{pr_url}"]
-cwd = "caller"
-on_success = "refresh-local"
-```
-
-The dashboard's live load supplies the cached inbox and PR snapshots. Cached
-dismissal fails if the target snapshot is unavailable; it never falls back to
-GitHub. After success, the local reload applies the usual dismissal rules and
-updates rows and repository groups. Selection stays on the same PR when possible.
-If it disappears, focus keeps its position within the same repository and checkout,
-falling back to that group's last remaining PR. Focus moves to another group only
-when the selected group becomes empty.
-
-The bottom terminal row becomes a status line while work is running or a notice
-is visible. Pending key prefixes temporarily show their continuations there.
-Otherwise the row belongs to the PR list. Running actions show only their name
-and elapsed time. Initial loading,
-manual refreshes, and live refreshes after actions show `Refreshing pull requests…`
-with elapsed time. Cached reloads and routine periodic refreshes stay quiet unless
-they fail. Successful actions show a three-second completion notice after the list
-updates, or immediately for `on_success = "none"`. When the notice clears, the row
-returns to the scrolling PR list.
-
-Errors disappear after ten seconds; success and cancellation notices last three
-seconds. The next keyboard interaction also clears notices without consuming the
-key. Action failures show `"<action name>" failed, see <path>`,
-shortening the log's home directory to `~`. Errors without a recorded log
-show their cause directly; status messages have no details popup. A successful
-retry clears only the matching error.
-
-All status messages share a warm-gray background. Normal notices use black text;
-errors use brighter red across the whole message, keeping the strip quiet and
-distinct from pastel terminal dividers and scroll indicators.
-
-Failed or cancelled actions do not trigger a reload; the current rows stay visible.
-Esc cancels a pending key prefix or closes help, the action menu, or its command
-preview first; otherwise it cancels a running action and never exits. Ctrl-C
-cancels a running action or exits. These manual actions are
-separate from lifecycle hooks and never execute during loading or refreshing.
-
-## Clone and workspace layout
-
-This section is the configuration reference. See the [code layout guide](code-layout.md)
-for how layout discovery and project keys apply across commands.
-
-`jx clone` normalizes shorthand inputs to a source, owner, and repo, then places
-the checkout at `root/path`. `jx work` uses the same identity to place managed
-workspaces at `root/workspace_dir/path/name`, keeping primary checkouts visible
-while parallel work stays under the hidden workspace directory. Task workspaces
-created with `jx work add --task-id` prefix that workspace name with the task id
-and store the task id in workspace-local metadata for `jx stack publish`.
-`jx work add --project` stores a separate project key in the same metadata so
-`jx work list` can group related workspaces without changing names. `jx work add
---child` records the current project workspace as the new workspace's parent and
-inherits its project. `jx work info --format json` exposes the current workspace
-metadata for integrations. `jx sync` can use the same layout in reverse to
-initialize a local jj/Git repository and infer
-private GitHub repository creation when a layout path has no repo or remotes.
-Without config, `owner/repo` uses the built-in GitHub source and clones to
-`~/src/github.com/owner/repo` with an SSH URL. When the current directory is a
-configured layout prefix that fixes the missing source and owner, `jx clone repo`
-uses that prefix to infer the full slug and clone into the matching child path.
+A file can contain any subset of the supported sections. `[section]` declares a
+TOML table; `[[section.rules]]` appends a rule. Nested tables under an array entry
+belong to the most recently declared entry.
 
 ```toml
 [layout]
-default_source = "github"
 default_root = "~/src"
-workspace_dir = ".work"
-
-[layout.default]
-path = "{host}/{owner}/{repo}"
-
-[[layout.sources]]
-name = "github"
-provider = "github"
-host = "github.com"
-clone_url = "ssh"
 
 [[layout.rules]]
 source = "github"
@@ -273,476 +35,76 @@ owner = "example-org"
 root = "~/work"
 path = "{repo}"
 
-[[layout.rules]]
-source = "github"
-owner = "example-user"
-root = "~/projects"
-path = "{repo}"
-```
-
-Supported clone URL formats are `ssh` and `https`. Explicit clone URLs keep their
-input URL for the clone transport while still using normalized identity for
-layout rule matching. Layout rules compose in config order; later matching rules
-can override the root or path selected by earlier ones. Workspace names must use
-letters, numbers, `_`, or `-` so they remain single safe path segments.
-
-## Authentication
-
-Without config, `jx` reads tokens from `JX_GITHUB_TOKEN`, `GH_TOKEN`, then
-`GITHUB_TOKEN`.
-
-Optional keychain lookup:
-
-```toml
-[auth.keychain]
-service = "jx-example"
-account = "example-user"
-```
-
-Environment tokens take precedence over configured keychain lookup.
-
-## Repo policy
-
-Repo policy matches the fixed `origin` GitHub repository. Unscoped `[repo]`
-settings apply wherever that config file is loaded; `[[repo.rules]]` entries
-match `owner/repo` globs:
-
-```toml
 [repo]
-reviewers = ["example-reviewer", "ExampleOrg/platform"]
-workspace_shared_paths = [".pi"]
+reviewers = ["example-reviewer"]
 
 [[repo.rules]]
-repo = "example-owner/*"
-advance_trunk = true
-reviewers = ["owner-reviewer"]
-workspace_shared_paths = [".local-tool-state"]
-```
-
-`advance_trunk` makes repository sync (`jx sync` or `jx sync --repo`) move the
-local trunk bookmark to the newest contiguous stack commit with changes, a
-non-empty description, and no conflicts before pushing tracked bookmarks, then
-leaves an empty working-copy change on top when needed.
-
-`repo.sync.push_access` lets global sync trust a local policy decision instead
-of probing GitHub repository permissions. `true` treats matching repositories as
-writable and makes `jx sync --all` try pushing tracked bookmarks before fetching;
-if the push is rejected by stale remote refs, sync fetches/rebases once and
-retries the push. `false` treats matching repositories as read-only and syncs
-with fetch/rebase only, without a permission probe.
-
-`repo.sync.rebase_strategy` controls whether repository sync rebases local stacks
-after fetching origin. The default `always` preserves historical behavior. The
-opt-in `stack_green_pull_requests` strategy leaves a trunk-child stack in place
-when that root PR is mergeable, has passing policy-normalized checks by the same
-stack-status policy used by `jx stack status`, the local bookmark matches the PR
-head commit, and no configured `rebase_needed_labels` entry is present. Review
-approval is not required for this sync protection. Stack commands continue to
-treat the PR base branch as trunk while allowing the local stack to start at the
-older trunk commit that current trunk descends from. Once trunk contains the
-protected root, sync moves any remaining local descendants onto current trunk.
-Descendant PRs in a protected stack are only metadata-synced when their bookmark
-was actually pushed. Use `jx sync -R` or `jx sync --rebase` to ignore
-`stack_green_pull_requests` for one run and rebase normally.
-
-```toml
-[repo.sync]
-rebase_strategy = "always"
-
-[[repo.rules]]
-repo = "example-owner/example-repo"
-
-[repo.rules.sync]
-push_access = true
-rebase_strategy = "stack_green_pull_requests"
-rebase_needed_labels = ["rebase-needed"]
-```
-
-Check commands run before selected lifecycle operations when at least one
-changed file matches the configured repo-relative glob patterns. Commands are
-argv arrays, run from the workspace root, and must exit successfully without
-changing the jj working-copy commit:
-
-```toml
-[[repo.checks]]
-id = "generated-sources"
-before = ["pull_request", "push", "sync"]
-paths = ["schema/**", "src/generated/**"]
-command = ["./scripts/check-generated"]
-
-[[repo.rules]]
-repo = "example-owner/example-repo"
-
-[[repo.rules.checks]]
-id = "api-contract"
-before = ["pull_request"]
-paths = ["api/**"]
-command = ["./scripts/check-api-contract"]
-```
-
-Supported `before` values are `pull_request`, `push`, and `sync`. A failing
-command prints its captured output and aborts the operation. If a command exits
-successfully but modifies tracked working-copy content, `jx` aborts and leaves
-the changes visible for review or revert.
-
-Lifecycle hooks run configured mutating commands at selected repository workflow
-points. Commands are argv arrays. `workspace.delete.before` hooks run after delete
-confirmation but before the workspace is moved or removed, always with the
-workspace being deleted as the current directory. Successful hooks are reported
-in command output as `Event[hook-id]: ran ...`, including the command argv. Each hook start,
-success, and error is appended to `~/.local/state/jx/jx-hooks.log` as JSONL; set
-`JX_HOOK_LOG=/path/to/log` to override the path or `off` to disable this log. A
-failing hook prints captured output, aborts deletion, and leaves the workspace
-intact:
-
-```toml
-[[repo.rules]]
-repo = "example-owner/example-repo"
-
-[[repo.rules.hooks]]
-id = "stop-build-server"
-on = "workspace.delete.before"
-command = ["build-tool", "shutdown"]
-
-[[repo.rules.hooks]]
-id = "clear-build-cache"
-on = "workspace.delete.before"
-command = ["build-tool", "clean", "--all"]
-```
-
-Matching rule hooks compose after base hooks. A matching rule can replace a
-previous hook with the same `id`, or disable it with `id = "..."` and
-`enabled = false`.
-
-`workspace_shared_paths` lists repo-relative local-only paths that managed
-`jx work add` workspaces should symlink from the primary checkout after jj
-creates the workspace. This is intended for ignored checkout state such as `.pi`.
-Paths compose through base repo policy and matching repo rules, normalize in
-config order, and dedupe exact duplicates. Empty, absolute, escaping, and
-parent/child-overlapping paths are rejected. Missing sources in the primary
-checkout are skipped. Existing sources must be untracked in the selected checkout
-at the exact configured path; tracked parent directories are allowed for nested
-paths. If post-create setup fails, `jx` reports the failure without rolling back
-the created jj workspace, and shell integration does not enter it.
-
-Stack status and review views can classify repository-specific approval gate
-checks separately from test health, highlight stale review wait time, omit noisy
-checks, stack-status labels, or reviewer identities, report label-driven
-auto-merge state, hide pre-merge-only labels after merge, and rewrite title
-prefixes or label names before display rendering. Review views can also omit
-review-only labels without affecting stack status, and ignore command-style
-author comments that should not resurface dismissed reviews.
-Approval requires at least one approver remaining after `ignored_reviewers`
-filtering, even when GitHub reports an aggregate approval. Matching review-gate
-checks are removed from the `Chk` aggregate and constrain the review state:
-all configured gate regexes must have passing matching checks. Passing gates
-cannot substitute for reviewer approval. GitHub's changes-requested and protected
-review-required decisions still block approval, while missing, pending, unknown,
-or failing gate checks keep review pending. The
-review column is undefined for drafts and PRs targeting a non-default base branch
-because those PRs are not independently mergeable into trunk yet.
-Ignored checks are removed without affecting check or review state. Configured
-auto-merge prerequisite checks are also removed from `Chk`; non-passing matches
-make armed auto-merge render as waiting for manual prerequisites instead of as a
-test failure. Remaining checks still decide whether `Chk` is passing, pending, or
-failing. Review-wait thresholds accept `m`, `h`, or `d` suffixes; fresh waits
-render subdued, overdue waits render red, drafts stay subdued, and merged PRs
-stay green. Check ignore, review-gate, auto-merge prerequisite,
-`ignored_label_patterns`, and reviewer entries are Rust regexes. Label entries
-are exact names; `auto_merge_labels` and `hidden_labels` add snapshot-backed
-`when` conditions such as `ALWAYS`, `NOT_DRAFT`, `MERGED`, and
-`TARGETS_DEFAULT_BRANCH`. Stack-status `label_rewrites` are regex replacements
-applied after label filtering and before chip rendering, and review views inherit
-them through the shared stack-status policy. Configured auto-merge labels are
-hidden from label chips; matching non-draft open PRs show `◎` when armed,
-matching armed PRs with
-non-passing prerequisites show an orange `◈`, and otherwise-ready matching PRs
-show an orange `◆` to indicate that auto-merge is not armed. Existing
-`ignored_labels` entries are unconditional hides, and
-`ignored_labels_when_merged` entries are merged-only hides. Review rules support
-the same `hidden_labels` shape for review-only omissions. Conditions
-in one rule are ANDed; repeated rules for the same label are ORed. Supported
-conditions are `ALWAYS`, `DRAFT`, `NOT_DRAFT`, `OPEN`, `CLOSED`, `MERGED`,
-`NOT_MERGED`, `TARGETS_DEFAULT_BRANCH`, and `TARGETS_NON_DEFAULT_BRANCH`.
-`ignored_author_response_comments` entries are multiline Rust regexes matched
-against PR-author comment bodies before dismissal resurfacing. Local review
-visibility state lives in the shared pull-request store; `review-dismissals.toml`
-is no longer read. See [review management](review-management.md) for dismissal,
-audit-log, and store behavior. Title and label rewrites use Rust regex capture
-replacements in configured order:
-
-```toml
-[[repo.rules]]
-repo = "example-owner/example-repo"
-
-[repo.rules.stack_status]
-ignored_checks = ["^ci/noisy-check$", "^generated-advisory/.*"]
-ignored_labels = ["generated-noise"]
-ignored_label_patterns = ["^category: .*"]
-ignored_labels_when_merged = ["auto-merge", "bot-trigger"]
-auto_merge_labels = ["auto-merge"]
-hidden_labels = [
-  { label = "bot-trigger", when = ["NOT_DRAFT", "TARGETS_DEFAULT_BRANCH"] },
-]
-ignored_reviewers = ["^automation-bot$", "-bot$"]
-review_gate_checks = ["^approval gate$"]
-auto_merge_prerequisite_checks = ["^Settings( - .*)?$"]
-review_wait_threshold = "4h"
-
-[repo.rules.review]
-ignored_author_response_comments = ["^/automation merge\\s*$"]
-ignored_labels = ["team-review"]
-ignored_label_patterns = ["^review-only-category: .*"]
-hidden_labels = [
-  { label = "review-only-noise", when = ["ALWAYS"] },
-]
-
-[[repo.rules.stack_status.title_rewrites]]
-pattern = "^\\[([A-Z]+-[0-9]+)\\] (.+)$"
-replace = "$1: $2"
-
-[[repo.rules.stack_status.title_rewrites]]
-pattern = "^(?:feat|fix)\\([^)]+\\):\\s+(.+)$"
-replace = "$1"
-
-[[repo.rules.stack_status.title_rewrites]]
-pattern = "^(.+?)\\s+(?:\\(|\\[)([A-Z][A-Z0-9]+-[0-9]+)(?:\\)|\\])(\\s+\\[[0-9]+/[0-9]+\\])?$"
-replace = "$2: $1$3"
-
-[[repo.rules.stack_status.label_rewrites]]
-pattern = "^workflow-setting-change$"
-replace = "workflow"
-```
-
-Set `repo.review.hide_pending_checks = true` to omit PRs from the review inbox
-while any relevant required check is queued or running, even if another check has
-already failed. It defaults to false. To enable it only for Faire repositories,
-add the setting to the existing `Faire/*` rule, or define that rule as follows:
-
-```toml
-[[repo.rules]]
-repo = "Faire/*"
+repo = "example-org/*"
 
 [repo.rules.review]
 hide_pending_checks = true
+
+[ui]
+default_command = ["status"]
 ```
 
-The filter uses the latest checks after shared status policy removes ignored
-checks, review gates, and auto-merge prerequisites. Optional checks do not block
-visibility. Missing or unknown results alone do not hide a PR. Once no relevant
-required checks are pending, the next refresh shows the PR again if existing
-review and dismissal rules allow it, whether CI passed or failed.
+The main sections are `layout`, `repo`, `ui`, `shell`, `diff`, and `auth`.
+Unsupported keys and invalid values are reported as configuration errors.
 
-This is an inbox filter, not a recorded dismissal. It applies to human, JSON,
-and interactive review output; `--cached` uses the stored check states. It does
-not change stack status or dismissal-management commands. An explicit
-`hide_pending_checks = false` in a later matching rule opts a repository back in
-to seeing pending PRs.
+## Merging
 
-Event handlers run configured PR automation while `jx stack publish` prepares,
-creates, or updates pull requests. Handlers can update the selected commit title, add
-labels, or ask the command layer to open the PR in an operator browser. `when`
-uses a small GitHub-search-like AND query with `has:task`, `is:draft`,
-`is:ready`, `has:reviewers`, `label:name`, and `-term` negation:
+Composition is field-specific, not a generic TOML deep merge:
 
-```toml
-[[repo.event_handlers]]
-id = "prepend-task-id-to-commit-title"
-on = "pull_request.prepare"
-when = "has:task"
-run = "prepend_task_id"
+- Later scalar values replace earlier ones; omitted values keep their inherited
+  setting. Command argv arrays are also replaced, not concatenated.
+- Rule lists accumulate in file order. All matching rules apply, not just the
+  first or most specific match.
+- Set-like lists, such as reviewers and shared workspace paths, accumulate and
+  deduplicate. Ordered transformations, such as title rewrites, compose in order.
+- Named layout sources and diff tools replace earlier definitions with the same
+  name.
+- Checks, hooks, handlers, and manual actions with the same `id` replace the whole
+  earlier definition. Hooks, handlers, and actions also support
+  `enabled = false` to remove an inherited entry.
 
-[[repo.event_handlers]]
-id = "label-draft-prs"
-on = "pull_request.created"
-when = "is:draft -label:bar"
-run = "add_labels"
-labels = ["bar"]
+Do not assume an empty list clears an accumulated setting. Consult the owning
+configuration type below for field-specific behavior.
 
-[[repo.rules]]
-repo = "example-owner/example-repo"
+## Matching
 
-[[repo.rules.event_handlers]]
-id = "open-unreviewed-prs"
-on = "pull_request.created"
-when = "-has:reviewers -is:draft"
-run = "open_pull_request"
-```
+**Layout rules** match a source and the supplied owner/repository names exactly.
+At least one of owner or repository is required. Later matching rules override
+only the placement fields they specify. Layout maps repository identity to
+checkout paths; see [code layout](code-layout.md) for the model.
 
-Matching rule handlers compose after base handlers. A matching rule can disable a
-previous handler with `id = "..."` and `enabled = false`. Use
-`jx stack publish --no-event-handlers` to disable all configured handlers for one run.
-Default output reports handlers that changed PR or commit state, plus browser
-open attempts; no-op matches are kept quiet. Prepare effects appear in the PR
-preview, and create/update effects appear after publishing. `prepend_task_id`
-rewrites the selected commit title before PR planning, using `TASK-ID: title`
-and normalizing common existing task prefixes.
+**Repository policy** matches the fixed `origin` repository's `owner/repo` slug
+with globs. All `[repo]` defaults are merged first, then matching `[[repo.rules]]`
+apply in file order. A global matching rule can therefore override a local base
+value; use a matching local rule to override it.
 
-Pull-request handlers can run generic commands when `jx stack status` observes a
-tracked PR as merged. Commands run once per handler and PR from the repository
-root, and each start, success, or error is appended to the central
-`~/.local/state/jx/jx-pull-request-handlers.log` JSONL log. Set
-`JX_PULL_REQUEST_HANDLER_LOG=/path/to/log` to override the path or `off` to disable
-this log. The command is configured as an argument array, not a shell string, and
-supports placeholders such as `{repo}`, `{pr_number}`, `{pr_url}`, `{title}`, `{branch}`,
-`{base_branch}`, and `{merged_at}`:
+**Manual PR actions** match the selected PR's repository, not the caller's.
+`review_actions` and `stack_status_actions` are independent sets. Each resolves
+global defaults, matching global rules, local defaults, then matching local rules,
+retaining file order within each phase.
 
-```toml
-[[repo.rules]]
-repo = "example-owner/example-repo"
+## Dashboard preferences
 
-[[repo.rules.pull_request_handlers]]
-id = "notify-merged-pr"
-on = "pull_request.merged"
-command = ["terminal-notifier", "-title", "PR merged", "-message", "{title}", "-open", "{pr_url}"]
-```
+Review and stack-status dashboards share configurable keys under global
+`[ui.dashboard.keys]`. Each operation replaces its inherited bindings;
+unspecified operations remain inherited and `[]` unbinds one. Press `?` in the
+dashboard to see the effective bindings.
 
-Matching rule handlers compose after base handlers. A matching rule can replace a
-previous handler with the same `id`, or disable it with `id = "..."` and
-`enabled = false`.
+## Source reference
 
-Work item handlers can run generic commands when `jx stack status` observes a
-PR with `fixes_work_ids` transition to merged. Commands run from the repository
-root, and each start, success, or error is appended to the central
-`~/.local/state/jx/jx-work-item-handlers.log` JSONL log. Set
-`JX_WORK_ITEM_HANDLER_LOG=/path/to/log` to override the path or `off` to disable
-this log. The command is configured as an argument array, not a shell string, and supports
-placeholders such as `{work_id}`, `{repo}`, `{pr_number}`, `{pr_url}`, `{title}`,
-and `{branch}`:
+Use the owning types and parsers for supported fields, defaults, and validation:
 
-```toml
-[repo.rules.work_items]
-apply_on_stack_status = true
-
-[[repo.rules.work_item_handlers]]
-id = "resolve-ticket"
-on = "work_item.fixed"
-command = ["ticket", "resolve", "{work_id}"]
-```
-
-Reviewers may be GitHub users or teams written as `org/team`. Repo-level
-reviewer lists power shell completion for `jx stack publish --reviewer` only;
-completion is advisory, so syntactically valid reviewers that are not configured
-can still be typed explicitly.
-
-Path reviewer rules add reviewers when changed-file globs match. These are the
-configured reviewers that appear in the publish selection prompt. Each repo
-policy can contain multiple path rules:
-
-```toml
-[[repo.path_reviewers]]
-paths = ["docs/**"]
-reviewers = ["ExampleOrg/docs"]
-
-[[repo.rules]]
-repo = "example-owner/example-repo"
-
-[[repo.rules.path_reviewers]]
-paths = ["foo/bar/**", "bar/bux/*.py"]
-reviewers = ["work-reviewer", "ExampleOrg/frontend"]
-```
-
-## Performance tracing
-
-Stack publishing writes best-effort JSONL performance spans to
-`~/.local/state/jx/jx-perf.log`, or `$XDG_STATE_HOME/jx/jx-perf.log` when
-`XDG_STATE_HOME` is set. Set `JX_PERF_LOG=/path/to/jx-perf.log` to override the
-path, or `JX_PERF_LOG=off` to disable tracing for one command. The log records
-command phase timings such as publish planning, GitHub PR publishing, and stack
-metadata refresh/sync.
-
-## Shell integration
-
-`jx shell init bash` prints optional shell integration for `eval`. The generated
-navigation function resolves current-repository layout workspace aliases and
-trunk aliases first, then global `jx work` locations, then optionally falls back
-to zoxide when `zoxide = "auto"` and the `zoxide` binary is installed. Explicit
-absolute and dot-relative paths are used directly. Navigation completion derives
-same-repository workspace aliases from configured managed directories that have
-`.jj` workspace metadata, while global locations come from discovered `.jj`
-directories rather than the jj workspace registry. A matching managed workspace
-can appear before it is registered, and an out-of-layout jj workspace may appear
-only by its global key. Navigation queries
-can also be unique key fragments, and slash-separated fragments can select child
-directories under the matched location. When `fzf` is installed, pressing Tab for
-the navigation command opens an interactive picker over navigation candidates;
-typed text such as `u foo<Tab>` seeds the picker query with `foo`. Path-like
-inputs such as `u ../<Tab>` keep normal directory completion.
-
-```toml
-[shell]
-navigation = "u"
-navigation_tab = "ut"
-zoxide = "prefer"
-```
-
-Set `zoxide = "prefer"` to resolve zoxide matches before jx layout keys, while
-keeping `default`, `trunk`, and `root` as jx-first aliases. Set `zoxide = "auto"`
-to use zoxide only as a fallback, or `zoxide = "never"` to omit zoxide. Omit
-`navigation` or set it to an empty string to skip generating a navigation
-function. When `navigation_tab` is set alongside `navigation`, the generated
-companion command uses the same resolution and completion; inside zellij it opens
-the target in a new tab, and outside zellij it warns and enters the directory in
-the current shell.
-
-## Diff tools
-
-Named diff tools can be selected by config or command flag:
-
-```toml
-[diff]
-default_tool = "difft"
-
-[diff.tools.difft]
-mode = "external"
-command = "difft"
-args = ["--color=always", "--display=side-by-side"]
-
-[diff.tools.delta]
-mode = "pipe"
-producer_args = ["-w", "--git"]
-command = "delta"
-args = []
-```
-
-`external` tools compare jj's generated left/right trees. `pipe` tools consume a
-`jj diff` stream on stdin. Extra renderer arguments after `jx diff -- ...` are
-appended to the configured renderer arguments.
-
-## jj aliases
-
-Use jj aliases if you want `jj` to remain the single command entry point:
-
-```toml
-[aliases]
-st = ["util", "exec", "--", "jx", "status"]
-dx = ["util", "exec", "--", "jx", "diff"]
-pr = ["util", "exec", "--", "jx", "pr"]
-sync = ["util", "exec", "--", "jx", "sync"]
-push = ["util", "exec", "--", "jx", "push"]
-```
-
-Choose names that fit your existing jj config.
-
-## Link styling
-
-`jx` wraps GitHub URLs and bookmark names in OSC8 terminal hyperlinks. Linked
-text uses jj's `link` color label and is underlined by default.
-
-Override the default in `~/.config/jj/config.toml`:
-
-```toml
-[colors]
-link = { underline = false }
-```
-
-Or keep the affordance but make it more visible:
-
-```toml
-[colors]
-link = { underline = true, bold = true }
-"bookmark link" = { underline = true, fg = "bright magenta" }
-```
-
-The `link` label stacks with existing labels such as `bookmark`, so link
-styling can add an affordance without replacing normal jj colors.
+| Area | Source |
+| --- | --- |
+| File discovery and composition | [config.rs](../src/repository/config.rs) |
+| TOML sections and parsing | [parse.rs](../src/repository/config/parse.rs) |
+| Layout | [layout.rs](../src/repository/config/layout.rs) |
+| Repository policy | [repo_policy.rs](../src/repository/config/repo_policy.rs) |
+| Manual actions | [actions.rs](../src/repository/config/actions.rs), [parser](../src/repository/config/actions/parse.rs) |
+| UI and keybindings | [ui.rs](../src/repository/config/ui.rs), [dashboard_keys.rs](../src/repository/config/dashboard_keys.rs) |
+| Shell and diff tools | [shell.rs](../src/repository/config/shell.rs), [diff.rs](../src/repository/config/diff.rs) |
+| Authentication | [auth.rs](../src/repository/auth.rs) |

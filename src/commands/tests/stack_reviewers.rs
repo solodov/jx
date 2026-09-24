@@ -9,13 +9,11 @@ fn publish_and_pub_help_explain_ready_only_selection_and_the_draft_exception() {
             .to_string();
         let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(help.contains("Reviewer selection applies only to ready PRs"));
-        assert!(help.contains("final state after --ready/--draft overrides"));
-        assert!(help.contains("-A -R alice applies Alice only to ready PRs"));
-        assert!(help.contains("still leaves draft reviewers unchanged"));
+        assert!(help.contains("after readiness overrides"));
+        assert!(help.contains("Drafts retain their reviewers"));
+        assert!(help.contains("an all-draft selection skips the picker"));
         assert!(help.contains("jx stack pub -r REVISION -R alice"));
-        assert!(help.contains("provide -R, without -A"));
-        assert!(help.contains("retaining that draft's existing reviewers"));
-        assert!(help.contains("the picker is skipped"));
+        assert!(help.contains("select it explicitly without --apply-to-stack"));
     }
 }
 

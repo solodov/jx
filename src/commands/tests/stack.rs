@@ -9,12 +9,10 @@ fn stack_help_describes_cached_display_and_live_refresh() {
     // Verifies: Stack help distinguishes local cached display from GitHub-backed refresh.
     let help = help_output(["jx", "stack", "--help"]);
 
-    assert!(help.contains(
-        "Show, move, publish, status-check, or refresh repo-local pull request stack state"
-    ));
+    assert!(help.contains("Show, move, publish, or refresh pull-request stacks"));
     assert!(help.contains(".jx/stack.toml"));
     assert!(help.contains("without contacting GitHub"));
-    assert!(help.contains("create or update pull requests"));
+
     assert!(help.contains("--revision"));
     assert!(help.contains("--onto"));
     assert!(help.contains("--trunk"));
@@ -4798,11 +4796,10 @@ fn stack_subcommand_help_explains_effects() {
     assert!(show_help.contains("default when no stack subcommand"));
 
     let refresh_help = help_output(["jx", "stack", "refresh", "--help"]);
-    assert!(refresh_help.contains("Rebuild repo-local stack state"));
-    assert!(refresh_help.contains("searches open GitHub PRs authored by the authenticated login"));
-    assert!(refresh_help.contains("writes"));
+    assert!(refresh_help.contains("Rebuild stack metadata from local bookmarks"));
+    assert!(refresh_help.contains("authored open GitHub PRs"));
     assert!(refresh_help.contains(".jx/stack.toml"));
-    assert!(refresh_help.contains("syncs affected PR bases/descriptions"));
+    assert!(refresh_help.contains("affected PR bases and descriptions"));
     assert!(refresh_help.contains("push branches"));
     assert!(refresh_help.contains("create, close, or delete pull requests"));
 }
@@ -6053,5 +6050,9 @@ fn help_output<const N: usize>(args: [&str; N]) -> String {
         .try_get_matches_from(args)
         .expect_err("help exits before command execution");
     assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-    error.to_string()
+    error
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }

@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn dashboard_help_points_to_live_bindings_without_listing_defaults() {
+    for args in [
+        vec!["jx", "review", "--help"],
+        vec!["jx", "stack", "status", "--help"],
+    ] {
+        let error = cli()
+            .try_get_matches_from(args)
+            .expect_err("help exits before command execution");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(help.contains("Press ? for current keybindings"));
+        assert!(help.contains("[ui.dashboard.keys]"));
+        assert!(help.contains("repository-local actions require confirmation"));
+        assert!(!help.contains("Default keys:"));
+        assert!(!help.contains("g r refreshes"));
+    }
+}
+
+#[test]
 fn log_subcommand_renders_workspace_log() {
     // Verifies: Integrations can call the compact log renderer explicitly.
     let environment = RuntimeEnvironment::new("/workspace", []);

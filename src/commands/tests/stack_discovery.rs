@@ -308,7 +308,7 @@ fn status_help_explains_automatic_discovery() {
     let help = help_output(["jx", "stack", "status", "--help"]);
     assert!(help.contains("without local bookmarks"));
     assert!(help.contains("even without existing stack metadata"));
-    assert!(help.contains("does not sync PR bases or descriptions"));
+    assert!(help.contains("without changing GitHub PRs or pushing branches"));
 }
 
 fn discovery_workspace() -> TestWorkspace {

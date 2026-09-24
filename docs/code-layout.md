@@ -1,251 +1,35 @@
 # Code layout
 
-`jx` is more than a thin wrapper around the current `jj` checkout. It also keeps
-an index of configured code roots so commands can find, name, and operate on
-multiple primary repository clones consistently.
+A layout lets `jx` find repositories and managed workspaces without depending on
+the current directory. Each repository has a normalized identity: source, host,
+owner, and repository name.
 
-The layout model is deliberately small: every repository has a normalized
-identity, every identity maps to one visible primary checkout path, and managed
-workspaces live under a hidden sibling tree derived from that same identity.
+## Checkouts and workspaces
 
-## Repository identity
-
-Layout starts by normalizing repository inputs into four fields:
-
-- `source` - a configured source name such as `github`
-- `host` - the Git host such as `github.com`
-- `owner` - the GitHub owner or organization
-- `repo` - the repository name
-
-Without configuration, `jx` has one built-in source:
-
-```toml
-[layout]
-default_source = "github"
-default_root = "~/src"
-workspace_dir = ".work"
-
-[layout.default]
-path = "{host}/{owner}/{repo}"
-
-[[layout.sources]]
-name = "github"
-provider = "github"
-host = "github.com"
-clone_url = "ssh"
-```
-
-That means `example-owner/example-repo` resolves to the identity
-`github:example-owner/example-repo`, clones from
-`git@github.com:example-owner/example-repo.git`, and by default lives at:
+The layout maps each identity to a primary checkout and a family of parallel jj
+workspaces:
 
 ```text
-~/src/github.com/example-owner/example-repo
+primary checkout:   <root>/<path>
+managed workspace:  <root>/<workspace_dir>/<path>/<workspace-name>
 ```
 
-Path templates may use `{source}`, `{host}`, `{owner}`, and `{repo}`. They must
-render to relative paths without `.` or `..` components. Layout roots must be
-absolute or start with `~/`.
+Primary checkouts are the targets for cross-repository maintenance. Managed
+workspaces provide separate working copies of the same repository. They can carry
+task and project context independently of their directory names.
 
-## Primary checkouts and managed workspaces
+## Discovery
 
-For each repository identity, `jx` derives two related path families:
+`jx` discovers locations under configured layout roots and assigns keys that
+identify them without full paths. Managed workspace keys include an `@workspace`
+suffix. Commands run against the current checkout unless given another target;
+layout-aware commands can resolve those targets from elsewhere.
 
-```text
-primary checkout:     <root>/<path>
-managed workspace:   <root>/<workspace_dir>/<path>/<workspace-name>
-```
+See [configuration](configuration.md) for placement rules and matching. Use
+`jx clone --help`, `jx work --help`, and `jx shell --help` for command usage.
 
-With the default layout, a `fix` workspace for `example-owner/example-repo` is:
+## Source
 
-```text
-~/src/.work/github.com/example-owner/example-repo/fix
-```
-
-`workspace_dir` and workspace names are single path segments. Workspace names may
-contain letters, numbers, `_`, and `-`.
-
-## Layout rules
-
-Rules override the default root and/or path for matching identities. They match a
-single `source` and at least one of `owner` or `repo`. Rules compose in config
-order; later matching rules override the root or path chosen by earlier matches.
-
-```toml
-[layout]
-default_root = "~/src"
-workspace_dir = ".work"
-
-[layout.default]
-path = "{host}/{owner}/{repo}"
-
-[[layout.rules]]
-source = "github"
-owner = "example-org"
-root = "~/work"
-path = "{repo}"
-
-[[layout.rules]]
-source = "github"
-owner = "example-org"
-repo = "special-repo"
-path = "special/{repo}"
-```
-
-This keeps most `example-org` repos under `~/work/<repo>`, while
-`example-org/special-repo` lives under `~/work/special/special-repo`.
-
-## Discovery and project keys
-
-Global and project-targeted commands discover layout repositories by scanning the
-configured layout roots for `.jj` workspaces. A discovered path is kept only when
-it can be mapped back to either the primary checkout path or a managed workspace
-path for one normalized identity.
-
-`jx` assigns stable keys to discovered locations:
-
-- `repo` when the repo name is unique
-- `owner/repo` when multiple owners have the same repo name
-- `source:owner/repo` when even `owner/repo` is ambiguous
-- `repo@workspace` for managed workspaces
-
-Primary repository commands use only keys without `@`. Managed workspace keys are
-for navigation and workspace management.
-
-## How commands use layout
-
-- `jx clone` resolves repository shorthands through layout sources and places the
-  primary checkout at the configured destination, unless an explicit destination
-  is provided. From a configured layout prefix, a single repo name can infer the
-  missing source and owner.
-- `jx work` lists, completes, resolves, adds, and removes locations in the
-  configured layout. `jx work add` creates managed workspaces under the hidden
-  workspace tree, can prefix task workspaces with `--task-id`, and `jx work
-  remove` refuses paths outside that managed tree.
-- `jx remote-status` uses the current repository by default, can target one
-  primary repository key, and can scan all configured primary repositories.
-  With `--all`, positional patterns filter provider/owner/repo identities;
-  `--repo` remains a glob filter for global scans.
-- `jx open` uses the current repository by default, can target one primary
-  repository key, and can use `--repo` globs to open matching GitHub repository
-  pages or matching pull-request searches.
-- `jx fetch` uses the current repository by default, can target one primary
-  repository key, and can scan every safe primary repository with `--all`.
-- `jx sync` syncs tracked bookmarks for the current repository by default and
-  applies repository policy such as trunk advancement. From an uninitialized
-  layout path, it can prompt to initialize the local jj/Git repository before
-  continuing bootstrap. Pass a jj revision or bookmark to sync one bookmarked
-  target instead, use `jx sync --repo` to force repository mode explicitly, or
-  use `jx sync --all` to conservatively sync every eligible primary repository.
-- `jx stack publish` uses an explicit `--task-id` when present; otherwise it can
-  read the task id stored in workspace-local metadata created by
-  `jx work add --task-id`. `jx work add --project` stores project context in
-  the same metadata for grouped workspace listing, and `jx work add --child`
-  records the current workspace as the new workspace's parent.
-- `jx shell init bash` exposes layout keys to shell completion. Navigation
-  completion prefers current-repository layout workspace aliases, `trunk`/`root`
-  aliases, and same-repository layout keys before other global work locations;
-  project argument completion includes only primary repositories. The navigation
-  command accepts explicit absolute and dot-relative paths, and can also resolve
-  unique key fragments plus slash-separated directory fragments under the
-  selected location. In zoxide-prefer mode, zoxide matches win except for the
-  `default`, `trunk`, and `root` jj aliases. An optional tab companion uses the
-  same resolution and opens zellij tabs when available. When `[shell] title =
-  true`, generated Bash integration exports `JX_WORK_CONTEXT` and sets terminal
-  titles from the same layout-aware context so Starship can render it without
-  duplicating path-trimming rules.
-
-Starship prompts can show the context by replacing or complementing `$directory`
-with `${env_var.JX_WORK_CONTEXT}` in `format` and styling
-`[env_var.JX_WORK_CONTEXT]`; source the generated Bash after `starship init` so
-its precmd hook can compose with Starship's hook. Repositories matching
-`[shell] slug_repositories` globs render as `owner/repo` in titles and shell
-navigation, which keeps organization-scoped workspaces such as
-`example-org/backend@fix` distinct without changing personal-project titles.
-`[[shell.title_rewrites]]` rules then apply regex replacements to title labels
-only, so a prompt can shorten `ExampleOrg/backend@fix` to `E/backend@fix`
-without changing navigation keys.
-
-## Workspace metadata
-
-Task workspaces keep the task id visible in navigation while storing task,
-project, and parent associations as workspace-local metadata.
-
-```sh
-jx work add github-navigation --project github-navigation
-jx work add fix --task-id ABC-123 --child
-```
-
-This creates a managed workspace whose directory and jj workspace name are both:
-
-```text
-ABC-123-fix
-```
-
-It also writes:
-
-```text
-<workspace-root>/.jx/.gitignore
-<workspace-root>/.jx/workspace.toml
-```
-
-The `.gitignore` file ignores the whole `.jx` metadata directory, and
-`workspace.toml` contains:
-
-```toml
-task_id = "ABC-123"
-project = "github-navigation"
-
-[parent]
-workspace_name = "github-navigation"
-project = "github-navigation"
-```
-
-The visible workspace name makes completion entries such as `repo@ABC-123-fix`
-scannable. The metadata file remains the source of truth for `jx stack publish`,
-so the workspace name is not parsed for task information. Project metadata does
-not affect workspace names; `jx work list` uses it only to group related
-workspaces. Child metadata captures the current workspace snapshot and inherits
-its project, but `--revision` still controls the jj checkout base. `jx work info
---format json` exposes the current workspace metadata and repository identity for
-integrations without requiring direct `.jx` parsing.
-
-## All-repository fetch and sync
-
-The layout index lets `jx` run maintenance commands over primary checkouts from
-any directory. These global modes use only primary repository keys; managed
-workspace keys with `@` remain navigation/workspace targets and are not scanned.
-
-`jx fetch --all` is intentionally broad but local-work safe. For each configured
-primary checkout, it discovers fixed-origin repository context and fetches only
-when the current workspace is a clean empty child of `origin` trunk. Repositories
-that are not discoverable or are not safe for automatic fetch are skipped;
-repositories that fail after selection are rendered as error rows.
-
-`jx sync --all` is narrower because it can push. It does not initialize missing
-repositories, create GitHub repositories, or prompt. A repository is eligible for
-automatic sync when the primary checkout is discoverable, already has a GitHub
-`origin`, and any needed fetch/rebase can run without touching local work.
-
-Writable repositories push tracked bookmark state whose push ranges have no
-conflicted commits. Repositories with configured or detected push access use the
-normal fetch-then-push flow, while `repo.sync.push_access = true` uses the
-push-first flow and fetches/rebases once only if stale remote refs reject the
-push. Read-only repositories fetch/rebase only. Conflicted bookmarks are skipped
-and reported separately. Local jj work does not by itself block push-capable
-`sync --all`; if GitHub `origin` has not moved ahead of the cached trunk,
-pushing tracked bookmark state is still safe. Repos that do not fetch, advance
-trunk, or push anything are grouped as up to date. Other skips are grouped by
-reason so pull-needed repos and setup issues remain visible without being treated
-as failures.
-
-## Current repository versus layout repository
-
-Commands with no project argument operate on the current working directory and
-walk up to the enclosing `.jj` workspace. Project arguments resolve through the
-global layout index first and then run the same command as if the process had
-started in that repository's primary checkout.
-
-This split lets `jx` stay predictable inside a workspace while still supporting
-fast cross-repository workflows from anywhere with access to the configured
-layout roots.
+- [Layout resolution and discovery](../src/repository/config/layout.rs)
+- [Workspace metadata](../src/repository/workspace_metadata.rs)
+- [Workspace commands](../src/commands/work.rs)

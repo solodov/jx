@@ -146,15 +146,15 @@ fn cached_review_uses_the_same_lag_order_without_fetching() {
 }
 
 #[test]
-fn review_help_describes_lag_order_within_repository_groups() {
+fn review_help_explains_inbox_order_and_local_state() {
     let help = cli()
         .try_get_matches_from(["jx", "review", "--help"])
         .expect_err("help prints")
         .to_string();
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(help.contains("Repository groups keep their configured-first alphabetical order"));
-    assert!(help.contains("PRs with the longest review lag appear first"));
-    assert!(help.contains("unknown lag comes last"));
+    assert!(help.contains("grouped by repository with longest-waiting reviews first"));
+    assert!(help.contains("without contacting GitHub"));
+    assert!(help.contains("Dismissals are local"));
 }
 
 fn review_with_lag(number: u64, since: Option<i64>) -> PullRequestWithHistory {

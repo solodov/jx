@@ -1,5 +1,24 @@
 # Development guide
 
+## Build and validation
+
+Run `just build`, `just lint`, and `just test` from the repository root.
+`just install` installs the release binary. See the [Justfile](../Justfile) for
+the recipes; tests require [cargo-nextest](https://nexte.st/).
+
+## Documentation scope
+
+- Keep the README a short tour of command groups and links to guides.
+- Keep guides focused on concepts, boundaries, and rationale. Link to the owning
+  code for algorithms, defaults, formats, and edge cases.
+- Keep configuration docs about file shape, scope, merging, and matching, not a
+  catalog of every field or its runtime effects.
+- Put actionable command usage in `--help` and effective dashboard bindings in
+  `?`. Do not repeat them across guides or enumerate bindings in CLI help.
+- Keep help concise: explain invocation and important effects, not internal
+  scheduling, rendering, or implementation steps. Rely on generated option
+  listings rather than repeating flags and defaults in prose.
+
 ## Source organization
 
 `jx` uses facade modules at `src/*.rs` and focused implementation modules under `src/<area>/`.
@@ -20,12 +39,6 @@ Current areas:
 - `github` owns GitHub API types, reviewer types, errors, and the Octocrab-backed client.
 
 ## Tests
-
-`just test` requires [cargo-nextest](https://nexte.st/). Install it before running the repository test recipe:
-
-```sh
-cargo install cargo-nextest --locked
-```
 
 Keep unit tests under the module they exercise:
 

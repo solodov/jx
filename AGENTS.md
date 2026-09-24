@@ -11,6 +11,12 @@ When adding or moving code:
 - Keep unit tests under the module they exercise in `src/<area>/tests/`; use root `tests/` only for black-box integration coverage.
 - Update `docs/development.md` when organization rules change.
 
+## Documentation
+
+Follow the documentation scope in `docs/development.md`. Keep prose high level;
+command usage belongs in `jx --help`, dashboard keys in `?`, and implementation
+details in code and tests.
+
 ## Perf analysis
 
 When investigating `jx` latency, prefer the repo script over ad hoc log parsing:
