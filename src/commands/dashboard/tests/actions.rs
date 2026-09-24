@@ -67,7 +67,9 @@ fn actions_report_success_failure_and_cancellation_once_without_blocking_the_nex
                         PrActionOnSuccess::Refresh => DashboardRefreshKind::Live,
                         _ => DashboardRefreshKind::Local,
                     });
-                    actions.refreshed(Ok(())).unwrap();
+                    actions
+                        .refreshed(Ok(()), &environment, PrActionSet::Review)
+                        .unwrap();
                 }
             }
             DashboardActionOutcome::Cancelled(_) => assert!(cancel),

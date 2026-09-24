@@ -2,7 +2,9 @@ use super::*;
 use crate::domain::{prepare_pr_action, PrActionContext, PrActionUnavailable, PreparedPrAction};
 use crate::repository::ResolvedPrAction;
 mod execution;
+mod log_file;
 pub(super) use execution::{PrActionFailure, RunningPrAction};
+pub(super) use log_file::open_action_log;
 
 pub(super) struct AvailablePrAction {
     pub(super) definition: ResolvedPrAction,

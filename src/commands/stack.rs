@@ -1,6 +1,7 @@
 use super::*;
 use crate::jj::{StackPublishMetrics, StackPublishNodeFacts};
 
+mod dashboard_snapshot;
 mod reviewers;
 
 #[cfg(test)]
@@ -171,13 +172,7 @@ fn load_stack_status_dashboard_snapshot(
         ],
     );
     let result = if request.all {
-        load_global_stack_status_dashboard_snapshot(
-            &request,
-            environment,
-            &services,
-            &progress,
-            &mut span,
-        )
+        dashboard_snapshot::load(&request, environment, &services, &progress, &mut span)
     } else {
         load_current_stack_status_dashboard_snapshot(
             request,
@@ -194,28 +189,6 @@ fn load_stack_status_dashboard_snapshot(
     }
     span.end();
     result
-}
-
-fn load_global_stack_status_dashboard_snapshot(
-    request: &StackStatusRequest,
-    environment: &RuntimeEnvironment,
-    services: &dyn CommandServices,
-    progress: &dyn ProgressSink,
-    span: &mut PerfSpan,
-) -> Result<DashboardFrameSnapshot, CommandError> {
-    let loaded = load_global_stack_status_view(request, environment, services, progress, span)?;
-    let current_dir = environment.current_dir().to_path_buf();
-    Ok(DashboardFrameSnapshot::new(move |options| {
-        Ok(render_global_stack_status(
-            &loaded.entries,
-            loaded.total_repositories,
-            &current_dir,
-            options.color,
-            options.terminal_width,
-            PullRequestTableLayout::FitTerminal,
-            &loaded.display_names,
-        ))
-    }))
 }
 
 fn load_current_stack_status_dashboard_snapshot(

@@ -1,4 +1,5 @@
 use super::*;
+use std::fs::{self, OpenOptions};
 
 #[test]
 fn refresh_logging_failures_are_reported_even_if_later_writes_recover() {

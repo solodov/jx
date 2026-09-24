@@ -51,10 +51,17 @@ fn failed_loads_or_rendering_preserve_rows_and_report_the_error_only_once() {
         })),
     ] {
         let mut view = DashboardView {
-            pending: Some(Ok(snapshot(&[12]))),
+            pending: Some(Ok(snapshot(&[12, 13]))),
             ..DashboardView::default()
         };
         view.update(false, size);
+        let mut navigation = DashboardNavigation::default();
+        navigation.reconcile(view.frame.as_ref());
+        navigation.handle_command(
+            DashboardCommand::Down,
+            view.frame.as_ref().unwrap(),
+            size.height,
+        );
         let before = view.frame.clone();
         view.pending = Some(result);
         assert!(view.update(true, size).is_none());
@@ -64,6 +71,41 @@ fn failed_loads_or_rendering_preserve_rows_and_report_the_error_only_once() {
         ));
         assert_eq!(view.frame, before);
         assert!(view.update(false, size).is_none());
+        let resized = DashboardTerminalSize::new(42, 20);
+        assert!(matches!(
+            view.update(false, resized),
+            Some(DashboardViewUpdate::Reflowed(Ok(())))
+        ));
+        navigation.reconcile(view.frame.as_ref());
+        assert_eq!(
+            view.frame.as_ref().unwrap().text,
+            "width=42\nPR 12\nPR 13\n"
+        );
+        assert_eq!(
+            navigation
+                .selected(view.frame.as_ref().unwrap())
+                .unwrap()
+                .pr_number,
+            13
+        );
+
+        view.pending = Some(Ok(snapshot(&[13, 14])));
+        assert!(matches!(
+            view.update(false, resized),
+            Some(DashboardViewUpdate::Loaded(Ok(())))
+        ));
+        navigation.reconcile(view.frame.as_ref());
+        assert_eq!(
+            view.frame.as_ref().unwrap().text,
+            "width=42\nPR 13\nPR 14\n"
+        );
+        assert_eq!(
+            navigation
+                .selected(view.frame.as_ref().unwrap())
+                .unwrap()
+                .pr_number,
+            13
+        );
     }
 }
 

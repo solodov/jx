@@ -1,10 +1,6 @@
 use super::*;
 use crate::repository::PrActionOnSuccess;
-use std::{
-    fs::{self, File, OpenOptions},
-    process::Child,
-    time::Instant,
-};
+use std::{fs::File, process::Child, time::Instant};
 
 /// A quiet command and its log, retained through a configured reload after the child exits.
 /// Dropping a live command cancels and reaps it.
@@ -199,29 +195,8 @@ impl ActionLog {
         action_set: PrActionSet,
     ) -> Result<Self, PrActionFailure> {
         let started = Instant::now();
-        let path = action_log_path(environment).ok_or_else(|| PrActionFailure {
-            message: "Action not started: HOME or XDG_STATE_HOME must be set to store action logs"
-                .to_owned(),
-            log_path: None,
-        })?;
-        let file = (|| {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut options = OpenOptions::new();
-            options.create(true).append(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(&path)
-        })()
-        .map_err(|error| PrActionFailure {
-            message: format!(
-                "Action not started: cannot open log {}: {error}",
-                path.display()
-            ),
+        let (file, path) = open_action_log(environment).map_err(|message| PrActionFailure {
+            message: format!("Action not started: {message}"),
             log_path: None,
         })?;
         let metadata = serde_json::json!({
@@ -283,27 +258,6 @@ impl ActionLog {
             log_path: None,
         }
     }
-}
-
-fn action_log_path(environment: &RuntimeEnvironment) -> Option<PathBuf> {
-    if let Some(path) = environment
-        .variable("JX_ACTION_LOG")
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
-        return Some(environment.current_dir().join(path));
-    }
-    environment
-        .variable("XDG_STATE_HOME")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| environment.home_dir().map(|home| home.join(".local/state")))
-        .map(|root| {
-            environment
-                .current_dir()
-                .join(root)
-                .join("jx/jx-actions.log")
-        })
 }
 
 #[cfg(test)]

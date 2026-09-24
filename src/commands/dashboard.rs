@@ -17,6 +17,7 @@ use std::{
 };
 
 mod actions;
+mod diagnostics;
 mod keybindings;
 mod menu;
 mod navigation;
@@ -168,16 +169,22 @@ pub(super) fn run_interactive_dashboard(
                 refresh = None;
             } else if !loading.timed_out && dashboard_refresh_timed_out(loading.started.elapsed()) {
                 loading.timed_out = true;
-                let failure = actions.refresh_timed_out(dashboard_refresh_timeout_error());
+                let failure = actions.refresh_timed_out(
+                    dashboard_refresh_timeout_error(),
+                    environment,
+                    action_set,
+                );
                 status.refresh_timed_out(failure, environment, Instant::now());
                 // Retain the worker: abandoning it could race an action or a new load.
             }
         }
         if let Some(update) = view.update(menu.is_some() || keyboard.help_open(), terminal_size) {
             match update {
-                DashboardViewUpdate::Loaded(result) => {
-                    status.refreshed(actions.refreshed(result), environment, Instant::now())
-                }
+                DashboardViewUpdate::Loaded(result) => status.refreshed(
+                    actions.refreshed(result, environment, action_set),
+                    environment,
+                    Instant::now(),
+                ),
                 DashboardViewUpdate::Reflowed(result) => status.reflowed(result, Instant::now()),
             }
         }
@@ -223,7 +230,7 @@ pub(super) fn run_interactive_dashboard(
                             if let Some(update) = view.update(false, terminal_size) {
                                 match update {
                                     DashboardViewUpdate::Loaded(result) => status.refreshed(
-                                        actions.refreshed(result),
+                                        actions.refreshed(result, environment, action_set),
                                         environment,
                                         Instant::now(),
                                     ),

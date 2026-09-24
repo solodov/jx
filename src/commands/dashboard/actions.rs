@@ -1,3 +1,4 @@
+use super::diagnostics::record_refresh_failure;
 use super::*;
 use crate::{
     commands::pr_actions::{PrActionFailure, PrActionSet, RunningPrAction},
@@ -82,19 +83,31 @@ impl DashboardActions {
         }
     }
 
-    /// Ends the operation only once the replacement snapshot has been rendered.
-    pub(super) fn refreshed(&mut self, result: Result<(), String>) -> Result<(), PrActionFailure> {
+    /// Finishes an action's reload or records a standalone refresh failure.
+    pub(super) fn refreshed(
+        &mut self,
+        result: Result<(), String>,
+        environment: &RuntimeEnvironment,
+        action_set: PrActionSet,
+    ) -> Result<(), PrActionFailure> {
         match self.refreshing.take() {
             Some(mut action) => action.refreshed(result),
-            None => result.map_err(PrActionFailure::from),
+            None => {
+                result.map_err(|message| record_refresh_failure(message, environment, action_set))
+            }
         }
     }
 
-    /// Keeps the log alive after a timeout so a late result is still recorded for this action.
-    pub(super) fn refresh_timed_out(&mut self, message: String) -> PrActionFailure {
+    /// Records a timeout, retaining any action log for a late refresh result.
+    pub(super) fn refresh_timed_out(
+        &mut self,
+        message: String,
+        environment: &RuntimeEnvironment,
+        action_set: PrActionSet,
+    ) -> PrActionFailure {
         match &mut self.refreshing {
             Some(action) => action.refresh_timed_out(&message),
-            None => message.into(),
+            None => record_refresh_failure(message, environment, action_set),
         }
     }
 
