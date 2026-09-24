@@ -18,12 +18,13 @@ pub struct PrAction {
     pub on_success: PrActionOnSuccess,
 }
 
-/// Whether and how a dashboard reloads after success; local reloads are review-only.
+/// Whether a successful action reloads the dashboard; defaults to no reload.
+/// Live refreshes are opt-in, and local reloads are review-only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PrActionOnSuccess {
-    #[default]
     Refresh,
     RefreshLocal,
+    #[default]
     None,
 }
 

@@ -272,12 +272,14 @@ fn review_actions_can_request_local_refresh_and_overrides_replace_the_policy() {
         config.review_actions.for_repository(&repo)[0]
             .action
             .on_success,
-        PrActionOnSuccess::Refresh
+        PrActionOnSuccess::None
     );
 }
 
 #[test]
-fn no_refresh_policy_works_in_both_action_sets_and_all_config_scopes() {
+fn action_refreshes_are_opt_in_across_both_action_sets_and_all_config_scopes() {
+    assert_eq!(PrActionOnSuccess::default(), PrActionOnSuccess::None);
+    assert_eq!(PrActionOnSuccess::default().as_str(), "none");
     let workspace = TestWorkspace::new();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let repo = GitHubRepository::parse("https://github.com/owner/repo").unwrap();
@@ -292,28 +294,36 @@ fn no_refresh_policy_works_in_both_action_sets_and_all_config_scopes() {
                 } else {
                     ("", format!("repo.{action_set}"))
                 };
-                workspace.write_file(path, &format!(
-                    "{prefix}[[{key}]]\nid='queue'\ntitle='Queue'\ncommand=['queue']\non_success='none'\n"
-                ));
-                let config = WorkflowConfig::discover(&environment).unwrap();
-                let actions = match action_set {
-                    "review_actions" => config.review_actions.for_repository(&repo),
-                    _ => config.stack_status_actions.for_repository(&repo),
-                };
-                assert_eq!(actions[0].action.on_success, PrActionOnSuccess::None);
-                assert_eq!(actions[0].action.on_success.as_str(), "none");
-                workspace.write_file(path, "");
+                for (policy, expected) in [
+                    ("", PrActionOnSuccess::None),
+                    ("on_success='none'", PrActionOnSuccess::None),
+                    ("on_success='refresh'", PrActionOnSuccess::Refresh),
+                ] {
+                    workspace.write_file(path, &format!(
+                        "{prefix}[[{key}]]\nid='queue'\ntitle='Queue'\ncommand=['queue']\n{policy}\n"
+                    ));
+                    let config = WorkflowConfig::discover(&environment).unwrap();
+                    let actions = match action_set {
+                        "review_actions" => config.review_actions.for_repository(&repo),
+                        _ => config.stack_status_actions.for_repository(&repo),
+                    };
+                    assert_eq!(
+                        actions[0].action.on_success, expected,
+                        "{path}: {key}: {policy}"
+                    );
+                    workspace.write_file(path, "");
+                }
             }
         }
     }
 }
 
 #[test]
-fn an_override_without_a_policy_restores_live_refresh_after_none() {
+fn an_override_without_a_policy_resets_explicit_refresh_to_none() {
     let workspace = TestWorkspace::new();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let repo = GitHubRepository::parse("https://github.com/owner/repo").unwrap();
-    workspace.write_file(".config/jx/actions.toml", "[[repo.stack_status_actions]]\nid='queue'\ntitle='Queue'\ncommand=['queue']\non_success='none'\n");
+    workspace.write_file(".config/jx/actions.toml", "[[repo.stack_status_actions]]\nid='queue'\ntitle='Queue'\ncommand=['queue']\non_success='refresh'\n");
     workspace.write_file(
         ".jx/config.toml",
         "[[repo.stack_status_actions]]\nid='queue'\ntitle='Queue'\ncommand=['other']\n",
@@ -321,7 +331,7 @@ fn an_override_without_a_policy_restores_live_refresh_after_none() {
     let config = WorkflowConfig::discover(&environment).unwrap();
     let actions = config.stack_status_actions.for_repository(&repo);
     assert_eq!(actions[0].action.command, ["other"]);
-    assert_eq!(actions[0].action.on_success, PrActionOnSuccess::Refresh);
+    assert_eq!(actions[0].action.on_success, PrActionOnSuccess::None);
 }
 
 #[test]

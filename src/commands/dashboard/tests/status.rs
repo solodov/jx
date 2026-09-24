@@ -40,13 +40,13 @@ fn action_feedback_is_short_and_local_reloads_stay_silent() {
 }
 
 #[test]
-fn no_refresh_success_is_immediate_and_not_repeated_by_the_next_periodic_refresh() {
+fn default_action_success_is_immediate_and_not_repeated_by_the_next_periodic_refresh() {
     let now = Instant::now();
     let mut status = DashboardStatus::default();
     assert_eq!(
         complete(
             &mut status,
-            DashboardActionOutcome::Succeeded(PrActionOnSuccess::None),
+            DashboardActionOutcome::Succeeded(PrActionOnSuccess::default()),
             now
         ),
         None

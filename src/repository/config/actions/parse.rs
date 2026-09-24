@@ -157,7 +157,7 @@ fn parse_actions(
             }
         };
         let on_success = match table.get("on_success") {
-            None => PrActionOnSuccess::Refresh,
+            None => PrActionOnSuccess::default(),
             Some(value) if value.as_str() == Some("refresh") => PrActionOnSuccess::Refresh,
             Some(value) if value.as_str() == Some("none") => PrActionOnSuccess::None,
             Some(value) if value.as_str() == Some("refresh-local") && allow_local_refresh => {
