@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::{PrActionContext, PrActionKey};
+use crate::repository::DashboardCommand;
 
 /// Selection follows a PR, with checkout identity distinguishing multiple clones of the same PR.
 #[derive(Default)]
@@ -38,9 +39,10 @@ impl DashboardNavigation {
         frame.rows.get(self.index).map(|row| &row.context)
     }
 
-    pub(super) fn handle_key(
+    /// Applies resolved navigation without knowing which key or sequence invoked it.
+    pub(super) fn handle_command(
         &mut self,
-        key: KeyCode,
+        command: DashboardCommand,
         frame: &PullRequestTableFrame,
         height: usize,
     ) {
@@ -48,13 +50,13 @@ impl DashboardNavigation {
             return;
         }
         let last = frame.rows.len() - 1;
-        let index = match key {
-            KeyCode::Up | KeyCode::Char('k') => self.index.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.index.saturating_add(1).min(last),
-            KeyCode::PageUp => self.index.saturating_sub(height.max(1)),
-            KeyCode::PageDown => self.index.saturating_add(height.max(1)).min(last),
-            KeyCode::Home | KeyCode::Char('g') => 0,
-            KeyCode::End | KeyCode::Char('G') => last,
+        let index = match command {
+            DashboardCommand::Up => self.index.saturating_sub(1),
+            DashboardCommand::Down => self.index.saturating_add(1).min(last),
+            DashboardCommand::PageUp => self.index.saturating_sub(height.max(1)),
+            DashboardCommand::PageDown => self.index.saturating_add(height.max(1)).min(last),
+            DashboardCommand::First => 0,
+            DashboardCommand::Last => last,
             _ => return,
         };
         self.select(frame, index);

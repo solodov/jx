@@ -16,6 +16,7 @@ use jj_lib::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod dashboard_keys;
 mod layout_discovery;
 mod pr_actions;
 mod review;

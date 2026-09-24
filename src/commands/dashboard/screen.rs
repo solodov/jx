@@ -1,13 +1,20 @@
 use super::*;
-use super::{actions::DashboardActionInfo, status::DashboardStatus};
+use super::{
+    actions::DashboardActionInfo, keybindings::DashboardKeyboard, status::DashboardStatus,
+};
 use std::{io::Write, time::Instant};
 
-/// Paints notices outside the scrolling viewport and returns the height available for navigation.
+pub(super) struct DashboardControls<'a> {
+    pub(super) menu: Option<&'a mut PrActionMenu>,
+    pub(super) keyboard: &'a mut DashboardKeyboard,
+}
+
+/// Reserves a footer only for notices or pending key prefixes, leaving idle rows to the PR list.
 pub(super) fn render_dashboard_frame(
     frame: Option<&PullRequestTableFrame>,
     size: DashboardTerminalSize,
     navigation: &mut DashboardNavigation,
-    menu: Option<&mut PrActionMenu>,
+    controls: DashboardControls<'_>,
     status: &DashboardStatus,
     running: Option<&DashboardActionInfo>,
 ) -> io::Result<DashboardTerminalSize> {
@@ -15,7 +22,7 @@ pub(super) fn render_dashboard_frame(
         frame,
         size,
         navigation,
-        menu,
+        controls,
         status,
         running,
         Instant::now(),
@@ -28,13 +35,19 @@ fn dashboard_screen(
     frame: Option<&PullRequestTableFrame>,
     size: DashboardTerminalSize,
     navigation: &mut DashboardNavigation,
-    menu: Option<&mut PrActionMenu>,
+    controls: DashboardControls<'_>,
     status: &DashboardStatus,
     running: Option<&DashboardActionInfo>,
     now: Instant,
 ) -> DashboardScreen {
     let footer = (size.width > 0 && size.height > 0)
-        .then(|| status.line(running, now, size.width))
+        .then(|| {
+            controls
+                .keyboard
+                .prefix_hint()
+                .map(|hint| key_hint_line(&hint, size.width))
+                .or_else(|| status.line(running, now, size.width))
+        })
         .flatten();
     let content_size = DashboardTerminalSize {
         width: size.width,
@@ -44,7 +57,10 @@ fn dashboard_screen(
         frame.map_or("", |frame| frame.text.as_str()),
         content_size.height,
     );
-    let menu = menu.map(|menu| menu.screen(content_size, marker));
+    let menu = match controls.menu {
+        Some(menu) => Some(menu.screen(content_size, marker)),
+        None => controls.keyboard.help_screen(content_size),
+    };
     DashboardScreen {
         size,
         content_size,
@@ -53,6 +69,14 @@ fn dashboard_screen(
         menu,
         footer,
     }
+}
+
+fn key_hint_line(hint: &str, width: usize) -> String {
+    let text = ellipsize_rendered_line(&format!(" {}", menu::plain_text(hint)), Some(width));
+    format!(
+        "\x1b[0;2m{text}{}\x1b[0m",
+        " ".repeat(width.saturating_sub(rendered_visible_width(&text)))
+    )
 }
 
 struct DashboardScreen {

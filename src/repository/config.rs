@@ -1,20 +1,26 @@
 use super::*;
 
 mod actions;
+mod dashboard_keys;
 mod diff;
 mod layout;
 mod parse;
 mod repo_policy;
 mod shell;
+mod ui;
 
 pub(crate) use actions::render_pr_action_argument;
 pub use actions::*;
 use actions::{parse_pr_action_layer, PrActionLayer};
+use dashboard_keys::parse_dashboard_keys;
+pub use dashboard_keys::{DashboardCommand, DashboardKey, DashboardKeyBindings};
 pub use diff::*;
 pub use layout::*;
 use parse::{config_file_label, parse_workflow_config_layer, WorkflowConfigLayer};
 pub use repo_policy::*;
 pub use shell::*;
+pub use ui::UiConfig;
+use ui::UiConfigLayer;
 
 const GLOBAL_CONFIG_RELATIVE_PATH: [&str; 2] = [".config", "jx"];
 const PROJECT_CONFIG_RELATIVE_PATH: [&str; 2] = [".jx", "config.toml"];
@@ -121,6 +127,17 @@ impl WorkflowConfig {
         let contents = fs::read_to_string(&path)
             .map_err(|source| RepositoryError::ConfigRead { file, source })?;
         let layer = parse_workflow_config_layer(path, &contents)?;
+        if scope == PrActionConfigScope::Repository
+            && layer
+                .ui
+                .as_ref()
+                .is_some_and(|ui| ui.dashboard_keys.is_some())
+        {
+            return Err(RepositoryError::InvalidConfig {
+                file: config_file_label(&layer.path),
+                message: "`ui.dashboard.keys` is a user preference; configure it in ~/.config/jx/*.toml, not repository-local config".to_owned(),
+            });
+        }
 
         self.apply_layer(layer, scope);
         Ok(())
@@ -162,6 +179,7 @@ impl WorkflowConfig {
         self.layout.validate()?;
         self.repo.validate()?;
         self.shell.validate()?;
+        self.ui.dashboard_keys.validate()?;
 
         if let Some(default_tool) = &self.diff.default_tool {
             if !self.diff.tools.contains_key(default_tool) {
@@ -206,33 +224,6 @@ impl AuthConfig {
     }
 }
 
-/// Terminal and dispatch preferences loaded from optional config.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UiConfig {
-    pub default_command: Vec<String>,
-}
-
-impl Default for UiConfig {
-    fn default() -> Self {
-        Self {
-            default_command: vec!["log".to_owned()],
-        }
-    }
-}
-
-impl UiConfig {
-    fn apply_layer(&mut self, layer: UiConfigLayer) {
-        if let Some(default_command) = layer.default_command {
-            self.default_command = default_command;
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct UiConfigLayer {
-    pub(super) default_command: Option<Vec<String>>,
-}
-
 /// Repository context discovery failures with actionable diagnostics.
 #[derive(Debug, Error)]
 pub enum RepositoryError {
@@ -258,7 +249,7 @@ pub enum RepositoryError {
         source: toml::de::Error,
     },
     #[error(
-        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.sync]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.hooks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, `[shell]` navigation/title options, and `[ui] default_command`; remotes are not configurable."
+        "Unsupported workflow config key `{key}` in `{file}`. Config supports `[layout]`, `[repo]`, `[repo.sync]`, `[repo.stack_status]`, `[[repo.checks]]`, `[[repo.hooks]]`, `[[repo.event_handlers]]`, `[[repo.path_reviewers]]`, `[[repo.rules]]`, repo `workspace_shared_paths`, `[diff]`, `[auth.keychain] service/account`, `[shell]` navigation/title options, and `[ui] default_command` / `[ui.dashboard.keys]`; remotes are not configurable."
     )]
     UnsupportedConfigKey { file: String, key: String },
     #[error("Invalid workflow config `{file}`: {message}")]

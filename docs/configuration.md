@@ -25,13 +25,64 @@ when another view should be the no-argument entrypoint:
 default_command = ["status"]
 ```
 
+## Dashboard keys
+
+`jx stack status -i` and `jx review -i` share the same main-list bindings:
+
+| Operation | Default keys |
+| --- | --- |
+| Refresh live state | `g r` |
+| Previous / next PR | `k` / `j`, Up / Down |
+| Page up / down | PageUp / PageDown |
+| First / last PR | `g g` / `G`, Home / End |
+| Open action menu | Enter |
+| Show effective bindings | `?` |
+| Exit | `q` |
+
+Spaces denote successive keystrokes, not keys held together. `g` waits for a
+continuation without moving selection; the bottom hint shows the available
+continuations. There is no prefix timeout. An invalid continuation clears the
+prefix without executing another operation. Esc cancels the prefix, closes help
+or the menu/preview, or cancels a running action. **Esc never exits the dashboard**;
+it does nothing on an idle list. Ctrl-C remains the interrupt key: cancel a
+running action, otherwise exit.
+
+Customize main-list bindings in `~/.config/jx/*.toml`:
+
+```toml
+[ui.dashboard.keys]
+refresh = ["g r"]
+first = ["Home", "g g"]
+last = ["End", "G"]
+quit = ["q"]
+```
+
+Available operations are `refresh`, `up`, `down`, `page_up`, `page_down`, `first`,
+`last`, `menu`, `help`, and `quit`. Each entry replaces that operation's inherited
+sequences; unspecified operations keep their defaults and `[]` unbinds one.
+Global files compose in lexical order. These preferences are user-global;
+repository-local `[ui.dashboard.keys]` is rejected.
+
+Keys may be single characters (case-sensitive), arrows, Home, End, PageUp,
+PageDown, Enter, Tab, BackTab, Backspace, Delete, Space, or F1–F12, with optional
+`Ctrl-`, `Alt-`, and `Shift-` prefixes. Uppercase letters already encode Shift;
+Ctrl-letter case is normalized because terminals do not reliably distinguish it.
+Esc and Ctrl-C are reserved and cannot appear in configured sequences. Duplicate
+bindings and ambiguous prefixes (such as `g` and `g r`) are rejected after merging
+all global layers. Holding a key repeats only single-key navigation, not refresh,
+exit, or multi-key sequences.
+
+Prefix hints and main-list help use the effective keymap; there is no persistent
+help line. Help scrolls with
+j/k, arrows, or PageUp/PageDown and closes with Esc, Enter, or q. Action-menu
+navigation, preview, and confirmation controls remain fixed and separate from
+these preferences; remapping list keys cannot change the confirmation keys.
+
 ## Manual PR actions
 
-`jx stack status -i` and `jx review -i` use independent action sets with the same
-keyboard controls. Up/Down (or j/k) moves the chevron; Enter opens the selected
-PR's menu. Home/End and PageUp/PageDown navigate the table, `r` refreshes, and
-q/Esc exits. Existing terminal hyperlinks remain clickable. No actions are
-installed by default.
+`jx stack status -i` and `jx review -i` use independent action sets. Enter opens the
+selected PR's menu by default. Existing terminal hyperlinks remain clickable.
+No actions are installed by default.
 
 Define `repo.review_actions` for `jx review` and `repo.stack_status_actions` for
 `jx stack status`, in global config or the selected repository's `.jx/config.toml`.
@@ -152,16 +203,18 @@ falling back to that group's last remaining PR. Focus moves to another group onl
 when the selected group becomes empty.
 
 The bottom terminal row becomes a status line while work is running or a notice
-is visible. Running actions show only their name and elapsed time. Initial loading,
+is visible. Pending key prefixes temporarily show their continuations there.
+Otherwise the row belongs to the PR list. Running actions show only their name
+and elapsed time. Initial loading,
 manual refreshes, and live refreshes after actions show `Refreshing pull requests…`
 with elapsed time. Cached reloads and routine periodic refreshes stay quiet unless
 they fail. Successful actions show a three-second completion notice after the list
-updates, or immediately for `on_success = "none"`. When the line clears, that row
+updates, or immediately for `on_success = "none"`. When the notice clears, the row
 returns to the scrolling PR list.
 
 Errors disappear after ten seconds; success and cancellation notices last three
 seconds. The next keyboard interaction also clears notices without consuming the
-key or hiding ongoing work. Action failures show `"<action name>" failed, see <path>`,
+key. Action failures show `"<action name>" failed, see <path>`,
 shortening the log's home directory to `~`. Errors without a recorded log
 show their cause directly; status messages have no details popup. A successful
 retry clears only the matching error.
@@ -171,8 +224,9 @@ errors use brighter red across the whole message, keeping the strip quiet and
 distinct from pastel terminal dividers and scroll indicators.
 
 Failed or cancelled actions do not trigger a reload; the current rows stay visible.
-Esc closes the action menu or its command preview first, otherwise cancels a running
-action or exits. Ctrl-C cancels a running action or exits. These manual actions are
+Esc cancels a pending key prefix or closes help, the action menu, or its command
+preview first; otherwise it cancels a running action and never exits. Ctrl-C
+cancels a running action or exits. These manual actions are
 separate from lifecycle hooks and never execute during loading or refreshing.
 
 ## Clone and workspace layout

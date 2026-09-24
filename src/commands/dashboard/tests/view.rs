@@ -16,7 +16,11 @@ fn menu_freezes_rows_until_the_queued_snapshot_can_be_applied_and_reflowed() {
     let before = view.frame.clone();
     let mut navigation = DashboardNavigation::default();
     navigation.reconcile(view.frame.as_ref());
-    navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+    navigation.handle_command(
+        DashboardCommand::Down,
+        view.frame.as_ref().unwrap(),
+        size.height,
+    );
 
     view.pending = Some(Ok(snapshot(&[2, 3, 1])));
     assert!(view.update(true, resized).is_none());
@@ -80,7 +84,11 @@ fn removing_a_pr_preserves_selection_or_selects_the_next_row_across_resizes() {
         let mut navigation = DashboardNavigation::default();
         navigation.reconcile(view.frame.as_ref());
         for _ in 1..selected {
-            navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+            navigation.handle_command(
+                DashboardCommand::Down,
+                view.frame.as_ref().unwrap(),
+                size.height,
+            );
         }
         view.pending = Some(Ok(snapshot(&remaining)));
         for width in [100, 42] {
@@ -121,7 +129,11 @@ fn grouped_dismissal_keeps_focus_in_the_repository_after_menu_close_and_resize()
     let mut navigation = DashboardNavigation::default();
     navigation.reconcile(view.frame.as_ref());
     for _ in 0..2 {
-        navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+        navigation.handle_command(
+            DashboardCommand::Down,
+            view.frame.as_ref().unwrap(),
+            size.height,
+        );
     }
     view.pending = Some(Ok(grouped_snapshot(&[1, 2])));
     assert!(view.update(true, size).is_none());
@@ -144,7 +156,11 @@ fn grouped_dismissal_keeps_focus_in_the_repository_after_menu_close_and_resize()
             2
         );
     }
-    navigation.handle_key(KeyCode::Down, view.frame.as_ref().unwrap(), size.height);
+    navigation.handle_command(
+        DashboardCommand::Down,
+        view.frame.as_ref().unwrap(),
+        size.height,
+    );
     assert_eq!(
         navigation
             .selected(view.frame.as_ref().unwrap())

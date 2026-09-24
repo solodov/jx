@@ -17,6 +17,7 @@ use std::{
 };
 
 mod actions;
+mod keybindings;
 mod menu;
 mod navigation;
 mod refresh;
@@ -29,12 +30,14 @@ mod terminal_session;
 pub(super) mod test_support;
 mod view;
 
+use crate::repository::DashboardCommand;
 use actions::DashboardActions;
+use keybindings::{DashboardInput, DashboardKeyboard};
 use menu::{MenuIntent, PrActionMenu};
 use navigation::DashboardNavigation;
 pub(super) use refresh::DashboardRefreshKind;
 use refresh::{DashboardRefresh, DashboardRefreshSchedule};
-use screen::render_dashboard_frame;
+use screen::{render_dashboard_frame, DashboardControls};
 use status::DashboardStatus;
 use terminal_session::DashboardTerminalSession;
 use view::{DashboardView, DashboardViewUpdate};
@@ -106,6 +109,10 @@ pub(super) fn run_interactive_dashboard(
     environment: &RuntimeEnvironment,
     action_set: pr_actions::PrActionSet,
 ) -> Result<CommandResult, CommandError> {
+    let bindings = WorkflowConfig::discover_global(environment)?
+        .ui
+        .dashboard_keys;
+    let mut keyboard = DashboardKeyboard::new(bindings);
     let interrupts = DashboardInterrupts::enter()?;
     let mut terminal = DashboardTerminalSession::enter()?;
     let mut terminal_size = dashboard_terminal_size()?;
@@ -133,11 +140,21 @@ pub(super) fn run_interactive_dashboard(
             }
         }
         status.tick(Instant::now());
-        if menu.is_none() && !actions.is_running() && !status.has_error() && watcher.changed() {
+        if menu.is_none()
+            && !keyboard.help_open()
+            && !actions.is_running()
+            && !status.has_error()
+            && watcher.changed()
+        {
             terminal.restore()?;
             return restart_dashboard_process();
         }
-        if refresh.is_none() && !actions.is_running() && view.pending.is_none() && menu.is_none() {
+        if refresh.is_none()
+            && !actions.is_running()
+            && view.pending.is_none()
+            && menu.is_none()
+            && !keyboard.help_open()
+        {
             if let Some(kind) = schedule.next(Local::now()) {
                 status.refresh_started(kind, view.frame.is_none(), Instant::now());
                 refresh = Some(DashboardRefresh::start(Arc::clone(&loader), kind));
@@ -154,7 +171,7 @@ pub(super) fn run_interactive_dashboard(
                 // Retain the worker: abandoning it could race an action or a new load.
             }
         }
-        if let Some(update) = view.update(menu.is_some(), terminal_size) {
+        if let Some(update) = view.update(menu.is_some() || keyboard.help_open(), terminal_size) {
             match update {
                 DashboardViewUpdate::Loaded(result) => status.refreshed(result, Instant::now()),
                 DashboardViewUpdate::Reflowed(result) => status.reflowed(result, Instant::now()),
@@ -165,7 +182,10 @@ pub(super) fn run_interactive_dashboard(
             view.frame.as_ref(),
             terminal_size,
             &mut navigation,
-            menu.as_mut(),
+            DashboardControls {
+                menu: menu.as_mut(),
+                keyboard: &mut keyboard,
+            },
             &status,
             actions.running_info(),
         )?;
@@ -185,11 +205,11 @@ pub(super) fn run_interactive_dashboard(
             }
             DashboardEvent::Resized => {}
             DashboardEvent::Key(key) => {
-                if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-                    continue;
-                }
                 status.clear_notice();
                 if let Some(open_menu) = &mut menu {
+                    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+                        continue;
+                    }
                     match open_menu.handle_key(key, refresh.is_some(), content_size) {
                         MenuIntent::None => {}
                         MenuIntent::Close => menu = None,
@@ -209,36 +229,48 @@ pub(super) fn run_interactive_dashboard(
                             actions.start(action, environment, action_set);
                         }
                     }
-                } else if key.code == KeyCode::Esc
-                    && key.kind == KeyEventKind::Press
-                    && actions.cancel()
-                {
-                    view.pending = None;
-                } else if dashboard_exit_key(key) {
-                    return Ok(CommandResult::success(String::new()));
-                } else if key.code == KeyCode::Enter
-                    && key.kind == KeyEventKind::Press
-                    && !actions.is_running()
-                {
-                    if let Some(context) = view
-                        .frame
-                        .as_ref()
-                        .and_then(|frame| navigation.selected(frame))
-                    {
-                        let entries =
-                            pr_actions::load_pr_actions(context.clone(), environment, action_set)
+                } else {
+                    match keyboard.handle_key(key) {
+                        DashboardInput::Cancel => {
+                            if actions.cancel() {
+                                view.pending = None;
+                            }
+                        }
+                        DashboardInput::Command(DashboardCommand::Quit) => {
+                            return Ok(CommandResult::success(String::new()));
+                        }
+                        DashboardInput::Command(DashboardCommand::Menu)
+                            if !actions.is_running() =>
+                        {
+                            if let Some(context) = view
+                                .frame
+                                .as_ref()
+                                .and_then(|frame| navigation.selected(frame))
+                            {
+                                let entries = pr_actions::load_pr_actions(
+                                    context.clone(),
+                                    environment,
+                                    action_set,
+                                )
                                 .map_err(|error| error.to_string());
-                        menu = Some(PrActionMenu::new(context, entries));
+                                menu = Some(PrActionMenu::new(context, entries));
+                            }
+                        }
+                        DashboardInput::Command(DashboardCommand::Refresh) => {
+                            status.request_refresh();
+                            if refresh.as_ref().map(|loading| loading.kind)
+                                != Some(DashboardRefreshKind::Live)
+                            {
+                                schedule.request_live();
+                            }
+                        }
+                        DashboardInput::Command(command) if command.is_navigation() => {
+                            if let Some(frame) = &view.frame {
+                                navigation.handle_command(command, frame, content_size.height);
+                            }
+                        }
+                        _ => {}
                     }
-                } else if key.code == KeyCode::Char('r') && key.kind == KeyEventKind::Press {
-                    status.request_refresh();
-                    if refresh.as_ref().map(|loading| loading.kind)
-                        != Some(DashboardRefreshKind::Live)
-                    {
-                        schedule.request_live();
-                    }
-                } else if let Some(frame) = &view.frame {
-                    navigation.handle_key(key.code, frame, content_size.height);
                 }
             }
             DashboardEvent::None => {}
@@ -273,14 +305,6 @@ fn read_dashboard_event(
         }
         _ => Ok(DashboardEvent::None),
     }
-}
-
-fn dashboard_exit_key(key: KeyEvent) -> bool {
-    key.kind == KeyEventKind::Press
-        && matches!(
-            key.code,
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
-        )
 }
 
 fn dashboard_interrupt_key(key: KeyEvent) -> bool {

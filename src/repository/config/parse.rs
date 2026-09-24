@@ -2355,6 +2355,7 @@ fn parse_shell_zoxide_mode(
     }
 }
 
+/// Parses dispatch preferences and optional dashboard key overrides; scope is checked on load.
 fn parse_ui_config(file: &str, value: &toml::Value) -> Result<UiConfigLayer, RepositoryError> {
     let Some(table) = value.as_table() else {
         return Err(RepositoryError::InvalidConfig {
@@ -2364,7 +2365,10 @@ fn parse_ui_config(file: &str, value: &toml::Value) -> Result<UiConfigLayer, Rep
     };
 
     for key in table.keys() {
-        if !matches!(key.as_str(), "default_command" | "default-command") {
+        if !matches!(
+            key.as_str(),
+            "default_command" | "default-command" | "dashboard"
+        ) {
             return Err(RepositoryError::UnsupportedConfigKey {
                 file: file.to_owned(),
                 key: format!("ui.{key}"),
@@ -2394,7 +2398,35 @@ fn parse_ui_config(file: &str, value: &toml::Value) -> Result<UiConfigLayer, Rep
         })
         .transpose()?;
 
-    Ok(UiConfigLayer { default_command })
+    let dashboard_keys = table
+        .get("dashboard")
+        .map(|value| {
+            let dashboard = value
+                .as_table()
+                .ok_or_else(|| RepositoryError::InvalidConfig {
+                    file: file.to_owned(),
+                    message: "`ui.dashboard` must be a table".to_owned(),
+                })?;
+            for key in dashboard.keys() {
+                if key != "keys" {
+                    return Err(RepositoryError::UnsupportedConfigKey {
+                        file: file.to_owned(),
+                        key: format!("ui.dashboard.{key}"),
+                    });
+                }
+            }
+            dashboard
+                .get("keys")
+                .map(|value| parse_dashboard_keys(file, value))
+                .transpose()
+        })
+        .transpose()?
+        .flatten();
+
+    Ok(UiConfigLayer {
+        default_command,
+        dashboard_keys,
+    })
 }
 
 fn parse_auth_config(file: &str, value: &toml::Value) -> Result<AuthConfig, RepositoryError> {

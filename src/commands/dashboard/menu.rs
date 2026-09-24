@@ -331,6 +331,44 @@ impl PrActionMenu {
     }
 }
 
+/// Shows effective bindings in the existing bounded panel style, with scrolling for small panes.
+pub(super) fn keybinding_help_screen(
+    lines: &[String],
+    offset: &mut usize,
+    size: DashboardTerminalSize,
+) -> MenuScreen {
+    let width = size.width.min(90);
+    if width < 5 || size.height < 3 {
+        return MenuScreen {
+            x: 0,
+            y: 0,
+            lines: if size.height > 0 && width > 0 {
+                vec![panel_line("Enlarge terminal; Esc closes help", width, BODY)]
+            } else {
+                Vec::new()
+            },
+        };
+    }
+    let lines = lines
+        .iter()
+        .flat_map(|line| wrap_plain(&plain_text(line), width - 4))
+        .collect::<Vec<_>>();
+    let capacity = size.height - 2;
+    *offset = (*offset).min(lines.len().saturating_sub(capacity));
+    let rows = lines
+        .iter()
+        .skip(*offset)
+        .take(capacity)
+        .map(|line| (line.as_str(), BODY))
+        .collect::<Vec<_>>();
+    let lines = bordered_lines(&rows, width);
+    MenuScreen {
+        x: (size.width - width) / 2,
+        y: (size.height - lines.len()) / 2,
+        lines,
+    }
+}
+
 pub(super) struct MenuScreen {
     pub(super) x: usize,
     pub(super) y: usize,

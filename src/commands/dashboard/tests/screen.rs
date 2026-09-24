@@ -2,8 +2,9 @@ use super::*;
 use crate::commands::dashboard::test_support::context;
 
 #[test]
-fn notice_reserves_the_bottom_row_until_interaction_clears_it() {
+fn clearing_a_notice_returns_the_footer_row_to_the_pr_list() {
     let now = Instant::now();
+    let mut keyboard = DashboardKeyboard::new(crate::repository::DashboardKeyBindings::default());
     let mut frame = PullRequestTableFrame::default();
     frame.push_line("repository");
     for number in 1..=8 {
@@ -14,7 +15,7 @@ fn notice_reserves_the_bottom_row_until_interaction_clears_it() {
     }
     let mut nav = DashboardNavigation::default();
     nav.reconcile(Some(&frame));
-    nav.handle_key(KeyCode::End, &frame, 5);
+    nav.handle_command(DashboardCommand::Last, &frame, 5);
     let mut status = DashboardStatus::default();
     status.refreshed(Err("offline".to_owned()), now);
     for height in [5, 3] {
@@ -22,7 +23,10 @@ fn notice_reserves_the_bottom_row_until_interaction_clears_it() {
             Some(&frame),
             DashboardTerminalSize::new(100, height),
             &mut nav,
-            None,
+            DashboardControls {
+                menu: None,
+                keyboard: &mut keyboard,
+            },
             &status,
             None,
             now,
@@ -38,12 +42,15 @@ fn notice_reserves_the_bottom_row_until_interaction_clears_it() {
         assert!(rendered.contains("\x1b[0m\x1b[?7h"));
     }
     status.clear_notice();
-    nav.handle_key(KeyCode::Home, &frame, 5);
+    nav.handle_command(DashboardCommand::First, &frame, 5);
     let screen = dashboard_screen(
         Some(&frame),
         DashboardTerminalSize::new(100, 5),
         &mut nav,
-        None,
+        DashboardControls {
+            menu: None,
+            keyboard: &mut keyboard,
+        },
         &status,
         None,
         now,
@@ -54,8 +61,65 @@ fn notice_reserves_the_bottom_row_until_interaction_clears_it() {
 }
 
 #[test]
+fn prefix_hints_and_help_preserve_selection_on_resize_without_idle_hints() {
+    let now = Instant::now();
+    let mut keyboard = DashboardKeyboard::new(crate::repository::DashboardKeyBindings::default());
+    let mut frame = PullRequestTableFrame::default();
+    for number in 1..=3 {
+        frame.push_pr_line(&format!("PR {number}"), Some(context(number, "owner/repo")));
+    }
+    let mut nav = DashboardNavigation::default();
+    nav.reconcile(Some(&frame));
+    nav.handle_command(DashboardCommand::Down, &frame, 20);
+    let status = DashboardStatus::default();
+    keyboard.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    let screen = dashboard_screen(
+        Some(&frame),
+        DashboardTerminalSize::new(100, 20),
+        &mut nav,
+        DashboardControls {
+            menu: None,
+            keyboard: &mut keyboard,
+        },
+        &status,
+        None,
+        now,
+    );
+    assert!(screen.footer.as_deref().unwrap().contains("g …"));
+    assert_eq!(nav.selected(&frame).unwrap().pr_number, 2);
+    keyboard.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    keyboard.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    for (width, height) in [(100, 20), (30, 8), (1, 1), (0, 0)] {
+        let screen = dashboard_screen(
+            Some(&frame),
+            DashboardTerminalSize::new(width, height),
+            &mut nav,
+            DashboardControls {
+                menu: None,
+                keyboard: &mut keyboard,
+            },
+            &status,
+            None,
+            now,
+        );
+        let help = screen.menu.unwrap();
+        assert!(screen.footer.is_none());
+        assert_eq!(screen.content_size.height, usize::from(height));
+        assert!(help.y + help.lines.len() <= screen.content_size.height);
+        assert_eq!(nav.selected(&frame).unwrap().pr_number, 2);
+    }
+    assert_eq!(
+        keyboard.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        DashboardInput::None
+    );
+    assert!(!keyboard.help_open());
+    assert_eq!(nav.selected(&frame).unwrap().pr_number, 2);
+}
+
+#[test]
 fn menus_stay_above_the_status_line_and_tiny_panes_do_not_underflow() {
     let now = Instant::now();
+    let mut keyboard = DashboardKeyboard::new(crate::repository::DashboardKeyBindings::default());
     let mut status = DashboardStatus::default();
     status.refreshed(Err("offline".to_owned()), now);
     let mut nav = DashboardNavigation::default();
@@ -65,7 +129,10 @@ fn menus_stay_above_the_status_line_and_tiny_panes_do_not_underflow() {
             None,
             DashboardTerminalSize::new(80, height),
             &mut nav,
-            Some(&mut menu),
+            DashboardControls {
+                menu: Some(&mut menu),
+                keyboard: &mut keyboard,
+            },
             &status,
             None,
             now,
@@ -75,6 +142,21 @@ fn menus_stay_above_the_status_line_and_tiny_panes_do_not_underflow() {
         let mut bytes = Vec::new();
         write_dashboard_screen(&mut bytes, &screen).unwrap();
     }
+    status.clear_notice();
+    let screen = dashboard_screen(
+        None,
+        DashboardTerminalSize::new(80, 10),
+        &mut nav,
+        DashboardControls {
+            menu: Some(&mut menu),
+            keyboard: &mut keyboard,
+        },
+        &status,
+        None,
+        now,
+    );
+    assert!(screen.footer.is_none());
+    assert_eq!(screen.content_size.height, 10);
     assert_eq!(
         clipped_dashboard_lines("abcdef\nok\nthird", DashboardTerminalSize::new(4, 2)),
         ["abc…", "ok"]
