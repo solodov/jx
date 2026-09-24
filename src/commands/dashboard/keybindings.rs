@@ -102,28 +102,6 @@ impl DashboardKeyboard {
         self.help_offset.is_some()
     }
 
-    /// Hints are derived from the effective keymap, including pending sequence continuations.
-    pub(super) fn prefix_hint(&self) -> Option<String> {
-        if self.prefix.is_empty() {
-            return None;
-        }
-        let prefix = key_labels(&self.prefix);
-        let continuations = self
-            .bindings
-            .sequences()
-            .filter(|(_, keys)| keys.starts_with(&self.prefix))
-            .map(|(command, keys)| {
-                format!(
-                    "{}: {}",
-                    key_labels(&keys[self.prefix.len()..]),
-                    command.label()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" · ");
-        Some(format!("{prefix} …  {continuations} · Esc cancel"))
-    }
-
     pub(super) fn help_screen(&mut self, size: DashboardTerminalSize) -> Option<menu::MenuScreen> {
         if !self.help_open() {
             return None;
@@ -158,13 +136,6 @@ impl DashboardKeyboard {
         );
         lines
     }
-}
-
-fn key_labels(keys: &[DashboardKey]) -> String {
-    keys.iter()
-        .map(DashboardKey::label)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]

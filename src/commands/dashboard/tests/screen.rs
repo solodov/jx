@@ -61,7 +61,7 @@ fn clearing_a_notice_returns_the_footer_row_to_the_pr_list() {
 }
 
 #[test]
-fn prefix_hints_and_help_preserve_selection_on_resize_without_idle_hints() {
+fn pending_prefix_does_not_change_the_screen_and_help_preserves_selection_on_resize() {
     let now = Instant::now();
     let mut keyboard = DashboardKeyboard::new(crate::repository::DashboardKeyBindings::default());
     let mut frame = PullRequestTableFrame::default();
@@ -72,6 +72,18 @@ fn prefix_hints_and_help_preserve_selection_on_resize_without_idle_hints() {
     nav.reconcile(Some(&frame));
     nav.handle_command(DashboardCommand::Down, &frame, 20);
     let status = DashboardStatus::default();
+    let before = dashboard_screen(
+        Some(&frame),
+        DashboardTerminalSize::new(100, 20),
+        &mut nav,
+        DashboardControls {
+            menu: None,
+            keyboard: &mut keyboard,
+        },
+        &status,
+        None,
+        now,
+    );
     keyboard.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
     let screen = dashboard_screen(
         Some(&frame),
@@ -85,7 +97,13 @@ fn prefix_hints_and_help_preserve_selection_on_resize_without_idle_hints() {
         None,
         now,
     );
-    assert!(screen.footer.as_deref().unwrap().contains("g …"));
+    assert!(screen.footer.is_none());
+    assert_eq!(screen.content_size.height, 20);
+    let mut before_bytes = Vec::new();
+    let mut after_bytes = Vec::new();
+    write_dashboard_screen(&mut before_bytes, &before).unwrap();
+    write_dashboard_screen(&mut after_bytes, &screen).unwrap();
+    assert_eq!(before_bytes, after_bytes);
     assert_eq!(nav.selected(&frame).unwrap().pr_number, 2);
     keyboard.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     keyboard.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
@@ -114,6 +132,32 @@ fn prefix_hints_and_help_preserve_selection_on_resize_without_idle_hints() {
     );
     assert!(!keyboard.help_open());
     assert_eq!(nav.selected(&frame).unwrap().pr_number, 2);
+}
+
+#[test]
+fn pending_prefix_does_not_replace_the_running_refresh_status() {
+    let now = Instant::now();
+    let mut keyboard = DashboardKeyboard::new(crate::repository::DashboardKeyBindings::default());
+    let mut status = DashboardStatus::default();
+    status.request_refresh();
+    status.refresh_started(DashboardRefreshKind::Live, false, now);
+    let mut nav = DashboardNavigation::default();
+    keyboard.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    let screen = dashboard_screen(
+        None,
+        DashboardTerminalSize::new(100, 20),
+        &mut nav,
+        DashboardControls {
+            menu: None,
+            keyboard: &mut keyboard,
+        },
+        &status,
+        None,
+        now,
+    );
+    assert_eq!(screen.footer, status.line(None, now, 100));
+    assert!(screen.footer.unwrap().contains("Refreshing pull requests"));
+    assert_eq!(screen.content_size.height, 19);
 }
 
 #[test]

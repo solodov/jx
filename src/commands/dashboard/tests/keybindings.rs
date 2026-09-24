@@ -5,15 +5,10 @@ fn defaults_refresh_only_with_gr_and_use_gg_without_moving_on_the_prefix() {
     let mut keyboard = keyboard("");
     assert_eq!(press(&mut keyboard, 'r'), DashboardInput::None);
     assert_eq!(press(&mut keyboard, 'g'), DashboardInput::None);
-    let hint = keyboard.prefix_hint().unwrap();
-    assert!(hint.contains("g …"));
-    assert!(hint.contains("r: Refresh"));
-    assert!(hint.contains("g: First PR"));
     assert_eq!(
         press(&mut keyboard, 'r'),
         DashboardInput::Command(DashboardCommand::Refresh)
     );
-    assert!(keyboard.prefix_hint().is_none());
     assert_eq!(press(&mut keyboard, 'g'), DashboardInput::None);
     assert_eq!(
         press(&mut keyboard, 'g'),
@@ -33,7 +28,7 @@ fn escape_never_requests_exit_and_cancels_prefix_or_help_before_running_actions(
     assert_eq!(keyboard.handle_key(escape), DashboardInput::Cancel);
     press(&mut keyboard, 'g');
     assert_eq!(keyboard.handle_key(escape), DashboardInput::None);
-    assert!(keyboard.prefix_hint().is_none());
+    assert_eq!(press(&mut keyboard, 'r'), DashboardInput::None);
     press(&mut keyboard, '?');
     assert!(keyboard.help_open());
     assert_eq!(keyboard.handle_key(escape), DashboardInput::None);
@@ -50,7 +45,6 @@ fn invalid_continuations_do_not_accidentally_quit_or_reuse_the_old_prefix() {
     let mut keyboard = keyboard("");
     press(&mut keyboard, 'g');
     assert_eq!(press(&mut keyboard, 'q'), DashboardInput::None);
-    assert!(keyboard.prefix_hint().is_none());
     assert_eq!(press(&mut keyboard, 'r'), DashboardInput::None);
     assert_eq!(press(&mut keyboard, 'g'), DashboardInput::None);
     assert_eq!(
@@ -76,13 +70,11 @@ fn repeats_only_navigate_and_do_not_complete_a_prefix_or_fire_refresh_or_quit() 
     let mut event = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
     event.kind = KeyEventKind::Repeat;
     assert_eq!(keyboard.handle_key(event), DashboardInput::None);
-    assert!(keyboard.prefix_hint().is_some());
     let mut repeat_refresh = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
     repeat_refresh.kind = KeyEventKind::Repeat;
     assert_eq!(keyboard.handle_key(repeat_refresh), DashboardInput::None);
     event.kind = KeyEventKind::Release;
     assert_eq!(keyboard.handle_key(event), DashboardInput::None);
-    assert!(keyboard.prefix_hint().is_some());
     assert_eq!(
         press(&mut keyboard, 'g'),
         DashboardInput::Command(DashboardCommand::First)
@@ -90,7 +82,7 @@ fn repeats_only_navigate_and_do_not_complete_a_prefix_or_fire_refresh_or_quit() 
 }
 
 #[test]
-fn remaps_replace_defaults_and_help_and_prefix_hints_follow_effective_bindings() {
+fn remaps_replace_defaults_and_help_follows_effective_bindings() {
     let mut keyboard =
         keyboard("[ui.dashboard.keys]\nrefresh=['Ctrl-r', 'z z r']\nquit=['x']\nfirst=['Home']\n");
     assert_eq!(press(&mut keyboard, 'r'), DashboardInput::None);
@@ -104,7 +96,6 @@ fn remaps_replace_defaults_and_help_and_prefix_hints_follow_effective_bindings()
         DashboardInput::Command(DashboardCommand::Quit)
     );
     assert_eq!(press(&mut keyboard, 'z'), DashboardInput::None);
-    assert!(keyboard.prefix_hint().unwrap().contains("z r: Refresh"));
     assert_eq!(press(&mut keyboard, 'z'), DashboardInput::None);
     assert_eq!(
         press(&mut keyboard, 'r'),

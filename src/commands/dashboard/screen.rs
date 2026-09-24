@@ -9,7 +9,7 @@ pub(super) struct DashboardControls<'a> {
     pub(super) keyboard: &'a mut DashboardKeyboard,
 }
 
-/// Reserves a footer only for notices or pending key prefixes, leaving idle rows to the PR list.
+/// Reserves a footer only for status messages, leaving key sequences visually silent.
 pub(super) fn render_dashboard_frame(
     frame: Option<&PullRequestTableFrame>,
     size: DashboardTerminalSize,
@@ -41,13 +41,7 @@ fn dashboard_screen(
     now: Instant,
 ) -> DashboardScreen {
     let footer = (size.width > 0 && size.height > 0)
-        .then(|| {
-            controls
-                .keyboard
-                .prefix_hint()
-                .map(|hint| key_hint_line(&hint, size.width))
-                .or_else(|| status.line(running, now, size.width))
-        })
+        .then(|| status.line(running, now, size.width))
         .flatten();
     let content_size = DashboardTerminalSize {
         width: size.width,
@@ -69,14 +63,6 @@ fn dashboard_screen(
         menu,
         footer,
     }
-}
-
-fn key_hint_line(hint: &str, width: usize) -> String {
-    let text = ellipsize_rendered_line(&format!(" {}", menu::plain_text(hint)), Some(width));
-    format!(
-        "\x1b[0;2m{text}{}\x1b[0m",
-        " ".repeat(width.saturating_sub(rendered_visible_width(&text)))
-    )
 }
 
 struct DashboardScreen {
