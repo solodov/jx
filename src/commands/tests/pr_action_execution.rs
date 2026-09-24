@@ -77,6 +77,82 @@ fn quiet_execution_logs_both_streams_argv_and_status_without_a_terminal() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn configured_refreshes_log_phases_timings_failures_and_timeout_recovery() {
+    use crate::repository::PrActionOnSuccess;
+    for (policy, kind, fail, timeout) in [
+        (PrActionOnSuccess::Refresh, "live", false, false),
+        (PrActionOnSuccess::RefreshLocal, "local", true, false),
+        (PrActionOnSuccess::Refresh, "live", false, true),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut action = invocation(&["sh", "-c", "exit 0"], temp.path());
+        action.on_success = policy;
+        let mut running = RunningPrAction::start(
+            action,
+            &action_environment(temp.path()),
+            PrActionSet::Review,
+        )
+        .unwrap();
+        wait_for_action(&mut running).unwrap();
+        let path = temp.path().join(".local/state/jx/jx-actions.log");
+        let command_log = fs::read_to_string(&path).unwrap();
+        assert!(command_log.contains("\"status\":\"command_success\""));
+        assert!(!command_log.contains("\"status\":\"success\""));
+        running.refresh_started(kind);
+        if timeout {
+            let error = running.refresh_timed_out("refresh timed out");
+            assert_eq!(error.log_path.as_deref(), Some(path.as_path()));
+        }
+        let result = running.refreshed(if fail {
+            Err("snapshot could not render".to_owned())
+        } else {
+            Ok(())
+        });
+        if fail {
+            assert_eq!(
+                result.unwrap_err().log_path.as_deref(),
+                Some(path.as_path())
+            );
+        } else {
+            result.unwrap();
+        }
+        let log = fs::read_to_string(&path).unwrap();
+        let records = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("[jx-action] "))
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let mut expected = vec!["start", "command_success", "refresh_start"];
+        if timeout {
+            expected.push("refresh_timeout");
+        }
+        if fail {
+            expected.push("refresh_failed");
+            assert!(log.contains("snapshot could not render"));
+        } else {
+            expected.extend(["refresh_success", "success"]);
+        }
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(records
+            .windows(2)
+            .all(|pair| pair[0]["elapsed_ms"].as_u64().unwrap()
+                <= pair[1]["elapsed_ms"].as_u64().unwrap()));
+        for record in &records[2..] {
+            assert_eq!(record["refresh_kind"], kind);
+            assert!(record["refresh_elapsed_ms"].as_u64().is_some());
+            assert_eq!(record["on_success"], policy.as_str());
+        }
+    }
+}
+
 #[test]
 fn spawn_failures_are_logged_and_unwritable_logs_prevent_execution() {
     let temp = tempfile::tempdir().unwrap();

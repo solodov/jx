@@ -142,7 +142,7 @@ pub(super) fn run_interactive_dashboard(
         status.tick(Instant::now());
         if menu.is_none()
             && !keyboard.help_open()
-            && !actions.is_running()
+            && !actions.is_busy()
             && !status.has_error()
             && watcher.changed()
         {
@@ -156,6 +156,7 @@ pub(super) fn run_interactive_dashboard(
             && !keyboard.help_open()
         {
             if let Some(kind) = schedule.next(Local::now()) {
+                actions.refresh_started(kind);
                 status.refresh_started(kind, view.frame.is_none(), Instant::now());
                 refresh = Some(DashboardRefresh::start(Arc::clone(&loader), kind));
             }
@@ -167,13 +168,16 @@ pub(super) fn run_interactive_dashboard(
                 refresh = None;
             } else if !loading.timed_out && dashboard_refresh_timed_out(loading.started.elapsed()) {
                 loading.timed_out = true;
-                status.refresh_timed_out(Instant::now());
+                let failure = actions.refresh_timed_out(dashboard_refresh_timeout_error());
+                status.refresh_timed_out(failure, environment, Instant::now());
                 // Retain the worker: abandoning it could race an action or a new load.
             }
         }
         if let Some(update) = view.update(menu.is_some() || keyboard.help_open(), terminal_size) {
             match update {
-                DashboardViewUpdate::Loaded(result) => status.refreshed(result, Instant::now()),
+                DashboardViewUpdate::Loaded(result) => {
+                    status.refreshed(actions.refreshed(result), environment, Instant::now())
+                }
                 DashboardViewUpdate::Reflowed(result) => status.reflowed(result, Instant::now()),
             }
         }
@@ -218,9 +222,11 @@ pub(super) fn run_interactive_dashboard(
                             // Finish any queued list update before attributing work to the next action.
                             if let Some(update) = view.update(false, terminal_size) {
                                 match update {
-                                    DashboardViewUpdate::Loaded(result) => {
-                                        status.refreshed(result, Instant::now())
-                                    }
+                                    DashboardViewUpdate::Loaded(result) => status.refreshed(
+                                        actions.refreshed(result),
+                                        environment,
+                                        Instant::now(),
+                                    ),
                                     DashboardViewUpdate::Reflowed(result) => {
                                         status.reflowed(result, Instant::now())
                                     }
@@ -239,9 +245,7 @@ pub(super) fn run_interactive_dashboard(
                         DashboardInput::Command(DashboardCommand::Quit) => {
                             return Ok(CommandResult::success(String::new()));
                         }
-                        DashboardInput::Command(DashboardCommand::Menu)
-                            if !actions.is_running() =>
-                        {
+                        DashboardInput::Command(DashboardCommand::Menu) if !actions.is_busy() => {
                             if let Some(context) = view
                                 .frame
                                 .as_ref()

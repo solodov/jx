@@ -2,41 +2,51 @@ use super::*;
 use crate::commands::dashboard::test_support::context;
 
 #[test]
-fn action_feedback_is_short_and_local_reloads_stay_silent() {
+fn configured_reloads_keep_one_action_timer_until_the_list_is_rendered() {
     let now = Instant::now();
-    let action = action(now);
-    let mut status = DashboardStatus::default();
-    let later = now + ERROR_DURATION;
-    status.clear_notice();
-    status.tick(later);
-    let line = status.line(Some(&action), later, 120).unwrap();
-    assert!(line.contains("Running dismiss/fix tests… 10s"));
-    assert!(line.contains("48;2;236;233;219m"));
-    assert!(line.contains("38;2;0;0;0m"));
-    assert!(!line.contains("owner/repo"));
-    assert!(line.contains("Esc cancel"));
-    assert!(!line.contains('?'));
-    assert_eq!(
-        complete(
-            &mut status,
-            DashboardActionOutcome::Succeeded(PrActionOnSuccess::RefreshLocal),
-            later,
-        ),
-        Some(PrActionOnSuccess::RefreshLocal)
-    );
-    assert!(status.line(None, later, 120).is_none());
-    status.refresh_started(DashboardRefreshKind::Local, false, later);
-    status.clear_notice();
-    status.tick(later + ERROR_DURATION);
-    assert!(status.line(None, later, 120).is_none());
-    let later = later + ERROR_DURATION;
-    status.refreshed(Ok(()), later);
-    assert!(status
-        .line(None, later, 120)
-        .unwrap()
-        .contains("\"dismiss/fix tests\" completed"));
-    status.tick(later + NOTICE_DURATION);
-    assert!(status.line(None, later, 120).is_none());
+    for (policy, kind) in [
+        (PrActionOnSuccess::RefreshLocal, DashboardRefreshKind::Local),
+        (PrActionOnSuccess::Refresh, DashboardRefreshKind::Live),
+    ] {
+        let action = action(now);
+        let mut status = DashboardStatus::default();
+        let later = now + Duration::from_secs(10);
+        let line = status.line(Some(&action), later, 120).unwrap();
+        assert!(line.contains("Running dismiss/fix tests… 10s"));
+        assert!(line.contains("Esc cancel"));
+        assert!(!line.contains("owner/repo"));
+        assert_eq!(
+            status.action_completed(
+                DashboardActionCompletion {
+                    action,
+                    outcome: DashboardActionOutcome::Succeeded(policy),
+                },
+                &environment(),
+                later,
+            ),
+            Some(policy)
+        );
+        assert!(status
+            .line(None, later, 120)
+            .unwrap()
+            .contains("Running dismiss/fix tests… 10s"));
+        status.refresh_started(kind, false, later);
+        status.clear_notice();
+        let later = later + Duration::from_secs(10);
+        status.tick(later);
+        let line = status.line(None, later, 120).unwrap();
+        assert!(line.contains("Running dismiss/fix tests… 20s"));
+        assert!(!line.contains("Refreshing"));
+        assert!(!line.contains("Esc cancel"));
+        assert!(!line.contains("completed"));
+        status.refreshed(Ok(()), &environment(), later);
+        assert!(status
+            .line(None, later, 120)
+            .unwrap()
+            .contains("\"dismiss/fix tests\" completed"));
+        status.tick(later + NOTICE_DURATION);
+        assert!(status.line(None, later, 120).is_none());
+    }
 }
 
 #[test]
@@ -62,7 +72,7 @@ fn default_action_success_is_immediate_and_not_repeated_by_the_next_periodic_ref
     assert!(status.line(None, later, 120).is_none());
     status.refresh_started(DashboardRefreshKind::Live, false, later);
     assert!(status.line(None, later, 120).is_none());
-    status.refreshed(Ok(()), later);
+    status.refreshed(Ok(()), &environment(), later);
     assert!(status.line(None, later, 120).is_none());
 }
 
@@ -92,16 +102,12 @@ fn no_refresh_success_clears_its_own_previous_error() {
 }
 
 #[test]
-fn initial_and_post_action_live_refreshes_show_elapsed_time() {
+fn initial_and_manual_live_refreshes_show_elapsed_time() {
     let now = Instant::now();
     for initial in [true, false] {
         let mut status = DashboardStatus::default();
         if !initial {
-            complete(
-                &mut status,
-                DashboardActionOutcome::Succeeded(PrActionOnSuccess::Refresh),
-                now,
-            );
+            status.request_refresh();
         }
         status.refresh_started(DashboardRefreshKind::Live, initial, now);
         status.clear_notice();
@@ -120,7 +126,7 @@ fn manual_refresh_during_a_cached_reload_only_shows_feedback_when_live_loading_s
     status.refresh_started(DashboardRefreshKind::Local, false, now);
     status.request_refresh();
     assert!(status.line(None, now, 120).is_none());
-    status.refreshed(Ok(()), now);
+    status.refreshed(Ok(()), &environment(), now);
     status.refresh_started(DashboardRefreshKind::Live, false, now);
     assert!(status
         .line(None, now, 120)
@@ -147,7 +153,7 @@ fn logged_errors_show_the_actual_log_path_and_expire_after_ten_seconds() {
             }),
             now,
         );
-        status.refreshed(Ok(()), now);
+        status.refreshed(Ok(()), &environment(), now);
         let line = status.line(None, now, 80).unwrap();
         assert!(line.contains(&format!("\"dismiss/fix tests\" failed, see {display}")));
         assert!(!line.contains("owner/repo"));
@@ -221,14 +227,18 @@ fn refresh_timeout_expires_without_resuming_busy_feedback_and_can_recover() {
         now,
     );
     status.refresh_started(DashboardRefreshKind::Local, false, now);
-    status.refresh_timed_out(now);
+    status.refresh_timed_out(
+        dashboard_refresh_timeout_error().into(),
+        &environment(),
+        now,
+    );
     let line = status.line(None, now, 200).unwrap();
     assert!(line.contains("\"dismiss/fix tests\" completed; refresh failed"));
     assert!(line.contains(&dashboard_refresh_timeout_error()));
     let later = now + ERROR_DURATION;
     status.tick(later);
     assert!(status.line(None, later, 160).is_none());
-    status.refreshed(Ok(()), later);
+    status.refreshed(Ok(()), &environment(), later);
     assert!(status
         .line(None, later, 160)
         .unwrap()
@@ -246,13 +256,46 @@ fn refresh_timeout_expires_without_resuming_busy_feedback_and_can_recover() {
         .line(None, later, 120)
         .unwrap()
         .contains("Refreshing"));
-    status.refreshed(Err("network down".to_owned()), later);
+    status.refreshed(Err("network down".to_owned().into()), &environment(), later);
     assert!(status
         .line(None, later, 120)
         .unwrap()
         .contains("Refresh failed: network down"));
-    status.refreshed(Ok(()), later);
+    status.refreshed(Ok(()), &environment(), later);
     assert!(!status.has_error());
+}
+
+#[test]
+fn action_refresh_failures_distinguish_command_success_and_only_link_recorded_errors() {
+    let now = Instant::now();
+    for log_path in [Some(PathBuf::from("/home/operator/actions.log")), None] {
+        let logged = log_path.is_some();
+        let mut status = DashboardStatus::default();
+        complete(
+            &mut status,
+            DashboardActionOutcome::Succeeded(PrActionOnSuccess::Refresh),
+            now,
+        );
+        status.refreshed(
+            Err(PrActionFailure {
+                message: "offline".to_owned(),
+                log_path,
+            }),
+            &environment(),
+            now,
+        );
+        let line = status.line(None, now, 160).unwrap();
+        assert!(line.contains("\"dismiss/fix tests\" completed; refresh failed"));
+        assert!(!line.contains("Running"));
+        if logged {
+            assert!(line.contains("see ~/actions.log"));
+        } else {
+            assert!(line.contains("refresh failed: offline"));
+            assert!(!line.contains("see "));
+        }
+        status.clear_notice();
+        assert!(status.line(None, now, 160).is_none());
+    }
 }
 
 #[test]
@@ -294,17 +337,20 @@ fn complete(
     outcome: DashboardActionOutcome,
     now: Instant,
 ) -> Option<PrActionOnSuccess> {
-    let environment = RuntimeEnvironment::new(
-        "/caller",
-        [("HOME".to_owned(), "/home/operator".to_owned())],
-    );
     status.action_completed(
         DashboardActionCompletion {
             action: action(now),
             outcome,
         },
-        &environment,
+        &environment(),
         now,
+    )
+}
+
+fn environment() -> RuntimeEnvironment {
+    RuntimeEnvironment::new(
+        "/caller",
+        [("HOME".to_owned(), "/home/operator".to_owned())],
     )
 }
 

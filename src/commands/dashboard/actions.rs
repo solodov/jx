@@ -6,10 +6,11 @@ use crate::{
 };
 use std::time::Instant;
 
-/// Runs one action and delivers its outcome once; notifications never block the next action.
+/// Runs one command at a time and retains its log until the configured list update finishes.
 #[derive(Default)]
 pub(super) struct DashboardActions {
     running: Option<RunningPrAction>,
+    refreshing: Option<RunningPrAction>,
     info: Option<DashboardActionInfo>,
     on_success: PrActionOnSuccess,
     completed: Option<DashboardActionCompletion>,
@@ -23,7 +24,7 @@ impl DashboardActions {
         environment: &RuntimeEnvironment,
         action_set: PrActionSet,
     ) {
-        if self.running.is_some() {
+        if self.is_busy() {
             return;
         }
         self.info = Some(DashboardActionInfo {
@@ -39,8 +40,14 @@ impl DashboardActions {
         }
     }
 
+    /// Only the subprocess blocks starting its own follow-up refresh.
     pub(super) fn is_running(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// The whole operation blocks another action or an automatic executable restart.
+    pub(super) fn is_busy(&self) -> bool {
+        self.running.is_some() || self.refreshing.is_some()
     }
 
     pub(super) fn running_info(&self) -> Option<&DashboardActionInfo> {
@@ -65,14 +72,46 @@ impl DashboardActions {
         true
     }
 
+    /// Attaches reload details to the completed command's original log.
+    pub(super) fn refresh_started(&mut self, kind: DashboardRefreshKind) {
+        if let Some(action) = &mut self.refreshing {
+            action.refresh_started(match kind {
+                DashboardRefreshKind::Live => "live",
+                DashboardRefreshKind::Local => "local",
+            });
+        }
+    }
+
+    /// Ends the operation only once the replacement snapshot has been rendered.
+    pub(super) fn refreshed(&mut self, result: Result<(), String>) -> Result<(), PrActionFailure> {
+        match self.refreshing.take() {
+            Some(mut action) => action.refreshed(result),
+            None => result.map_err(PrActionFailure::from),
+        }
+    }
+
+    /// Keeps the log alive after a timeout so a late result is still recorded for this action.
+    pub(super) fn refresh_timed_out(&mut self, message: String) -> PrActionFailure {
+        match &mut self.refreshing {
+            Some(action) => action.refresh_timed_out(&message),
+            None => message.into(),
+        }
+    }
+
     fn poll_running(&mut self) -> bool {
         let Some(result) = self.running.as_mut().and_then(RunningPrAction::poll) else {
             return false;
         };
-        self.complete(match result {
-            Ok(()) => DashboardActionOutcome::Succeeded(self.on_success),
+        let outcome = match result {
+            Ok(()) => {
+                if self.on_success != PrActionOnSuccess::None {
+                    self.refreshing = self.running.take();
+                }
+                DashboardActionOutcome::Succeeded(self.on_success)
+            }
             Err(error) => DashboardActionOutcome::Failed(error),
-        });
+        };
+        self.complete(outcome);
         true
     }
 

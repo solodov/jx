@@ -17,7 +17,11 @@ fn clearing_a_notice_returns_the_footer_row_to_the_pr_list() {
     nav.reconcile(Some(&frame));
     nav.handle_command(DashboardCommand::Last, &frame, 5);
     let mut status = DashboardStatus::default();
-    status.refreshed(Err("offline".to_owned()), now);
+    status.refreshed(
+        Err("offline".to_owned().into()),
+        &RuntimeEnvironment::new("/caller", []),
+        now,
+    );
     for height in [5, 3] {
         let screen = dashboard_screen(
             Some(&frame),
@@ -165,7 +169,11 @@ fn menus_stay_above_the_status_line_and_tiny_panes_do_not_underflow() {
     let now = Instant::now();
     let mut keyboard = DashboardKeyboard::new(crate::repository::DashboardKeyBindings::default());
     let mut status = DashboardStatus::default();
-    status.refreshed(Err("offline".to_owned()), now);
+    status.refreshed(
+        Err("offline".to_owned().into()),
+        &RuntimeEnvironment::new("/caller", []),
+        now,
+    );
     let mut nav = DashboardNavigation::default();
     let mut menu = PrActionMenu::new(&context(1, "owner/repo"), Ok(Vec::new()));
     for height in [0, 1, 10] {

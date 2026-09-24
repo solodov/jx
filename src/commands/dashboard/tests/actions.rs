@@ -57,11 +57,24 @@ fn actions_report_success_failure_and_cancellation_once_without_blocking_the_nex
             DashboardActionOutcome::Succeeded(actual) => {
                 assert_eq!(command, "exit 0");
                 assert_eq!(actual, policy);
+                if policy != PrActionOnSuccess::None {
+                    assert!(actions.is_busy());
+                    assert!(
+                        !actions.cancel(),
+                        "the completed command is no longer cancellable"
+                    );
+                    actions.refresh_started(match policy {
+                        PrActionOnSuccess::Refresh => DashboardRefreshKind::Live,
+                        _ => DashboardRefreshKind::Local,
+                    });
+                    actions.refreshed(Ok(())).unwrap();
+                }
             }
             DashboardActionOutcome::Cancelled(_) => assert!(cancel),
             DashboardActionOutcome::Failed(_) => assert_eq!(command, "exit 1"),
         }
         assert!(actions.poll().is_none());
         assert!(actions.running_info().is_none());
+        assert!(!actions.is_busy());
     }
 }

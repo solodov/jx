@@ -2002,7 +2002,7 @@ fn dashboard_interactive_arg() -> Arg {
         .long("interactive")
         .action(ArgAction::SetTrue)
         .help("Open a live dashboard (? for keybindings)")
-        .long_help("Keep the live PR list open and refresh periodically. Press ? for current keybindings.\n\nCustomize keys in global [ui.dashboard.keys] and manual actions in repo.review_actions or repo.stack_status_actions. Actions are non-interactive; repository-local actions require confirmation. Actions do not trigger a reload unless on_success requests \"refresh\" or, for review actions, \"refresh-local\". Output is logged to ~/.local/state/jx/jx-actions.log (XDG_STATE_HOME and JX_ACTION_LOG are supported).")
+        .long_help("Keep the live PR list open and refresh periodically. Press ? for current keybindings.\n\nCustomize keys in global [ui.dashboard.keys] and manual actions in repo.review_actions or repo.stack_status_actions. Actions are non-interactive; repository-local actions require confirmation. Actions do not trigger a reload unless on_success requests \"refresh\" or, for review actions, \"refresh-local\". Action progress includes the configured reload. Command output and refresh details are logged to ~/.local/state/jx/jx-actions.log (XDG_STATE_HOME and JX_ACTION_LOG are supported).")
 }
 
 fn dashboard_refresh_seconds_arg() -> Arg {

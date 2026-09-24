@@ -77,20 +77,28 @@ impl DashboardStatus {
     ) {
         self.refresh_started = Some((kind, now));
         self.foreground_refresh = kind == DashboardRefreshKind::Live
-            && (std::mem::take(&mut self.foreground_requested)
-                || initial
-                || self.updating_action.is_some());
+            && (std::mem::take(&mut self.foreground_requested) || initial);
         self.timed_out = false;
     }
 
     /// Reports a timeout once while retaining the worker and its action context for later recovery.
-    pub(super) fn refresh_timed_out(&mut self, now: Instant) {
+    pub(super) fn refresh_timed_out(
+        &mut self,
+        failure: PrActionFailure,
+        environment: &RuntimeEnvironment,
+        now: Instant,
+    ) {
         self.timed_out = true;
-        self.report_refresh_error(dashboard_refresh_timeout_error(), now);
+        self.report_refresh_error(failure, environment, now);
     }
 
     /// Called after the replacement snapshot is rendered, not merely when fetching finishes.
-    pub(super) fn refreshed(&mut self, result: Result<(), String>, now: Instant) {
+    pub(super) fn refreshed(
+        &mut self,
+        result: Result<(), PrActionFailure>,
+        environment: &RuntimeEnvironment,
+        now: Instant,
+    ) {
         self.refresh_started = None;
         self.foreground_refresh = false;
         self.timed_out = false;
@@ -103,7 +111,7 @@ impl DashboardStatus {
                 }
             }
             Err(error) => {
-                self.report_refresh_error(error, now);
+                self.report_refresh_error(error, environment, now);
                 self.updating_action = None;
             }
         }
@@ -169,15 +177,21 @@ impl DashboardStatus {
         ));
     }
 
-    fn report_refresh_error(&mut self, error: String, now: Instant) {
-        let message = if let Some(action) = &self.updating_action {
+    fn report_refresh_error(
+        &mut self,
+        failure: PrActionFailure,
+        environment: &RuntimeEnvironment,
+        now: Instant,
+    ) {
+        let mut message = if let Some(action) = &self.updating_action {
             StatusMessage::new(
                 StatusKind::Error,
-                format!("\"{}\" completed; refresh failed: {error}", action.title),
+                format!("\"{}\" completed; refresh failed", action.title),
             )
         } else {
-            StatusMessage::new(StatusKind::Error, format!("Refresh failed: {error}"))
+            StatusMessage::new(StatusKind::Error, "Refresh failed".to_owned())
         };
+        message.add_failure(failure, environment);
         self.error = Some((ErrorSource::Refresh, now + ERROR_DURATION, message));
     }
 
@@ -191,17 +205,19 @@ impl DashboardStatus {
         }
     }
 
+    /// Keeps one action timer across execution and reload; only the subprocess can be cancelled.
     fn message(
         &self,
         running: Option<&DashboardActionInfo>,
         now: Instant,
     ) -> Option<StatusMessage> {
-        if let Some(action) = running {
+        if let Some(action) = running.or(self.updating_action.as_ref().filter(|_| !self.timed_out))
+        {
             let elapsed = now.saturating_duration_since(action.started).as_secs();
             return Some(StatusMessage {
                 kind: StatusKind::Working,
                 body: format!("Running {}… {elapsed}s", action.title),
-                hint: Some("Esc cancel".to_owned()),
+                hint: running.map(|_| "Esc cancel".to_owned()),
             });
         }
         if !self.timed_out {
