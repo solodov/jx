@@ -3,7 +3,7 @@ use crate::github::{
     AuthenticatedUser, CommitComparison, ComparisonStatus, GitHubError, LabelApplyResult,
     PullRequestCheck, PullRequestCheckStatus, PullRequestCreate, PullRequestStatusRecord,
     PullRequestUpdate, PullRequestUpdateSummary, RepositoryAccess, RepositoryFork,
-    ReviewerSyncResult,
+    ReviewerSyncResult, PULL_REQUEST_STATUS_BATCH_SIZE,
 };
 use chrono::Utc;
 use futures::{stream, StreamExt};
@@ -691,6 +691,7 @@ where
         Ok(store.latest_pull_requests_with_history(repository, &fetched_numbers)?)
     }
 
+    /// Refreshes stale snapshots in bounded batches, retaining progress on later failures.
     async fn refresh_pull_request_snapshots(
         &self,
         repository: &GitHubRepository,
@@ -707,10 +708,13 @@ where
             .await?;
         let refresh_plan =
             pull_request_refresh_plan(&store, repository, &requested_numbers, &summaries)?;
-        if !refresh_plan.numbers_to_fetch.is_empty() {
+        for numbers in refresh_plan
+            .numbers_to_fetch
+            .chunks(PULL_REQUEST_STATUS_BATCH_SIZE)
+        {
             let fetched = self
                 .github
-                .pull_request_statuses(repository, &refresh_plan.numbers_to_fetch)
+                .pull_request_statuses(repository, numbers)
                 .await?;
             store.record_pull_request_snapshots_with_updates(
                 repository,
@@ -1270,7 +1274,6 @@ fn unique_pull_request_numbers(numbers: &[u64]) -> Vec<u64> {
 }
 
 const GITHUB_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE: usize = 10;
 const PULL_REQUEST_STATUS_MAX_ATTEMPTS: usize = 2;
 const PULL_REQUEST_STATUS_RETRY_DELAY_MS: u64 = 250;
 
@@ -1827,13 +1830,13 @@ where
                 perf_attr("number_count", numbers.len()),
                 perf_attr("unique_number_count", requested_numbers.len()),
                 perf_attr("chunk_count", chunk_count),
-                perf_attr("chunk_size", PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE),
+                perf_attr("chunk_size", PULL_REQUEST_STATUS_BATCH_SIZE),
             ],
         );
         let mut statuses = Vec::new();
         let mut retry_count = 0_usize;
         for (chunk_index, chunk) in requested_numbers
-            .chunks(PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE)
+            .chunks(PULL_REQUEST_STATUS_BATCH_SIZE)
             .enumerate()
         {
             let chunk_statuses = self
@@ -2107,7 +2110,7 @@ fn pull_request_status_chunk_count(number_count: usize) -> usize {
     if number_count == 0 {
         0
     } else {
-        number_count.div_ceil(PULL_REQUEST_STATUS_TRACE_CHUNK_SIZE)
+        number_count.div_ceil(PULL_REQUEST_STATUS_BATCH_SIZE)
     }
 }
 
@@ -4031,6 +4034,8 @@ mod tests {
     use crate::github::{PullRequestAutoMergeStatus, PullRequestMergeStatus};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    mod refresh_batches;
+
     #[derive(Default)]
     struct CountingGitHubCalls {
         authenticated_user: AtomicUsize,
@@ -4047,6 +4052,8 @@ mod tests {
         calls: Arc<CountingGitHubCalls>,
         statuses: Arc<Mutex<Vec<PullRequestStatusRecord>>>,
         update_summaries: Arc<Mutex<Vec<PullRequestUpdateSummary>>>,
+        status_requests: Arc<Mutex<Vec<Vec<u64>>>>,
+        status_failure_number: Arc<Mutex<Option<u64>>>,
     }
 
     #[async_trait::async_trait]
@@ -4168,12 +4175,29 @@ mod tests {
         async fn pull_request_statuses(
             &self,
             _repository: &GitHubRepository,
-            _numbers: &[u64],
+            numbers: &[u64],
         ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
             self.calls
                 .pull_request_statuses
                 .fetch_add(1, Ordering::Relaxed);
-            Ok(self.statuses.lock().expect("status fixture lock").clone())
+            self.status_requests.lock().unwrap().push(numbers.to_vec());
+            if self
+                .status_failure_number
+                .lock()
+                .unwrap()
+                .is_some_and(|number| numbers.contains(&number))
+            {
+                return Err(GitHubError::Timeout {
+                    operation: "load pull request statuses",
+                    timeout_ms: 15_000,
+                });
+            }
+            let statuses = self.statuses.lock().expect("status fixture lock");
+            Ok(numbers
+                .iter()
+                .filter_map(|number| statuses.iter().find(|status| status.number == *number))
+                .cloned()
+                .collect())
         }
 
         async fn create_pull_request(

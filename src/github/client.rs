@@ -1233,7 +1233,8 @@ mutation($pullRequestId: ID!) {
 "#;
 
 const PULL_REQUEST_RECORD_BATCH_SIZE: usize = 50;
-const PULL_REQUEST_STATUS_BATCH_SIZE: usize = 10;
+// Full details include nested checks and discussions; keep cold-cache queries small.
+pub(crate) const PULL_REQUEST_STATUS_BATCH_SIZE: usize = 3;
 
 pub(super) fn pull_request_update_summary_query(numbers: &[u64]) -> String {
     let fields = numbers
