@@ -1,5 +1,9 @@
 use super::*;
 
+mod authored_pull_requests;
+use authored_pull_requests::{
+    load_authored_pull_request_inventory, map_authored_open_pull_request,
+};
 mod review_refresh;
 use review_refresh::{review_refresh_key, REVIEW_REFRESH_FRAGMENT};
 
@@ -58,6 +62,16 @@ pub trait GitHubClient: Send + Sync {
         _author: &str,
     ) -> Result<Vec<PullRequestRecord>, GitHubError> {
         Ok(Vec::new())
+    }
+
+    /// Loads all open authored PRs for this credential scope; errors require repository-level fallback.
+    async fn authored_pull_request_inventory(
+        &self,
+    ) -> Result<AuthoredPullRequestInventory, GitHubError> {
+        Err(GitHubError::GraphQl {
+            operation: "load authored pull request inventory",
+            message: "bulk authored PR discovery is not supported by this client".to_owned(),
+        })
     }
 
     /// Finds an open pull request by same-repository head branch.
@@ -662,19 +676,8 @@ impl GitHubClient for OctocrabGitHubClient {
                 )
                 .await?;
             for node in data.search.nodes.into_iter().flatten() {
-                if node.head_repository_owner.login != repository.owner {
+                let Some(pull_request) = map_authored_open_pull_request(repository, node) else {
                     continue;
-                }
-                let pull_request = PullRequestRecord {
-                    number: node.number,
-                    title: node.title,
-                    body: (!node.body.is_empty()).then_some(node.body),
-                    head_branch: node.head_ref_name,
-                    base_branch: node.base_ref_name,
-                    html_url: Some(node.url),
-                    draft: node.is_draft,
-                    merged: node.merged,
-                    reviewers: ReviewerSelection::default(),
                 };
                 if seen.insert(pull_request.number) {
                     pull_requests.push(pull_request);
@@ -689,6 +692,12 @@ impl GitHubClient for OctocrabGitHubClient {
             cursor = Some(next_cursor);
         }
         Ok(pull_requests)
+    }
+
+    async fn authored_pull_request_inventory(
+        &self,
+    ) -> Result<AuthoredPullRequestInventory, GitHubError> {
+        load_authored_pull_request_inventory(self).await
     }
 
     async fn find_open_pull_request(

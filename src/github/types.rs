@@ -72,6 +72,27 @@ pub struct AuthenticatedUser {
     pub login: String,
 }
 
+/// Complete open authored-PR discovery for one authenticated viewer and credential scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthoredPullRequestInventory {
+    pub viewer: AuthenticatedUser,
+    pub repositories: std::collections::BTreeMap<GitHubRepository, Vec<PullRequestRecord>>,
+}
+
+impl AuthoredPullRequestInventory {
+    /// Returns authored PRs using GitHub's case-insensitive repository identity rules.
+    pub fn for_repository(&self, repository: &GitHubRepository) -> &[PullRequestRecord] {
+        self.repositories
+            .iter()
+            .find(|(candidate, _)| {
+                candidate.owner.eq_ignore_ascii_case(&repository.owner)
+                    && candidate.name.eq_ignore_ascii_case(&repository.name)
+            })
+            .map(|(_, pull_requests)| pull_requests.as_slice())
+            .unwrap_or_default()
+    }
+}
+
 /// Public GitHub profile fields used only for human display enrichment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubUserProfile {

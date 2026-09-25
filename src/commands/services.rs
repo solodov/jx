@@ -1,9 +1,9 @@
 use super::*;
 use crate::github::{
-    AuthenticatedUser, CommitComparison, ComparisonStatus, GitHubError, LabelApplyResult,
-    PullRequestCheck, PullRequestCheckStatus, PullRequestCreate, PullRequestStatusRecord,
-    PullRequestUpdate, PullRequestUpdateSummary, RepositoryAccess, RepositoryFork,
-    ReviewerSyncResult, PULL_REQUEST_STATUS_BATCH_SIZE,
+    AuthenticatedUser, AuthoredPullRequestInventory, CommitComparison, ComparisonStatus,
+    GitHubError, LabelApplyResult, PullRequestCheck, PullRequestCheckStatus, PullRequestCreate,
+    PullRequestStatusRecord, PullRequestUpdate, PullRequestUpdateSummary, RepositoryAccess,
+    RepositoryFork, ReviewerSyncResult, PULL_REQUEST_STATUS_BATCH_SIZE,
 };
 use chrono::Utc;
 use futures::{stream, StreamExt};
@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod authored_pull_requests;
+use authored_pull_requests::AuthoredPullRequestDiscovery;
 mod pull_requests;
 #[cfg(test)]
 use pull_requests::review_timestamp_unix;
@@ -1414,6 +1416,30 @@ where
         self.finish(span, result, attrs)
     }
 
+    async fn authored_pull_request_inventory(
+        &self,
+    ) -> Result<AuthoredPullRequestInventory, GitHubError> {
+        let span = self.start_span("github.authored_pull_request_inventory", None, Vec::new());
+        let result = github_request(
+            "load authored pull request inventory",
+            self.inner.authored_pull_request_inventory(),
+        )
+        .await;
+        let attrs = if let Ok(inventory) = &result {
+            self.cache_authenticated_user(&self.auth_cache_key(), &inventory.viewer);
+            vec![
+                perf_attr("repository_count", inventory.repositories.len()),
+                perf_attr(
+                    "pull_request_count",
+                    inventory.repositories.values().map(Vec::len).sum::<usize>(),
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        self.finish(span, result, attrs)
+    }
+
     async fn find_open_pull_request(
         &self,
         repository: &GitHubRepository,
@@ -2675,9 +2701,11 @@ impl CommandServices for ProductionServices<'_> {
     ) -> Vec<GlobalStackStatusEntry> {
         let parallelism = request.parallelism.max(1);
         let fetch_budget = PullRequestFetchBudget::new(parallelism);
+        let discovery = AuthoredPullRequestDiscovery::new();
 
         self.github_runtime.block_on(async {
             let fetch_budget = &fetch_budget;
+            let discovery = &discovery;
             let mut stream = stream::iter(repositories.iter().enumerate().map(
                 |(index, repository)| async move {
                     (
@@ -2686,7 +2714,7 @@ impl CommandServices for ProductionServices<'_> {
                             repository,
                             environment,
                             self.environment,
-                            &self.github_cache,
+                            discovery,
                             fetch_budget,
                         )
                         .await,
@@ -3102,7 +3130,7 @@ async fn production_global_stack_status_entry(
     repository: &WorkRepository,
     environment: &RuntimeEnvironment,
     token_environment: &RuntimeEnvironment,
-    cache: &Arc<Mutex<GitHubFactCache>>,
+    discovery: &AuthoredPullRequestDiscovery<TracedGitHubClient<OctocrabGitHubClient>>,
     fetch_budget: &PullRequestFetchBudget,
 ) -> Option<GlobalStackStatusEntry> {
     let perf = PerfLog::from_environment(token_environment);
@@ -3117,7 +3145,7 @@ async fn production_global_stack_status_entry(
         repository,
         environment,
         token_environment,
-        cache,
+        discovery,
         fetch_budget,
         &perf,
         &mut span,
@@ -3148,7 +3176,7 @@ async fn production_global_stack_status_entry_traced(
     repository: &WorkRepository,
     environment: &RuntimeEnvironment,
     token_environment: &RuntimeEnvironment,
-    cache: &Arc<Mutex<GitHubFactCache>>,
+    discovery: &AuthoredPullRequestDiscovery<TracedGitHubClient<OctocrabGitHubClient>>,
     fetch_budget: &PullRequestFetchBudget,
     perf: &PerfLog,
     span: &mut PerfSpan,
@@ -3175,32 +3203,47 @@ async fn production_global_stack_status_entry_traced(
         }
     };
     let repository_identity = context.origin.github.clone();
-    let github =
-        match OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)
-            .map_err(WorkflowError::from)
-            .map_err(CommandError::from)
-            .map_err(|error| error.to_string())
-        {
-            Ok(github) => TracedGitHubClient {
+    let scope = match discovery
+        .scope(&context.token_source, || {
+            let github =
+                OctocrabGitHubClient::from_token_source(&context.token_source, token_environment)?;
+            Ok(TracedGitHubClient {
                 inner: github,
                 perf: perf.clone(),
-                repo: repository_identity.slug(),
-                cache: Arc::clone(cache),
+                repo: "stack-discovery".to_owned(),
+                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
                 durable_auth_cache: Some(DurableAuthCache {
                     environment: token_environment.clone(),
                     token_source: context.token_source.clone(),
                 }),
-            },
-            Err(error) => {
-                return Some(GlobalStackStatusEntry {
-                    key: Some(repository.key.clone()),
-                    root: repository.root.clone(),
-                    display_root,
-                    repository: Some(repository_identity),
-                    result: Err(error),
-                });
-            }
-        };
+            })
+        })
+        .await
+    {
+        Ok(scope) => scope,
+        Err(error) => {
+            return Some(GlobalStackStatusEntry {
+                key: Some(repository.key.clone()),
+                root: repository.root.clone(),
+                display_root,
+                repository: Some(repository_identity),
+                result: Err(error),
+            });
+        }
+    };
+    let github = &scope.github;
+    span.set([
+        perf_attr("authored_discovery", scope.discovery_mode()),
+        perf_attr("repo", repository_identity.slug()),
+        perf_attr("metadata_node_count", metadata.nodes.len()),
+    ]);
+    if scope.can_skip_repository(&repository_identity, !metadata.nodes.is_empty()) {
+        span.set([
+            perf_attr("skipped_empty_repository", true),
+            perf_attr("pr_count", 0_usize),
+        ]);
+        return None;
+    }
     // Keep local fact loading overlapped for cached stacks, but avoid it for empty repositories.
     let load_status_facts = || {
         spawn_global_stack_status_facts_load(
@@ -3215,17 +3258,7 @@ async fn production_global_stack_status_entry_traced(
     let status_facts_task = (!metadata.nodes.is_empty()).then(&load_status_facts);
     let discover_step = span.start_step("discover_pull_requests", Vec::new());
     let discovered_pull_requests = async {
-        let author = github
-            .authenticated_user()
-            .await
-            .map_err(|error| error.to_string())?;
-        if author.login.is_empty() {
-            return Err(WorkflowError::MissingGitHubLogin.to_string());
-        }
-        let mut pull_requests = github
-            .authored_open_pull_requests(&context.origin.github, &author.login)
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut pull_requests = scope.for_repository(&context.origin.github).await?;
         let authored_branches = pull_requests
             .iter()
             .map(|pr| pr.head_branch.clone())
@@ -3268,6 +3301,7 @@ async fn production_global_stack_status_entry_traced(
     ]);
 
     if metadata.nodes.is_empty() && discovered_pull_requests.as_ref().is_ok_and(Vec::is_empty) {
+        span.set([perf_attr("skipped_empty_repository", true)]);
         return None;
     }
     let status_facts_task = status_facts_task.unwrap_or_else(load_status_facts);
@@ -3276,7 +3310,7 @@ async fn production_global_stack_status_entry_traced(
         let result = if numbers.is_empty() {
             Ok(Vec::new())
         } else {
-            PullRequestService::new(token_environment, &github, fetch_budget.clone())
+            PullRequestService::new(token_environment, github, fetch_budget.clone())
                 .pull_requests(&context.origin.github, &numbers)
                 .await
                 .map_err(CommandError::from)
@@ -3293,7 +3327,7 @@ async fn production_global_stack_status_entry_traced(
             .map(|facts| facts.metrics.clone());
         let result = match status_facts_result {
             Ok(status_facts) => {
-                domain::stack_trunk_status_report(&context, status_facts.status_workspace, &github)
+                domain::stack_trunk_status_report(&context, status_facts.status_workspace, github)
                     .await
                     .map(Some)
                     .map_err(CommandError::from)
@@ -3830,6 +3864,7 @@ mod tests {
     use crate::github::{PullRequestAutoMergeStatus, PullRequestMergeStatus};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    mod authored_pull_requests;
     mod parallel_pull_requests;
     mod refresh_batches;
     use parallel_pull_requests::RequestProbe;
@@ -3837,6 +3872,8 @@ mod tests {
     #[derive(Default)]
     struct CountingGitHubCalls {
         authenticated_user: AtomicUsize,
+        authored_pull_request_inventory: AtomicUsize,
+        authored_open_pull_requests: AtomicUsize,
         repository_access: AtomicUsize,
         find_open_pull_request: AtomicUsize,
         find_pull_request_by_number: AtomicUsize,
@@ -3854,6 +3891,10 @@ mod tests {
         status_failure_number: Arc<Mutex<Option<u64>>>,
         repository_statuses: Arc<Mutex<BTreeMap<GitHubRepository, Vec<PullRequestStatusRecord>>>>,
         request_probe: Option<Arc<RequestProbe>>,
+        inventory: Arc<Mutex<Option<AuthoredPullRequestInventory>>>,
+        inventory_gate: Option<Arc<tokio::sync::Semaphore>>,
+        authored: Arc<Mutex<BTreeMap<GitHubRepository, Vec<PullRequestRecord>>>>,
+        authored_error: Option<&'static str>,
     }
 
     #[async_trait::async_trait]
@@ -3865,6 +3906,48 @@ mod tests {
             Ok(AuthenticatedUser {
                 login: "example-user".to_owned(),
             })
+        }
+
+        async fn authored_pull_request_inventory(
+            &self,
+        ) -> Result<AuthoredPullRequestInventory, GitHubError> {
+            self.calls
+                .authored_pull_request_inventory
+                .fetch_add(1, Ordering::Relaxed);
+            if let Some(gate) = &self.inventory_gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            self.inventory
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| GitHubError::GraphQl {
+                    operation: "load authored pull request inventory",
+                    message: "bulk result unavailable or incomplete".to_owned(),
+                })
+        }
+
+        async fn authored_open_pull_requests(
+            &self,
+            repository: &GitHubRepository,
+            _author: &str,
+        ) -> Result<Vec<PullRequestRecord>, GitHubError> {
+            self.calls
+                .authored_open_pull_requests
+                .fetch_add(1, Ordering::Relaxed);
+            if let Some(message) = self.authored_error {
+                return Err(GitHubError::GraphQl {
+                    operation: "search authored open pull requests",
+                    message: message.to_owned(),
+                });
+            }
+            Ok(self
+                .authored
+                .lock()
+                .unwrap()
+                .get(repository)
+                .cloned()
+                .unwrap_or_default())
         }
 
         async fn repository_access(
