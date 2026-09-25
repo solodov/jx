@@ -4,10 +4,7 @@ use super::*;
 fn old_review_snapshots_refresh_in_small_batches_then_use_warm_cache() {
     let temp = tempfile::tempdir().unwrap();
     let (environment, repository, github) = old_review_snapshot_fixture(temp.path());
-    let service = PullRequestService {
-        environment: &environment,
-        github: &github,
-    };
+    let service = PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
     let runtime = test_github_runtime();
     let numbers = (1..=16).collect::<Vec<_>>();
 
@@ -35,10 +32,7 @@ fn failed_refresh_retains_completed_batches_and_only_retries_stale_snapshots() {
     let (environment, repository, github) = old_review_snapshot_fixture(temp.path());
     *github.status_failure_number.lock().unwrap() = Some(4);
     let client = traced_client(github.clone());
-    let service = PullRequestService {
-        environment: &environment,
-        github: &client,
-    };
+    let service = PullRequestService::new(&environment, &client, PullRequestFetchBudget::default());
     let runtime = test_github_runtime();
     let numbers = (1..=16).collect::<Vec<_>>();
 

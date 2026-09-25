@@ -1454,46 +1454,52 @@ impl CommandServices for FakeServices {
             .collect()
     }
 
-    fn pull_request_statuses_for_repository(
+    fn load_pull_requests(
         &self,
-        _token_source: &TokenSource,
-        _repository: &GitHubRepository,
-        numbers: &[u64],
-    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
-        self.pull_request_status_calls
-            .borrow_mut()
-            .push(numbers.to_vec());
-        Ok(numbers
+        environment: &RuntimeEnvironment,
+        repositories: &BTreeMap<GitHubRepository, Vec<u64>>,
+        source: PullRequestLoadSource<'_>,
+        progress: &dyn ProgressSink,
+    ) -> Result<Vec<LoadedRepositoryPullRequests>, WorkflowError> {
+        if matches!(source, PullRequestLoadSource::CachedOnly) {
+            return load_cached_pull_requests(environment, repositories, |completed, total| {
+                progress.percentage("Loading cached pull request details", completed, total);
+            });
+        }
+        Ok(repositories
             .iter()
-            .filter_map(|number| self.pull_request_statuses.get(number).cloned())
-            .collect())
-    }
-
-    fn pull_requests_with_history_for_repository(
-        &self,
-        _token_source: &TokenSource,
-        _repository: &GitHubRepository,
-        numbers: &[u64],
-    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
-        self.pull_request_status_calls
-            .borrow_mut()
-            .push(numbers.to_vec());
-        Ok(numbers
-            .iter()
-            .filter_map(|number| {
-                self.pull_requests_with_history
-                    .get(number)
-                    .cloned()
-                    .or_else(|| {
-                        self.pull_request_statuses
+            .enumerate()
+            .map(|(index, (repository, numbers))| {
+                self.pull_request_status_calls
+                    .borrow_mut()
+                    .push(numbers.to_vec());
+                let pull_requests = numbers
+                    .iter()
+                    .filter_map(|number| {
+                        self.pull_requests_with_history
                             .get(number)
                             .cloned()
-                            .map(|status| PullRequestWithHistory {
-                                status,
-                                history: Vec::new(),
-                                actions: Vec::new(),
+                            .or_else(|| {
+                                self.pull_request_statuses
+                                    .get(number)
+                                    .cloned()
+                                    .map(|status| PullRequestWithHistory {
+                                        status,
+                                        history: Vec::new(),
+                                        actions: Vec::new(),
+                                    })
                             })
                     })
+                    .collect();
+                progress.percentage(
+                    "Loading pull request details",
+                    index + 1,
+                    repositories.len(),
+                );
+                LoadedRepositoryPullRequests {
+                    repository: repository.clone(),
+                    result: Ok(pull_requests),
+                }
             })
             .collect())
     }

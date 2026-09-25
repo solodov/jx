@@ -16,9 +16,12 @@ use std::{
 };
 
 mod pull_requests;
-use pull_requests::PullRequestService;
 #[cfg(test)]
 use pull_requests::review_timestamp_unix;
+pub(super) use pull_requests::{
+    load_cached_pull_requests, LoadedRepositoryPullRequests, PullRequestLoadSource,
+};
+use pull_requests::{PullRequestFetchBudget, PullRequestService};
 
 pub(super) struct StackStatusFetches {
     pub(super) statuses: Vec<PullRequestStatusRecord>,
@@ -354,33 +357,14 @@ pub(super) trait CommandServices {
         BTreeMap::new()
     }
 
-    /// Loads batched read-only pull-request facts for an arbitrary repository.
-    fn pull_request_statuses_for_repository(
+    /// Loads repository-scoped PR facts and history, preserving each repository's failure.
+    fn load_pull_requests(
         &self,
-        token_source: &TokenSource,
-        repository: &GitHubRepository,
-        numbers: &[u64],
-    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError>;
-
-    /// Loads pull requests with derived history for an arbitrary repository.
-    fn pull_requests_with_history_for_repository(
-        &self,
-        token_source: &TokenSource,
-        repository: &GitHubRepository,
-        numbers: &[u64],
-    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
-        self.pull_request_statuses_for_repository(token_source, repository, numbers)
-            .map(|statuses| {
-                statuses
-                    .into_iter()
-                    .map(|status| PullRequestWithHistory {
-                        status,
-                        history: Vec::new(),
-                        actions: Vec::new(),
-                    })
-                    .collect()
-            })
-    }
+        environment: &RuntimeEnvironment,
+        repositories: &BTreeMap<GitHubRepository, Vec<u64>>,
+        source: PullRequestLoadSource<'_>,
+        progress: &dyn ProgressSink,
+    ) -> Result<Vec<LoadedRepositoryPullRequests>, WorkflowError>;
 
     /// Opens a URL in the platform default browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
@@ -658,6 +642,7 @@ pub(super) struct ProductionServices<'environment> {
     environment: &'environment RuntimeEnvironment,
     pub(super) github_runtime: tokio::runtime::Runtime,
     github_cache: Arc<Mutex<GitHubFactCache>>,
+    pull_request_fetch_budget: PullRequestFetchBudget,
 }
 
 impl<'environment> ProductionServices<'environment> {
@@ -671,6 +656,7 @@ impl<'environment> ProductionServices<'environment> {
             environment,
             github_runtime,
             github_cache: Arc::new(Mutex::new(GitHubFactCache::default())),
+            pull_request_fetch_budget: PullRequestFetchBudget::default(),
         })
     }
 
@@ -2481,10 +2467,11 @@ impl CommandServices for ProductionServices<'_> {
         self.github_runtime.block_on(async {
             let github = self.traced_github_client(context)?;
 
-            PullRequestService {
-                environment: self.environment,
-                github: &github,
-            }
+            PullRequestService::new(
+                self.environment,
+                &github,
+                self.pull_request_fetch_budget.clone(),
+            )
             .pull_requests(&context.origin.github, numbers)
             .await
         })
@@ -2505,10 +2492,11 @@ impl CommandServices for ProductionServices<'_> {
                 let statuses = if numbers.is_empty() {
                     Vec::new()
                 } else {
-                    PullRequestService {
-                        environment: self.environment,
-                        github: &github,
-                    }
+                    PullRequestService::new(
+                        self.environment,
+                        &github,
+                        self.pull_request_fetch_budget.clone(),
+                    )
                     .pull_requests(&context.origin.github, numbers)
                     .await?
                 };
@@ -2643,52 +2631,35 @@ impl CommandServices for ProductionServices<'_> {
         display_names
     }
 
-    fn pull_request_statuses_for_repository(
+    fn load_pull_requests(
         &self,
-        token_source: &TokenSource,
-        repository: &GitHubRepository,
-        numbers: &[u64],
-    ) -> Result<Vec<PullRequestStatusRecord>, WorkflowError> {
-        self.github_runtime.block_on(async {
-            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
-            let github = TracedGitHubClient {
-                inner: github,
-                perf: PerfLog::from_environment(self.environment),
-                repo: repository.slug(),
-                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
-                durable_auth_cache: None,
-            };
-            PullRequestService {
-                environment: self.environment,
-                github: &github,
+        environment: &RuntimeEnvironment,
+        repositories: &BTreeMap<GitHubRepository, Vec<u64>>,
+        source: PullRequestLoadSource<'_>,
+        progress: &dyn ProgressSink,
+    ) -> Result<Vec<LoadedRepositoryPullRequests>, WorkflowError> {
+        if repositories.is_empty() {
+            return Ok(Vec::new());
+        }
+        match source {
+            PullRequestLoadSource::CachedOnly => {
+                load_cached_pull_requests(environment, repositories, |completed, total| {
+                    progress.percentage("Loading cached pull request details", completed, total);
+                })
             }
-            .pull_requests(repository, numbers)
-            .await
-        })
-    }
-
-    fn pull_requests_with_history_for_repository(
-        &self,
-        token_source: &TokenSource,
-        repository: &GitHubRepository,
-        numbers: &[u64],
-    ) -> Result<Vec<PullRequestWithHistory>, WorkflowError> {
-        self.github_runtime.block_on(async {
-            let github = OctocrabGitHubClient::from_token_source(token_source, self.environment)?;
-            let github = TracedGitHubClient {
-                inner: github,
-                perf: PerfLog::from_environment(self.environment),
-                repo: repository.slug(),
-                cache: Arc::new(Mutex::new(GitHubFactCache::default())),
-                durable_auth_cache: None,
-            };
-            PullRequestService {
-                environment: self.environment,
-                github: &github,
-            }
-            .pull_requests_with_history(repository, numbers)
-            .await
-        })
+            PullRequestLoadSource::Live(token_source) => self.github_runtime.block_on(async {
+                let github = self.traced_github_client_for_token_source(token_source)?;
+                Ok(PullRequestService::new(
+                    environment,
+                    &github,
+                    self.pull_request_fetch_budget.clone(),
+                )
+                .load_many(repositories, |completed, total| {
+                    progress.percentage("Loading pull request details", completed, total);
+                })
+                .await)
+            }),
+        }
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
@@ -2703,8 +2674,10 @@ impl CommandServices for ProductionServices<'_> {
         progress: &dyn ProgressSink,
     ) -> Vec<GlobalStackStatusEntry> {
         let parallelism = request.parallelism.max(1);
+        let fetch_budget = PullRequestFetchBudget::new(parallelism);
 
         self.github_runtime.block_on(async {
+            let fetch_budget = &fetch_budget;
             let mut stream = stream::iter(repositories.iter().enumerate().map(
                 |(index, repository)| async move {
                     (
@@ -2714,6 +2687,7 @@ impl CommandServices for ProductionServices<'_> {
                             environment,
                             self.environment,
                             &self.github_cache,
+                            fetch_budget,
                         )
                         .await,
                     )
@@ -3129,6 +3103,7 @@ async fn production_global_stack_status_entry(
     environment: &RuntimeEnvironment,
     token_environment: &RuntimeEnvironment,
     cache: &Arc<Mutex<GitHubFactCache>>,
+    fetch_budget: &PullRequestFetchBudget,
 ) -> Option<GlobalStackStatusEntry> {
     let perf = PerfLog::from_environment(token_environment);
     let mut span = perf.start(
@@ -3143,6 +3118,7 @@ async fn production_global_stack_status_entry(
         environment,
         token_environment,
         cache,
+        fetch_budget,
         &perf,
         &mut span,
     )
@@ -3173,6 +3149,7 @@ async fn production_global_stack_status_entry_traced(
     environment: &RuntimeEnvironment,
     token_environment: &RuntimeEnvironment,
     cache: &Arc<Mutex<GitHubFactCache>>,
+    fetch_budget: &PullRequestFetchBudget,
     perf: &PerfLog,
     span: &mut PerfSpan,
 ) -> Option<GlobalStackStatusEntry> {
@@ -3299,14 +3276,11 @@ async fn production_global_stack_status_entry_traced(
         let result = if numbers.is_empty() {
             Ok(Vec::new())
         } else {
-            PullRequestService {
-                environment: token_environment,
-                github: &github,
-            }
-            .pull_requests(&context.origin.github, &numbers)
-            .await
-            .map_err(CommandError::from)
-            .map_err(|error| error.to_string())
+            PullRequestService::new(token_environment, &github, fetch_budget.clone())
+                .pull_requests(&context.origin.github, &numbers)
+                .await
+                .map_err(CommandError::from)
+                .map_err(|error| error.to_string())
         };
         (result, duration_us(started.elapsed()))
     };
@@ -3856,7 +3830,9 @@ mod tests {
     use crate::github::{PullRequestAutoMergeStatus, PullRequestMergeStatus};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    mod parallel_pull_requests;
     mod refresh_batches;
+    use parallel_pull_requests::RequestProbe;
 
     #[derive(Default)]
     struct CountingGitHubCalls {
@@ -3876,6 +3852,8 @@ mod tests {
         update_summaries: Arc<Mutex<Vec<PullRequestUpdateSummary>>>,
         status_requests: Arc<Mutex<Vec<Vec<u64>>>>,
         status_failure_number: Arc<Mutex<Option<u64>>>,
+        repository_statuses: Arc<Mutex<BTreeMap<GitHubRepository, Vec<PullRequestStatusRecord>>>>,
+        request_probe: Option<Arc<RequestProbe>>,
     }
 
     #[async_trait::async_trait]
@@ -3981,9 +3959,13 @@ mod tests {
 
         async fn pull_request_update_summaries(
             &self,
-            _repository: &GitHubRepository,
-            _numbers: &[u64],
+            repository: &GitHubRepository,
+            numbers: &[u64],
         ) -> Result<Vec<PullRequestUpdateSummary>, GitHubError> {
+            let _request = match &self.request_probe {
+                Some(probe) => Some(probe.begin(repository, "summary").await),
+                None => None,
+            };
             self.calls
                 .pull_request_update_summaries
                 .fetch_add(1, Ordering::Relaxed);
@@ -3991,14 +3973,21 @@ mod tests {
                 .update_summaries
                 .lock()
                 .expect("update summary fixture lock")
-                .clone())
+                .iter()
+                .filter(|summary| numbers.contains(&summary.number))
+                .cloned()
+                .collect())
         }
 
         async fn pull_request_statuses(
             &self,
-            _repository: &GitHubRepository,
+            repository: &GitHubRepository,
             numbers: &[u64],
         ) -> Result<Vec<PullRequestStatusRecord>, GitHubError> {
+            let _request = match &self.request_probe {
+                Some(probe) => Some(probe.begin(repository, "details").await),
+                None => None,
+            };
             self.calls
                 .pull_request_statuses
                 .fetch_add(1, Ordering::Relaxed);
@@ -4014,7 +4003,13 @@ mod tests {
                     timeout_ms: 15_000,
                 });
             }
-            let statuses = self.statuses.lock().expect("status fixture lock");
+            let statuses = self
+                .repository_statuses
+                .lock()
+                .unwrap()
+                .get(repository)
+                .cloned()
+                .unwrap_or_else(|| self.statuses.lock().expect("status fixture lock").clone());
             Ok(numbers
                 .iter()
                 .filter_map(|number| statuses.iter().find(|status| status.number == *number))
@@ -4151,10 +4146,8 @@ mod tests {
         };
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Example review")];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
 
         let loaded = runtime
@@ -4196,10 +4189,8 @@ mod tests {
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Cached review")];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
 
         let first = runtime
@@ -4251,10 +4242,8 @@ mod tests {
         };
         *github.update_summaries.lock().unwrap() = vec![summary.clone()];
         *github.statuses.lock().unwrap() = vec![status.clone()];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
         runtime
             .block_on(service.pull_requests_with_history(&repository, &[status.number]))
@@ -4347,10 +4336,8 @@ mod tests {
             review_refresh_key: "current-reviews".to_owned(),
         }];
         *github.statuses.lock().unwrap() = vec![fresh.clone()];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
         for _ in 0..2 {
             let loaded = runtime
@@ -4400,10 +4387,8 @@ mod tests {
         let mut initial = test_pull_request_status(12, "Pending checks");
         initial.checks = vec![pending_check];
         *github.statuses.lock().expect("status fixture lock") = vec![initial];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
         runtime
             .block_on(service.pull_requests_with_history(&repository, &[12]))
@@ -4462,10 +4447,8 @@ mod tests {
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Old schema review")];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
         runtime
             .block_on(service.pull_requests_with_history(&repository, &[12]))
@@ -4514,10 +4497,8 @@ mod tests {
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Initial review")];
-        let service = PullRequestService {
-            environment: &environment,
-            github: &github,
-        };
+        let service =
+            PullRequestService::new(&environment, &github, PullRequestFetchBudget::default());
         let runtime = test_github_runtime();
         runtime
             .block_on(service.pull_requests_with_history(&repository, &[12]))

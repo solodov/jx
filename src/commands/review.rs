@@ -364,34 +364,27 @@ fn load_review_requests_view(
         progress.percentage("Loading pull request details", 0, grouped_repo_count);
     }
     let mut repositories = Vec::new();
-    let mut detail_pr_count = 0usize;
+    let detail_pr_count = normalize_review_fetch_targets(&mut grouped);
     let fetch_details = span.start_step(
         "review.fetch_pull_request_details",
         [perf_attr("repo_count", grouped_repo_count)],
     );
-    for (index, (repository, mut numbers)) in grouped.into_iter().enumerate() {
-        numbers.sort_unstable();
-        numbers.dedup();
-        detail_pr_count += numbers.len();
-        let pull_requests = services.pull_requests_with_history_for_repository(
-            &token_source,
-            &repository,
-            &numbers,
-        )?;
+    let loaded = services.load_pull_requests(
+        environment,
+        &grouped,
+        PullRequestLoadSource::Live(&token_source),
+        progress,
+    )?;
+    for entry in loaded {
         if let Some(repository_view) = build_review_repository_view(
             &view_context,
-            &repository,
-            pull_requests,
+            &entry.repository,
+            entry.result?,
             &candidate_keys,
             &viewer,
             ReviewCleanupMode::Record,
         )? {
             repositories.push(repository_view);
-            progress.percentage(
-                "Loading pull request details",
-                index + 1,
-                grouped_repo_count,
-            );
         }
     }
     span.finish_step(
@@ -474,30 +467,27 @@ fn load_cached_review_requests_view(
         progress.percentage("Loading cached pull request details", 0, grouped_repo_count);
     }
     let mut repositories = Vec::new();
-    let mut detail_pr_count = 0usize;
+    let detail_pr_count = normalize_review_fetch_targets(&mut grouped);
     let load_details = span.start_step(
         "review.load_cached_pull_request_details",
         [perf_attr("repo_count", grouped_repo_count)],
     );
-    for (index, (repository, mut numbers)) in grouped.into_iter().enumerate() {
-        numbers.sort_unstable();
-        numbers.dedup();
-        detail_pr_count += numbers.len();
-        let pull_requests = store.latest_pull_requests_with_history(&repository, &numbers)?;
+    let loaded = services.load_pull_requests(
+        context.environment,
+        &grouped,
+        PullRequestLoadSource::CachedOnly,
+        progress,
+    )?;
+    for entry in loaded {
         if let Some(repository_view) = build_review_repository_view(
             context,
-            &repository,
-            pull_requests,
+            &entry.repository,
+            entry.result?,
             &candidate_keys,
             &viewer,
             ReviewCleanupMode::ReadOnly,
         )? {
             repositories.push(repository_view);
-            progress.percentage(
-                "Loading cached pull request details",
-                index + 1,
-                grouped_repo_count,
-            );
         }
     }
     span.finish_step(
@@ -521,6 +511,18 @@ fn load_cached_review_requests_view(
         view,
         display_names,
     })
+}
+
+/// Stabilizes repository-local PR order and counts distinct requested snapshots.
+fn normalize_review_fetch_targets(grouped: &mut BTreeMap<GitHubRepository, Vec<u64>>) -> usize {
+    grouped
+        .values_mut()
+        .map(|numbers| {
+            numbers.sort_unstable();
+            numbers.dedup();
+            numbers.len()
+        })
+        .sum()
 }
 
 fn group_review_candidates(

@@ -1,15 +1,69 @@
 use super::*;
 
-/// Loads PR facts through the shared snapshot store for stack and review workflows.
-pub(super) struct PullRequestService<'a, G: ?Sized> {
-    pub(super) environment: &'a RuntimeEnvironment,
-    pub(super) github: &'a G,
+/// Selects fresh GitHub facts or strictly local snapshots, without an implicit network fallback.
+#[derive(Clone, Copy)]
+pub(in crate::commands) enum PullRequestLoadSource<'a> {
+    Live(&'a TokenSource),
+    CachedOnly,
 }
 
-impl<G> PullRequestService<'_, G>
+/// Preserves repository identity and failures independently of completion order.
+pub(in crate::commands) struct LoadedRepositoryPullRequests {
+    pub(in crate::commands) repository: GitHubRepository,
+    pub(in crate::commands) result: Result<Vec<PullRequestWithHistory>, WorkflowError>,
+}
+
+/// Loads PR facts through the shared snapshot store for stack and review workflows.
+pub(super) struct PullRequestService<'a, G: ?Sized> {
+    environment: &'a RuntimeEnvironment,
+    github: &'a G,
+    budget: PullRequestFetchBudget,
+}
+
+impl<'a, G> PullRequestService<'a, G>
 where
     G: GitHubClient + ?Sized,
 {
+    /// Creates a loader using the caller's shared request budget.
+    pub(super) fn new(
+        environment: &'a RuntimeEnvironment,
+        github: &'a G,
+        budget: PullRequestFetchBudget,
+    ) -> Self {
+        Self {
+            environment,
+            github,
+            budget,
+        }
+    }
+
+    /// Loads repositories concurrently, reporting completion but returning stable input order.
+    pub(super) async fn load_many(
+        &self,
+        repositories: &BTreeMap<GitHubRepository, Vec<u64>>,
+        mut completed: impl FnMut(usize, usize),
+    ) -> Vec<LoadedRepositoryPullRequests> {
+        let mut pending = stream::iter(repositories.iter().enumerate().map(
+            |(index, (repository, numbers))| async move {
+                (
+                    index,
+                    LoadedRepositoryPullRequests {
+                        repository: repository.clone(),
+                        result: self.pull_requests_with_history(repository, numbers).await,
+                    },
+                )
+            },
+        ))
+        .buffer_unordered(self.budget.parallelism);
+        let mut loaded = Vec::with_capacity(repositories.len());
+        while let Some(entry) = pending.next().await {
+            loaded.push(entry);
+            completed(loaded.len(), repositories.len());
+        }
+        loaded.sort_by_key(|(index, _)| *index);
+        loaded.into_iter().map(|(_, entry)| entry).collect()
+    }
+
     /// Loads current PR records through the shared local snapshot store.
     pub(super) async fn pull_requests(
         &self,
@@ -49,8 +103,11 @@ where
         }
         let store = PullRequestStore::open(self.environment)?;
         let summaries = self
-            .github
-            .pull_request_update_summaries(repository, &requested_numbers)
+            .budget
+            .run(
+                self.github
+                    .pull_request_update_summaries(repository, &requested_numbers),
+            )
             .await?;
         let refresh_plan =
             pull_request_refresh_plan(&store, repository, &requested_numbers, &summaries)?;
@@ -59,8 +116,8 @@ where
             .chunks(PULL_REQUEST_STATUS_BATCH_SIZE)
         {
             let fetched = self
-                .github
-                .pull_request_statuses(repository, numbers)
+                .budget
+                .run(self.github.pull_request_statuses(repository, numbers))
                 .await?;
             store.record_pull_request_snapshots_with_updates(
                 repository,
@@ -71,6 +128,69 @@ where
         store
             .latest_pull_request_snapshots(repository, &refresh_plan.available_numbers)
             .map_err(WorkflowError::from)
+    }
+}
+
+/// Loads local facts without constructing a GitHub client or refreshing snapshot metadata.
+pub(in crate::commands) fn load_cached_pull_requests(
+    environment: &RuntimeEnvironment,
+    repositories: &BTreeMap<GitHubRepository, Vec<u64>>,
+    mut completed: impl FnMut(usize, usize),
+) -> Result<Vec<LoadedRepositoryPullRequests>, WorkflowError> {
+    if repositories.is_empty() {
+        return Ok(Vec::new());
+    }
+    let store = PullRequestStore::open(environment)?;
+    Ok(repositories
+        .iter()
+        .enumerate()
+        .map(|(index, (repository, numbers))| {
+            let loaded = LoadedRepositoryPullRequests {
+                repository: repository.clone(),
+                result: store
+                    .latest_pull_requests_with_history(
+                        repository,
+                        &unique_pull_request_numbers(numbers),
+                    )
+                    .map_err(WorkflowError::from),
+            };
+            completed(index + 1, repositories.len());
+            loaded
+        })
+        .collect())
+}
+
+/// One shared budget for PR queries, even when callers load multiple repositories concurrently.
+#[derive(Clone)]
+pub(super) struct PullRequestFetchBudget {
+    parallelism: usize,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+impl PullRequestFetchBudget {
+    /// Bounds concurrent PR requests, treating zero as one request.
+    pub(super) fn new(parallelism: usize) -> Self {
+        let parallelism = parallelism.max(1);
+        Self {
+            parallelism,
+            permits: Arc::new(tokio::sync::Semaphore::new(parallelism)),
+        }
+    }
+
+    async fn run<T>(&self, request: impl Future<Output = T>) -> T {
+        // Queueing is outside the client's request timeout; retries retain the same permit.
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .expect("PR request budget is never closed");
+        request.await
+    }
+}
+
+impl Default for PullRequestFetchBudget {
+    fn default() -> Self {
+        Self::new(3)
     }
 }
 
