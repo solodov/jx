@@ -3250,6 +3250,7 @@ fn stack_status_record(
         checks: Vec::new(),
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status,
+        review_refresh_key: None,
         auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers,
         suggested_reviewers: Vec::new(),

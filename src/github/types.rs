@@ -170,6 +170,8 @@ pub struct PullRequestUpdateSummary {
     pub updated_at: String,
     pub latest_commit_oid: Option<String>,
     pub checks: Vec<PullRequestCheck>,
+    /// Canonical review/request facts; GitHub may not advance updatedAt for review changes.
+    pub review_refresh_key: String,
 }
 
 /// Pull-request data returned by the GitHub boundary.
@@ -270,6 +272,10 @@ pub struct PullRequestStatusRecord {
     pub checks: Vec<PullRequestCheck>,
     pub merge_status: PullRequestMergeStatus,
     pub review_status: PullRequestReviewStatus,
+    /// Raw review/request freshness key, independent of rendered review state and repo policy.
+    /// Older snapshots omit this key and are refreshed on the next live load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_refresh_key: Option<String>,
     /// Repo-configured label-driven auto-merge presentation state.
     #[serde(
         default,

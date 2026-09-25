@@ -795,7 +795,15 @@ fn pull_request_refresh_plan(
                     pull_request_check_summary(&status.checks)
                         != pull_request_check_summary(&summary.checks)
                 });
-                (needs_current_schema || github_updated || head_changed || checks_changed)
+                // Approvals can change while updatedAt and the aggregate review decision stay fixed.
+                let reviews_changed = stored_status
+                    .and_then(|status| status.review_refresh_key.as_deref())
+                    != Some(summary.review_refresh_key.as_str());
+                (needs_current_schema
+                    || github_updated
+                    || head_changed
+                    || checks_changed
+                    || reviews_changed)
                     .then_some(summary.number)
             })
             .chain(summaries.iter().filter_map(|summary| {
@@ -4338,6 +4346,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
             latest_commit_oid: Some("commit-12".to_owned()),
             checks: Vec::new(),
+            review_refresh_key: "unchanged-reviews".to_owned(),
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Cached review")];
@@ -4365,6 +4374,144 @@ mod tests {
                 .load(Ordering::Relaxed),
             2
         );
+        assert_eq!(
+            github.calls.pull_request_statuses.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn pull_request_service_refetches_reviews_without_updated_at_head_or_check_changes() {
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let repository = GitHubRepository {
+            owner: "Faire".to_owned(),
+            name: "backend".to_owned(),
+        };
+        let github = CountingGitHub::default();
+        let mut status = test_pull_request_status(300560, "Already approved by a peer");
+        status.review_status = PullRequestReviewStatus::Approved;
+        status.approved_reviewers = vec!["peer".to_owned()];
+        status.requested_reviewers = ReviewerSelection::new(["viewer"], Vec::<String>::new());
+        let mut summary = PullRequestUpdateSummary {
+            number: status.number,
+            updated_at: "2026-09-24T21:10:47Z".to_owned(),
+            latest_commit_oid: status.latest_commit_oid.clone(),
+            checks: status.checks.clone(),
+            review_refresh_key: status.review_refresh_key.clone().unwrap(),
+        };
+        *github.update_summaries.lock().unwrap() = vec![summary.clone()];
+        *github.statuses.lock().unwrap() = vec![status.clone()];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+        runtime
+            .block_on(service.pull_requests_with_history(&repository, &[status.number]))
+            .unwrap();
+
+        for (index, change) in ["approved", "dismissed", "requested", "commented"]
+            .into_iter()
+            .enumerate()
+        {
+            match change {
+                "approved" => {
+                    status.requested_reviewers = ReviewerSelection::default();
+                    status.approved_reviewers.push("viewer".to_owned());
+                }
+                "dismissed" => {
+                    status
+                        .approved_reviewers
+                        .retain(|reviewer| reviewer != "viewer");
+                    status.dismissed_reviewers.push("viewer".to_owned());
+                }
+                "requested" => {
+                    status.requested_reviewers =
+                        ReviewerSelection::new(["viewer"], Vec::<String>::new())
+                }
+                "commented" => {
+                    status.requested_reviewers = ReviewerSelection::default();
+                    status.dismissed_reviewers.clear();
+                    status.commented_reviewers.push("viewer".to_owned());
+                }
+                _ => unreachable!(),
+            }
+            // Only individual review facts change; overall approval remains satisfied by the peer.
+            summary.review_refresh_key = change.to_owned();
+            status.review_refresh_key = Some(summary.review_refresh_key.clone());
+            *github.update_summaries.lock().unwrap() = vec![summary.clone()];
+            *github.statuses.lock().unwrap() = vec![status.clone()];
+            for _ in 0..2 {
+                let loaded = runtime
+                    .block_on(service.pull_requests_with_history(&repository, &[status.number]))
+                    .unwrap();
+                assert_eq!(loaded[0].status, status);
+                if change == "approved" {
+                    assert_eq!(
+                        crate::domain::review_request_state(&loaded[0].status, "viewer"),
+                        crate::domain::ReviewRequestState::Approved
+                    );
+                    assert!(loaded[0]
+                        .history
+                        .iter()
+                        .any(|event| event.kind == "review_state_changed"));
+                }
+            }
+            assert_eq!(
+                github.calls.pull_request_statuses.load(Ordering::Relaxed),
+                index + 2
+            );
+        }
+    }
+
+    #[test]
+    fn pull_request_service_refreshes_old_snapshots_without_review_keys_once() {
+        let temp = tempfile::tempdir().expect("create temp home");
+        let environment = RuntimeEnvironment::new(
+            temp.path(),
+            [("HOME".to_owned(), temp.path().display().to_string())],
+        );
+        let repository = GitHubRepository {
+            owner: "owner".to_owned(),
+            name: "repo".to_owned(),
+        };
+        let mut old = test_pull_request_status(12, "Old snapshot");
+        old.review_refresh_key = None;
+        let updated_at = "2026-01-01T00:00:00Z";
+        PullRequestStore::open(&environment)
+            .unwrap()
+            .record_pull_request_snapshots_with_updates(
+                &repository,
+                &[old.clone()],
+                &BTreeMap::from([(12, review_timestamp_unix(updated_at).unwrap())]),
+            )
+            .unwrap();
+        let mut fresh = old;
+        fresh.review_refresh_key = Some("current-reviews".to_owned());
+        let github = CountingGitHub::default();
+        *github.update_summaries.lock().unwrap() = vec![PullRequestUpdateSummary {
+            number: 12,
+            updated_at: updated_at.to_owned(),
+            latest_commit_oid: fresh.latest_commit_oid.clone(),
+            checks: fresh.checks.clone(),
+            review_refresh_key: "current-reviews".to_owned(),
+        }];
+        *github.statuses.lock().unwrap() = vec![fresh.clone()];
+        let service = PullRequestService {
+            environment: &environment,
+            github: &github,
+        };
+        let runtime = test_github_runtime();
+        for _ in 0..2 {
+            let loaded = runtime
+                .block_on(service.pull_requests_with_history(&repository, &[12]))
+                .unwrap();
+            assert_eq!(loaded[0].status, fresh);
+        }
         assert_eq!(
             github.calls.pull_request_statuses.load(Ordering::Relaxed),
             1
@@ -4402,6 +4549,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
             latest_commit_oid: Some("commit-12".to_owned()),
             checks: vec![pending_check.clone()],
+            review_refresh_key: "unchanged-reviews".to_owned(),
         }];
         let mut initial = test_pull_request_status(12, "Pending checks");
         initial.checks = vec![pending_check];
@@ -4423,6 +4571,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
             latest_commit_oid: Some("commit-12".to_owned()),
             checks: vec![passing_check.clone()],
+            review_refresh_key: "unchanged-reviews".to_owned(),
         }];
         let mut updated = test_pull_request_status(12, "Passing checks");
         updated.checks = vec![passing_check];
@@ -4463,6 +4612,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
             latest_commit_oid: Some("commit-12".to_owned()),
             checks: Vec::new(),
+            review_refresh_key: "unchanged-reviews".to_owned(),
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Old schema review")];
@@ -4514,6 +4664,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
             latest_commit_oid: Some("commit-12".to_owned()),
             checks: Vec::new(),
+            review_refresh_key: "unchanged-reviews".to_owned(),
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Initial review")];
@@ -4534,6 +4685,7 @@ mod tests {
             updated_at: "2026-01-02T00:00:00Z".to_owned(),
             latest_commit_oid: Some("commit-12".to_owned()),
             checks: Vec::new(),
+            review_refresh_key: "unchanged-reviews".to_owned(),
         }];
         *github.statuses.lock().expect("status fixture lock") =
             vec![test_pull_request_status(12, "Updated review")];
@@ -4647,6 +4799,7 @@ mod tests {
             checks: Vec::new(),
             merge_status: PullRequestMergeStatus::Mergeable,
             review_status: PullRequestReviewStatus::ReviewRequired,
+            review_refresh_key: Some("unchanged-reviews".to_owned()),
             auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
             requested_reviewers: ReviewerSelection::default(),
             suggested_reviewers: Vec::new(),

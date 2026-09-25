@@ -733,7 +733,14 @@ fn pull_request_update_summary_query_uses_only_refresh_guard_fields() {
     assert!(query.contains("contexts(first: 100)"));
     assert!(query.contains("isRequired(pullRequestNumber: 7)"));
     assert!(query.contains("isRequired(pullRequestNumber: 12)"));
+    assert!(query.contains("reviewDecision"));
+    assert!(query.contains("reviewRequests(first: 100)"));
+    assert!(query.contains("latestReviews(first: 100)"));
+    assert!(query.contains("submittedAt"));
+    assert!(query.contains("authorAssociation"));
     assert!(!query.contains("reviewThreads"));
+    assert!(!query.contains("bodyText"));
+    assert!(!query.contains("comments("));
 }
 
 #[test]

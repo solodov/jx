@@ -1412,6 +1412,7 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         checks: Vec::new(),
         merge_status: crate::github::PullRequestMergeStatus::Mergeable,
         review_status: crate::github::PullRequestReviewStatus::Approved,
+        review_refresh_key: None,
         auto_merge_status: crate::github::PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers: ReviewerSelection::default(),
         suggested_reviewers: Vec::new(),

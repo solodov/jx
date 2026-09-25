@@ -2672,6 +2672,7 @@ fn pull_request_status_record(number: u64, title: &str) -> PullRequestStatusReco
         checks: Vec::new(),
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status: PullRequestReviewStatus::ReviewRequired,
+        review_refresh_key: None,
         auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers: ReviewerSelection::default(),
         suggested_reviewers: Vec::new(),

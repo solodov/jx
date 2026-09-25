@@ -32,6 +32,7 @@ fn sync_pull_request_status(
         checks: Vec::new(),
         merge_status: PullRequestMergeStatus::Mergeable,
         review_status: PullRequestReviewStatus::Approved,
+        review_refresh_key: None,
         auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers: ReviewerSelection::default(),
         suggested_reviewers: Vec::new(),

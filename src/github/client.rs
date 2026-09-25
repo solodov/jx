@@ -1,5 +1,8 @@
 use super::*;
 
+mod review_refresh;
+use review_refresh::{review_refresh_key, REVIEW_REFRESH_FRAGMENT};
+
 /// GitHub API operations exposed to command/domain services.
 #[async_trait]
 pub trait GitHubClient: Send + Sync {
@@ -1239,7 +1242,7 @@ pub(super) fn pull_request_update_summary_query(numbers: &[u64]) -> String {
         .map(|(index, number)| {
             let check_context_fields = pull_request_check_context_fields(*number);
             format!(
-                "    {}: pullRequest(number: {number}) {{\n      number\n      updatedAt\n      commits(last: 1) {{\n        nodes {{\n          commit {{\n            oid\n            statusCheckRollup {{\n              state\n{check_context_fields}\n            }}\n          }}\n        }}\n      }}\n    }}",
+                "    {}: pullRequest(number: {number}) {{\n      number\n      updatedAt\n      ...PullRequestReviewRefreshFields\n      commits(last: 1) {{\n        nodes {{\n          commit {{\n            oid\n            statusCheckRollup {{\n              state\n{check_context_fields}\n            }}\n          }}\n        }}\n      }}\n    }}",
                 pull_request_update_summary_alias(index)
             )
         })
@@ -1251,6 +1254,8 @@ pub(super) fn pull_request_update_summary_query(numbers: &[u64]) -> String {
 {fields}
   }}
 }}
+
+{REVIEW_REFRESH_FRAGMENT}
 "#
     )
 }
@@ -1338,18 +1343,7 @@ fragment PullRequestStatusFields on PullRequest {{
   mergedAt
   closedAt
   mergeable
-  reviewDecision
-  reviewRequests(first: 100) {{
-    totalCount
-    nodes {{
-      requestedReviewer {{
-        __typename
-        ... on User {{
-          login
-        }}
-      }}
-    }}
-  }}
+  ...PullRequestReviewRefreshFields
   suggestedReviewers {{
     reviewer {{
       login
@@ -1359,17 +1353,6 @@ fragment PullRequestStatusFields on PullRequest {{
     nodes {{
       name
       color
-    }}
-  }}
-  latestReviews(first: 100) {{
-    nodes {{
-      state
-      submittedAt
-      author {{
-        __typename
-        login
-      }}
-      authorAssociation
     }}
   }}
   reviews(first: 100) {{
@@ -1432,6 +1415,8 @@ fragment PullRequestStatusFields on PullRequest {{
     }}
   }}
 }}
+
+{REVIEW_REFRESH_FRAGMENT}
 "#
     )
 }
@@ -1829,6 +1814,12 @@ struct GraphQlPullRequestUpdateSummary {
     number: u64,
     #[serde(rename = "updatedAt")]
     updated_at: String,
+    #[serde(rename = "reviewDecision")]
+    review_decision: Option<String>,
+    #[serde(rename = "reviewRequests")]
+    review_requests: GraphQlReviewRequests,
+    #[serde(rename = "latestReviews")]
+    latest_reviews: GraphQlReviews,
     commits: GraphQlPullRequestStatusCommits,
 }
 
@@ -2208,6 +2199,11 @@ fn map_graphql_pull_request_update_summary(
         .last()
         .map(|node| node.commit);
     PullRequestUpdateSummary {
+        review_refresh_key: review_refresh_key(
+            pull.review_decision.as_deref(),
+            &pull.review_requests,
+            &pull.latest_reviews,
+        ),
         number: pull.number,
         updated_at: pull.updated_at,
         latest_commit_oid: latest_commit.as_ref().map(|commit| commit.oid.clone()),
@@ -2221,6 +2217,11 @@ fn map_graphql_pull_request_update_summary(
 pub(super) fn map_graphql_pull_request_status(
     pull: GraphQlPullRequestStatus,
 ) -> PullRequestStatusRecord {
+    let review_refresh_key = review_refresh_key(
+        pull.review_decision.as_deref(),
+        &pull.review_requests,
+        &pull.latest_reviews,
+    );
     let requested_reviewer_count = pull.review_requests.total_count;
     let pull_request_author = pull.author.as_ref().map(|author| author.login.as_str());
     let requested_reviewers = reviewer_selection_from_graphql(pull.review_requests.nodes);
@@ -2316,6 +2317,7 @@ pub(super) fn map_graphql_pull_request_status(
         checks,
         merge_status: map_merge_status(pull.mergeable.as_deref()),
         review_status,
+        review_refresh_key: Some(review_refresh_key),
         auto_merge_status: PullRequestAutoMergeStatus::NotConfigured,
         requested_reviewers,
         suggested_reviewers,
