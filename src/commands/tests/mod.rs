@@ -209,10 +209,11 @@ impl PullRequestPreviewer for RecordingPullRequestPreviewer {
     fn show_preview(
         &self,
         _plan: &PullRequestPlan,
-        _status: &WorkspaceStatus,
+        _current_dir: &Path,
         _prepare_effects: &[PullRequestEventEffect],
-    ) {
+    ) -> Result<(), JjError> {
         self.events.borrow_mut().push("preview");
+        Ok(())
     }
 }
 

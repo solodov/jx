@@ -5985,12 +5985,13 @@ impl PullRequestPreviewer for TitleRecordingPullRequestPreviewer {
     fn show_preview(
         &self,
         plan: &PullRequestPlan,
-        _status: &WorkspaceStatus,
+        _current_dir: &Path,
         _prepare_effects: &[PullRequestEventEffect],
-    ) {
+    ) -> Result<(), JjError> {
         self.events
             .borrow_mut()
             .push(format!("preview {}", plan.title));
+        Ok(())
     }
 }
 

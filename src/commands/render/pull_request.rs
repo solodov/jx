@@ -8,55 +8,13 @@ pub(in crate::commands) fn render_pull_request(report: &PullRequestReport) -> St
     )
 }
 
-/// Renders the approval-focused PR preview before any publishing mutation.
-#[cfg(test)]
+/// Wraps shared commit content from the publish plan in PR headers and workflow metadata.
 pub(in crate::commands) fn render_pull_request_preview(
     plan: &PullRequestPlan,
-    status: &WorkspaceStatus,
+    current_dir: &Path,
     prepare_effects: &[PullRequestEventEffect],
-) -> String {
-    render_pull_request_preview_with_style(plan, status, prepare_effects, false)
-}
-
-/// Renders the PR preview with optional log-line styling for interactive terminals.
-pub(in crate::commands) fn render_pull_request_preview_with_style(
-    plan: &PullRequestPlan,
-    status: &WorkspaceStatus,
-    prepare_effects: &[PullRequestEventEffect],
-    color: bool,
-) -> String {
-    render_pull_request_preview_with_style_for_width(
-        plan,
-        status,
-        prepare_effects,
-        color,
-        termimad::terminal_size().0.into(),
-    )
-}
-
-#[cfg(test)]
-pub(in crate::commands) fn render_pull_request_preview_for_width(
-    plan: &PullRequestPlan,
-    status: &WorkspaceStatus,
-    prepare_effects: &[PullRequestEventEffect],
-    terminal_width: usize,
-) -> String {
-    render_pull_request_preview_with_style_for_width(
-        plan,
-        status,
-        prepare_effects,
-        false,
-        terminal_width,
-    )
-}
-
-fn render_pull_request_preview_with_style_for_width(
-    plan: &PullRequestPlan,
-    _status: &WorkspaceStatus,
-    prepare_effects: &[PullRequestEventEffect],
-    color: bool,
-    terminal_width: usize,
-) -> String {
+    output: OutputMode,
+) -> Result<String, JjError> {
     let mut header = vec![pull_request_preview_header(plan)];
     header.extend(
         prepare_effects
@@ -65,19 +23,19 @@ fn render_pull_request_preview_with_style_for_width(
     );
     let header = header
         .into_iter()
-        .map(|line| style_log_line(&line, color))
+        .map(|line| style_log_line(&line, output.color))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let content_width = terminal_width.saturating_sub(PREVIEW_CONTENT_INDENT.len());
+    let mut description = plan.title.clone();
+    if !plan.body.is_empty() {
+        description.push_str("\n\n");
+        description.push_str(&plan.body);
+    }
     let mut blocks = vec![header];
-    blocks.push(indent_non_empty_lines(
-        &render_pull_request_description_preview(plan, content_width),
-    ));
-
-    let change_lines = pull_request_preview_change_lines(plan, color);
-    if !change_lines.is_empty() {
-        blocks.push(indent_non_empty_lines(&change_lines.join("\n")));
+    let content = render_commit_content(&description, &plan.change_lines, current_dir, output)?;
+    if !content.is_empty() {
+        blocks.push(content);
     }
 
     let mut metadata = vec![pull_request_reviewer_preview(plan)];
@@ -86,7 +44,7 @@ fn render_pull_request_preview_with_style_for_width(
     }
     blocks.push(metadata.join("\n"));
 
-    format!("{}\n", blocks.join("\n\n"))
+    Ok(format!("{}\n", blocks.join("\n\n")))
 }
 
 /// Shows the effective reviewers and distinguishes preserved requests from explicit draft additions.
@@ -111,44 +69,12 @@ fn pull_request_reviewer_preview(plan: &PullRequestPlan) -> String {
     format!("Reviewers: {summary}{note}")
 }
 
-const PREVIEW_CONTENT_INDENT: &str = "  ";
 const LOG_LINE_STYLE: &str = "\x1b[2m\x1b[38;5;244m";
-const FILE_CHANGE_STYLE: &str = "\x1b[38;5;6m";
-const FILE_CHANGE_RESET_STYLE: &str = "\x1b[39m";
 const RESET_STYLE: &str = "\x1b[0m";
 
 pub(in crate::commands) fn style_log_line(line: &str, color: bool) -> String {
     if color {
         format!("{LOG_LINE_STYLE}{line}{RESET_STYLE}")
-    } else {
-        line.to_owned()
-    }
-}
-
-fn indent_non_empty_lines(value: &str) -> String {
-    value
-        .lines()
-        .map(|line| {
-            if line.is_empty() {
-                String::new()
-            } else {
-                format!("{PREVIEW_CONTENT_INDENT}{line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn pull_request_preview_change_lines(plan: &PullRequestPlan, color: bool) -> Vec<String> {
-    plan.change_lines
-        .iter()
-        .map(|line| style_file_change_line(line, color))
-        .collect()
-}
-
-fn style_file_change_line(line: &str, color: bool) -> String {
-    if color {
-        format!("{FILE_CHANGE_STYLE}{line}{FILE_CHANGE_RESET_STYLE}")
     } else {
         line.to_owned()
     }
@@ -204,17 +130,6 @@ fn pull_request_prepare_event_summary(effect: &PullRequestEventEffect) -> Option
         | PullRequestEventEffectKind::OpenPullRequest { .. }
         | PullRequestEventEffectKind::TitleAlready { .. } => None,
     }
-}
-
-fn render_pull_request_description_preview(plan: &PullRequestPlan, width: usize) -> String {
-    let mut description = plan.title.clone();
-    if !plan.body.is_empty() {
-        description.push_str("\n\n");
-        description.push_str(&plan.body);
-    }
-    render_status_description(&description, width)
-        .trim_end()
-        .to_owned()
 }
 
 pub(in crate::commands) fn pull_request_event_display_name(

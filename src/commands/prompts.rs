@@ -19,9 +19,9 @@ pub(super) trait PullRequestPreviewer {
     fn show_preview(
         &self,
         plan: &PullRequestPlan,
-        status: &WorkspaceStatus,
+        current_dir: &Path,
         prepare_effects: &[PullRequestEventEffect],
-    );
+    ) -> Result<(), JjError>;
 }
 
 pub(super) struct TerminalPullRequestPreviewer;
@@ -30,18 +30,22 @@ impl PullRequestPreviewer for TerminalPullRequestPreviewer {
     fn show_preview(
         &self,
         plan: &PullRequestPlan,
-        status: &WorkspaceStatus,
+        current_dir: &Path,
         prepare_effects: &[PullRequestEventEffect],
-    ) {
+    ) -> Result<(), JjError> {
         eprint!(
             "{}",
-            render_pull_request_preview_with_style(
+            render_pull_request_preview(
                 plan,
-                status,
+                current_dir,
                 prepare_effects,
-                io::stderr().is_terminal(),
-            )
+                OutputMode {
+                    color: io::stderr().is_terminal(),
+                    terminal_width: None
+                },
+            )?
         );
+        Ok(())
     }
 }
 
@@ -53,9 +57,10 @@ impl PullRequestPreviewer for NoPullRequestPreview {
     fn show_preview(
         &self,
         _plan: &PullRequestPlan,
-        _status: &WorkspaceStatus,
+        _current_dir: &Path,
         _prepare_effects: &[PullRequestEventEffect],
-    ) {
+    ) -> Result<(), JjError> {
+        Ok(())
     }
 }
 

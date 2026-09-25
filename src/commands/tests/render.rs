@@ -1,5 +1,15 @@
 use super::*;
 
+#[path = "commit_render.rs"]
+mod commit;
+
+fn commit_output(color: bool, width: usize) -> OutputMode {
+    OutputMode {
+        color,
+        terminal_width: Some(width),
+    }
+}
+
 #[test]
 fn pull_request_label_chips_use_pastels_or_monochrome_and_restore_row_style() {
     // Verifies: active labels retain source hues; subdued labels are always neutral gray.
@@ -310,7 +320,7 @@ fn workspace_status_renderer_orders_commit_description_and_jj_changes() {
     };
 
     assert_eq!(
-            render_workspace_status_with_width(&status, 80),
+            render_workspace_status(&status, Path::new("."), commit_output(false, 80)).unwrap(),
             "Working copy  (@) : kvxvwztp b9e8f888\nParent commit (@-): xskrmynn 6257dd5a main | parent\n\nAdd stack trunk move\n\nM README.md\nM src/commands.rs\n"
         );
 }
@@ -325,7 +335,8 @@ fn workspace_status_renderer_renders_markdown_description_without_preview_indent
         extra_lines: Vec::new(),
     };
 
-    let rendered = render_workspace_status_with_width(&status, 28);
+    let rendered =
+        render_workspace_status(&status, Path::new("."), commit_output(false, 28)).unwrap();
     let description_block = rendered
         .split("\n\n")
         .nth(1)
@@ -352,7 +363,8 @@ fn workspace_status_renderer_hides_stack_context_comment_markers() {
         extra_lines: Vec::new(),
     };
 
-    let rendered = render_workspace_status_with_width(&status, 120);
+    let rendered =
+        render_workspace_status(&status, Path::new("."), commit_output(false, 120)).unwrap();
 
     assert!(!rendered.contains("jx-stack"), "{rendered:?}");
     assert!(!rendered.contains("<!--"), "{rendered:?}");
@@ -366,7 +378,8 @@ fn pull_request_preview_renders_legacy_stack_context_as_terminal_links() {
     plan.title = "Child change".to_owned();
     plan.body = "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child **notes**](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->".to_owned();
 
-    let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 160);
+    let preview =
+        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 160)).unwrap();
 
     assert!(!preview.contains("jx-stack"), "{preview:?}");
     assert!(!preview.contains("]("), "{preview:?}");
@@ -385,7 +398,7 @@ fn pull_request_preview_renders_legacy_stack_context_as_terminal_links() {
         )),
         "{preview:?}"
     );
-    assert!(preview.contains("    └ ◌ "), "{preview:?}");
+    assert!(preview.contains("\n  └ ◌ "), "{preview:?}");
 }
 
 #[test]
@@ -402,18 +415,19 @@ fn pull_request_preview_renders_nested_stack_lists_with_number_only_links() {
         "\n\n<!-- jx-stack:end -->",
     ).to_owned();
 
-    let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 180);
+    let preview =
+        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 180)).unwrap();
     let root_link = osc8_link("https://github.com/example-owner/example-repo/pull/6", "#6");
     let child_link = osc8_link("https://github.com/example-owner/example-repo/pull/7", "#7");
     let nested_link = osc8_link("https://github.com/example-owner/example-repo/pull/8", "#8");
     assert!(
-        preview.contains(&format!("  - {root_link} · Root")),
+        preview.contains(&format!("\n- {root_link} · Root")),
         "{preview:?}"
     );
-    assert!(preview.contains(&format!("    - {BOLD_STYLE}{child_link} — this PR{RESET_STYLE} · Child — \x1b[3mdraft{RESET_STYLE}")), "{preview:?}");
+    assert!(preview.contains(&format!("\n  - {BOLD_STYLE}{child_link} — this PR{RESET_STYLE} · Child — \x1b[3mdraft{RESET_STYLE}")), "{preview:?}");
     assert!(
         preview.contains(&format!(
-            "      - {nested_link} · [ids] *stars* _name_ `code` <tag> &amp; \\path | #42 — café"
+            "\n    - {nested_link} · [ids] *stars* _name_ `code` <tag> &amp; \\path | #42 — café"
         )),
         "{preview:?}"
     );
@@ -431,8 +445,6 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
     plan.base_pull_request = Some(existing_pull_request(false));
     plan.changed_files = vec!["src/main.rs".to_owned(), "src/lib.rs".to_owned()];
     plan.change_lines = vec!["M src/main.rs".to_owned(), "A src/lib.rs".to_owned()];
-    let mut status = workspace_status();
-    status.change_lines = vec!["M stale-current-workspace-file.rs".to_owned()];
     let prepare_effects = [PullRequestEventEffect {
         event: crate::repository::RepoEvent::PullRequestPrepare,
         handler_id: Some("prepend-task".to_owned()),
@@ -441,18 +453,36 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
         },
     }];
 
-    let preview = render_pull_request_preview(&plan, &status, &prepare_effects);
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &prepare_effects,
+        commit_output(false, 80),
+    )
+    .unwrap();
 
     assert_eq!(
         preview,
         format!(
-            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\n  example change\n\n  M src/main.rs\n  A src/lib.rs\n\nReviewers: none\nLabels: bug, help wanted\n",
+            "Creating: {} → {}\nEvent[prepend-task]: Added task ID to the title\n\nexample change\n\nM src/main.rs\nA src/lib.rs\n\nReviewers: none\nLabels: bug, help wanted\n",
             example_bookmark_link("example-user/02-zzzzzzzz"),
             example_pull_request_link(7),
         )
     );
-    let colored = render_pull_request_preview_with_style(&plan, &status, &prepare_effects, true);
+    let workspace = TestWorkspace::new();
+    workspace.write_file(
+        ".jj/repo/config.toml",
+        "[ui]\ncolor = 'always'\n[colors]\n'diff added' = 'green'\n'diff modified' = 'cyan'\n",
+    );
+    let colored = render_pull_request_preview(
+        &plan,
+        &workspace.path(),
+        &prepare_effects,
+        commit_output(true, 80),
+    )
+    .unwrap();
     assert!(colored.contains("\x1b[38;5;6mM src/main.rs\x1b[39m"));
+    assert!(colored.contains("\x1b[38;5;2mA src/lib.rs\x1b[39m"));
     assert_eq!(pull_request_confirmation_prompt(&plan), "Create?");
     plan.draft = true;
     assert_eq!(pull_request_confirmation_prompt(&plan), "Create draft?");
@@ -478,17 +508,20 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
 fn pull_request_preview_distinguishes_draft_reviewer_outcomes() {
     let mut plan = preview_plan();
     plan.draft = true;
-    let preview = render_pull_request_preview(&plan, &workspace_status(), &[]);
+    let preview =
+        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 80)).unwrap();
     assert!(preview.contains("Reviewers: none (draft)"));
 
     let mut existing = existing_pull_request(true);
     existing.reviewers = ReviewerSelection::new(["bob"], ["platform"]);
     plan.existing_pull_request = Some(existing);
-    let preview = render_pull_request_preview(&plan, &workspace_status(), &[]);
+    let preview =
+        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 80)).unwrap();
     assert!(preview.contains("Reviewers: bob, platform (team) (unchanged)"));
 
     plan.reviewers = ReviewerSelection::new(["alice", "bob"], ["platform"]);
-    let preview = render_pull_request_preview(&plan, &workspace_status(), &[]);
+    let preview =
+        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 80)).unwrap();
     assert!(preview.contains("Reviewers: alice, bob, platform (team) (explicit draft request)"));
 }
 
@@ -511,20 +544,30 @@ fn workspace_remove_confirmation_prompt_uses_display_root() {
 }
 
 #[test]
-fn pull_request_preview_wraps_description_inside_content_indent() {
-    // Verifies: Indented PR content still reserves indentation width before markdown wrapping.
+fn pull_request_preview_wraps_description_at_the_same_width_as_status() {
+    // Verifies: both views give commit content the full terminal width.
     let mut plan = preview_plan();
     plan.title = "Example preview title".to_owned();
     plan.body = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda".to_owned();
-    let preview = render_pull_request_preview_for_width(&plan, &workspace_status(), &[], 28);
-
-    let indented_lines = preview
-        .lines()
-        .filter(|line| line.starts_with("  ") && !line.trim().is_empty())
-        .collect::<Vec<_>>();
-
-    assert!(indented_lines.len() > 3, "{preview:?}");
-    for line in indented_lines {
+    let output = commit_output(false, 28);
+    let preview = render_pull_request_preview(&plan, Path::new("."), &[], output).unwrap();
+    let mut status = workspace_status();
+    status.description = format!("{}\n\n{}", plan.title, plan.body);
+    status.change_lines = plan.change_lines.clone();
+    let content = render_commit_content(
+        &status.description,
+        &status.change_lines,
+        Path::new("."),
+        output,
+    )
+    .unwrap();
+    assert!(preview.contains(&content));
+    assert!(render_workspace_status(&status, Path::new("."), output)
+        .unwrap()
+        .contains(&content));
+    assert!(content.lines().count() > 3, "{content:?}");
+    for line in content.lines() {
+        assert!(!line.starts_with("  "));
         assert!(
             line.len() <= 28,
             "line exceeded preview width: {line:?}\n{preview}"

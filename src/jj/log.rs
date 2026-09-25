@@ -12,7 +12,7 @@ impl JjWorkspace {
         render_current_workspace_log(&workspace, repo.as_ref(), current_dir, annotations)
     }
 
-    /// Renders caller-provided content through jj's workspace formatter and color rules.
+    /// Renders explicitly colored content using jj's workspace color rules, independent of stdout.
     pub fn render_workspace_formatted_output(
         current_dir: &Path,
         render: impl FnOnce(&mut dyn Formatter) -> io::Result<()>,
@@ -80,11 +80,13 @@ pub(super) fn render_workspace_formatted_output(
         .create(workspace_root)
         .map_err(render_error)?;
     let config = resolved_workspace_config_for_render(&ui, loader.as_ref())?;
-    let ui = Ui::with_config(&config).map_err(render_command_error)?;
+    // The caller chooses the output stream and color mode; previews may use stderr with piped stdout.
+    let factory =
+        jj_cli::formatter::FormatterFactory::color(&config, false).map_err(render_error)?;
     let mut output = Vec::new();
 
     {
-        let mut formatter = ui.new_formatter(&mut output);
+        let mut formatter = factory.new_formatter(&mut output);
         render(formatter.as_mut()).map_err(render_error)?;
     }
 

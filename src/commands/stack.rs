@@ -747,13 +747,6 @@ impl StackPublishExecution<'_> {
         let mut plans = plans_result?;
         add_projected_stack_context_to_existing_plans(&mut plans);
         span.set([perf_attr("plan_count", plans.len())]);
-        let status = span.measure("workspace_status", Vec::new(), || {
-            self.services.workspace_status(
-                self.environment.current_dir(),
-                None,
-                io::stderr().is_terminal(),
-            )
-        })?;
         self.progress.finish();
 
         let intent_plan_positions = stack_publish_intent_plan_positions(&facts, &intent_indexes);
@@ -791,7 +784,6 @@ impl StackPublishExecution<'_> {
                 self.confirm_stack_publish_plans(
                     plans,
                     &confirmation_plan_positions,
-                    &status,
                     &prepare_effects,
                 )
             },
@@ -1089,7 +1081,6 @@ impl StackPublishExecution<'_> {
         &self,
         plans: Vec<PullRequestPlan>,
         intent_plan_positions: &BTreeSet<usize>,
-        status: &WorkspaceStatus,
         prepare_effects: &[PullRequestEventEffect],
     ) -> Result<StackPublishPlanSelection, CommandError> {
         let mut selected = StackPublishPlanSelection::default();
@@ -1111,9 +1102,11 @@ impl StackPublishExecution<'_> {
                 continue;
             }
 
-            self.prompts
-                .pull_request_previewer
-                .show_preview(&plan, status, prepare_effects);
+            self.prompts.pull_request_previewer.show_preview(
+                &plan,
+                self.environment.current_dir(),
+                prepare_effects,
+            )?;
             if self
                 .prompts
                 .pull_request_confirmer

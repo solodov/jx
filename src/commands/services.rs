@@ -99,7 +99,7 @@ pub(super) trait CommandServices {
         target: &InitialPublishTarget,
     ) -> Result<BootstrapPushOutcome, JjError>;
 
-    /// Loads the selected commit status block shared by status and PR preview.
+    /// Loads workspace status headers and commit content for the selected revision.
     fn workspace_status(
         &self,
         current_dir: &Path,

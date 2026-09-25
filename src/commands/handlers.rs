@@ -22,7 +22,7 @@ pub(super) fn handle_request(
                 request.revision.as_deref(),
                 output.color,
             )?;
-            render_workspace_status(&status)
+            render_workspace_status(&status, environment.current_dir(), output)?
         }
         CommandRequest::Diff(request) => {
             let config = WorkflowConfig::discover(environment)?;

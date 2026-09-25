@@ -1,6 +1,7 @@
 use super::*;
 
 mod check;
+mod commit;
 mod common;
 mod fork;
 mod pr_table;
@@ -14,6 +15,7 @@ mod sync;
 mod work;
 
 pub(in crate::commands) use check::*;
+pub(in crate::commands) use commit::*;
 pub(in crate::commands) use common::*;
 pub(in crate::commands) use fork::*;
 pub(in crate::commands) use pr_table::*;
