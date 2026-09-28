@@ -39,7 +39,7 @@ fn configured_reloads_keep_one_action_timer_until_the_list_is_rendered() {
         assert!(!line.contains("Refreshing"));
         assert!(!line.contains("Esc cancel"));
         assert!(!line.contains("completed"));
-        status.refreshed(Ok(()), &environment(), later);
+        status.refreshed(kind, Ok(()), &environment(), later);
         assert!(status
             .line(None, later, 120)
             .unwrap()
@@ -61,8 +61,7 @@ fn default_action_success_is_immediate_and_not_repeated_by_the_next_periodic_ref
         ),
         None
     );
-    assert!(status.updating_action.is_none());
-    assert!(status.refresh_started.is_none());
+    assert!(status.refreshes.is_empty());
     let line = status.line(None, now, 120).unwrap();
     assert!(line.contains("\"dismiss/fix tests\" completed"));
     assert!(!line.contains("Refreshing"));
@@ -72,7 +71,7 @@ fn default_action_success_is_immediate_and_not_repeated_by_the_next_periodic_ref
     assert!(status.line(None, later, 120).is_none());
     status.refresh_started(DashboardRefreshKind::Live, false, later);
     assert!(status.line(None, later, 120).is_none());
-    status.refreshed(Ok(()), &environment(), later);
+    status.refreshed(DashboardRefreshKind::Live, Ok(()), &environment(), later);
     assert!(status.line(None, later, 120).is_none());
 }
 
@@ -126,7 +125,7 @@ fn manual_refresh_during_a_cached_reload_only_shows_feedback_when_live_loading_s
     status.refresh_started(DashboardRefreshKind::Local, false, now);
     status.request_refresh();
     assert!(status.line(None, now, 120).is_none());
-    status.refreshed(Ok(()), &environment(), now);
+    status.refreshed(DashboardRefreshKind::Local, Ok(()), &environment(), now);
     status.refresh_started(DashboardRefreshKind::Live, false, now);
     assert!(status
         .line(None, now, 120)
@@ -153,7 +152,7 @@ fn logged_errors_show_the_actual_log_path_and_expire_after_ten_seconds() {
             }),
             now,
         );
-        status.refreshed(Ok(()), &environment(), now);
+        status.refreshed(DashboardRefreshKind::Live, Ok(()), &environment(), now);
         let line = status.line(None, now, 80).unwrap();
         assert!(line.contains(&format!("\"dismiss/fix tests\" failed, see {display}")));
         assert!(!line.contains("owner/repo"));
@@ -228,6 +227,7 @@ fn refresh_timeout_expires_without_resuming_busy_feedback_and_can_recover() {
     );
     status.refresh_started(DashboardRefreshKind::Local, false, now);
     status.refresh_timed_out(
+        DashboardRefreshKind::Local,
         dashboard_refresh_timeout_error().into(),
         &environment(),
         now,
@@ -238,7 +238,7 @@ fn refresh_timeout_expires_without_resuming_busy_feedback_and_can_recover() {
     let later = now + ERROR_DURATION;
     status.tick(later);
     assert!(status.line(None, later, 160).is_none());
-    status.refreshed(Ok(()), &environment(), later);
+    status.refreshed(DashboardRefreshKind::Local, Ok(()), &environment(), later);
     assert!(status
         .line(None, later, 160)
         .unwrap()
@@ -256,12 +256,17 @@ fn refresh_timeout_expires_without_resuming_busy_feedback_and_can_recover() {
         .line(None, later, 120)
         .unwrap()
         .contains("Refreshing"));
-    status.refreshed(Err("network down".to_owned().into()), &environment(), later);
+    status.refreshed(
+        DashboardRefreshKind::Live,
+        Err("network down".to_owned().into()),
+        &environment(),
+        later,
+    );
     assert!(status
         .line(None, later, 120)
         .unwrap()
         .contains("Refresh failed: network down"));
-    status.refreshed(Ok(()), &environment(), later);
+    status.refreshed(DashboardRefreshKind::Live, Ok(()), &environment(), later);
     assert!(!status.has_error());
 }
 
@@ -277,6 +282,7 @@ fn action_refresh_failures_distinguish_command_success_and_only_link_recorded_er
             now,
         );
         status.refreshed(
+            DashboardRefreshKind::Live,
             Err(PrActionFailure {
                 message: "offline".to_owned(),
                 log_path,
@@ -330,6 +336,87 @@ fn status_line_sanitizes_and_clips_text_while_painting_the_full_width() {
             assert!(line.ends_with(" \x1b[0m"));
         }
     }
+}
+
+#[test]
+fn overlapping_refreshes_keep_their_own_actions_timers_and_errors() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    for (policy, kind, title) in [
+        (
+            PrActionOnSuccess::Refresh,
+            DashboardRefreshKind::Live,
+            "live",
+        ),
+        (
+            PrActionOnSuccess::RefreshLocal,
+            DashboardRefreshKind::Local,
+            "local",
+        ),
+    ] {
+        let mut info = action(now);
+        info.title = title.to_owned();
+        status.action_completed(
+            DashboardActionCompletion {
+                action: info,
+                outcome: DashboardActionOutcome::Succeeded(policy),
+            },
+            &environment(),
+            now,
+        );
+        status.refresh_started(kind, false, now);
+    }
+    status.refresh_timed_out(
+        DashboardRefreshKind::Live,
+        "slow network".to_owned().into(),
+        &environment(),
+        now,
+    );
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("Running local"));
+    status.refreshed(DashboardRefreshKind::Local, Ok(()), &environment(), now);
+    assert!(status.refreshes.contains_key(&DashboardRefreshKind::Live));
+    assert!(!status.refreshes.contains_key(&DashboardRefreshKind::Local));
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("\"live\" completed; refresh failed"));
+    status.refreshed(DashboardRefreshKind::Live, Ok(()), &environment(), now);
+    assert!(status.refreshes.is_empty());
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("\"live\" completed"));
+}
+
+#[test]
+fn unrelated_remote_failure_does_not_complete_or_claim_a_local_action() {
+    let now = Instant::now();
+    let mut status = DashboardStatus::default();
+    status.refresh_started(DashboardRefreshKind::Live, true, now);
+    complete(
+        &mut status,
+        DashboardActionOutcome::Succeeded(PrActionOnSuccess::RefreshLocal),
+        now,
+    );
+    status.refresh_started(DashboardRefreshKind::Local, false, now);
+    status.refreshed(
+        DashboardRefreshKind::Live,
+        Err("offline".to_owned().into()),
+        &environment(),
+        now,
+    );
+    assert!(status
+        .line(None, now, 120)
+        .unwrap()
+        .contains("Running dismiss/fix tests"));
+    status.refreshed(DashboardRefreshKind::Local, Ok(()), &environment(), now);
+    assert!(status.refreshes.is_empty());
+    let line = status.line(None, now, 120).unwrap();
+    assert!(line.contains("Refresh failed: offline"));
+    assert!(!line.contains("dismiss/fix tests"));
 }
 
 fn complete(

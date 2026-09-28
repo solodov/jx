@@ -11,7 +11,7 @@ use std::time::Instant;
 #[derive(Default)]
 pub(super) struct DashboardActions {
     running: Option<RunningPrAction>,
-    refreshing: Option<RunningPrAction>,
+    refreshing: BTreeMap<DashboardRefreshKind, RunningPrAction>,
     info: Option<DashboardActionInfo>,
     on_success: PrActionOnSuccess,
     completed: Option<DashboardActionCompletion>,
@@ -25,7 +25,7 @@ impl DashboardActions {
         environment: &RuntimeEnvironment,
         action_set: PrActionSet,
     ) {
-        if self.is_busy() {
+        if !self.can_start(action.on_success) {
             return;
         }
         self.info = Some(DashboardActionInfo {
@@ -46,9 +46,16 @@ impl DashboardActions {
         self.running.is_some()
     }
 
-    /// The whole operation blocks another action or an automatic executable restart.
+    /// Keeps executable restarts from interrupting an action's command or follow-up reload.
     pub(super) fn is_busy(&self) -> bool {
-        self.running.is_some() || self.refreshing.is_some()
+        self.running.is_some() || !self.refreshing.is_empty()
+    }
+
+    /// Local actions may overlap a live follow-up, but commands and local reloads stay serial.
+    pub(super) fn can_start(&self, policy: PrActionOnSuccess) -> bool {
+        !self.is_running()
+            && !self.refreshing.contains_key(&DashboardRefreshKind::Local)
+            && (policy != PrActionOnSuccess::Refresh || self.refreshing.is_empty())
     }
 
     pub(super) fn running_info(&self) -> Option<&DashboardActionInfo> {
@@ -75,7 +82,7 @@ impl DashboardActions {
 
     /// Attaches reload details to the completed command's original log.
     pub(super) fn refresh_started(&mut self, kind: DashboardRefreshKind) {
-        if let Some(action) = &mut self.refreshing {
+        if let Some(action) = self.refreshing.get_mut(&kind) {
             action.refresh_started(match kind {
                 DashboardRefreshKind::Live => "live",
                 DashboardRefreshKind::Local => "local",
@@ -86,11 +93,12 @@ impl DashboardActions {
     /// Finishes an action's reload or records a standalone refresh failure.
     pub(super) fn refreshed(
         &mut self,
+        kind: DashboardRefreshKind,
         result: Result<(), String>,
         environment: &RuntimeEnvironment,
         action_set: PrActionSet,
     ) -> Result<(), PrActionFailure> {
-        match self.refreshing.take() {
+        match self.refreshing.remove(&kind) {
             Some(mut action) => action.refreshed(result),
             None => {
                 result.map_err(|message| record_refresh_failure(message, environment, action_set))
@@ -101,11 +109,12 @@ impl DashboardActions {
     /// Records a timeout, retaining any action log for a late refresh result.
     pub(super) fn refresh_timed_out(
         &mut self,
+        kind: DashboardRefreshKind,
         message: String,
         environment: &RuntimeEnvironment,
         action_set: PrActionSet,
     ) -> PrActionFailure {
-        match &mut self.refreshing {
+        match self.refreshing.get_mut(&kind) {
             Some(action) => action.refresh_timed_out(&message),
             None => record_refresh_failure(message, environment, action_set),
         }
@@ -117,8 +126,8 @@ impl DashboardActions {
         };
         let outcome = match result {
             Ok(()) => {
-                if self.on_success != PrActionOnSuccess::None {
-                    self.refreshing = self.running.take();
+                if let Some(kind) = DashboardRefreshKind::for_action(self.on_success) {
+                    self.refreshing.insert(kind, self.running.take().unwrap());
                 }
                 DashboardActionOutcome::Succeeded(self.on_success)
             }

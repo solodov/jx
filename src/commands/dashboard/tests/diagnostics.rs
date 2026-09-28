@@ -13,19 +13,27 @@ fn standalone_failures_in_both_dashboards_are_logged_and_shown_as_one_notice() {
     let details = "2 repository refreshes failed:\nowner/a: offline\nowner/b: bad checkout";
     for action_set in [PrActionSet::Review, PrActionSet::StackStatus] {
         let failure = actions
-            .refreshed(Err(details.to_owned()), &environment, action_set)
+            .refreshed(
+                DashboardRefreshKind::Live,
+                Err(details.to_owned()),
+                &environment,
+                action_set,
+            )
             .unwrap_err();
         assert_eq!(failure.log_path.as_deref(), Some(path.as_path()));
         let mut status = DashboardStatus::default();
-        status.refreshed(Err(failure), &environment, now);
+        status.refreshed(DashboardRefreshKind::Live, Err(failure), &environment, now);
         let line = status.line(None, now, 120).unwrap();
         assert!(line.contains("Refresh failed, see ~/.local/state/jx/jx-actions.log"));
         assert!(!line.contains("owner/a"));
         assert!(!line.contains("owner/b"));
         assert!(!line.contains('\n'));
-        actions.refreshed(Ok(()), &environment, action_set).unwrap();
+        actions
+            .refreshed(DashboardRefreshKind::Live, Ok(()), &environment, action_set)
+            .unwrap();
     }
     let timeout = actions.refresh_timed_out(
+        DashboardRefreshKind::Live,
         "refresh timed out".to_owned(),
         &environment,
         PrActionSet::Review,

@@ -80,10 +80,15 @@ fn run_review_dashboard(
     let loader_request = request.clone();
     let loader: DashboardFrameLoader = std::sync::Arc::new(move |kind| {
         let mut request = loader_request.clone();
-        request.cached = kind == DashboardRefreshKind::Local;
+        request.cached = kind != DashboardLoadKind::Live;
         let services =
             ProductionServices::new(&loader_environment).map_err(|error| error.to_string())?;
-        load_review_dashboard_snapshot(request, &loader_environment, &services)
+        let cleanup = if kind == DashboardLoadKind::AfterLive {
+            ReviewCleanupMode::Record
+        } else {
+            ReviewCleanupMode::ReadOnly
+        };
+        load_review_dashboard_snapshot(request, &loader_environment, &services, cleanup)
             .map_err(|error| error.to_string())
     });
     run_interactive_dashboard(
@@ -94,11 +99,12 @@ fn run_review_dashboard(
     )
 }
 
-/// Loads a complete renderable inbox from GitHub or local storage according to the request.
+/// Loads an inbox, deferring visibility cleanup during concurrent dashboard remote fetches.
 pub(super) fn load_review_dashboard_snapshot(
     request: ReviewRequest,
     environment: &RuntimeEnvironment,
     services: &dyn CommandServices,
+    cleanup: ReviewCleanupMode,
 ) -> Result<DashboardFrameSnapshot, CommandError> {
     let progress = SilentProgress;
     let perf = PerfLog::from_environment(environment);
@@ -117,6 +123,7 @@ pub(super) fn load_review_dashboard_snapshot(
             &progress,
             &mut span,
             ReviewDismissalMode::Apply,
+            cleanup,
         )?;
         Ok::<_, CommandError>(DashboardFrameSnapshot::new(move |options| {
             Ok(render_review_requests(
@@ -204,6 +211,11 @@ fn handle_review_traced(
         progress,
         span,
         dismissal_mode,
+        if request.cached {
+            ReviewCleanupMode::ReadOnly
+        } else {
+            ReviewCleanupMode::Record
+        },
     )?;
     progress.finish();
 
@@ -236,8 +248,9 @@ enum ReviewDismissalMode {
     Only,
 }
 
+/// Remote dashboard workers defer cleanup to the serialized post-fetch cache rebuild.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReviewCleanupMode {
+pub(super) enum ReviewCleanupMode {
     Record,
     ReadOnly,
 }
@@ -275,6 +288,7 @@ fn load_review_requests_view(
     progress: &dyn ProgressSink,
     span: &mut PerfSpan,
     dismissal_mode: ReviewDismissalMode,
+    cleanup: ReviewCleanupMode,
 ) -> Result<LoadedReviewRequestsView, CommandError> {
     progress.status("Loading review context…");
     let config = span.measure("review.discover_config", Vec::new(), || {
@@ -320,6 +334,7 @@ fn load_review_requests_view(
             progress,
             span,
             &filter_matchers,
+            cleanup,
         );
     }
 
@@ -382,7 +397,7 @@ fn load_review_requests_view(
             entry.result?,
             &candidate_keys,
             &viewer,
-            ReviewCleanupMode::Record,
+            cleanup,
         )? {
             repositories.push(repository_view);
         }
@@ -427,6 +442,7 @@ fn load_cached_review_requests_view(
     progress: &dyn ProgressSink,
     span: &mut PerfSpan,
     filter_matchers: &[ReviewFilterMatcher],
+    cleanup: ReviewCleanupMode,
 ) -> Result<LoadedReviewRequestsView, CommandError> {
     progress.status("Loading cached review requests…");
     let store = span.measure("review.open_store", Vec::new(), || {
@@ -485,7 +501,7 @@ fn load_cached_review_requests_view(
             entry.result?,
             &candidate_keys,
             &viewer,
-            ReviewCleanupMode::ReadOnly,
+            cleanup,
         )? {
             repositories.push(repository_view);
         }
@@ -917,6 +933,11 @@ fn handle_review_dismiss_traced(
         progress,
         span,
         ReviewDismissalMode::Ignore,
+        if cached {
+            ReviewCleanupMode::ReadOnly
+        } else {
+            ReviewCleanupMode::Record
+        },
     )?;
     progress.finish();
 
@@ -1031,6 +1052,7 @@ fn handle_review_undismiss_traced(
         progress,
         span,
         ReviewDismissalMode::Only,
+        ReviewCleanupMode::Record,
     )?;
     progress.finish();
 

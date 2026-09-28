@@ -3,10 +3,31 @@ use crate::repository::PrActionOnSuccess;
 use std::{sync::mpsc, thread, time::Instant};
 
 /// Selects GitHub-backed loading or a local-only rebuild of the review inbox.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::commands) enum DashboardRefreshKind {
     Live,
     Local,
+}
+
+/// Separates remote/cache I/O from the refresh whose completion owns the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::commands) enum DashboardLoadKind {
+    /// Fetch remote facts and update the cache without writing visibility actions.
+    Live,
+    /// Read the cache without fetching or recording automatic visibility changes.
+    Local,
+    /// Rebuild from cache and clean up dismissals after remote fetching has finished.
+    AfterLive,
+}
+
+impl DashboardRefreshKind {
+    pub(super) fn for_action(policy: PrActionOnSuccess) -> Option<Self> {
+        match policy {
+            PrActionOnSuccess::None => None,
+            PrActionOnSuccess::Refresh => Some(Self::Live),
+            PrActionOnSuccess::RefreshLocal => Some(Self::Local),
+        }
+    }
 }
 
 /// Local action reloads take priority without postponing the next scheduled live refresh.
@@ -29,11 +50,15 @@ impl DashboardRefreshSchedule {
         self.next_live_at = None;
     }
 
-    /// Called only when the dashboard can start a load without racing an action.
-    pub(super) fn next(&mut self, now: DateTime<Local>) -> Option<DashboardRefreshKind> {
+    /// Local reloads can proceed while a live refresh is already in flight.
+    pub(super) fn next(
+        &mut self,
+        now: DateTime<Local>,
+        live_busy: bool,
+    ) -> Option<DashboardRefreshKind> {
         if std::mem::take(&mut self.local_requested) {
             Some(DashboardRefreshKind::Local)
-        } else if dashboard_wait_duration(now, self.next_live_at).is_none() {
+        } else if !live_busy && dashboard_wait_duration(now, self.next_live_at).is_none() {
             Some(DashboardRefreshKind::Live)
         } else {
             None
@@ -54,20 +79,18 @@ impl DashboardRefreshSchedule {
 
 pub(super) struct DashboardRefresh {
     receiver: mpsc::Receiver<Result<DashboardFrameSnapshot, String>>,
-    pub(super) kind: DashboardRefreshKind,
     pub(super) started: Instant,
     pub(super) timed_out: bool,
 }
 
 impl DashboardRefresh {
-    pub(super) fn start(loader: DashboardFrameLoader, kind: DashboardRefreshKind) -> Self {
+    pub(super) fn start(loader: DashboardFrameLoader, kind: DashboardLoadKind) -> Self {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let _ = sender.send(loader(kind));
         });
         Self {
             receiver,
-            kind,
             started: Instant::now(),
             timed_out: false,
         }

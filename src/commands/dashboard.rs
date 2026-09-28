@@ -17,6 +17,7 @@ use std::{
 };
 
 mod actions;
+mod activity;
 mod diagnostics;
 mod keybindings;
 mod menu;
@@ -33,10 +34,12 @@ mod view;
 
 use crate::repository::DashboardCommand;
 use actions::DashboardActions;
+use activity::DashboardActivity;
 use keybindings::{DashboardInput, DashboardKeyboard};
 use menu::{MenuIntent, PrActionMenu};
 use navigation::DashboardNavigation;
-pub(super) use refresh::DashboardRefreshKind;
+pub(super) use refresh::DashboardLoadKind;
+use refresh::DashboardRefreshKind;
 use refresh::{DashboardRefresh, DashboardRefreshSchedule};
 use screen::{render_dashboard_frame, DashboardControls};
 use status::DashboardStatus;
@@ -48,7 +51,7 @@ const DASHBOARD_IDLE_POLL: Duration = Duration::from_millis(500);
 const DASHBOARD_REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(super) type DashboardFrameLoader =
-    Arc<dyn Fn(DashboardRefreshKind) -> Result<DashboardFrameSnapshot, String> + Send + Sync>;
+    Arc<dyn Fn(DashboardLoadKind) -> Result<DashboardFrameSnapshot, String> + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DashboardRenderOptions {
@@ -118,142 +121,83 @@ pub(super) fn run_interactive_dashboard(
     let mut terminal = DashboardTerminalSession::enter()?;
     let mut terminal_size = dashboard_terminal_size()?;
     let mut watcher = ExecutableWatcher::from_process();
-    let mut view = DashboardView::default();
     let mut navigation = DashboardNavigation::default();
     let mut menu = None::<PrActionMenu>;
-    let mut actions = DashboardActions::default();
-    let mut refresh = None::<DashboardRefresh>;
-    let mut schedule = DashboardRefreshSchedule::default();
-    let mut status = DashboardStatus::default();
+    let mut activity = DashboardActivity::new(loader, environment, action_set, refresh_seconds);
 
     loop {
         if interrupts.take_pending() {
-            status.clear_notice();
-            if !actions.cancel() {
+            activity.status.clear_notice();
+            if !activity.actions.cancel() {
                 return Ok(CommandResult::with_exit_code(String::new(), 130));
             }
-            view.pending = None;
         }
-        if let Some(completion) = actions.poll() {
-            if let Some(policy) = status.action_completed(completion, environment, Instant::now()) {
-                view.pending = None;
-                schedule.after_action(policy);
-            }
-        }
-        status.tick(Instant::now());
+        activity.tick(menu.is_some() || keyboard.help_open(), terminal_size);
         if menu.is_none()
             && !keyboard.help_open()
-            && !actions.is_busy()
-            && !status.has_error()
+            && !activity.is_busy()
+            && !activity.status.has_error()
             && watcher.changed()
         {
             terminal.restore()?;
             return restart_dashboard_process();
         }
-        if refresh.is_none()
-            && !actions.is_running()
-            && view.pending.is_none()
-            && menu.is_none()
-            && !keyboard.help_open()
-        {
-            if let Some(kind) = schedule.next(Local::now()) {
-                actions.refresh_started(kind);
-                status.refresh_started(kind, view.frame.is_none(), Instant::now());
-                refresh = Some(DashboardRefresh::start(Arc::clone(&loader), kind));
-            }
-        }
-        if let Some(loading) = &mut refresh {
-            if let Some(result) = loading.poll() {
-                view.pending = Some(result);
-                schedule.loaded(loading.kind, Local::now(), refresh_seconds);
-                refresh = None;
-            } else if !loading.timed_out && dashboard_refresh_timed_out(loading.started.elapsed()) {
-                loading.timed_out = true;
-                let failure = actions.refresh_timed_out(
-                    dashboard_refresh_timeout_error(),
-                    environment,
-                    action_set,
-                );
-                status.refresh_timed_out(failure, environment, Instant::now());
-                // Retain the worker: abandoning it could race an action or a new load.
-            }
-        }
-        if let Some(update) = view.update(menu.is_some() || keyboard.help_open(), terminal_size) {
-            match update {
-                DashboardViewUpdate::Loaded(result) => status.refreshed(
-                    actions.refreshed(result, environment, action_set),
-                    environment,
-                    Instant::now(),
-                ),
-                DashboardViewUpdate::Reflowed(result) => status.reflowed(result, Instant::now()),
-            }
-        }
-        navigation.reconcile(view.frame.as_ref());
+        navigation.reconcile(activity.view.frame.as_ref());
         let content_size = render_dashboard_frame(
-            view.frame.as_ref(),
+            activity.view.frame.as_ref(),
             terminal_size,
             &mut navigation,
             DashboardControls {
                 menu: menu.as_mut(),
                 keyboard: &mut keyboard,
             },
-            &status,
-            actions.running_info(),
+            &activity.status,
+            activity.actions.running_info(),
         )?;
-        let timeout = if refresh.is_some() || actions.is_running() {
+        let timeout = if activity.has_workers() || activity.actions.is_running() {
             DASHBOARD_EVENT_POLL
         } else {
             DASHBOARD_IDLE_POLL
         };
         match read_dashboard_event(timeout, &mut terminal_size)? {
             DashboardEvent::Interrupt => {
-                status.clear_notice();
-                if actions.cancel() {
-                    view.pending = None;
-                } else {
+                activity.status.clear_notice();
+                if !activity.actions.cancel() {
                     return Ok(CommandResult::with_exit_code(String::new(), 130));
                 }
             }
             DashboardEvent::Resized => {}
             DashboardEvent::Key(key) => {
-                status.clear_notice();
+                activity.status.clear_notice();
                 if let Some(open_menu) = &mut menu {
                     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
                         continue;
                     }
-                    match open_menu.handle_key(key, refresh.is_some(), content_size) {
+                    match open_menu.handle_key(
+                        key,
+                        |policy| activity.can_start(policy),
+                        content_size,
+                    ) {
                         MenuIntent::None => {}
                         MenuIntent::Close => menu = None,
                         MenuIntent::Run(action) => {
                             menu = None;
-                            // Finish any queued list update before attributing work to the next action.
-                            if let Some(update) = view.update(false, terminal_size) {
-                                match update {
-                                    DashboardViewUpdate::Loaded(result) => status.refreshed(
-                                        actions.refreshed(result, environment, action_set),
-                                        environment,
-                                        Instant::now(),
-                                    ),
-                                    DashboardViewUpdate::Reflowed(result) => {
-                                        status.reflowed(result, Instant::now())
-                                    }
-                                }
-                            }
-                            actions.start(action, environment, action_set);
+                            activity.start_action(action, terminal_size);
                         }
                     }
                 } else {
                     match keyboard.handle_key(key) {
                         DashboardInput::Cancel => {
-                            if actions.cancel() {
-                                view.pending = None;
-                            }
+                            activity.actions.cancel();
                         }
                         DashboardInput::Command(DashboardCommand::Quit) => {
                             return Ok(CommandResult::success(String::new()));
                         }
-                        DashboardInput::Command(DashboardCommand::Menu) if !actions.is_busy() => {
-                            if let Some(context) = view
+                        DashboardInput::Command(DashboardCommand::Menu)
+                            if activity.can_start(crate::repository::PrActionOnSuccess::None) =>
+                        {
+                            if let Some(context) = activity
+                                .view
                                 .frame
                                 .as_ref()
                                 .and_then(|frame| navigation.selected(frame))
@@ -268,15 +212,10 @@ pub(super) fn run_interactive_dashboard(
                             }
                         }
                         DashboardInput::Command(DashboardCommand::Refresh) => {
-                            status.request_refresh();
-                            if refresh.as_ref().map(|loading| loading.kind)
-                                != Some(DashboardRefreshKind::Live)
-                            {
-                                schedule.request_live();
-                            }
+                            activity.request_refresh();
                         }
                         DashboardInput::Command(command) if command.is_navigation() => {
-                            if let Some(frame) = &view.frame {
+                            if let Some(frame) = &activity.view.frame {
                                 navigation.handle_command(command, frame, content_size.height);
                             }
                         }

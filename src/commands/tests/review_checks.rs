@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::review::load_review_dashboard_snapshot;
+use crate::commands::review::{load_review_dashboard_snapshot, ReviewCleanupMode};
 
 #[test]
 fn live_cached_and_dashboard_inboxes_wait_only_for_required_checks_in_matching_repositories() {
@@ -113,6 +113,7 @@ fn live_cached_and_dashboard_inboxes_wait_only_for_required_checks_in_matching_r
         },
         &environment,
         &offline,
+        ReviewCleanupMode::ReadOnly,
     )
     .unwrap();
     for width in [120, 60] {

@@ -45,7 +45,7 @@ impl PrActionMenu {
     pub(super) fn handle_key(
         &mut self,
         key: KeyEvent,
-        busy: bool,
+        can_run: impl Fn(crate::repository::PrActionOnSuccess) -> bool,
         size: DashboardTerminalSize,
     ) -> MenuIntent {
         if matches!(
@@ -102,7 +102,7 @@ impl PrActionMenu {
                     return MenuIntent::Close;
                 };
                 match &entry.prepared {
-                    Ok(action) if !busy => {
+                    Ok(action) if can_run(action.on_success) => {
                         if action.requires_confirmation() {
                             self.confirming = true;
                             self.showing_details = false;
@@ -115,13 +115,13 @@ impl PrActionMenu {
                     Err(_) => self.showing_details = true,
                 }
             }
-            KeyCode::Char('y' | 'Y')
-                if self.confirming && !busy && key.kind == KeyEventKind::Press =>
-            {
+            KeyCode::Char('y' | 'Y') if self.confirming && key.kind == KeyEventKind::Press => {
                 if let Some(Ok(action)) =
                     self.entries.get(self.selected).map(|entry| &entry.prepared)
                 {
-                    return MenuIntent::Run(action.clone());
+                    if can_run(action.on_success) {
+                        return MenuIntent::Run(action.clone());
+                    }
                 }
             }
             KeyCode::Char('n' | 'N') if self.confirming => self.confirming = false,

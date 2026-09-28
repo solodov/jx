@@ -10,13 +10,18 @@ use std::time::Instant;
 /// Keeps ongoing activity visible while notices expire or yield to keyboard interaction.
 #[derive(Default)]
 pub(super) struct DashboardStatus {
-    updating_action: Option<DashboardActionInfo>,
-    refresh_started: Option<(DashboardRefreshKind, Instant)>,
+    refreshes: BTreeMap<DashboardRefreshKind, RefreshStatus>,
     foreground_refresh: bool,
     foreground_requested: bool,
-    timed_out: bool,
     error: Option<(ErrorSource, Instant, StatusMessage)>,
     transient: Option<(Instant, StatusMessage)>,
+}
+
+#[derive(Default)]
+struct RefreshStatus {
+    action: Option<DashboardActionInfo>,
+    started: Option<Instant>,
+    timed_out: bool,
 }
 
 impl DashboardStatus {
@@ -33,12 +38,12 @@ impl DashboardStatus {
         match outcome {
             DashboardActionOutcome::Succeeded(policy) => {
                 self.clear_error(&source);
-                if policy == PrActionOnSuccess::None {
+                if let Some(kind) = DashboardRefreshKind::for_action(policy) {
+                    self.refreshes.entry(kind).or_default().action = Some(action);
+                    Some(policy)
+                } else {
                     self.show_action_success(action, now);
                     None
-                } else {
-                    self.updating_action = Some(action);
-                    Some(policy)
                 }
             }
             DashboardActionOutcome::Failed(failure) => {
@@ -61,7 +66,11 @@ impl DashboardStatus {
     }
 
     pub(super) fn request_refresh(&mut self) {
-        if matches!(self.refresh_started, Some((DashboardRefreshKind::Live, _))) {
+        if self
+            .refreshes
+            .get(&DashboardRefreshKind::Live)
+            .is_some_and(|refresh| refresh.started.is_some())
+        {
             self.foreground_refresh = true;
         } else {
             self.foreground_requested = true;
@@ -75,44 +84,52 @@ impl DashboardStatus {
         initial: bool,
         now: Instant,
     ) {
-        self.refresh_started = Some((kind, now));
-        self.foreground_refresh = kind == DashboardRefreshKind::Live
-            && (std::mem::take(&mut self.foreground_requested) || initial);
-        self.timed_out = false;
+        let refresh = self.refreshes.entry(kind).or_default();
+        refresh.started = Some(now);
+        refresh.timed_out = false;
+        if kind == DashboardRefreshKind::Live {
+            self.foreground_refresh = std::mem::take(&mut self.foreground_requested) || initial;
+        }
     }
 
     /// Reports a timeout once while retaining the worker and its action context for later recovery.
     pub(super) fn refresh_timed_out(
         &mut self,
+        kind: DashboardRefreshKind,
         failure: PrActionFailure,
         environment: &RuntimeEnvironment,
         now: Instant,
     ) {
-        self.timed_out = true;
-        self.report_refresh_error(failure, environment, now);
+        self.refreshes.entry(kind).or_default().timed_out = true;
+        self.report_refresh_error(kind, failure, environment, now);
     }
 
     /// Called after the replacement snapshot is rendered, not merely when fetching finishes.
     pub(super) fn refreshed(
         &mut self,
+        kind: DashboardRefreshKind,
         result: Result<(), PrActionFailure>,
         environment: &RuntimeEnvironment,
         now: Instant,
     ) {
-        self.refresh_started = None;
-        self.foreground_refresh = false;
-        self.timed_out = false;
+        if kind == DashboardRefreshKind::Live {
+            self.foreground_refresh = false;
+        }
         match result {
             Ok(()) => {
-                self.clear_error(&ErrorSource::Refresh);
+                self.clear_error(&ErrorSource::Refresh(kind));
                 self.clear_error(&ErrorSource::Render);
-                if let Some(action) = self.updating_action.take() {
+                if let Some(action) = self
+                    .refreshes
+                    .remove(&kind)
+                    .and_then(|refresh| refresh.action)
+                {
                     self.show_action_success(action, now);
                 }
             }
             Err(error) => {
-                self.report_refresh_error(error, environment, now);
-                self.updating_action = None;
+                self.report_refresh_error(kind, error, environment, now);
+                self.refreshes.remove(&kind);
             }
         }
     }
@@ -179,11 +196,16 @@ impl DashboardStatus {
 
     fn report_refresh_error(
         &mut self,
+        kind: DashboardRefreshKind,
         failure: PrActionFailure,
         environment: &RuntimeEnvironment,
         now: Instant,
     ) {
-        let mut message = if let Some(action) = &self.updating_action {
+        let mut message = if let Some(action) = self
+            .refreshes
+            .get(&kind)
+            .and_then(|refresh| refresh.action.as_ref())
+        {
             StatusMessage::new(
                 StatusKind::Error,
                 format!("\"{}\" completed; refresh failed", action.title),
@@ -192,7 +214,7 @@ impl DashboardStatus {
             StatusMessage::new(StatusKind::Error, "Refresh failed".to_owned())
         };
         message.add_failure(failure, environment);
-        self.error = Some((ErrorSource::Refresh, now + ERROR_DURATION, message));
+        self.error = Some((ErrorSource::Refresh(kind), now + ERROR_DURATION, message));
     }
 
     fn clear_error(&mut self, source: &ErrorSource) {
@@ -211,8 +233,14 @@ impl DashboardStatus {
         running: Option<&DashboardActionInfo>,
         now: Instant,
     ) -> Option<StatusMessage> {
-        if let Some(action) = running.or(self.updating_action.as_ref().filter(|_| !self.timed_out))
-        {
+        // Prefer the short local follow-up over a concurrent remote follow-up.
+        let updating = self
+            .refreshes
+            .values()
+            .rev()
+            .filter(|refresh| !refresh.timed_out)
+            .find_map(|refresh| refresh.action.as_ref());
+        if let Some(action) = running.or(updating) {
             let elapsed = now.saturating_duration_since(action.started).as_secs();
             return Some(StatusMessage {
                 kind: StatusKind::Working,
@@ -220,8 +248,12 @@ impl DashboardStatus {
                 hint: running.map(|_| "Esc cancel".to_owned()),
             });
         }
-        if !self.timed_out {
-            if let Some((_, started)) = self.refresh_started.filter(|_| self.foreground_refresh) {
+        if let Some(refresh) = self
+            .refreshes
+            .get(&DashboardRefreshKind::Live)
+            .filter(|refresh| !refresh.timed_out && self.foreground_refresh)
+        {
+            if let Some(started) = refresh.started {
                 let elapsed = now.saturating_duration_since(started).as_secs();
                 return Some(StatusMessage::new(
                     StatusKind::Working,
@@ -241,7 +273,7 @@ const ERROR_DURATION: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Eq)]
 enum ErrorSource {
-    Refresh,
+    Refresh(DashboardRefreshKind),
     Render,
     Action(String, PrActionKey),
 }

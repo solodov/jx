@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::review::load_review_dashboard_snapshot;
+use crate::commands::review::{load_review_dashboard_snapshot, ReviewCleanupMode};
 
 #[test]
 fn cached_dismiss_parses_but_other_review_subcommands_still_reject_cached() {
@@ -47,7 +47,13 @@ fn cached_dismiss_and_dashboard_reload_remove_rows_and_empty_groups_without_netw
         color: false,
         terminal_width: Some(120),
     };
-    let before = load_review_dashboard_snapshot(request.clone(), &environment, &services).unwrap();
+    let before = load_review_dashboard_snapshot(
+        request.clone(),
+        &environment,
+        &services,
+        ReviewCleanupMode::ReadOnly,
+    )
+    .unwrap();
     assert_eq!(before.render(options).unwrap().rows.len(), 3);
 
     run_with_args_and_services(
@@ -63,7 +69,13 @@ fn cached_dismiss_and_dashboard_reload_remove_rows_and_empty_groups_without_netw
     )
     .unwrap();
 
-    let after = load_review_dashboard_snapshot(request, &environment, &services).unwrap();
+    let after = load_review_dashboard_snapshot(
+        request,
+        &environment,
+        &services,
+        ReviewCleanupMode::ReadOnly,
+    )
+    .unwrap();
     for width in [120, 60] {
         let frame = after
             .render(DashboardRenderOptions {
@@ -132,6 +144,100 @@ fn failed_cached_dismiss_does_not_hide_the_pr() {
     assert!(output.stdout.contains("Missing head"));
     assert!(store.action_dismissed_pull_requests().unwrap().is_empty());
     assert_no_network(&services);
+}
+
+#[test]
+fn post_fetch_cleanup_uses_the_latest_dismissal_and_only_new_state_resurfaces() {
+    for (new_commits, dismiss_again) in [(false, false), (true, false), (true, true)] {
+        let workspace = review_workspace();
+        let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+        seed_inbox(&environment);
+        let offline = FakeServices::default();
+        let dismiss = ["jx", "review", "--cached", "dismiss", "api-alpha#12"];
+        run_with_args_and_services(dismiss, &environment, &offline).unwrap();
+        let mut status = review_status_record(12, "Title 12", "author", false);
+        if new_commits {
+            status.latest_commit_oid = Some("new-head".to_owned());
+        }
+        let store = PullRequestStore::open(&environment).unwrap();
+        let repository = GitHubRepository {
+            owner: "example-owner".to_owned(),
+            name: "api-alpha".to_owned(),
+        };
+        // The production live service writes its fetched facts before returning history/actions.
+        store
+            .record_pull_request_snapshots(&repository, &[status])
+            .unwrap();
+        let fetched = store
+            .latest_pull_requests_with_history(&repository, &[12])
+            .unwrap()
+            .remove(0);
+        let services = FakeServices {
+            github_login: "example-reviewer".to_owned(),
+            review_requests: vec![review_request("example-owner", "api-alpha", 12)],
+            pull_requests_with_history: BTreeMap::from([(12, fetched)]),
+            ..FakeServices::default()
+        };
+        let mut request = ReviewRequest {
+            action: ReviewAction::Show,
+            repo_filters: Vec::new(),
+            interactive: true,
+            refresh_seconds: 300,
+            format: ReviewFormat::Human,
+            cached: false,
+        };
+        let live = load_review_dashboard_snapshot(
+            request.clone(),
+            &environment,
+            &services,
+            ReviewCleanupMode::ReadOnly,
+        )
+        .unwrap();
+        let options = DashboardRenderOptions {
+            color: false,
+            terminal_width: Some(120),
+        };
+        assert_eq!(
+            live.render(options).unwrap().rows.len(),
+            usize::from(new_commits)
+        );
+        let actions = store
+            .latest_pull_requests_with_history(&repository, &[12])
+            .unwrap()
+            .remove(0)
+            .actions;
+        assert_eq!(
+            actions.last().unwrap().action,
+            "dismiss",
+            "network phase must not undismiss based on earlier local state"
+        );
+        if dismiss_again {
+            run_with_args_and_services(dismiss, &environment, &offline).unwrap();
+        }
+        request.cached = true;
+        let after = load_review_dashboard_snapshot(
+            request,
+            &environment,
+            &offline,
+            ReviewCleanupMode::Record,
+        )
+        .unwrap();
+        let resurfaced = new_commits && !dismiss_again;
+        assert_eq!(
+            after.render(options).unwrap().rows.len(),
+            usize::from(resurfaced)
+        );
+        let actions = store
+            .latest_pull_requests_with_history(&repository, &[12])
+            .unwrap()
+            .remove(0)
+            .actions;
+        assert_eq!(
+            actions.last().unwrap().action,
+            if resurfaced { "undismiss" } else { "dismiss" }
+        );
+        assert_no_network(&offline);
+    }
 }
 
 fn seed_inbox(environment: &RuntimeEnvironment) {

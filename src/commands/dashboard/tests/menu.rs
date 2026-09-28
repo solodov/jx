@@ -49,7 +49,7 @@ fn local_overrides_require_explicit_confirmation_of_frozen_invocation() {
         Ok(vec![entry(true, &["open", "{pr_url}"])]),
     );
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| true, size()),
         MenuIntent::None
     ));
     assert!(menu.confirming);
@@ -58,16 +58,16 @@ fn local_overrides_require_explicit_confirmation_of_frozen_invocation() {
     assert!(preview.contains("cwd: /caller"));
     assert!(preview.contains("argv[0]: \"open\""));
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| true, size()),
         MenuIntent::None
     ));
     let mut repeat = key(KeyCode::Char('y'));
     repeat.kind = KeyEventKind::Repeat;
     assert!(matches!(
-        menu.handle_key(repeat, false, size()),
+        menu.handle_key(repeat, |_| true, size()),
         MenuIntent::None
     ));
-    let MenuIntent::Run(action) = menu.handle_key(key(KeyCode::Char('y')), false, size()) else {
+    let MenuIntent::Run(action) = menu.handle_key(key(KeyCode::Char('y')), |_| true, size()) else {
         panic!("confirmed invocation")
     };
     assert_eq!(action.target.number, 12);
@@ -81,14 +81,14 @@ fn local_overrides_require_explicit_confirmation_of_frozen_invocation() {
 #[test]
 fn escape_cancels_confirmation_without_running_and_then_closes_menu() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(vec![entry(true, &["open"])]));
-    menu.handle_key(key(KeyCode::Enter), false, size());
+    menu.handle_key(key(KeyCode::Enter), |_| true, size());
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Esc), false, size()),
+        menu.handle_key(key(KeyCode::Esc), |_| true, size()),
         MenuIntent::None
     ));
     assert!(!menu.confirming);
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Esc), false, size()),
+        menu.handle_key(key(KeyCode::Esc), |_| true, size()),
         MenuIntent::Close
     ));
 }
@@ -103,25 +103,25 @@ fn missing_context_refreshes_and_tiny_terminals_prevent_execution() {
         ]),
     );
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| true, size()),
         MenuIntent::None
     ));
     assert!(menu.details().join("\n").contains("local_change_id"));
-    menu.handle_key(key(KeyCode::Down), false, size());
+    menu.handle_key(key(KeyCode::Down), |_| true, size());
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), true, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| false, size()),
         MenuIntent::None
     ));
     assert!(matches!(
         menu.handle_key(
             key(KeyCode::Enter),
-            false,
+            |_| true,
             DashboardTerminalSize::new(10, 5)
         ),
         MenuIntent::None
     ));
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| true, size()),
         MenuIntent::Run(_)
     ));
 }
@@ -135,7 +135,7 @@ fn menu_is_bounded_sanitized_and_preview_is_pageable() {
         &ctx,
         Ok(vec![entry(true, &["program", &long, "", "literal\nvalue"])]),
     );
-    menu.handle_key(key(KeyCode::Tab), false, size());
+    menu.handle_key(key(KeyCode::Tab), |_| true, size());
     for (width, height) in [(100, 30), (30, 10), (10, 5), (0, 0)] {
         let screen = menu.screen(DashboardTerminalSize::new(width, height), None);
         assert!(screen.lines.len() <= usize::from(height));
@@ -146,12 +146,48 @@ fn menu_is_bounded_sanitized_and_preview_is_pageable() {
         }
     }
     assert!(plain_text(&ctx.title).contains("\\u{1b}"));
-    menu.handle_key(key(KeyCode::PageDown), false, size());
+    menu.handle_key(key(KeyCode::PageDown), |_| true, size());
     let screen = menu.screen(size(), None);
     assert!(menu.detail_offset > 0);
     assert!(screen.lines.iter().any(|line| line.contains("漢字")));
     assert!(menu.details().join("\n").contains("argv[2]: \"\""));
     assert!(menu.details().join("\n").contains("/source/config.toml"));
+}
+
+#[test]
+fn execution_checks_the_selected_policy_on_enter_and_confirmation() {
+    use crate::repository::PrActionOnSuccess;
+    let can_run = |policy| policy != PrActionOnSuccess::Refresh;
+    for local in [false, true] {
+        for policy in [
+            PrActionOnSuccess::None,
+            PrActionOnSuccess::RefreshLocal,
+            PrActionOnSuccess::Refresh,
+        ] {
+            let mut entry = entry(local, &["open"]);
+            entry.definition.action.on_success = policy;
+            entry.prepared.as_mut().unwrap().on_success = policy;
+            let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(vec![entry]));
+            let intent = menu.handle_key(key(KeyCode::Enter), can_run, size());
+            if policy == PrActionOnSuccess::Refresh {
+                assert!(matches!(intent, MenuIntent::None));
+                assert!(!menu.confirming);
+            } else if local {
+                assert!(matches!(intent, MenuIntent::None));
+                assert!(menu.confirming);
+                assert!(matches!(
+                    menu.handle_key(key(KeyCode::Char('y')), |_| false, size()),
+                    MenuIntent::None
+                ));
+                assert!(matches!(
+                    menu.handle_key(key(KeyCode::Char('y')), can_run, size()),
+                    MenuIntent::Run(_)
+                ));
+            } else {
+                assert!(matches!(intent, MenuIntent::Run(_)));
+            }
+        }
+    }
 }
 
 fn unstyled(text: &str) -> String {
@@ -180,24 +216,24 @@ fn compact_menu_matches_acme_colors_and_keeps_details_off_the_action_list() {
     );
     assert_eq!(BODY, "\x1b[0;38;2;31;91;42;48;2;228;246;211m");
     assert_eq!(SELECTED, "\x1b[0;1;38;2;228;246;211;48;2;31;91;42m");
-    menu.handle_key(key(KeyCode::Char('?')), false, size());
+    menu.handle_key(key(KeyCode::Char('?')), |_| true, size());
     assert!(menu
         .screen(size(), None)
         .lines
         .join("\n")
         .contains("argv[0]"));
-    menu.handle_key(key(KeyCode::Esc), false, size());
+    menu.handle_key(key(KeyCode::Esc), |_| true, size());
     assert!(!menu.showing_details);
     for _ in 0..4 {
-        menu.handle_key(key(KeyCode::Down), false, size());
+        menu.handle_key(key(KeyCode::Down), |_| true, size());
     }
     assert_eq!(menu.selected, 3);
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| true, size()),
         MenuIntent::Run(_)
     ));
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Esc), false, size()),
+        menu.handle_key(key(KeyCode::Esc), |_| true, size()),
         MenuIntent::Close
     ));
 }
@@ -214,7 +250,7 @@ fn long_action_lists_scroll_and_stay_inside_the_terminal() {
     let mut menu = PrActionMenu::new(&context(12, "owner/repo"), Ok(entries));
     let size = DashboardTerminalSize::new(24, 10);
     for _ in 0..29 {
-        menu.handle_key(key(KeyCode::Down), false, size);
+        menu.handle_key(key(KeyCode::Down), |_| true, size);
     }
     for (anchor, top, height) in [(9, 0, 9), (4, 5, 5), (0, 1, 9)] {
         let screen = menu.screen(size, Some(anchor));
@@ -240,7 +276,7 @@ fn refresh_completion_does_not_change_menu_layout_or_entries() {
     );
     let before = menu.screen(size(), Some(5));
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), true, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| false, size()),
         MenuIntent::None
     ));
     let after = menu.screen(size(), Some(5));
@@ -248,7 +284,7 @@ fn refresh_completion_does_not_change_menu_layout_or_entries() {
         (before.x, before.y, before.lines),
         (after.x, after.y, after.lines)
     );
-    let MenuIntent::Run(action) = menu.handle_key(key(KeyCode::Enter), false, size()) else {
+    let MenuIntent::Run(action) = menu.handle_key(key(KeyCode::Enter), |_| true, size()) else {
         panic!("action runs once refresh finishes");
     };
     assert_eq!(action.target.number, 12);
@@ -274,7 +310,7 @@ fn empty_menu_only_shows_no_actions_configured() {
         "no actions configured"
     );
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, small),
+        menu.handle_key(key(KeyCode::Enter), |_| true, small),
         MenuIntent::Close
     ));
 }
@@ -302,7 +338,7 @@ fn invalid_configuration_is_not_misreported_as_no_actions() {
     assert!(screen.contains("Cannot load actions: invalid config"));
     assert!(!screen.contains("no actions configured"));
     assert!(matches!(
-        menu.handle_key(key(KeyCode::Enter), false, size()),
+        menu.handle_key(key(KeyCode::Enter), |_| true, size()),
         MenuIntent::Close
     ));
 }

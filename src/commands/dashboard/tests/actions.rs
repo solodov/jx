@@ -63,12 +63,10 @@ fn actions_report_success_failure_and_cancellation_once_without_blocking_the_nex
                         !actions.cancel(),
                         "the completed command is no longer cancellable"
                     );
-                    actions.refresh_started(match policy {
-                        PrActionOnSuccess::Refresh => DashboardRefreshKind::Live,
-                        _ => DashboardRefreshKind::Local,
-                    });
+                    let kind = DashboardRefreshKind::for_action(policy).unwrap();
+                    actions.refresh_started(kind);
                     actions
-                        .refreshed(Ok(()), &environment, PrActionSet::Review)
+                        .refreshed(kind, Ok(()), &environment, PrActionSet::Review)
                         .unwrap();
                 }
             }
