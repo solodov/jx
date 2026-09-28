@@ -86,6 +86,7 @@ mod fork;
 mod handlers;
 mod hooks;
 mod interrupt;
+mod log;
 mod perf;
 mod pr_actions;
 mod progress;
@@ -552,6 +553,10 @@ where
         "command.run",
         [
             perf_attr("arg_count", args.len().saturating_sub(1)),
+            perf_attr(
+                "current_dir",
+                environment.current_dir().display().to_string(),
+            ),
             perf_attr("color", output.color),
             perf_attr("terminal_width", output.terminal_width.unwrap_or_default()),
         ],

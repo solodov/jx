@@ -41,6 +41,7 @@ mod clone;
 mod diff;
 mod fetch;
 mod fork;
+mod log;
 mod open;
 mod pull_request;
 mod push;
@@ -892,7 +893,11 @@ impl FakeServices {
 }
 
 impl CommandServices for FakeServices {
-    fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
+    fn workspace_log(
+        &self,
+        annotations: &[LogBookmarkAnnotation],
+        _timings: &mut crate::jj::LogTimings,
+    ) -> Result<String, JjError> {
         self.workspace_log_annotations
             .borrow_mut()
             .push(annotations.to_vec());

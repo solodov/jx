@@ -205,7 +205,9 @@ def print_step_spans(records: list[dict[str, Any]], top_steps: int) -> None:
 
     print("spans with steps:")
     for span in spans:
-        print(f"  span line {span['_lineno']} {event_label(span)} {duration(span)}")
+        extras = event_extras(span)
+        suffix = f"  {extras}" if extras else ""
+        print(f"  span line {span['_lineno']} {event_label(span)} {duration(span)}{suffix}")
         for step in sorted(
             span.get("steps", []), key=lambda item: item.get("duration_us", 0), reverse=True
         )[:top_steps]:
@@ -242,7 +244,10 @@ def event_extras(record: dict[str, Any]) -> str:
         "command",
         "mode",
         "repo",
+        "current_dir",
         "workspace_root",
+        "annotation_count",
+        "immutable_commit_count",
         "scope",
         "workspace_root_count",
         "jj_workspace",
@@ -284,6 +289,7 @@ def event_extras(record: dict[str, Any]) -> str:
 
 def step_extras(step: dict[str, Any]) -> str:
     keys = [
+        "output_bytes",
         "layout_root",
         "pattern_count",
         "directory_count",

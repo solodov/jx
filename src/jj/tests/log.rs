@@ -14,13 +14,75 @@ fn current_workspace_log_snapshots_pending_disk_changes() {
         .expect("initialize jj workspace");
     fs::write(fixture.path().join("README.md"), "pending\n").expect("write pending file");
 
-    let log = JjWorkspace::current_workspace_log(fixture.path(), &[]).expect("log renders");
+    let mut timings = LogTimings::default();
+    let log = JjWorkspace::current_workspace_log_with_timings(fixture.path(), &[], &mut timings)
+        .expect("log renders");
+    assert_eq!(timings.workspace_root.as_deref(), Some(fixture.path()));
+    assert_eq!(
+        timings
+            .steps
+            .iter()
+            .map(|step| step.name)
+            .collect::<Vec<_>>(),
+        [
+            "find_workspace",
+            "snapshot_working_copy",
+            "load_repository",
+            "evaluate_log_revset",
+            "immutable_history",
+            "prepare_templates",
+            "render_graph"
+        ]
+    );
+    assert!(timings.steps.iter().all(|step| step.error.is_none()));
+    assert!(timings
+        .immutable_commit_count
+        .is_some_and(|count| count > 0));
     let workspace = JjWorkspace::load(fixture.path()).expect("workspace reloads");
     let current = workspace.current_commit().expect("current commit");
     let is_empty = pollster::block_on(current.is_empty(workspace.repo.as_ref()))
         .expect("current commit emptiness");
 
     assert!(!is_empty, "{log}");
+}
+
+#[test]
+fn log_timings_keep_completed_phases_and_the_template_error() {
+    let fixture = TestWorkspace::new("workspace-log-timing-error");
+    let mut config = StackedConfig::with_defaults();
+    config.extend_layers(jx_default_config_layers());
+    config.extend_layers([ConfigLayer::parse(
+        ConfigSource::User,
+        "[templates]\nlog = 'missing_template_function()'\n",
+    )
+    .unwrap()]);
+    let settings = UserSettings::from_config(config).unwrap();
+    let (workspace, repo) =
+        pollster::block_on(Workspace::init_internal_git(&settings, fixture.path())).unwrap();
+    let mut timings = LogTimings::default();
+
+    let error =
+        render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[], &mut timings)
+            .unwrap_err();
+
+    assert_eq!(
+        timings
+            .steps
+            .iter()
+            .map(|step| step.name)
+            .collect::<Vec<_>>(),
+        [
+            "evaluate_log_revset",
+            "immutable_history",
+            "prepare_templates"
+        ]
+    );
+    assert!(timings.steps[..2].iter().all(|step| step.error.is_none()));
+    assert_eq!(
+        timings.steps[2].error.as_deref(),
+        Some(error.to_string().as_str())
+    );
+    assert!(timings.immutable_commit_count.is_some());
 }
 
 #[test]
@@ -60,8 +122,14 @@ fn workspace_log_preserves_configured_jj_revset() {
         (workspace, repo)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains("current workspace change"), "{log}");
     assert!(log.contains("main trunk"), "{log}");
@@ -141,8 +209,14 @@ fn workspace_log_keeps_current_empty_workspace_head_and_omits_others() {
             )
         });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains("hypothetical feature change"), "{log}");
     assert!(log.contains("hypothetical main trunk"), "{log}");
@@ -257,8 +331,14 @@ fn workspace_log_omits_commit_ids_from_jx_default_header() {
         (workspace, repo, current_change_id, current_commit_id)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains(&current_change_id), "{log}");
     assert!(!log.contains(&current_commit_id), "{log}");
@@ -363,8 +443,14 @@ fn workspace_log_renders_compact_commit_age() {
         (workspace, repo)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains(" 2m"), "{log}");
     assert!(!log.contains("minutes ago"), "{log}");
@@ -398,8 +484,14 @@ fn workspace_log_ellipsizes_long_description_line() {
         (workspace, repo)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
     let description = log
         .lines()
         .find(|line| line.contains("BRA4-350"))
@@ -465,8 +557,14 @@ email = "me@example.com"
         (workspace, repo, mine_change_id)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains(&format!("{mine_change_id} me ")), "{log}");
     assert!(!log.contains("me@example.com"), "{log}");
@@ -528,8 +626,14 @@ color = "always"
         (workspace, repo)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains("me\x1b["), "{log:?}");
     assert!(log.contains("\x1b[38;5;14m2m\x1b["), "{log:?}");
@@ -580,8 +684,14 @@ color = "always"
         (workspace, repo)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains("topic/current"), "{log}");
     assert!(!log.contains("topic/current*"), "{log}");
@@ -630,8 +740,14 @@ color = "always"
         (workspace, repo)
     });
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &[])
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &[],
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains("topic/current"), "{log}");
     assert!(!log.contains("topic/current*"), "{log}");
@@ -672,8 +788,14 @@ fn workspace_log_links_pull_request_annotations_for_matching_bookmarks() {
         url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
     }];
 
-    let log = render_current_workspace_log(&workspace, repo.as_ref(), fixture.path(), &annotations)
-        .expect("log renders");
+    let log = render_current_workspace_log(
+        &workspace,
+        repo.as_ref(),
+        fixture.path(),
+        &annotations,
+        &mut LogTimings::default(),
+    )
+    .expect("log renders");
 
     assert!(log.contains("topic/current"), "{log}");
     assert!(

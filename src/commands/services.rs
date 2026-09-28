@@ -5,6 +5,7 @@ use crate::github::{
     PullRequestStatusRecord, PullRequestUpdate, PullRequestUpdateSummary, RepositoryAccess,
     RepositoryFork, ReviewerSyncResult, PULL_REQUEST_STATUS_BATCH_SIZE,
 };
+use crate::jj::LogTimings;
 use chrono::Utc;
 use futures::{stream, StreamExt};
 use std::future::Future;
@@ -33,8 +34,12 @@ pub(super) struct StackStatusFetches {
 }
 
 pub(super) trait CommandServices {
-    /// Renders the no-argument workspace log.
-    fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError>;
+    /// Renders the workspace log, retaining local phase timings even if rendering fails.
+    fn workspace_log(
+        &self,
+        annotations: &[LogBookmarkAnnotation],
+        timings: &mut LogTimings,
+    ) -> Result<String, JjError>;
 
     /// Shows the current jj diff, optionally constraining it to non-test files.
     fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError>;
@@ -2064,8 +2069,16 @@ fn load_stack_trunk_status_workspace_facts(
 }
 
 impl CommandServices for ProductionServices<'_> {
-    fn workspace_log(&self, annotations: &[LogBookmarkAnnotation]) -> Result<String, JjError> {
-        JjWorkspace::current_workspace_log(self.environment.current_dir(), annotations)
+    fn workspace_log(
+        &self,
+        annotations: &[LogBookmarkAnnotation],
+        timings: &mut LogTimings,
+    ) -> Result<String, JjError> {
+        JjWorkspace::current_workspace_log_with_timings(
+            self.environment.current_dir(),
+            annotations,
+            timings,
+        )
     }
 
     fn current_diff(&self, current_dir: &Path, options: &DiffOptions) -> Result<String, JjError> {

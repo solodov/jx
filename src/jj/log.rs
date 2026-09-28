@@ -1,15 +1,38 @@
 use super::*;
 
+mod timings;
+pub use timings::{LogTimingStep, LogTimings};
+
 impl JjWorkspace {
     /// Renders the default jj log with jx bookmark annotations.
     pub fn current_workspace_log(
         current_dir: &Path,
         annotations: &[LogBookmarkAnnotation],
     ) -> Result<String, JjError> {
-        let workspace_root = super::status::snapshot_working_copy_for_read(current_dir)?;
-        let (workspace, repo) = load_workspace_for_log(&workspace_root)?;
+        Self::current_workspace_log_with_timings(
+            current_dir,
+            annotations,
+            &mut LogTimings::default(),
+        )
+    }
 
-        render_current_workspace_log(&workspace, repo.as_ref(), current_dir, annotations)
+    /// Renders the same log while retaining phase timings and workspace context on failure.
+    pub fn current_workspace_log_with_timings(
+        current_dir: &Path,
+        annotations: &[LogBookmarkAnnotation],
+        timings: &mut LogTimings,
+    ) -> Result<String, JjError> {
+        let workspace_root =
+            timings.measure("find_workspace", || find_jj_workspace_root(current_dir))?;
+        timings.workspace_root = Some(workspace_root.clone());
+        timings.measure("snapshot_working_copy", || {
+            super::status::snapshot_working_copy_for_read(&workspace_root)
+        })?;
+        let (workspace, repo) = timings.measure("load_repository", || {
+            load_workspace_for_log(&workspace_root)
+        })?;
+
+        render_current_workspace_log(&workspace, repo.as_ref(), current_dir, annotations, timings)
     }
 
     /// Renders explicitly colored content using jj's workspace color rules, independent of stdout.
@@ -230,6 +253,7 @@ pub(super) fn render_current_workspace_log(
     repo: &ReadonlyRepo,
     current_dir: &Path,
     annotations: &[LogBookmarkAnnotation],
+    timings: &mut LogTimings,
 ) -> Result<String, JjError> {
     // Reuse jj-cli's graph and template machinery so `jx` keeps user aliases and
     // graph behavior while owning a compact default log template.
@@ -260,14 +284,16 @@ pub(super) fn render_current_workspace_log(
     )?;
     let id_prefix_context =
         log_id_prefix_context(settings, &ui, &revset_context, revset_extensions.clone())?;
-    let revset = log_revset(
-        settings,
-        &ui,
-        repo,
-        &revset_context,
-        &id_prefix_context,
-        &revset_extensions,
-    )?;
+    let revset = timings.measure("evaluate_log_revset", || {
+        log_revset(
+            settings,
+            &ui,
+            repo,
+            &revset_context,
+            &id_prefix_context,
+            &revset_extensions,
+        )
+    })?;
     let prioritize_revset = graph_prioritize_revset(
         settings,
         &ui,
@@ -277,12 +303,15 @@ pub(super) fn render_current_workspace_log(
         &revset_extensions,
     )?;
     let immutable_expression = immutable_expression(&ui, &revset_context)?;
-    let log_empty_workspace_parent_ids = log_immutable_commit_ids(
-        repo,
-        revset_extensions.clone(),
-        &id_prefix_context,
-        immutable_expression.clone(),
-    )?;
+    let log_empty_workspace_parent_ids = timings.measure("immutable_history", || {
+        log_immutable_commit_ids(
+            repo,
+            revset_extensions.clone(),
+            &id_prefix_context,
+            immutable_expression.clone(),
+        )
+    })?;
+    timings.immutable_commit_count = Some(log_empty_workspace_parent_ids.len());
     let conflict_marker_style = settings
         .get("ui.conflict-marker-style")
         .map_err(log_error)?;
@@ -296,37 +325,42 @@ pub(super) fn render_current_workspace_log(
         conflict_marker_style,
         &[JxLogTemplateExtension],
     );
-    let template_text = settings.get_string("templates.log").map_err(log_error)?;
-    let template = parse_log_template(&ui, &language, &template_aliases_map, &template_text)?
-        .labeled(["log", "commit"]);
-    let node_template = parse_log_template(
-        &ui,
-        &language,
-        &template_aliases_map,
-        &settings
-            .get_string("templates.log_node")
-            .map_err(log_error)?,
-    )?
-    .labeled(["log", "commit", "node"]);
+    let (template_text, template, node_template) = timings.measure("prepare_templates", || {
+        let template_text = settings.get_string("templates.log").map_err(log_error)?;
+        let template = parse_log_template(&ui, &language, &template_aliases_map, &template_text)?
+            .labeled(["log", "commit"]);
+        let node_template = parse_log_template(
+            &ui,
+            &language,
+            &template_aliases_map,
+            &settings
+                .get_string("templates.log_node")
+                .map_err(log_error)?,
+        )?
+        .labeled(["log", "commit", "node"]);
+        Ok((template_text, template, node_template))
+    })?;
 
-    render_log_graph(
-        &ui,
-        settings,
-        repo,
-        revset,
-        prioritize_revset,
-        LogGraphTemplates {
-            commit: template,
-            node: node_template,
-            ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
-            empty_workspace_parent_ids: log_empty_workspace_parent_ids,
-            current_workspace_commit_id: repo
-                .view()
-                .get_wc_commit_id(workspace.workspace_name())
-                .cloned(),
-        },
-        annotations,
-    )
+    timings.measure("render_graph", || {
+        render_log_graph(
+            &ui,
+            settings,
+            repo,
+            revset,
+            prioritize_revset,
+            LogGraphTemplates {
+                commit: template,
+                node: node_template,
+                ellipsize_description_line: should_ellipsize_log_description_line(&template_text),
+                empty_workspace_parent_ids: log_empty_workspace_parent_ids,
+                current_workspace_commit_id: repo
+                    .view()
+                    .get_wc_commit_id(workspace.workspace_name())
+                    .cloned(),
+            },
+            annotations,
+        )
+    })
 }
 
 pub(super) fn render_commit_ids_log(

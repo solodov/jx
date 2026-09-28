@@ -109,6 +109,7 @@ use facts::*;
 use fetch::*;
 use git_transport::*;
 use log::*;
+pub use log::{LogTimingStep, LogTimings};
 pub use pr_actions::PrActionRevision;
 use push::*;
 #[cfg(test)]
