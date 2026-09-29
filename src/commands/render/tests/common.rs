@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn ellipses_follow_content_without_trailing_whitespace() {
+    for (line, width, expected) in [
+        ("foo bar", 5, "foo…"),
+        ("foo   bar", 7, "foo…"),
+        ("foo\t\u{2003} bar", 7, "foo…"),
+        ("café   suite", 7, "café…"),
+        ("foo bar baz", 8, "foo bar…"),
+        ("   foo", 3, "…"),
+        ("foo", 1, "…"),
+        ("foo", 0, ""),
+    ] {
+        assert_eq!(ellipsize_rendered_line(line, Some(width)), expected);
+        assert!(rendered_visible_width(expected) <= width);
+    }
+    for width in [None, Some(6), Some(20)] {
+        assert_eq!(ellipsize_rendered_line("foo   ", width), "foo   ");
+    }
+}
+
+#[test]
+fn trimming_whitespace_restores_the_retained_escape_state() {
+    let close_link = "\x1b]8;;\x1b\\";
+    for (line, expected) in [
+        (
+            format!("{GREEN_STYLE}foo {RESET_STYLE}  bar"),
+            format!("{GREEN_STYLE}foo…{RESET_STYLE}"),
+        ),
+        (
+            format!("{}  bar", osc8_link("https://example.com", "foo ")),
+            format!("\x1b]8;;https://example.com\x1b\\foo…{close_link}{RESET_STYLE}"),
+        ),
+        (
+            format!("foo {} bar", osc8_link("https://example.com", " ")),
+            "foo…".to_owned(),
+        ),
+        (
+            format!("{GREEN_STYLE}     bar{RESET_STYLE}"),
+            format!("{GREEN_STYLE}…{RESET_STYLE}"),
+        ),
+    ] {
+        assert_eq!(ellipsize_rendered_line(&line, Some(6)), expected);
+    }
+    let line = format!("{GREEN_STYLE}foo {RESET_STYLE}bar baz");
+    assert_eq!(
+        ellipsize_rendered_line(&line, Some(8)),
+        format!("{GREEN_STYLE}foo {RESET_STYLE}bar…{RESET_STYLE}")
+    );
+}
+
+#[test]
+fn elastic_table_row_right_aligns_metadata_after_trimming_its_ellipsis() {
+    let row = render_elastic_table_row("#12  ", &"t".repeat(80), "", "foo    bar", Some(53));
+    assert_eq!(rendered_visible_width(&row), 53);
+    assert!(row.ends_with("foo…"));
+}
+
+#[test]
 fn elastic_table_row_shrinks_title_above_minimum_before_right_metadata() {
     let row = render_elastic_table_row(
         "  #12      ✓    ?    <1h   ",
@@ -88,7 +145,7 @@ fn elastic_table_row_prioritizes_title_on_narrow_terminals() {
     for width in 0..=45 {
         let row = render_elastic_table_row(prefix, &title, "[bug]", "Reviewer", Some(width));
 
-        assert_eq!(rendered_visible_width(&row), width, "width: {width}");
+        assert!(rendered_visible_width(&row) <= width, "width: {width}");
         assert!(!row.contains("[bug]"));
         assert!(!row.contains("Reviewer"));
         if width > prefix.len() {

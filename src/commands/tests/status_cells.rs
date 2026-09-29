@@ -250,6 +250,77 @@ fn stack_review_cells_keep_submitted_reviews_visible_after_requests_clear() {
 }
 
 #[test]
+fn both_tables_trim_title_whitespace_before_ellipsis() {
+    let title = format!("foo{}bar", " ".repeat(100));
+    for draft in [false, true] {
+        let mut status = review_status_record(12, &title, "author", draft);
+        status.labels.clear();
+        let view = ReviewRequestsView {
+            viewer: "example-reviewer".to_owned(),
+            repositories: vec![ReviewRequestRepositoryView {
+                repository: GitHubRepository {
+                    owner: "example-owner".to_owned(),
+                    name: "repo".to_owned(),
+                },
+                layout_key: None,
+                root: None,
+                display_root: None,
+                rows: vec![ReviewRequestRowView {
+                    status: status.clone(),
+                    state: crate::domain::ReviewRequestState::New,
+                    viewer_signal: ReviewRequestViewerSignal::None,
+                    lag_since_unix: None,
+                    dismissal: None,
+                }],
+                external: false,
+                review_wait_threshold_seconds: None,
+            }],
+        };
+        let pull_request =
+            pull_request_choice_record(12, &title, &status.head_branch, "main", draft);
+        let report = PullRequestStackStatusReport {
+            repository: preview_plan().repository,
+            snapshot: PullRequestStackSnapshot::from_metadata(
+                &StackMetadata::default(),
+                &[],
+                &[pull_request],
+                PullRequestStackSelection::default(),
+            ),
+            statuses: BTreeMap::from([(12, status)]),
+            trunk: None,
+            review_wait_threshold_seconds: None,
+        };
+        for color in [false, true] {
+            for layout in [
+                PullRequestTableLayout::Flow,
+                PullRequestTableLayout::FitTerminal,
+            ] {
+                for width in [60, 80] {
+                    let review =
+                        render_review_requests(&view, color, Some(width), layout, &BTreeMap::new());
+                    let stack = render_stack_status(
+                        &report,
+                        Path::new("/repo"),
+                        color,
+                        Some(width),
+                        layout,
+                        &BTreeMap::new(),
+                    );
+                    for frame in [review, stack] {
+                        assert_eq!(frame.rows.len(), 1);
+                        let row = &frame.rows[0];
+                        assert_eq!(row.context.title, title);
+                        let text = frame.text.lines().nth(row.line).unwrap();
+                        assert!(text.contains("foo…"), "{text:?}");
+                        assert!(rendered_visible_width(text) <= width, "{text:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
     let mut draft = review_status_record(13, "Aligned title", "author", true);
     draft.check_status = PullRequestCheckStatus::Missing;

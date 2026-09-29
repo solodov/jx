@@ -68,7 +68,7 @@ pub(in crate::commands) fn render_elastic_table_row(
     }
 
     let right = ellipsize_rendered_line(right, Some(right_width));
-    let used_width = rendered_visible_width(&left) + right_width;
+    let used_width = rendered_visible_width(&left) + rendered_visible_width(&right);
     let gap = terminal_width.saturating_sub(used_width);
     let line = format!("{left}{}{right}", " ".repeat(gap));
     ellipsize_rendered_line(&line, Some(terminal_width))
@@ -93,6 +93,7 @@ pub(in crate::commands) fn flow_table_row(
     line
 }
 
+/// Clips visible text, trimming whitespace before the ellipsis and closing retained links/styles.
 pub(in crate::commands) fn ellipsize_rendered_line(line: &str, max_width: Option<usize>) -> String {
     let Some(max_width) = max_width else {
         return line.to_owned();
@@ -110,6 +111,7 @@ pub(in crate::commands) fn ellipsize_rendered_line(line: &str, max_width: Option
     let mut rest = line;
     let mut open_osc8 = false;
     let mut copied_escape_sequence = false;
+    let mut trailing_whitespace = None;
     while !rest.is_empty() && width < target_width {
         if let Some(sequence) = ansi_sequence_prefix(rest) {
             copied_escape_sequence = true;
@@ -124,9 +126,20 @@ pub(in crate::commands) fn ellipsize_rendered_line(line: &str, max_width: Option
         let Some(ch) = rest.chars().next() else {
             break;
         };
+        if ch.is_whitespace() {
+            trailing_whitespace.get_or_insert((rendered.len(), open_osc8, copied_escape_sequence));
+        } else {
+            trailing_whitespace = None;
+        }
         rendered.push(ch);
         width += 1;
         rest = &rest[ch.len_utf8()..];
+    }
+    if let Some((end, retained_link, retained_style)) = trailing_whitespace {
+        // Escape sequences inside the removed whitespace must not affect the retained text.
+        rendered.truncate(end);
+        open_osc8 = retained_link;
+        copied_escape_sequence = retained_style;
     }
     rendered.push('…');
     if open_osc8 {
