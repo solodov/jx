@@ -564,7 +564,7 @@ fn group_review_candidates(
     (candidate_keys, grouped)
 }
 
-/// Builds rows after status policy, dismissal rules, and temporary inbox-only CI filtering.
+/// Builds rows after status/history policy, dismissal rules, and inbox-only CI filtering.
 fn build_review_repository_view(
     context: &ReviewViewContext<'_>,
     repository: &GitHubRepository,
@@ -582,6 +582,12 @@ fn build_review_repository_view(
             &stack_status_policy,
             &review_policy,
         );
+        // Keep raw audit history intact, but use the same response policy for visibility.
+        pull_request.history.retain(|event| {
+            event.kind != "author_response"
+                || review_history_json_str(event.new_json.as_ref(), "bodyText")
+                    .is_none_or(|body| !review_policy.ignores_author_response_comment(body))
+        });
         pull_request
     }) {
         let status = pull_request.status;
@@ -1977,22 +1983,21 @@ fn draft_action_dismissal_resurface_reason(
     "no_longer_hidden"
 }
 
+/// Resurfaces only replies newer than both dismissal and its recorded response watermark.
 fn review_action_has_new_author_response(
     action: &PullRequestActionRecord,
     history: &[PullRequestHistoryRecord],
     status: &PullRequestStatusRecord,
     viewer: &str,
 ) -> bool {
-    let dismissed_response_at = review_action_json_str(action, "dismissedViewerResponseAt");
-    if dismissed_response_at.is_some() {
-        review_history_has_author_response_after(history, viewer, dismissed_response_at)
-            || review_timestamp_after(
-                review_viewer_active_response_at(status, viewer),
-                dismissed_response_at,
-            )
-    } else {
-        review_history_has_author_response_after_unix(history, viewer, action.changed_at_unix)
-    }
+    let after_unix = review_action_json_str(action, "dismissedViewerResponseAt")
+        .and_then(review_timestamp_unix)
+        .unwrap_or(action.changed_at_unix)
+        .max(action.changed_at_unix);
+    review_history_has_author_response_after_unix(history, viewer, after_unix)
+        || review_viewer_active_response_at(status, viewer)
+            .and_then(review_timestamp_unix)
+            .is_some_and(|response_at| response_at > after_unix)
 }
 
 fn review_action_json_str<'a>(action: &'a PullRequestActionRecord, key: &str) -> Option<&'a str> {
@@ -2044,23 +2049,6 @@ fn review_history_has_reviewer_mention_after_unix(
     })
 }
 
-fn review_history_has_author_response_after(
-    history: &[PullRequestHistoryRecord],
-    viewer: &str,
-    after: Option<&str>,
-) -> bool {
-    history.iter().any(|event| {
-        event.kind == "author_response"
-            && review_history_event_after(event, after)
-            && event
-                .new_json
-                .as_ref()
-                .and_then(|value| value.get("reviewer"))
-                .and_then(serde_json::Value::as_str)
-                == Some(viewer)
-    })
-}
-
 fn review_history_has_author_response_after_unix(
     history: &[PullRequestHistoryRecord],
     viewer: &str,
@@ -2071,13 +2059,6 @@ fn review_history_has_author_response_after_unix(
             && event.changed_at_unix > after_unix
             && review_history_event_reviewer(event) == Some(viewer)
     })
-}
-
-fn review_history_event_after(event: &PullRequestHistoryRecord, after: Option<&str>) -> bool {
-    let Some(after) = after.and_then(review_timestamp_unix) else {
-        return true;
-    };
-    event.changed_at_unix > after
 }
 
 fn review_timestamp_unix(value: &str) -> Option<i64> {

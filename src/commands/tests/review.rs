@@ -7,6 +7,8 @@ mod action_frames;
 mod cache;
 #[path = "review_checks.rs"]
 mod checks;
+#[path = "review_dismissal_responses.rs"]
+mod dismissal_responses;
 #[path = "review_names.rs"]
 mod names;
 #[path = "review_order.rs"]
@@ -1581,15 +1583,20 @@ fn review_auto_dismissed_comment_resurfaces_on_author_response() {
             12,
             review_pull_request_with_actions(
                 status,
-                vec![review_action(
-                    "dismiss",
-                    "automatic",
-                    Some("commented"),
-                    serde_json::json!({
-                        "dismissedHeadOid": "commit-12",
-                        "dismissedViewerResponseAt": "2026-01-01T12:00:00Z",
-                    }),
-                )],
+                vec![PullRequestActionRecord {
+                    changed_at_unix: chrono::DateTime::parse_from_rfc3339("2026-01-01T12:30:00Z")
+                        .unwrap()
+                        .timestamp(),
+                    ..review_action(
+                        "dismiss",
+                        "automatic",
+                        Some("commented"),
+                        serde_json::json!({
+                            "dismissedHeadOid": "commit-12",
+                            "dismissedViewerResponseAt": "2026-01-01T12:00:00Z",
+                        }),
+                    )
+                }],
             ),
         )]),
         ..FakeServices::default()
@@ -2393,13 +2400,18 @@ fn review_dismissal_resurfaces_new_author_response() {
             12,
             review_pull_request_with_actions(
                 status,
-                vec![review_dismiss_action(
-                    "manual",
-                    serde_json::json!({
-                        "dismissedHeadOid": "commit-12",
-                        "dismissedViewerResponseAt": "2026-01-01T12:30:00Z",
-                    }),
-                )],
+                vec![PullRequestActionRecord {
+                    changed_at_unix: chrono::DateTime::parse_from_rfc3339("2026-01-01T12:30:00Z")
+                        .unwrap()
+                        .timestamp(),
+                    ..review_dismiss_action(
+                        "manual",
+                        serde_json::json!({
+                            "dismissedHeadOid": "commit-12",
+                            "dismissedViewerResponseAt": "2026-01-01T12:30:00Z",
+                        }),
+                    )
+                }],
             ),
         )]),
         ..FakeServices::default()
