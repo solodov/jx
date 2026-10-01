@@ -143,6 +143,23 @@ impl PerfSpan {
         });
     }
 
+    /// Records non-timing details with a timestamp for execution-order analysis.
+    pub(super) fn record_diagnostic<E>(
+        &mut self,
+        name: impl Into<String>,
+        attrs: impl IntoIterator<Item = PerfAttr>,
+        error: Option<&E>,
+    ) where
+        E: fmt::Display,
+    {
+        let mut attrs = attrs.into_iter().collect::<Vec<_>>();
+        attrs.extend([
+            perf_attr("diagnostic", true),
+            perf_attr("recorded_at", format_system_time(SystemTime::now())),
+        ]);
+        self.record_step_us(name, 0, attrs, error);
+    }
+
     /// Records one named step around a fallible operation.
     pub(super) fn measure<T, E>(
         &mut self,

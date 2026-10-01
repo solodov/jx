@@ -25,6 +25,8 @@ pub(super) use pull_requests::{
     load_cached_pull_requests, LoadedRepositoryPullRequests, PullRequestLoadSource,
 };
 use pull_requests::{PullRequestFetchBudget, PullRequestService};
+mod sync_trace;
+use sync_trace::{pull_request_fact_attrs, pull_request_update_attrs, record_skipped_pushes};
 
 pub(super) struct StackStatusFetches {
     pub(super) statuses: Vec<PullRequestStatusRecord>,
@@ -710,13 +712,16 @@ impl<'environment> ProductionServices<'environment> {
 }
 
 fn record_fetch_trace_step(span: &mut PerfSpan, step: FetchTraceStep) {
-    let error = step.error.clone();
-    span.record_step_us(
-        step.name,
-        step.duration_us,
-        step.attrs.into_iter().map(fetch_trace_attr_to_perf),
-        error.as_ref(),
-    );
+    let diagnostic = step
+        .attrs
+        .iter()
+        .any(|attr| attr.key == "diagnostic" && attr.value == FetchTraceValue::Bool(true));
+    let attrs = step.attrs.into_iter().map(fetch_trace_attr_to_perf);
+    if diagnostic {
+        span.record_diagnostic(step.name, attrs, step.error.as_ref());
+    } else {
+        span.record_step_us(step.name, step.duration_us, attrs, step.error.as_ref());
+    }
 }
 
 fn fetch_trace_attr_to_perf(attr: FetchTraceAttr) -> PerfAttr {
@@ -1559,7 +1564,7 @@ where
         numbers: &[u64],
     ) -> Result<Vec<PullRequestRecord>, GitHubError> {
         let requested_numbers = unique_pull_request_numbers(numbers);
-        let span = self.start_span(
+        let mut span = self.start_span(
             "github.find_pull_requests_by_numbers",
             Some(repository),
             [perf_attr("number_count", requested_numbers.len())],
@@ -1614,6 +1619,14 @@ where
             .iter()
             .filter_map(|number| pull_requests_by_number.get(number).cloned())
             .collect::<Vec<_>>();
+        for pull_request in &pull_requests {
+            let mut attrs = pull_request_fact_attrs(pull_request);
+            attrs.push(perf_attr(
+                "cache_hit",
+                !missing_numbers.contains(&pull_request.number),
+            ));
+            span.record_diagnostic("pull_request_fact", attrs, None::<&GitHubError>);
+        }
         self.finish(
             span,
             Ok(pull_requests),
@@ -1817,15 +1830,17 @@ where
         number: u64,
         request: PullRequestUpdate,
     ) -> Result<PullRequestRecord, GitHubError> {
+        let previous = self.cache.lock().ok().and_then(|cache| {
+            cache
+                .pull_request_by_number
+                .get(&Self::number_key(repository, number))
+                .cloned()
+                .flatten()
+        });
         let span = self.start_span(
             "github.update_pull_request",
             Some(repository),
-            [
-                perf_attr("number", number),
-                perf_attr("update_title", request.title.is_some()),
-                perf_attr("update_body", request.body.is_some()),
-                perf_attr("update_base", request.base.is_some()),
-            ],
+            pull_request_update_attrs(number, &request, previous.as_ref()),
         );
         let result = github_request(
             "update pull request",
@@ -1982,12 +1997,11 @@ fn pull_request_lookup_attrs(
     result: &Result<Option<PullRequestRecord>, GitHubError>,
 ) -> Vec<PerfAttr> {
     match result {
-        Ok(Some(pull_request)) => vec![
-            perf_attr("found", true),
-            perf_attr("number", pull_request.number),
-            perf_attr("head_branch", &pull_request.head_branch),
-            perf_attr("base", &pull_request.base_branch),
-        ],
+        Ok(Some(pull_request)) => {
+            let mut attrs = pull_request_fact_attrs(pull_request);
+            attrs.push(perf_attr("found", true));
+            attrs
+        }
         Ok(None) => vec![perf_attr("found", false)],
         Err(_) => Vec::new(),
     }
@@ -1995,11 +2009,7 @@ fn pull_request_lookup_attrs(
 
 fn pull_request_record_attrs(result: &Result<PullRequestRecord, GitHubError>) -> Vec<PerfAttr> {
     match result {
-        Ok(pull_request) => vec![
-            perf_attr("number", pull_request.number),
-            perf_attr("head_branch", &pull_request.head_branch),
-            perf_attr("base", &pull_request.base_branch),
-        ],
+        Ok(pull_request) => pull_request_fact_attrs(pull_request),
         Err(_) => Vec::new(),
     }
 }
@@ -2823,6 +2833,24 @@ impl CommandServices for ProductionServices<'_> {
                 ),
                 perf_attr("pid", u64::from(std::process::id())),
                 perf_attr("protected_rebase_root_count", protected_rebase_root_count),
+                perf_attr(
+                    "protected_rebase_roots",
+                    options.protected_rebase_roots.join(","),
+                ),
+                perf_attr(
+                    "rebase_strategy",
+                    match context
+                        .config
+                        .repo
+                        .sync_for(&context.origin.github)
+                        .rebase_strategy()
+                    {
+                        RepoSyncRebaseStrategy::Always => "always",
+                        RepoSyncRebaseStrategy::StackGreenPullRequests => {
+                            "stack_green_pull_requests"
+                        }
+                    },
+                ),
             ],
         );
         let result = (|| {
@@ -2947,21 +2975,27 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         revision: Option<&str>,
     ) -> Result<SyncPushOutcome, JjError> {
-        load_current_jj_workspace(context)?.push_syncable_revision(revision)
+        let outcome = load_current_jj_workspace(context)?.push_syncable_revision(revision)?;
+        record_skipped_pushes(self.environment, context, &outcome);
+        Ok(outcome)
     }
 
     fn push_syncable_tracked(
         &self,
         context: &RepositoryContext,
     ) -> Result<SyncPushOutcome, JjError> {
-        load_current_jj_workspace(context)?.push_syncable_tracked()
+        let outcome = load_current_jj_workspace(context)?.push_syncable_tracked()?;
+        record_skipped_pushes(self.environment, context, &outcome);
+        Ok(outcome)
     }
 
     fn push_syncable_tracked_with_metrics(
         &self,
         context: &RepositoryContext,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
-        load_current_jj_workspace(context)?.push_syncable_tracked_with_metrics()
+        let outcome = load_current_jj_workspace(context)?.push_syncable_tracked_with_metrics()?;
+        record_skipped_pushes(self.environment, context, &outcome.outcome);
+        Ok(outcome)
     }
 
     fn sync_pull_requests(

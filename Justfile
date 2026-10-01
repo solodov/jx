@@ -27,3 +27,4 @@ install:
 
 test *paths:
     cargo nextest run --all-targets --status-level fail --final-status-level fail
+    python3 -m unittest discover -s scripts -p '*_test.py'

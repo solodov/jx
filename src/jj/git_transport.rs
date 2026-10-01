@@ -171,6 +171,18 @@ pub(super) fn fetch_origin_refs(
             .map(StringExpression::exact)
             .collect(),
     );
+    let local_before = tracked_bookmarks
+        .iter()
+        .map(|branch| {
+            (
+                branch.clone(),
+                mut_repo
+                    .view()
+                    .get_local_bookmark(RefName::new(branch))
+                    .clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut fetcher = measure_git_fetch_step(
         trace,
         "create_git_fetcher",
@@ -234,7 +246,7 @@ pub(super) fn fetch_origin_refs(
         |_| Vec::new(),
     )?;
 
-    measure_git_fetch_step(
+    let stats = measure_git_fetch_step(
         trace,
         "import_refs",
         [
@@ -247,7 +259,10 @@ pub(super) fn fetch_origin_refs(
             })
         },
         import_refs_result_attrs,
-    )
+    )?;
+    drop(fetcher);
+    super::fetch::trace::record_import_details(mut_repo, &local_before, &stats, trace);
+    Ok(stats)
 }
 
 fn measure_git_fetch_step<T>(

@@ -1,6 +1,9 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+pub(super) mod trace;
+use trace::{record_rebase_decision, record_rebase_result, record_root_snapshot};
+
 impl JjWorkspace {
     /// Fetches tracked `origin` refs plus trunk, then rebases mutable stacks off trunk history.
     /// Commits whose changes are already present upstream are abandoned so remaining local work
@@ -93,6 +96,9 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
+        for root in &trunk_children_before {
+            record_root_snapshot(self.repo.as_ref(), root, trace);
+        }
         let workspace_currents_before = measure_fetch_step(
             trace,
             "collect_workspace_currents",
@@ -134,26 +140,29 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
-        let mut rebase_stats = measure_fetch_step(
+        let rebase_started = Instant::now();
+        let rebase_result = pollster::block_on(rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &trunk_children_before,
+            &updated_trunk,
+            &immutable_expression,
+            &protected_rebase_roots,
             trace,
-            "rebase_trunk_children",
-            [
-                fetch_trace_attr("branch", &fetch_trunk.branch),
-                fetch_trace_attr("previous_trunk", fetch_trunk.commit.id().hex()),
-                fetch_trace_attr("updated_trunk", updated_trunk.id().hex()),
-                fetch_trace_attr("child_count", trunk_children_before.len()),
-            ],
-            || {
-                pollster::block_on(rebase_trunk_child_changes_onto_updated_trunk(
-                    tx.repo_mut(),
-                    &trunk_children_before,
-                    &updated_trunk,
-                    &immutable_expression,
-                    &protected_rebase_roots,
-                ))
-            },
-            fetch_rebase_stats_attrs,
-        )?;
+        ));
+        let mut rebase_attrs = vec![
+            fetch_trace_attr("branch", &fetch_trunk.branch),
+            fetch_trace_attr("previous_trunk", fetch_trunk.commit.id().hex()),
+            fetch_trace_attr("updated_trunk", updated_trunk.id().hex()),
+            fetch_trace_attr("child_count", trunk_children_before.len()),
+        ];
+        rebase_attrs.extend(fetch_rebase_stats_attrs(&rebase_result));
+        trace(FetchTraceStep {
+            name: "rebase_trunk_children".to_owned(),
+            duration_us: fetch_duration_us(rebase_started.elapsed()),
+            attrs: rebase_attrs,
+            error: rebase_result.as_ref().err().map(ToString::to_string),
+        });
+        let mut rebase_stats = rebase_result?;
 
         let workspace_name = self.workspace.workspace_name().to_owned();
         let import_abandoned_commit_ids = import_stats
@@ -563,29 +572,46 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
     updated_trunk: &Commit,
     immutable_expression: &Arc<ResolvedRevsetExpression>,
     protected_rebase_roots: &BTreeMap<ChangeId, String>,
+    trace: &mut dyn FnMut(FetchTraceStep),
 ) -> Result<FetchRebaseStats, JjError> {
     let mut stats = FetchRebaseStats::default();
-    rebase_import_rewrites(mut_repo, immutable_expression, &mut stats).await?;
+    rebase_import_rewrites(mut_repo, immutable_expression, &mut stats, trace).await?;
 
     let options = fetch_rebase_options();
     for child_change in trunk_children_before {
         let Some(child) = resolve_visible_trunk_child_change(mut_repo, child_change)? else {
+            record_rebase_decision(child_change, None, updated_trunk, "unresolved", trace);
             stats.skipped_trunk_children += 1;
             continue;
         };
 
         if child.parent_ids().contains(updated_trunk.id()) {
+            record_rebase_decision(
+                child_change,
+                Some(&child),
+                updated_trunk,
+                "already_on_trunk",
+                trace,
+            );
             stats.skipped_trunk_children += 1;
             continue;
         }
 
         if is_ancestor_or_equal_in_repo(mut_repo, child.id(), updated_trunk.id())? {
+            record_rebase_decision(
+                child_change,
+                Some(&child),
+                updated_trunk,
+                "landed_by_ancestry",
+                trace,
+            );
             rebase_landed_trunk_child_descendants(
                 mut_repo,
                 &child,
                 updated_trunk,
                 &options,
                 &mut stats,
+                trace,
             )
             .await?;
             stats.skipped_trunk_children += 1;
@@ -593,16 +619,26 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
         }
 
         if protected_rebase_roots.contains_key(child.change_id()) {
+            record_rebase_decision(
+                child_change,
+                Some(&child),
+                updated_trunk,
+                "protected",
+                trace,
+            );
             stats.skipped_trunk_children += 1;
             continue;
         }
 
+        record_rebase_decision(child_change, Some(&child), updated_trunk, "replay", trace);
         rebase_trunk_child_onto_updated_trunk(
             mut_repo,
             &child,
             updated_trunk,
             &options,
             &mut stats,
+            "root",
+            trace,
         )
         .await?;
     }
@@ -611,6 +647,7 @@ pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
         let mut rebased_descendants = 0;
         mut_repo
             .rebase_descendants_with_options(immutable_expression, &options, |old, rebased| {
+                record_rebase_result(&old, &rebased, "descendant", options.empty, trace);
                 match rebased {
                     RebasedCommit::Rewritten(new) => {
                         stats
@@ -639,6 +676,7 @@ async fn rebase_landed_trunk_child_descendants(
     updated_trunk: &Commit,
     options: &RebaseOptions,
     stats: &mut FetchRebaseStats,
+    trace: &mut dyn FnMut(FetchTraceStep),
 ) -> Result<(), JjError> {
     for descendant_id in collect_child_ids(mut_repo, landed_child.id())? {
         if descendant_id == *updated_trunk.id()
@@ -652,8 +690,16 @@ async fn rebase_landed_trunk_child_descendants(
             continue;
         }
 
-        rebase_trunk_child_onto_updated_trunk(mut_repo, &descendant, updated_trunk, options, stats)
-            .await?;
+        rebase_trunk_child_onto_updated_trunk(
+            mut_repo,
+            &descendant,
+            updated_trunk,
+            options,
+            stats,
+            "landed_descendant",
+            trace,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -664,6 +710,8 @@ async fn rebase_trunk_child_onto_updated_trunk(
     updated_trunk: &Commit,
     options: &RebaseOptions,
     stats: &mut FetchRebaseStats,
+    phase: &str,
+    trace: &mut dyn FnMut(FetchTraceStep),
 ) -> Result<(), JjError> {
     let rebased = rebase_commit_with_options(
         CommitRewriter::new(mut_repo, child.clone(), vec![updated_trunk.id().clone()]),
@@ -673,6 +721,7 @@ async fn rebase_trunk_child_onto_updated_trunk(
     .map_err(|error| JjError::Backend {
         message: error.to_string(),
     })?;
+    record_rebase_result(child, &rebased, phase, options.empty, trace);
     match rebased {
         RebasedCommit::Rewritten(rebased) => {
             stats
@@ -691,17 +740,18 @@ async fn rebase_import_rewrites(
     mut_repo: &mut MutableRepo,
     immutable_expression: &Arc<ResolvedRevsetExpression>,
     stats: &mut FetchRebaseStats,
+    trace: &mut dyn FnMut(FetchTraceStep),
 ) -> Result<(), JjError> {
     if !mut_repo.has_rewrites() {
         return Ok(());
     }
 
     let mut rebased_descendants = 0;
+    let options = RebaseOptions::default();
     mut_repo
-        .rebase_descendants_with_options(
-            immutable_expression,
-            &RebaseOptions::default(),
-            |old, rebased| match rebased {
+        .rebase_descendants_with_options(immutable_expression, &options, |old, rebased| {
+            record_rebase_result(&old, &rebased, "import_rewrite", options.empty, trace);
+            match rebased {
                 RebasedCommit::Rewritten(new) => {
                     stats
                         .rebased_commits
@@ -711,8 +761,8 @@ async fn rebase_import_rewrites(
                 RebasedCommit::Abandoned { .. } => {
                     stats.abandoned_empty_commits += 1;
                 }
-            },
-        )
+            }
+        })
         .await
         .map_err(|error| JjError::Backend {
             message: error.to_string(),

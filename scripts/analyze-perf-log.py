@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
         "--top-steps",
         type=positive_int,
         default=30,
-        help="maximum slow steps to print per span (default: 30)",
+        help="maximum slow timing steps per span; diagnostics are always shown (default: 30)",
     )
     return parser.parse_args()
 
@@ -157,6 +157,11 @@ def print_window(
         if record is not command
         and record.get("_start")
         and start <= record["_start"] <= end
+        and (
+            command.get("pid") is None
+            or record.get("pid") is None
+            or record["pid"] == command["pid"]
+        )
     ]
     print(
         f"\n=== window for command line {command['_lineno']} "
@@ -164,8 +169,54 @@ def print_window(
     )
     print_command(command)
     print(f"nested records: {len(nested)}")
+    print_sync_diagnostics(nested)
     print_aggregate(nested)
     print_step_spans(nested, top_steps)
+
+
+def print_sync_diagnostics(records: list[dict[str, Any]]) -> None:
+    """Show sync decisions and PR observations independently of timing rankings."""
+    rows = []
+    for record in records:
+        op = record.get("op", "")
+        if (
+            op == "jj.fetch_origin"
+            or op == "github.update_pull_request"
+            or (op.startswith("github.") and "merged" in record)
+        ):
+            rows.append((record["_start"], record["_lineno"], -1, op, record))
+        for index, step in enumerate(record.get("steps", [])):
+            if not step.get("diagnostic"):
+                continue
+            recorded_at = step.get("recorded_at")
+            timestamp = (
+                datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+                if recorded_at
+                else record["_start"]
+            )
+            detail = {"repo": record.get("repo", ""), **step}
+            rows.append((timestamp, record["_lineno"], index, step["name"], detail))
+    if not rows:
+        return
+    print("sync diagnostics (execution order):")
+    for timestamp, _, _, label, detail in sorted(rows, key=lambda row: row[:3]):
+        extras = join_attrs(detail, ["repo", "workspace_root", *SYNC_DIAGNOSTIC_KEYS])
+        print(f"  {timestamp.isoformat()} {label}: {extras}")
+
+
+SYNC_DIAGNOSTIC_KEYS = [
+    "rebase_strategy", "force_rebase", "protected_rebase_root_count",
+    "protected_rebase_roots", "change", "change_id", "phase", "decision", "outcome",
+    "original_commit", "old_commit", "old_parents", "new_commit", "new_parents",
+    "replacement_parent", "updated_trunk", "bookmarks", "empty_policy",
+    "conflict_before", "conflict_after", "new_conflict", "conflict_paths",
+    "conflict_paths_truncated", "conflicted_parents", "diagnostic_error", "branch", "remote", "tracked",
+    "deleted", "old_remote_target", "new_remote_target", "old_local_target",
+    "new_local_target", "conflicted_commits", "number", "head_branch", "found",
+    "cache_hit", "merged", "draft", "base_before_known", "base_before",
+    "merged_before", "requested_base", "base", "update_title", "update_body",
+    "update_base", "skipped_conflicted_count",
+]
 
 
 def print_aggregate(records: list[dict[str, Any]]) -> None:
@@ -196,7 +247,10 @@ def print_aggregate(records: list[dict[str, Any]]) -> None:
 
 def print_step_spans(records: list[dict[str, Any]], top_steps: int) -> None:
     spans = sorted(
-        [record for record in records if record.get("steps")],
+        [
+            record for record in records
+            if any(not step.get("diagnostic") for step in record.get("steps", []))
+        ],
         key=lambda record: record.get("duration_us", 0),
         reverse=True,
     )
@@ -209,7 +263,8 @@ def print_step_spans(records: list[dict[str, Any]], top_steps: int) -> None:
         suffix = f"  {extras}" if extras else ""
         print(f"  span line {span['_lineno']} {event_label(span)} {duration(span)}{suffix}")
         for step in sorted(
-            span.get("steps", []), key=lambda item: item.get("duration_us", 0), reverse=True
+            [step for step in span.get("steps", []) if not step.get("diagnostic")],
+            key=lambda item: item.get("duration_us", 0), reverse=True
         )[:top_steps]:
             print_step(step, indent="    ")
 
@@ -284,7 +339,7 @@ def event_extras(record: dict[str, Any]) -> str:
         "head_branch",
         "found",
     ]
-    return join_attrs(record, keys)
+    return join_attrs(record, [*keys, *SYNC_DIAGNOSTIC_KEYS])
 
 
 def step_extras(step: dict[str, Any]) -> str:
@@ -355,11 +410,15 @@ def step_extras(step: dict[str, Any]) -> str:
         "jj_total_us",
         "err",
     ]
-    return join_attrs(step, keys)
+    return join_attrs(step, [*keys, *SYNC_DIAGNOSTIC_KEYS])
 
 
 def join_attrs(record: dict[str, Any], keys: list[str]) -> str:
-    attrs = [f"{key}={record[key]}" for key in keys if key in record]
+    attrs = [
+        f"{key}={record[key]}"
+        for key in dict.fromkeys(keys)
+        if key in record and key != "err"
+    ]
     if err := record.get("err"):
         err = str(err).replace("\n", " ")
         attrs.append(f"err={err[:100]}")

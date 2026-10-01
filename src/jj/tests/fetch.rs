@@ -185,6 +185,7 @@ fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
             &updated_trunk,
             &RevsetExpression::none(),
             &BTreeMap::new(),
+            &mut |_| {},
         )
         .await
         .expect("jj rewrite mapping is applied before trunk repair");
@@ -233,6 +234,7 @@ fn fetch_rebase_skips_protected_trunk_child_subtree() {
             &updated_trunk,
             &RevsetExpression::none(),
             &protected_rebase_roots,
+            &mut |_| {},
         )
         .await
         .expect("protected child is skipped");
@@ -299,6 +301,7 @@ fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
             &updated_trunk,
             &RevsetExpression::none(),
             &protected_rebase_roots,
+            &mut |_| {},
         )
         .await
         .expect("landed descendants rebase");
@@ -394,6 +397,7 @@ fn fetch_rebase_recovers_previously_protected_historical_stacks() {
             &advanced_trunk,
             &immutable,
             &protected,
+            &mut |_| {},
         )
         .await
         .expect("protected stacks stay on old trunk");
@@ -416,6 +420,7 @@ fn fetch_rebase_recovers_previously_protected_historical_stacks() {
             &advanced_trunk,
             &immutable,
             &protected,
+            &mut |_| {},
         )
         .await
         .expect("normal sync still protects historical roots");
@@ -438,6 +443,7 @@ fn fetch_rebase_recovers_previously_protected_historical_stacks() {
             &landed_trunk,
             &immutable,
             &BTreeMap::new(),
+            &mut |_| {},
         )
         .await
         .expect("force sync recovers both stacks");
@@ -516,6 +522,7 @@ fn fetch_root_selection_excludes_immutable_unrelated_and_nested_changes() {
             &trunk,
             &immutable,
             &BTreeMap::new(),
+            &mut |_| {},
         )
         .await
         .expect("only historical stack rebases");
@@ -576,6 +583,7 @@ fn fetch_rebase_recovers_descendants_when_landed_root_is_already_in_trunk() {
             &trunk,
             &immutable,
             &BTreeMap::new(),
+            &mut |_| {},
         )
         .await
         .expect("follow-up rebases");
