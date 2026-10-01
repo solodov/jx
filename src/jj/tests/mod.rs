@@ -22,6 +22,7 @@ mod description;
 mod diff;
 mod facts;
 mod fetch;
+mod fetch_import;
 mod fetch_trace;
 mod fork;
 mod git_transport;

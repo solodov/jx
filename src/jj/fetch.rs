@@ -140,6 +140,11 @@ impl JjWorkspace {
                 Err(_) => Vec::new(),
             },
         )?;
+        let import_abandoned_commit_ids = import_stats
+            .abandoned_commits
+            .iter()
+            .map(|commit| commit.id().clone())
+            .collect::<HashSet<_>>();
         let rebase_started = Instant::now();
         let rebase_result = pollster::block_on(rebase_trunk_child_changes_onto_updated_trunk(
             tx.repo_mut(),
@@ -147,6 +152,7 @@ impl JjWorkspace {
             &updated_trunk,
             &immutable_expression,
             &protected_rebase_roots,
+            &import_abandoned_commit_ids,
             trace,
         ));
         let mut rebase_attrs = vec![
@@ -165,11 +171,6 @@ impl JjWorkspace {
         let mut rebase_stats = rebase_result?;
 
         let workspace_name = self.workspace.workspace_name().to_owned();
-        let import_abandoned_commit_ids = import_stats
-            .abandoned_commits
-            .iter()
-            .map(|commit| commit.id().clone())
-            .collect::<HashSet<_>>();
         let repair_stats = measure_fetch_step(
             trace,
             "repair_working_copies",
@@ -566,14 +567,33 @@ pub(super) fn collect_workspace_current_commits(
         .collect()
 }
 
+/// Repairs snapshotted stacks, directing children of import-abandoned roots to fetched trunk.
 pub(super) async fn rebase_trunk_child_changes_onto_updated_trunk(
     mut_repo: &mut MutableRepo,
     trunk_children_before: &[TrunkChildChange],
     updated_trunk: &Commit,
     immutable_expression: &Arc<ResolvedRevsetExpression>,
     protected_rebase_roots: &BTreeMap<ChangeId, String>,
+    import_abandoned_commit_ids: &HashSet<CommitId>,
     trace: &mut dyn FnMut(FetchTraceStep),
 ) -> Result<FetchRebaseStats, JjError> {
+    // Default abandonment sends children to the root's historical parents.
+    // Redirect before replay so newly exposed roots never land on stale trunk.
+    for root in trunk_children_before {
+        if import_abandoned_commit_ids.contains(&root.commit_id) {
+            mut_repo.record_abandoned_commit_with_parents(
+                root.commit_id.clone(),
+                [updated_trunk.id().clone()],
+            );
+            record_rebase_decision(
+                root,
+                None,
+                updated_trunk,
+                "import_abandoned_onto_trunk",
+                trace,
+            );
+        }
+    }
     let mut stats = FetchRebaseStats::default();
     rebase_import_rewrites(mut_repo, immutable_expression, &mut stats, trace).await?;
 

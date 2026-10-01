@@ -32,6 +32,7 @@ fn fetch_trace_identifies_empty_drop_and_clean_descendant() {
             &trunk,
             &RevsetExpression::none(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &mut |step| steps.push(step),
         )
         .await
@@ -92,6 +93,7 @@ fn fetch_trace_identifies_new_propagated_and_preexisting_conflicts() {
             &trunk,
             &RevsetExpression::none(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &mut |step| steps.push(step),
         )
         .await
@@ -131,6 +133,7 @@ fn fetch_trace_identifies_new_propagated_and_preexisting_conflicts() {
             &next_trunk,
             &RevsetExpression::none(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &mut |step| steps.push(step),
         )
         .await
@@ -170,6 +173,7 @@ fn fetch_trace_explains_skipped_roots_and_import_rewrites() {
             &trunk,
             &RevsetExpression::none(),
             &BTreeMap::from([(protected.change_id().clone(), "topic/protected".to_owned())]),
+            &HashSet::new(),
             &mut |step| steps.push(step),
         )
         .await
@@ -211,6 +215,7 @@ fn fetch_trace_explains_skipped_roots_and_import_rewrites() {
             &replacement,
             &RevsetExpression::none(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &mut |step| steps.push(step),
         )
         .await
@@ -305,6 +310,7 @@ fn fetch_trace_bounds_conflict_paths_without_recording_file_contents() {
             &trunk,
             &RevsetExpression::none(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &mut |step| steps.push(step),
         )
         .await
