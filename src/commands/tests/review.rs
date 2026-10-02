@@ -387,7 +387,7 @@ fn review_interactive_layout_shrinks_titles_above_minimum_before_right_metadata(
     .text;
     let row = output
         .lines()
-        .find(|line| line.contains("#12"))
+        .find(|line| line.trim_start().starts_with("12 "))
         .expect("review row renders");
 
     assert_eq!(rendered_visible_width(row), 100);
@@ -437,7 +437,7 @@ fn review_interactive_layout_preserves_titles_with_long_author_names() {
                 .text;
                 let row = output
                     .lines()
-                    .find(|line| line.contains("#12"))
+                    .find(|line| line.contains(title_excerpt.trim_end_matches('…')))
                     .expect("review row renders");
 
                 assert_eq!(rendered_visible_width(row), width, "{row:?}");
@@ -548,7 +548,7 @@ fn review_links_external_repository_pull_request_rows() {
         .contains("\x1b[1m\x1b]8;;https://github.com/outside-owner/tooling-lib"));
     assert!(result
         .stdout
-        .contains("\x1b]8;;https://github.com/outside-owner/tooling-lib/pull/44\x1b\\#44"));
+        .contains("\x1b]8;;https://github.com/outside-owner/tooling-lib/pull/44\x1b\\44"));
     assert!(result.stdout.contains("\x1b[32mChk\x1b[0m"));
 }
 
@@ -2595,7 +2595,7 @@ fn review_ellipsizes_rows_to_terminal_width() {
     let row = result
         .stdout
         .lines()
-        .find(|line| line.contains("#12"))
+        .find(|line| line.trim_start().starts_with("12 "))
         .expect("review row renders");
     assert!(row.contains('…'));
     assert!(rendered_visible_width(row) <= 64);

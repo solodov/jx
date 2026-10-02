@@ -301,6 +301,7 @@ fn both_tables_trim_title_whitespace_before_ellipsis() {
                     let stack = render_stack_status(
                         &report,
                         Path::new("/repo"),
+                        &BTreeMap::new(),
                         color,
                         Some(width),
                         layout,
@@ -426,7 +427,7 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                 layout,
                 &BTreeMap::new(),
             );
-            for frame in [review, stack] {
+            for (frame, alias_width) in [(review, 0), (stack, 4)] {
                 assert_eq!(frame.rows.len(), 2 * row_count);
                 for row in &frame.rows {
                     assert_eq!(row.context.title, "Aligned title");
@@ -435,40 +436,53 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                         .lines()
                         .nth(row.line)
                         .expect("PR row has a line")
-                        .contains(&format!("#{}", row.context.pr_number)));
+                        .contains(&row.context.pr_number.to_string()));
                 }
                 let output = frame.text;
+                for number in 12..=19 {
+                    assert!(!output.contains(&format!("#{number}")), "{output:?}");
+                }
                 assert!(!output.contains("suggested-reviewer"));
                 assert_eq!(
                     output.matches("Chk Rev Lag").count(),
                     if color { 0 } else { 2 }
                 );
-                let rows = output
-                    .lines()
-                    .filter(|line| line.contains("Aligned title"))
+                let rows = frame
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        (
+                            row.context.pr_number,
+                            output.lines().nth(row.line).expect("PR row has a line"),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 assert_eq!(rows.len(), 2 * row_count);
-                for row in rows {
+                for (number, row) in rows {
                     let before_title = row.split_once("Aligned title").expect("title exists").0;
                     // Two-space indentation, four one-space separators, and a two-column lifecycle marker.
-                    let title_column =
-                        2 + PULL_REQUEST_STATUS_PR_WIDTH + 3 + 3 + REVIEW_LAG_WIDTH + 4 + 2;
+                    let title_column = 2
+                        + alias_width
+                        + PULL_REQUEST_STATUS_PR_WIDTH
+                        + 3
+                        + 3
+                        + REVIEW_LAG_WIDTH
+                        + 4
+                        + 2;
                     assert_eq!(
                         rendered_visible_width(before_title),
                         title_column,
                         "{row:?}"
                     );
-                    let draft = [13, 14, 15, 19]
-                        .iter()
-                        .any(|number| row.contains(&format!("#{number}")));
+                    let draft = [13, 14, 15, 19].contains(&number);
                     let row_style = if draft {
                         DRAFT_ROW_STYLE
-                    } else if row.contains("#16") {
+                    } else if number == 16 {
                         PASTEL_BLUE_STYLE
                     } else {
                         ""
                     };
-                    if row.contains("#13") {
+                    if number == 13 {
                         assert!(!row.contains("Chk"), "{row:?}");
                     } else if color {
                         assert!(
@@ -478,17 +492,14 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                             "{row:?}"
                         );
                     }
-                    if [13, 17, 18]
-                        .iter()
-                        .any(|number| row.contains(&format!("#{number}")))
-                    {
+                    if [13, 17, 18].contains(&number) {
                         assert!(!row.contains("Rev"), "{row:?}");
                         if !color {
                             let before_lag = row.split_once('—').expect("lag renders").0;
                             assert!(before_lag.ends_with("    "), "{row:?}");
                         }
                     } else if color {
-                        let review_style = if row.contains("#15") {
+                        let review_style = if number == 15 {
                             GREEN_STYLE
                         } else {
                             CYAN_STYLE
@@ -506,7 +517,7 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                         assert!(!row.contains(BOLD_STYLE), "{row:?}");
                         assert!(!row.contains("\x1b[38;2;194;95;0m"), "{row:?}");
                         assert!(row.ends_with(RESET_STYLE), "{row:?}");
-                    } else if color && row.contains("#16") {
+                    } else if color && number == 16 {
                         assert!(row.starts_with(PASTEL_BLUE_STYLE), "{row:?}");
                         assert!(!row.contains("backend"), "{row:?}");
                     }

@@ -46,7 +46,7 @@ fn author_first_names_and_login_fallbacks_work_in_both_table_layouts() {
                             .text;
                     let row = output
                         .lines()
-                        .find(|line| line.contains("#12"))
+                        .find(|line| line.contains("A short title"))
                         .expect("review row renders");
                     let suffix = if color && draft {
                         format!("  {expected}{RESET_STYLE}")

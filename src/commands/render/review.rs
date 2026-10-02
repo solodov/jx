@@ -468,9 +468,8 @@ fn review_request_row(
     );
     let lag = render_review_lag_cell(&lag, color && !on_ice, row_style, false, row.status.draft);
     let title = review_request_title(row, row_color, layout, display_names);
-    let pr_padding = " ".repeat(
-        PULL_REQUEST_STATUS_PR_WIDTH.saturating_sub(format!("#{}", row.status.number).len()),
-    );
+    let pr_padding = " "
+        .repeat(PULL_REQUEST_STATUS_PR_WIDTH.saturating_sub(row.status.number.to_string().len()));
     let prefix = format!(
         "  {pr}{pr_padding} {check} {state} {lag} ",
         pr = pr,
@@ -537,7 +536,7 @@ fn review_request_pr_cell(
     status: &PullRequestStatusRecord,
     color: bool,
 ) -> String {
-    let label = format!("#{}", status.number);
+    let label = status.number.to_string();
     let url = review_request_url(repository, status);
     if color {
         osc8_link(&url, &label)

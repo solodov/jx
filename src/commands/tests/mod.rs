@@ -50,7 +50,9 @@ mod render;
 mod review;
 mod shell;
 mod stack;
+mod stack_aliases;
 mod stack_reviewers;
+mod stack_selectors;
 mod sync;
 mod work;
 mod work_discovery;
@@ -454,6 +456,10 @@ struct FakeServices {
     stack_move: StackMoveOutcome,
     stack_move_requests: std::cell::RefCell<Vec<(Vec<String>, StackMoveTarget)>>,
     local_stack_branches: std::cell::RefCell<Vec<Vec<LocalStackBranch>>>,
+    local_bookmark_commit_ids: BTreeMap<String, String>,
+    local_bookmark_commit_requests: std::cell::RefCell<Vec<String>>,
+    local_bookmark_aliases_by_root: BTreeMap<PathBuf, BTreeMap<String, String>>,
+    local_bookmark_alias_requests: std::cell::RefCell<Vec<(PathBuf, Vec<String>)>>,
     stack_publish_facts: Option<StackPublishFacts>,
     stack_publish_facts_by_revision: BTreeMap<String, StackPublishFacts>,
     stack_publish_selections: std::cell::RefCell<Vec<StackPublishSelection>>,
@@ -711,6 +717,10 @@ impl Default for FakeServices {
             },
             stack_move_requests: std::cell::RefCell::new(Vec::new()),
             local_stack_branches: std::cell::RefCell::new(Vec::new()),
+            local_bookmark_commit_ids: BTreeMap::new(),
+            local_bookmark_commit_requests: std::cell::RefCell::new(Vec::new()),
+            local_bookmark_aliases_by_root: BTreeMap::new(),
+            local_bookmark_alias_requests: std::cell::RefCell::new(Vec::new()),
             stack_publish_facts: None,
             stack_publish_facts_by_revision: BTreeMap::new(),
             stack_publish_selections: std::cell::RefCell::new(Vec::new()),
@@ -1569,6 +1579,40 @@ impl CommandServices for FakeServices {
         } else {
             Ok(branches.remove(0))
         }
+    }
+
+    fn local_bookmark_change_aliases(
+        &self,
+        workspace_root: &Path,
+        bookmarks: &[String],
+    ) -> Result<BTreeMap<String, String>, JjError> {
+        self.local_bookmark_alias_requests
+            .borrow_mut()
+            .push((workspace_root.to_path_buf(), bookmarks.to_vec()));
+        Ok(self
+            .local_bookmark_aliases_by_root
+            .get(workspace_root)
+            .into_iter()
+            .flat_map(|aliases| aliases.iter())
+            .filter(|(bookmark, _)| bookmarks.contains(bookmark))
+            .map(|(bookmark, alias)| (bookmark.clone(), alias.clone()))
+            .collect())
+    }
+
+    fn local_bookmark_commit_id(
+        &self,
+        _context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<String, JjError> {
+        self.local_bookmark_commit_requests
+            .borrow_mut()
+            .push(branch.to_owned());
+        self.local_bookmark_commit_ids
+            .get(branch)
+            .cloned()
+            .ok_or_else(|| JjError::MissingLocalBookmark {
+                branch: branch.to_owned(),
+            })
     }
 
     fn stack_publish_facts(

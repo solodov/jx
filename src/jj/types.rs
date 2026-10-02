@@ -299,6 +299,8 @@ pub struct LogBookmarkAnnotation {
     pub bookmark: String,
     pub label: String,
     pub url: Option<String>,
+    /// Cached PR readiness used to style the annotation independently of the commit.
+    pub draft: bool,
 }
 
 /// Summary of a jj change/commit relevant to workflow planning.

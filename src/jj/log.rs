@@ -1,5 +1,6 @@
 use super::*;
 
+mod bookmark_aliases;
 mod timings;
 pub use timings::{LogTimingStep, LogTimings};
 
@@ -236,6 +237,8 @@ label("root", "root()") ++ "\n"
 [colors]
 "change_id prefix" = { fg = "#303030", bg = "#d6ecec", bold = true }
 link = { underline = true }
+pull_request_ready = { fg = "#287a38", bold = true }
+pull_request_draft = { fg = "#5c554c", bold = false }
 pull_request_commit = { bold = true }
 conflicted_commit = { fg = "red" }
 conflicted_pull_request_commit = { fg = "red", bold = true }
@@ -1031,15 +1034,23 @@ fn append_log_annotations(
     Ok(())
 }
 
-fn write_log_annotation(
+/// Writes a cached PR annotation with readiness styling and an optional clickable link.
+pub(super) fn write_log_annotation(
     formatter: &mut dyn Formatter,
     annotation: &LogBookmarkAnnotation,
 ) -> io::Result<()> {
-    if let Some(url) = &annotation.url {
+    formatter.push_label(if annotation.draft {
+        "pull_request_draft"
+    } else {
+        "pull_request_ready"
+    });
+    let result = if let Some(url) = &annotation.url {
         write_osc8(formatter, url, &annotation.label)
     } else {
         write!(formatter, "{}", annotation.label)
-    }
+    };
+    formatter.pop_label();
+    result
 }
 
 fn write_osc8(formatter: &mut dyn Formatter, url: &str, label: &str) -> io::Result<()> {

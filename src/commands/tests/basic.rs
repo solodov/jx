@@ -118,7 +118,8 @@ fn no_args_passes_stack_pull_request_annotations_to_workspace_log() {
         services.workspace_log_annotations.borrow().as_slice(),
         [vec![LogBookmarkAnnotation {
             bookmark: "topic/current".to_owned(),
-            label: "#42".to_owned(),
+            label: "42".to_owned(),
+            draft: false,
             url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
         }]]
     );

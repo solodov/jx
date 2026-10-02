@@ -13,6 +13,7 @@ fn failed_repository_entries_reject_both_partial_and_wholly_failed_refreshes() {
                     GitHubRepository::parse("https://github.com/owner/offline").unwrap(),
                 ),
                 result: Err("network down\nrequest details".to_owned()),
+                local_aliases: BTreeMap::new(),
             },
             GlobalStackStatusEntry {
                 key: Some("missing-checkout".to_owned()),
@@ -20,6 +21,7 @@ fn failed_repository_entries_reject_both_partial_and_wholly_failed_refreshes() {
                 display_root: "~/missing".to_owned(),
                 repository: None,
                 result: Err("cannot open checkout".to_owned()),
+                local_aliases: BTreeMap::new(),
             },
         ];
         if partial {

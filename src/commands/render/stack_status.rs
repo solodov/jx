@@ -2,6 +2,7 @@ use super::*;
 use crate::domain::PrActionContext;
 
 const STACK_STATUS_PR_WIDTH: usize = PULL_REQUEST_STATUS_PR_WIDTH;
+const STACK_STATUS_ALIAS_WIDTH: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands) struct GlobalStackStatusEntry {
@@ -10,6 +11,7 @@ pub(in crate::commands) struct GlobalStackStatusEntry {
     pub(in crate::commands) display_root: String,
     pub(in crate::commands) repository: Option<GitHubRepository>,
     pub(in crate::commands) result: Result<PullRequestStackStatusReport, String>,
+    pub(in crate::commands) local_aliases: BTreeMap<String, String>,
 }
 
 impl GlobalStackStatusEntry {
@@ -26,14 +28,16 @@ impl GlobalStackStatusEntry {
                 name: report.repository.github_slug_name().to_owned(),
             }),
             result: Ok(report.clone()),
+            local_aliases: BTreeMap::new(),
         }
     }
 }
 
-/// Renders unchanged terminal rows alongside structured PR targets for keyboard actions.
+/// Renders stack status with compact local change aliases and structured PR targets for keyboard actions.
 pub(in crate::commands) fn render_stack_status(
     report: &PullRequestStackStatusReport,
     repository_root: &Path,
+    local_aliases: &BTreeMap<String, String>,
     color: bool,
     terminal_width: Option<usize>,
     layout: PullRequestTableLayout,
@@ -51,6 +55,7 @@ pub(in crate::commands) fn render_stack_status(
         &mut output,
         report,
         repository_root,
+        local_aliases,
         StackStatusTableOptions {
             color,
             indent: 0,
@@ -99,6 +104,7 @@ pub(in crate::commands) fn render_global_stack_status(
                 &mut output,
                 report,
                 &entry.root,
+                &entry.local_aliases,
                 StackStatusTableOptions {
                     color,
                     indent: 2,
@@ -139,6 +145,7 @@ fn append_stack_status_report(
     output: &mut PullRequestTableFrame,
     report: &PullRequestStackStatusReport,
     repository_root: &Path,
+    local_aliases: &BTreeMap<String, String>,
     options: StackStatusTableOptions,
     display_names: &BTreeMap<String, String>,
 ) {
@@ -159,6 +166,7 @@ fn append_stack_status_report(
         report,
         repository_root,
         &visible_snapshot,
+        local_aliases,
         color,
         layout,
         display_names,
@@ -171,9 +179,11 @@ fn append_stack_status_report(
         .max(STACK_STATUS_PR_WIDTH);
     if !color {
         output.push_line(&format!(
-            "{indent}{:<pr_width$} Chk Rev {:<lag_width$} Title",
+            "{indent}{:<alias_width$} {:<pr_width$} Chk Rev {:<lag_width$} Title",
+            "JJ",
             "PR",
             "Lag",
+            alias_width = STACK_STATUS_ALIAS_WIDTH,
             pr_width = pr_width,
             lag_width = REVIEW_LAG_WIDTH,
         ));
@@ -188,8 +198,8 @@ fn append_stack_status_report(
             row.draft,
         );
         let prefix = format!(
-            "{indent}{}{} {} {} {} ",
-            row.pr_cell, pr_padding, row.check_cell, row.review_cell, review_lag,
+            "{indent}{} {}{} {} {} {} ",
+            row.alias_cell, row.pr_cell, pr_padding, row.check_cell, row.review_cell, review_lag,
         );
         let line = match layout {
             PullRequestTableLayout::Flow => ellipsize_rendered_line(
@@ -210,6 +220,7 @@ fn append_stack_status_report(
 
 struct StackStatusTableRow {
     action_context: Option<PrActionContext>,
+    alias_cell: String,
     pr_cell: String,
     pr_visible_width: usize,
     check_cell: String,
@@ -228,6 +239,7 @@ fn stack_status_table_rows(
     report: &PullRequestStackStatusReport,
     repository_root: &Path,
     snapshot: &PullRequestStackSnapshot,
+    local_aliases: &BTreeMap<String, String>,
     color: bool,
     layout: PullRequestTableLayout,
     display_names: &BTreeMap<String, String>,
@@ -262,6 +274,11 @@ fn stack_status_table_rows(
                     repository_root,
                     row.node,
                     status,
+                ),
+                alias_cell: stack_status_alias_cell(
+                    local_aliases.get(&row.node.branch).map(String::as_str),
+                    merged,
+                    color,
                 ),
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
@@ -332,13 +349,9 @@ fn stack_status_pr_cell(
     let target = row
         .node
         .pull_request_number()
-        .map(|number| format!("#{number}"))
+        .map(|number| number.to_string())
         .unwrap_or_else(|| row.node.branch.clone());
-    let styled_target = if merged && color {
-        format!("{GREEN_STYLE}{target}{RESET_STYLE}")
-    } else {
-        target.clone()
-    };
+    let styled_target = style_stack_status_target(&target, merged, color);
     let rendered_target = row.node.pull_request_number().map_or_else(
         || styled_target.clone(),
         |number| {
@@ -351,6 +364,30 @@ fn stack_status_pr_cell(
     StackStatusPrCell {
         rendered: rendered_target,
         visible_width: target.chars().count(),
+    }
+}
+
+/// Pads usable aliases to three columns without displaying an ambiguous truncated prefix.
+fn stack_status_alias_cell(alias: Option<&str>, merged: bool, color: bool) -> String {
+    let alias = alias.unwrap_or_default();
+    let label = if alias.chars().count() > STACK_STATUS_ALIAS_WIDTH {
+        "…"
+    } else {
+        alias
+    };
+    style_stack_status_target(
+        &format!("{label:<width$}", width = STACK_STATUS_ALIAS_WIDTH),
+        merged,
+        color,
+    )
+}
+
+/// Applies the same target styling to the jj alias and the adjacent PR number.
+fn style_stack_status_target(target: &str, merged: bool, color: bool) -> String {
+    if merged && color {
+        format!("{GREEN_STYLE}{target}{RESET_STYLE}")
+    } else {
+        target.to_owned()
     }
 }
 

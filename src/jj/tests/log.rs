@@ -784,7 +784,8 @@ fn workspace_log_links_pull_request_annotations_for_matching_bookmarks() {
     });
     let annotations = [LogBookmarkAnnotation {
         bookmark: "topic/current".to_owned(),
-        label: "#42".to_owned(),
+        label: "42".to_owned(),
+        draft: false,
         url: Some("https://github.com/example-owner/example-repo/pull/42".to_owned()),
     }];
 
@@ -800,10 +801,92 @@ fn workspace_log_links_pull_request_annotations_for_matching_bookmarks() {
     assert!(log.contains("topic/current"), "{log}");
     assert!(
         log.contains(
-            "\x1b]8;;https://github.com/example-owner/example-repo/pull/42\x1b\\#42\x1b]8;;\x1b\\"
+            "\x1b]8;;https://github.com/example-owner/example-repo/pull/42\x1b\\42\x1b]8;;\x1b\\"
         ),
         "{log}"
     );
+}
+
+#[test]
+fn log_pr_annotations_distinguish_readiness_without_labels_or_hash_prefixes() {
+    for color in ["always", "never"] {
+        for draft in [false, true] {
+            for linked in [false, true] {
+                let mut config = StackedConfig::with_defaults();
+                config.extend_layers(jx_default_config_layers());
+                config.extend_layers([ConfigLayer::parse(
+                    ConfigSource::User,
+                    &format!("[ui]\ncolor = '{color}'\n"),
+                )
+                .unwrap()]);
+                let ui = Ui::with_config(&config).unwrap();
+                let annotation = LogBookmarkAnnotation {
+                    bookmark: "topic/current".to_owned(),
+                    label: "42".to_owned(),
+                    url: linked.then(|| "https://github.com/owner/repo/pull/42".to_owned()),
+                    draft,
+                };
+                let mut bytes = Vec::new();
+                {
+                    let mut formatter = ui.new_formatter(&mut bytes);
+                    write_log_annotation(formatter.as_mut(), &annotation).unwrap();
+                    write!(formatter, " after").unwrap();
+                }
+                let output = String::from_utf8(bytes).unwrap();
+
+                assert!(output.contains("42"), "{output:?}");
+                assert!(!output.contains("#42"), "{output:?}");
+                assert!(!output.contains("draft"), "{output:?}");
+                assert_eq!(
+                    output.contains("\x1b]8;;https://github.com/owner/repo/pull/42"),
+                    linked
+                );
+                assert!(output.ends_with(" after"), "{output:?}");
+                if color == "never" {
+                    assert!(!output.contains("\x1b["), "{output:?}");
+                    if !linked {
+                        assert_eq!(output, "42 after");
+                    }
+                } else if draft {
+                    assert!(output.contains("\x1b[38;2;92;85;76m"), "{output:?}");
+                    assert!(!output.contains("\x1b[1m"), "{output:?}");
+                    assert!(!output.contains("\x1b[2m"), "{output:?}");
+                } else {
+                    assert!(output.contains("\x1b[38;2;40;122;56m"), "{output:?}");
+                    assert!(output.contains("\x1b[1m"), "{output:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn log_pr_colors_follow_user_overrides() {
+    let mut config = StackedConfig::with_defaults();
+    config.extend_layers(jx_default_config_layers());
+    config.extend_layers([ConfigLayer::parse(
+        ConfigSource::User,
+        "[ui]\ncolor = 'always'\n[colors]\npull_request_draft = { fg = '#614b3a' }\n",
+    )
+    .unwrap()]);
+    let ui = Ui::with_config(&config).unwrap();
+    let mut bytes = Vec::new();
+    {
+        let mut formatter = ui.new_formatter(&mut bytes);
+        write_log_annotation(
+            formatter.as_mut(),
+            &LogBookmarkAnnotation {
+                bookmark: "topic/current".to_owned(),
+                label: "42".to_owned(),
+                url: None,
+                draft: true,
+            },
+        )
+        .unwrap();
+    }
+
+    let output = String::from_utf8(bytes).unwrap();
+    assert!(output.contains("\x1b[38;2;97;75;58m"), "{output:?}");
 }
 
 fn jj_cli_is_available() -> bool {

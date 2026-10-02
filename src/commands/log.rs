@@ -86,7 +86,8 @@ fn workspace_log_annotation(
     let pull_request = node.pull_request?;
     Some(LogBookmarkAnnotation {
         bookmark: node.branch.clone(),
-        label: format!("#{pull_request}"),
+        label: pull_request.to_string(),
+        draft: node.draft,
         url: Some(
             node.url
                 .clone()

@@ -190,8 +190,12 @@ fn stack_publish_help_documents_task_id_and_revision_without_loading_repo() {
     assert!(stdout.contains("Associate a task identifier with generated workspace or PR bookmark"));
     assert!(stdout.contains("TASK_ID"));
     assert!(stdout.contains("--revision"));
-    assert!(stdout.contains("Publish exactly the selected jj revision, local bookmark, or revset"));
-    assert!(stdout.contains("COMMIT_OR_BOOKMARK"));
+    assert!(stdout.contains(
+        "Publish exactly the selected jj revision, local bookmark, revset, or cached PR"
+    ));
+    assert!(stdout.contains("REVISION_OR_PR"));
+    let help = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("local bookmark's current commit"));
 }
 
 #[test]

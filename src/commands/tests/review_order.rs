@@ -66,12 +66,7 @@ fn review_orders_exact_lag_within_unchanged_repository_groups() {
         .stdout
         .lines()
         .filter_map(|line| {
-            let number = line
-                .split_whitespace()
-                .next()?
-                .strip_prefix('#')?
-                .parse::<u64>()
-                .ok()?;
+            let number = line.split_whitespace().next()?.parse::<u64>().ok()?;
             Some((number, line))
         })
         .collect::<Vec<_>>();

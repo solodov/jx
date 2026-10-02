@@ -510,6 +510,20 @@ pub(super) trait CommandServices {
             .map(LocalStackBranchFacts::from_branches)
     }
 
+    /// Reads log-compatible local change aliases in one workspace load, omitting unusable targets.
+    fn local_bookmark_change_aliases(
+        &self,
+        workspace_root: &Path,
+        bookmarks: &[String],
+    ) -> Result<BTreeMap<String, String>, JjError>;
+
+    /// Resolves an exact local bookmark to its current commit, rejecting missing or conflicted targets.
+    fn local_bookmark_commit_id(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<String, JjError>;
+
     /// Reads the local stack selected for PR publishing.
     fn stack_publish_facts(
         &self,
@@ -2893,6 +2907,22 @@ impl CommandServices for ProductionServices<'_> {
             .local_stack_branch_facts(stack_base_policy_for_context(context))
     }
 
+    fn local_bookmark_change_aliases(
+        &self,
+        workspace_root: &Path,
+        bookmarks: &[String],
+    ) -> Result<BTreeMap<String, String>, JjError> {
+        JjWorkspace::load(workspace_root)?.local_bookmark_change_aliases(bookmarks)
+    }
+
+    fn local_bookmark_commit_id(
+        &self,
+        context: &RepositoryContext,
+        branch: &str,
+    ) -> Result<String, JjError> {
+        load_current_jj_workspace(context)?.local_bookmark_commit_id(branch)
+    }
+
     fn stack_publish_facts(
         &self,
         context: &RepositoryContext,
@@ -3121,6 +3151,7 @@ fn stack_status_entry_for_repository(
                 display_root,
                 repository: None,
                 result: Err(error.to_string()),
+                local_aliases: BTreeMap::new(),
             });
         }
     };
@@ -3134,6 +3165,7 @@ fn stack_status_entry_for_repository(
                 display_root,
                 repository: None,
                 result: Err(error.to_string()),
+                local_aliases: BTreeMap::new(),
             });
         }
     };
@@ -3170,6 +3202,7 @@ fn stack_status_entry_for_repository(
         display_root,
         repository: Some(repository_identity),
         result,
+        local_aliases: BTreeMap::new(),
     })
 }
 
@@ -3246,6 +3279,7 @@ async fn production_global_stack_status_entry_traced(
                 display_root,
                 repository: None,
                 result: Err(error),
+                local_aliases: BTreeMap::new(),
             });
         }
     };
@@ -3275,6 +3309,7 @@ async fn production_global_stack_status_entry_traced(
                 display_root,
                 repository: Some(repository_identity),
                 result: Err(error),
+                local_aliases: BTreeMap::new(),
             });
         }
     };
@@ -3476,6 +3511,7 @@ async fn production_global_stack_status_entry_traced(
         display_root,
         repository: Some(repository_identity),
         result,
+        local_aliases: BTreeMap::new(),
     })
 }
 

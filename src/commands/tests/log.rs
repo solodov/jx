@@ -121,6 +121,56 @@ fn disabled_or_unwritable_tracing_does_not_change_log_output() {
     }
 }
 
+#[test]
+fn log_annotations_use_bare_numbers_and_cached_draft_state() {
+    let workspace = TestWorkspace::new();
+    workspace.write_git_config(
+        "[remote \"origin\"]\n    url = https://github.com/example-owner/example-repo.git\n",
+    );
+    let nodes = [(42, false), (43, true)]
+        .into_iter()
+        .map(|(number, draft)| StackMetadataNode {
+            branch: format!("topic/{number}"),
+            base_branch: "main".to_owned(),
+            parent_branch: None,
+            pull_request: Some(number),
+            parent_pull_request: None,
+            title: "Current change".to_owned(),
+            url: None,
+            draft,
+            merged: false,
+            work_ids: Vec::new(),
+            fixes_work_ids: Vec::new(),
+        })
+        .collect();
+    write_stack_metadata(
+        &workspace.path(),
+        &StackMetadata {
+            nodes,
+            ..StackMetadata::default()
+        },
+    )
+    .unwrap();
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    run_with_args_and_services(["jx", "log"], &environment, &services).unwrap();
+
+    let calls = services.workspace_log_annotations.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].len(), 2);
+    for (annotation, (number, draft)) in calls[0].iter().zip([(42, false), (43, true)]) {
+        assert_eq!(annotation.label, number.to_string());
+        assert_eq!(annotation.draft, draft);
+        assert_eq!(
+            annotation.url.as_deref(),
+            Some(format!("https://github.com/example-owner/example-repo/pull/{number}").as_str()),
+        );
+    }
+    assert!(services.pull_request_number_calls.borrow().is_empty());
+    assert!(services.pull_request_status_calls.borrow().is_empty());
+}
+
 fn log_environment(workspace: &TestWorkspace, log_path: &Path) -> RuntimeEnvironment {
     RuntimeEnvironment::new(
         workspace.path(),

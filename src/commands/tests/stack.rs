@@ -232,9 +232,9 @@ fn stack_status_renders_check_and_review_summary() {
         .iter()
         .position(|line| line.contains("example-owner/example-repo"))
         .expect("repository header renders");
-    assert!(status_lines[repository_header_index + 1].starts_with("PR      Chk"));
+    assert!(status_lines[repository_header_index + 1].starts_with("JJ  PR      Chk"));
     assert!(result.stdout.contains("(origin/main behind)"));
-    assert!(result.stdout.contains("PR      Chk Rev Lag  Title"));
+    assert!(result.stdout.contains("JJ  PR      Chk Rev Lag  Title"));
     assert!(result.stdout.contains(&format!(
         "{} ✓   ✓   <1h  ◯ Root change [bug] [help wanted] [area:backend]  reviewer-approved",
         stack_status_pull_request_cell(101)
@@ -1376,6 +1376,7 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
             let local = render_stack_status(
                 &report,
                 Path::new("/repo"),
+                &BTreeMap::new(),
                 color,
                 Some(100),
                 PullRequestTableLayout::FitTerminal,
@@ -1407,7 +1408,7 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
                     assert!(
                         text.contains(&osc8_link(
                             &row.context.pr_url,
-                            &format!("#{}", row.context.pr_number)
+                            &row.context.pr_number.to_string()
                         )),
                         "{text:?}"
                     );
@@ -1416,7 +1417,14 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
                 for (number, title_chars) in [(119, 37), (120, 35)] {
                     let row = output
                         .lines()
-                        .find(|line| line.contains(&format!("#{number}")))
+                        .find(|line| {
+                            line.contains(&osc8_link(
+                                &format!(
+                                    "https://github.com/example-owner/example-repo/pull/{number}"
+                                ),
+                                &number.to_string(),
+                            ))
+                        })
                         .expect("stack row renders");
                     let title_excerpt =
                         format!("{}…", title.chars().take(title_chars).collect::<String>());
@@ -1498,7 +1506,7 @@ fn stack_status_ellipsizes_rows_to_terminal_width() {
     let row = result
         .stdout
         .lines()
-        .find(|line| line.contains("#119"))
+        .find(|line| line.contains(&stack_status_pull_request_cell(119)))
         .expect("stack row renders");
     assert!(row.contains('…'), "row: {row:?}\n{}", result.stdout);
     assert!(rendered_visible_width(row) <= 64, "row: {row:?}");
@@ -2258,7 +2266,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
     assert!(result.stdout.contains(
         "\x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m ui \x1b[0m\x1b[2m\x1b[38;2;184;184;184m  draft-pending, draft-approved"
     ));
-    assert!(result.stdout.contains("\x1b[32m#112\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[32m112\x1b[0m"));
     assert!(result.stdout.contains("\x1b[32m● Merged change\x1b[0m"));
     assert!(result.stdout.contains(
         "\x1b[32m● Merged change\x1b[0m \x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m done \x1b[0m"
@@ -2455,7 +2463,7 @@ fn stack_status_keeps_recently_closed_rows_as_reminders() {
     )
     .expect("colored stack status succeeds");
     assert!(colored.stdout.contains(
-        "\x1b[38;2;130;165;218m\x1b]8;;https://github.com/example-owner/example-repo/pull/301"
+        "\x1b[38;2;130;165;218m    \x1b]8;;https://github.com/example-owner/example-repo/pull/301"
     ));
     assert!(colored.stdout.contains("⊖ Closed root\x1b[0m"));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -2791,7 +2799,7 @@ path = "{repo}"
         .iter()
         .position(|line| line.contains("api-alpha"))
         .expect("repository header renders");
-    assert!(status_lines[repository_header_index + 1].starts_with("  PR      Chk"));
+    assert!(status_lines[repository_header_index + 1].starts_with("  JJ  PR      Chk"));
     assert!(result.stdout.contains("Alpha change"));
     assert!(!result.stdout.contains("web-beta"));
     assert_eq!(
@@ -2811,11 +2819,11 @@ path = "{repo}"
         .iter()
         .position(|line| line.contains("web-beta"))
         .expect("beta repository header renders");
-    assert!(status_lines[alpha_header_index + 1].starts_with("  PR      Chk"));
+    assert!(status_lines[alpha_header_index + 1].starts_with("  JJ  PR      Chk"));
     assert!(status_lines[alpha_header_index + 2].contains("Alpha change"));
     assert_eq!(status_lines[alpha_header_index + 3], "");
     assert_eq!(beta_header_index, alpha_header_index + 4);
-    assert!(status_lines[beta_header_index + 1].starts_with("  PR      Chk"));
+    assert!(status_lines[beta_header_index + 1].starts_with("  JJ  PR      Chk"));
     assert!(status_lines[beta_header_index + 2].contains("Beta change"));
 }
 
@@ -3189,10 +3197,13 @@ fn stack_status_records_perf_steps() {
 }
 
 fn stack_status_pull_request_cell(number: u64) -> String {
-    let target = format!("#{number}");
+    let target = number.to_string();
     format!(
         "{}{}",
-        example_pull_request_link(number),
+        osc8_link(
+            &format!("https://github.com/example-owner/example-repo/pull/{number}"),
+            &target,
+        ),
         " ".repeat(7_usize.saturating_sub(target.chars().count()))
     )
 }

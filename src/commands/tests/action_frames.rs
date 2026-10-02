@@ -35,6 +35,7 @@ fn stack_frames_skip_headers_errors_and_unpublished_branches_without_losing_link
             display_root: "/failed".to_owned(),
             repository: None,
             result: Err("#999 failed\nmore detail".to_owned()),
+            local_aliases: BTreeMap::new(),
         },
         GlobalStackStatusEntry::current(PathBuf::from("/empty"), &empty),
         GlobalStackStatusEntry::current(PathBuf::from("/correct-root"), &report),
@@ -63,7 +64,7 @@ fn stack_frames_skip_headers_errors_and_unpublished_branches_without_losing_link
         assert!(frame.text.contains("Unpublished change"));
         let text = frame.text.lines().nth(row.line).expect("PR row exists");
         assert!(
-            text.contains(&osc8_link(&row.context.pr_url, "#12")),
+            text.contains(&osc8_link(&row.context.pr_url, "12")),
             "{text:?}"
         );
     }
@@ -148,7 +149,7 @@ fn review_frames_keep_clickable_links_and_distinct_targets_across_resizes() {
                     assert_eq!(row.context.local_change_id, None);
                     if color {
                         assert!(
-                            text.contains(&osc8_link(&row.context.pr_url, "#12")),
+                            text.contains(&osc8_link(&row.context.pr_url, "12")),
                             "{text:?}"
                         );
                     }

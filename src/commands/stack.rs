@@ -1,8 +1,11 @@
 use super::*;
 use crate::jj::{StackPublishMetrics, StackPublishNodeFacts};
 
+mod aliases;
 mod dashboard_snapshot;
 mod reviewers;
+mod selectors;
+pub(super) use selectors::resolve_stack_publish_revisions;
 
 #[cfg(test)]
 use crate::repository::StackMetadataNode;
@@ -216,6 +219,7 @@ fn load_current_stack_status_dashboard_snapshot(
         Ok(render_stack_status(
             &loaded.report,
             &repository_root,
+            &loaded.local_aliases,
             options.color,
             options.terminal_width,
             PullRequestTableLayout::FitTerminal,
@@ -326,7 +330,7 @@ fn load_global_stack_status_view(
     if !repositories.is_empty() {
         progress.percentage("Checking stack status", 0, repositories.len());
     }
-    let entries = span.measure_with_result_attrs(
+    let mut entries = span.measure_with_result_attrs(
         "fetch_global_stack_status",
         [
             perf_attr("selected_repo_count", repositories.len()),
@@ -347,6 +351,10 @@ fn load_global_stack_status_view(
                 .unwrap_or_default()
         },
     )?;
+    span.measure("load_local_aliases", Vec::new(), || {
+        aliases::load_global_status_aliases(services, &mut entries, request.format);
+        Ok::<_, CommandError>(())
+    })?;
     let display_name_logins = stack_status_entry_user_logins(&entries);
     let display_names = span.measure_with_result_attrs(
         "load_display_names",
@@ -425,6 +433,7 @@ impl StackStatusExecution<'_> {
                 render_stack_status_output(
                     &loaded.report,
                     &self.context.repository_root,
+                    &loaded.local_aliases,
                     StackStatusOutputOptions {
                         color: self.output.color,
                         terminal_width: self.output.terminal_width,
@@ -507,6 +516,15 @@ impl StackStatusExecution<'_> {
             .flatten();
         let report =
             domain::pull_request_stack_status_report(self.context, snapshot, statuses, trunk);
+        let local_aliases = span.measure("load_local_aliases", Vec::new(), || {
+            aliases::load_status_aliases(
+                self.services,
+                &self.context.workspace_root,
+                &report,
+                request.format,
+            )
+            .map_err(CommandError::from)
+        })?;
         let display_name_logins = pull_request_status_user_logins(report.statuses.values());
         let display_names = span.measure_with_result_attrs(
             "load_display_names",
@@ -533,6 +551,7 @@ impl StackStatusExecution<'_> {
 
         Ok(LoadedStackStatusView {
             report,
+            local_aliases,
             display_names,
         })
     }
@@ -540,6 +559,7 @@ impl StackStatusExecution<'_> {
 
 struct LoadedStackStatusView {
     report: PullRequestStackStatusReport,
+    local_aliases: BTreeMap<String, String>,
     display_names: BTreeMap<String, String>,
 }
 
@@ -695,7 +715,9 @@ impl StackPublishExecution<'_> {
         let publish_options = PullRequestPublishOptions {
             event_handlers: !request.no_event_handlers,
         };
-        let selection = stack_publish_selection(&request.revisions, request.apply_to_stack);
+        let revisions =
+            resolve_stack_publish_revisions(self.context, self.services, &request.revisions)?;
+        let selection = stack_publish_selection(&revisions, request.apply_to_stack);
 
         self.progress.status("Loading publish stack…");
         let (facts, prepare_effects) = span.measure(
@@ -1195,7 +1217,11 @@ impl StackPublishExecution<'_> {
         span: &mut PerfSpan,
     ) -> Result<Vec<usize>, CommandError> {
         let selection = StackPublishSelection::ExplicitRevisions {
-            revisions: vec![revisions.to_owned()],
+            revisions: resolve_stack_publish_revisions(
+                self.context,
+                self.services,
+                &[revisions.to_owned()],
+            )?,
         };
         let selector_facts = span.measure(
             "resolve_readiness_selector",
@@ -2043,6 +2069,7 @@ struct StackStatusOutputOptions {
 fn render_stack_status_output(
     report: &PullRequestStackStatusReport,
     current_dir: &Path,
+    local_aliases: &BTreeMap<String, String>,
     options: StackStatusOutputOptions,
     display_names: &BTreeMap<String, String>,
 ) -> Result<String, CommandError> {
@@ -2050,6 +2077,7 @@ fn render_stack_status_output(
         StackStatusFormat::Human => Ok(render_stack_status(
             report,
             current_dir,
+            local_aliases,
             options.color,
             options.terminal_width,
             options.layout,

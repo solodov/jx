@@ -23,7 +23,8 @@ fn status_discovers_authored_pr_without_local_bookmark_or_metadata() {
 
     let result = run_with_args_and_services(["jx", "stack", "status"], &environment, &services)
         .expect("remote-only PR is discovered");
-    assert!(result.stdout.contains("#297480"));
+    assert!(result.stdout.contains("297480"));
+    assert!(!result.stdout.contains("#297480"));
     assert!(result.stdout.contains("Revert change"));
     let metadata = read_stack_metadata(&workspace.path()).expect("metadata reads");
     assert_eq!(metadata.nodes.len(), 1);

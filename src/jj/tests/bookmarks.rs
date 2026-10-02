@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn local_bookmark_commit_ids_use_exact_current_local_targets() {
+    let fixture = TestWorkspace::new("local-bookmark-commit");
+    let settings = user_settings().unwrap();
+    let (workspace, repo, current_id) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .unwrap();
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let old = write_child(tx.repo_mut(), &root, "previously pushed").await;
+        let current = write_child(tx.repo_mut(), &root, "rewritten local commit").await;
+        set_origin_bookmark(tx.repo_mut(), "topic/current", old.id());
+        set_local_bookmark(tx.repo_mut(), "topic/current", current.id());
+        set_local_bookmark(tx.repo_mut(), "other/topic/missing", current.id());
+        set_origin_bookmark(tx.repo_mut(), "topic/missing", old.id());
+        tx.repo_mut().set_local_bookmark_target(
+            RefName::new("topic/conflicted"),
+            RefTarget::from_legacy_form([], [old.id().clone(), current.id().clone()]),
+        );
+        let repo = tx.commit("arrange bookmark resolution").await.unwrap();
+        (workspace, repo, current.id().hex())
+    });
+    let subject = JjWorkspace { workspace, repo };
+
+    assert_eq!(
+        subject.local_bookmark_commit_id("topic/current").unwrap(),
+        current_id
+    );
+    assert!(matches!(
+        subject.local_bookmark_commit_id("topic/missing"),
+        Err(JjError::MissingLocalBookmark { branch }) if branch == "topic/missing",
+    ));
+    assert!(matches!(
+        subject.local_bookmark_commit_id("topic/conflicted"),
+        Err(JjError::ConflictedBookmark { branch }) if branch == "topic/conflicted",
+    ));
+}
+
+#[test]
 fn ensure_bookmark_creates_reuses_and_rejects_other_change() {
     // Verifies: Bookmark mutation creates, reuses, and rejects bookmarks on other changes.
     let fixture = TestWorkspace::new("bookmark-mutation");

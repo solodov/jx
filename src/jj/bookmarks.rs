@@ -1,6 +1,22 @@
 use super::*;
 
 impl JjWorkspace {
+    /// Resolves an exact local bookmark to its current commit without remote or fragment fallback.
+    pub fn local_bookmark_commit_id(&self, branch: &str) -> Result<String, JjError> {
+        let target = self.repo.view().get_local_bookmark(RefName::new(branch));
+        if target.has_conflict() {
+            return Err(JjError::ConflictedBookmark {
+                branch: branch.to_owned(),
+            });
+        }
+        target
+            .as_normal()
+            .map(CommitId::hex)
+            .ok_or_else(|| JjError::MissingLocalBookmark {
+                branch: branch.to_owned(),
+            })
+    }
+
     /// Ensures `branch` points at the selected change as a local jj bookmark.
     pub fn ensure_bookmark(
         &mut self,

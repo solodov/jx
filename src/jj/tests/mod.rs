@@ -17,6 +17,7 @@ use jj_lib::{
 
 use super::*;
 
+mod bookmark_aliases;
 mod bookmarks;
 mod description;
 mod diff;
