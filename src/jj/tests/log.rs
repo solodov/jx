@@ -849,11 +849,21 @@ fn log_pr_annotations_distinguish_readiness_without_labels_or_hash_prefixes() {
                     }
                 } else if draft {
                     assert!(output.contains("\x1b[38;2;92;85;76m"), "{output:?}");
+                    assert!(output.contains("\x1b[48;2;226;217;235m"), "{output:?}");
                     assert!(!output.contains("\x1b[1m"), "{output:?}");
                     assert!(!output.contains("\x1b[2m"), "{output:?}");
+                    let trailing = output.rsplit_once("42").unwrap().1;
+                    assert!(
+                        trailing.contains("\x1b[49m") || trailing.contains("\x1b[0m"),
+                        "{output:?}"
+                    );
                 } else {
                     assert!(output.contains("\x1b[38;2;40;122;56m"), "{output:?}");
                     assert!(output.contains("\x1b[1m"), "{output:?}");
+                    assert!(!output.contains("\x1b[48;"), "{output:?}");
+                }
+                if color == "always" && linked {
+                    assert!(output.contains("\x1b[4m"), "{output:?}");
                 }
             }
         }
@@ -866,7 +876,7 @@ fn log_pr_colors_follow_user_overrides() {
     config.extend_layers(jx_default_config_layers());
     config.extend_layers([ConfigLayer::parse(
         ConfigSource::User,
-        "[ui]\ncolor = 'always'\n[colors]\npull_request_draft = { fg = '#614b3a' }\n",
+        "[ui]\ncolor = 'always'\n[colors]\npull_request_draft = { fg = '#614b3a', bg = '#ddd7cb' }\n",
     )
     .unwrap()]);
     let ui = Ui::with_config(&config).unwrap();
@@ -887,6 +897,8 @@ fn log_pr_colors_follow_user_overrides() {
 
     let output = String::from_utf8(bytes).unwrap();
     assert!(output.contains("\x1b[38;2;97;75;58m"), "{output:?}");
+    assert!(output.contains("\x1b[48;2;221;215;203m"), "{output:?}");
+    assert!(!output.contains("\x1b[48;2;226;217;235m"), "{output:?}");
 }
 
 fn jj_cli_is_available() -> bool {

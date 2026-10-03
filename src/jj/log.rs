@@ -238,7 +238,7 @@ label("root", "root()") ++ "\n"
 "change_id prefix" = { fg = "#303030", bg = "#d6ecec", bold = true }
 link = { underline = true }
 pull_request_ready = { fg = "#287a38", bold = true }
-pull_request_draft = { fg = "#5c554c", bold = false }
+pull_request_draft = { fg = "#5c554c", bg = "#e2d9eb", bold = false }
 pull_request_commit = { bold = true }
 conflicted_commit = { fg = "red" }
 conflicted_pull_request_commit = { fg = "red", bold = true }
