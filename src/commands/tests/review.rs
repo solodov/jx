@@ -180,8 +180,8 @@ fn review_cached_rejects_interactive_dashboard() {
 }
 
 #[test]
-fn review_render_uses_viewer_review_state_labels() {
-    // Verifies: review rows summarize the viewer's own wait, comment, change-request, and approval states.
+fn review_render_uses_aggregate_reviews_without_changing_inbox_state() {
+    // Verifies: Rev summarizes all reviewers, independently of viewer-specific inbox state.
     let mut waiting = review_status_record(12, "Waiting on me", "example-author", false);
     waiting.requested_reviewers =
         ReviewerSelection::new(["example-reviewer"], Vec::<String>::new());
@@ -192,6 +192,7 @@ fn review_render_uses_viewer_review_state_labels() {
     changes_requested.changes_requested_reviewers = vec!["example-reviewer".to_owned()];
     let mut approved = review_status_record(15, "I approved", "example-author", false);
     approved.approved_reviewers = vec!["example-reviewer".to_owned()];
+    approved.review_status = PullRequestReviewStatus::Approved;
     let mut approved_with_comments =
         review_status_record(16, "I approved with comments", "example-author", false);
     approved_with_comments.approved_reviewers = vec!["example-reviewer".to_owned()];
@@ -277,13 +278,18 @@ fn review_render_uses_viewer_review_state_labels() {
     )
     .text;
 
-    assert!(output.contains("\x1b[36mRev\x1b[0m —    ◯ Waiting on me"));
-    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ I left comments"));
+    assert!(output.contains(&format!(
+        "{VIOLET_STYLE}Rev{RESET_STYLE} —    ◯ Waiting on me"
+    )));
+    assert!(output.contains("\x1b[31mRev\x1b[0m —    ◯ I left comments"));
     assert!(output.contains("\x1b[1m\x1b[31mRev\x1b[0m —    ◯ I requested changes"));
-    assert!(output.contains("\x1b[32mRev\x1b[0m —    ◯ I approved"));
-    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ I approved with comments"));
-    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ A peer approved before me"));
-    assert!(output.contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ My approval was dismissed"));
+    assert!(output.contains("\x1b[1m\x1b[32mRev\x1b[0m —    ◯ I approved"));
+    assert!(output.contains("\x1b[32mRev\x1b[0m —    ◯ I approved with comments"));
+    assert!(output.contains("\x1b[32mRev\x1b[0m —    ◯ A peer approved before me"));
+    assert!(output.contains(&format!(
+        "{VIOLET_STYLE}Rev{RESET_STYLE} —    ◯ My approval was dismissed"
+    )));
+    assert!(!output.contains("\x1b[38;2;194;95;0mRev"));
     assert!(!output.contains("Chk Rev Lag"));
     assert!(output.contains("\x1b[1mexample-author\x1b[0m"));
     assert!(!output.contains("Legend:"));
@@ -546,9 +552,10 @@ fn review_links_external_repository_pull_request_rows() {
     assert!(result
         .stdout
         .contains("\x1b[1m\x1b]8;;https://github.com/outside-owner/tooling-lib"));
-    assert!(result
-        .stdout
-        .contains("\x1b]8;;https://github.com/outside-owner/tooling-lib/pull/44\x1b\\44"));
+    assert!(result.stdout.contains(&osc8_link(
+        "https://github.com/outside-owner/tooling-lib/pull/44",
+        &format!("\x1b[22m{GREEN_STYLE}44{RESET_STYLE}"),
+    )));
     assert!(result.stdout.contains("\x1b[32mChk\x1b[0m"));
 }
 
@@ -725,7 +732,7 @@ fn review_lag_uses_visible_epoch_from_history() {
 
 #[test]
 fn review_styles_configured_review_wait_threshold() {
-    // Verifies: review inbox uses repo review-wait SLA styling for waiting requests.
+    // Verifies: overdue waits change only Lag; Rev keeps the same waiting color.
     let workspace = review_workspace();
     workspace.write_home_file(
         ".config/jx/10-review-threshold.toml",
@@ -780,12 +787,12 @@ review_wait_threshold = "4h"
     )
     .expect("colored review inbox renders");
 
-    assert!(result
-        .stdout
-        .contains("\x1b[1m\x1b[31mRev\x1b[0m \x1b[1m\x1b[31m5h  \x1b[0m ◯ Old review"));
-    assert!(result
-        .stdout
-        .contains("\x1b[36mRev\x1b[0m \x1b[2m1h  \x1b[0m ◯ Fresh review"));
+    assert!(result.stdout.contains(&format!(
+        "{VIOLET_STYLE}Rev{RESET_STYLE} \x1b[1m\x1b[31m5h  {RESET_STYLE} ◯ Old review"
+    )));
+    assert!(result.stdout.contains(&format!(
+        "{VIOLET_STYLE}Rev{RESET_STYLE} {DIM_STYLE}1h  {RESET_STYLE} ◯ Fresh review"
+    )));
 }
 
 #[test]
@@ -1833,7 +1840,7 @@ fn review_does_not_auto_dismiss_commented_pull_requests_requested_again() {
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("review inbox renders re-requested comment");
 
-    assert!(result.stdout.contains("?   —    ◯ Requested again"));
+    assert!(result.stdout.contains("!   —    ◯ Requested again"));
     assert!(!workspace
         .home
         .join(".local/state/jx/review-dismissals.toml")

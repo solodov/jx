@@ -194,8 +194,7 @@ fn append_stack_status_report(
             &row.review_lag,
             color && !row.closed,
             row.style,
-            row.merged,
-            row.draft,
+            row.draft || row.merged || row.closed,
         );
         let prefix = format!(
             "{indent}{} {}{} {} {} {} ",
@@ -253,9 +252,8 @@ fn stack_status_table_rows(
             let merged = stack_status_row_is_merged(row.node, status);
             let closed = stack_status_row_is_closed(status, merged);
             let draft = stack_status_row_is_draft(row.node, status, merged, closed);
-            let conflict = status.is_some_and(pull_request_has_merge_conflict);
-            let style = stack_status_row_style(conflict, closed, draft, color);
-            let pr_cell = stack_status_pr_cell(report, &row, status, merged, color);
+            let style = stack_status_row_style(closed, draft, color);
+            let pr_cell = stack_status_pr_cell(report, &row, status, color, style);
             let review_lag =
                 pull_request_stack_review_lag(status, report.review_wait_threshold_seconds);
             let title = stack_status_title(StackStatusTitleContext {
@@ -277,19 +275,11 @@ fn stack_status_table_rows(
                 ),
                 alias_cell: stack_status_alias_cell(
                     local_aliases.get(&row.node.branch).map(String::as_str),
-                    merged,
-                    color,
                 ),
                 pr_visible_width: pr_cell.visible_width,
                 pr_cell: pr_cell.rendered,
-                check_cell: pull_request_check_cell(status, merged, color, style),
-                review_cell: pull_request_review_cell(
-                    status,
-                    merged,
-                    color,
-                    review_lag.over_threshold,
-                    style,
-                ),
+                check_cell: pull_request_check_cell(status, color, style),
+                review_cell: pull_request_review_cell(status, color, style),
                 review_lag,
                 title: title.title,
                 suffix: title.suffix,
@@ -339,19 +329,20 @@ struct StackStatusPrCell {
     visible_width: usize,
 }
 
+/// Links the PR number while sharing mergeability styling with the review inbox.
 fn stack_status_pr_cell(
     report: &PullRequestStackStatusReport,
     row: &PullRequestStackRow<'_>,
     status: Option<&PullRequestStatusRecord>,
-    merged: bool,
     color: bool,
+    restore_style: &str,
 ) -> StackStatusPrCell {
     let target = row
         .node
         .pull_request_number()
         .map(|number| number.to_string())
         .unwrap_or_else(|| row.node.branch.clone());
-    let styled_target = style_stack_status_target(&target, merged, color);
+    let styled_target = pull_request_mergeability_label(&target, status, color, restore_style);
     let rendered_target = row.node.pull_request_number().map_or_else(
         || styled_target.clone(),
         |number| {
@@ -367,28 +358,15 @@ fn stack_status_pr_cell(
     }
 }
 
-/// Pads usable aliases to three columns without displaying an ambiguous truncated prefix.
-fn stack_status_alias_cell(alias: Option<&str>, merged: bool, color: bool) -> String {
+/// Pads neutral aliases to three columns without displaying an ambiguous truncated prefix.
+fn stack_status_alias_cell(alias: Option<&str>) -> String {
     let alias = alias.unwrap_or_default();
     let label = if alias.chars().count() > STACK_STATUS_ALIAS_WIDTH {
         "…"
     } else {
         alias
     };
-    style_stack_status_target(
-        &format!("{label:<width$}", width = STACK_STATUS_ALIAS_WIDTH),
-        merged,
-        color,
-    )
-}
-
-/// Applies the same target styling to the jj alias and the adjacent PR number.
-fn style_stack_status_target(target: &str, merged: bool, color: bool) -> String {
-    if merged && color {
-        format!("{GREEN_STYLE}{target}{RESET_STYLE}")
-    } else {
-        target.to_owned()
-    }
+    format!("{label:<width$}", width = STACK_STATUS_ALIAS_WIDTH)
 }
 
 fn compact_stack_prefix(prefix: &str) -> String {
@@ -646,15 +624,14 @@ fn lifecycle_label(
     }
 }
 
-fn stack_status_row_style(conflict: bool, closed: bool, draft: bool, color: bool) -> &'static str {
+/// Retains lifecycle styling without spreading merge conflicts across other columns.
+fn stack_status_row_style(closed: bool, draft: bool, color: bool) -> &'static str {
     if !color {
         ""
     } else if closed {
         PASTEL_BLUE_STYLE
     } else if draft {
         DRAFT_ROW_STYLE
-    } else if conflict {
-        CONFLICT_STYLE
     } else {
         ""
     }

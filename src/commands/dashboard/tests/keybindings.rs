@@ -108,6 +108,25 @@ fn remaps_replace_defaults_and_help_follows_effective_bindings() {
 }
 
 #[test]
+fn help_explains_review_state_and_wait_age_separately() {
+    let help = keyboard("").help_lines().join("\n");
+    assert!(
+        help.contains("PR number: green conflict-free; red conflict; neutral unknown/completed")
+    );
+    assert!(help.contains("Chk: green passing; yellow pending; bold red failing"));
+    assert!(
+        help.contains("Rev: violet waiting; green partial approval; bold green review complete")
+    );
+    assert!(help.contains("Rev: red comments without approval; bold red changes requested"));
+    assert!(help.contains(
+        "Rev summarizes all reviewers; review inbox selection and its Lag remain viewer-specific"
+    ));
+    assert!(help
+        .contains("Lag: bold red overdue; subdued below threshold, for drafts, or when completed"));
+    assert!(!help.contains("orange"));
+}
+
+#[test]
 fn help_is_bounded_scrollable_and_does_not_dispatch_list_commands() {
     let mut keyboard = keyboard("");
     press(&mut keyboard, '?');
@@ -123,7 +142,7 @@ fn help_is_bounded_scrollable_and_does_not_dispatch_list_commands() {
             assert!(rendered_visible_width(&line) <= usize::from(width));
         }
     }
-    for _ in 0..6 {
+    for _ in 0..keyboard.help_lines().len() {
         keyboard.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
     }
     let screen = keyboard

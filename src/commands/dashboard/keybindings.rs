@@ -115,6 +115,12 @@ impl DashboardKeyboard {
         let mut lines = vec![
             "Dashboard bindings".to_owned(),
             "Esc/Enter/q closes help; j/k or PgUp/PgDn scrolls".to_owned(),
+            "PR number: green conflict-free; red conflict; neutral unknown/completed".to_owned(),
+            "Chk: green passing; yellow pending; bold red failing".to_owned(),
+            "Rev: violet waiting; green partial approval; bold green review complete".to_owned(),
+            "Rev: red comments without approval; bold red changes requested".to_owned(),
+            "Rev summarizes all reviewers; review inbox selection and its Lag remain viewer-specific".to_owned(),
+            "Lag: bold red overdue; subdued below threshold, for drafts, or when completed".to_owned(),
         ];
         lines.extend(DashboardCommand::ALL.into_iter().map(|command| {
             let keys = self.bindings.labels(command);

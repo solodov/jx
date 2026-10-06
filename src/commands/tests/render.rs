@@ -78,6 +78,18 @@ fn pull_request_label_text_meets_srgb_contrast_threshold() {
 }
 
 #[test]
+fn waiting_review_violet_is_readable_on_light_terminal_backgrounds() {
+    let violet = relative_luminance(rendered_rgb(VIOLET_STYLE, "\x1b[38;2;"));
+    for background in [[255, 255, 255], [255, 255, 234], [248, 246, 242]] {
+        let contrast = (relative_luminance(background) + 0.05) / (violet + 0.05);
+        assert!(
+            contrast >= 4.5,
+            "violet contrast {contrast:.2}:1 on {background:?}"
+        );
+    }
+}
+
+#[test]
 fn pull_request_label_chips_fall_back_to_readable_neutral_colors() {
     // Verifies: malformed color metadata never produces malformed ANSI or low-contrast chips.
     for source in ["", "invalid", "123", "1234567", "gggggg", "ééé"] {
@@ -99,7 +111,7 @@ fn pull_request_label_chips_fall_back_to_readable_neutral_colors() {
                 [232, 232, 232],
             ),
         ] {
-            assert_eq!(label_chip_rgb(&chips[0], "\x1b[48;2;"), expected_background);
+            assert_eq!(rendered_rgb(&chips[0], "\x1b[48;2;"), expected_background);
             assert_label_chip_contrast(&chips[0]);
         }
     }
@@ -145,8 +157,8 @@ fn assert_label_chip_contrast(chip: &str) {
         chip.starts_with("\x1b[22m"),
         "chip must clear inherited intensity: {chip:?}"
     );
-    let background = label_relative_luminance(label_chip_rgb(chip, "\x1b[48;2;"));
-    let text = label_relative_luminance(label_chip_rgb(chip, "\x1b[38;2;"));
+    let background = relative_luminance(rendered_rgb(chip, "\x1b[48;2;"));
+    let text = relative_luminance(rendered_rgb(chip, "\x1b[38;2;"));
     let contrast = (background.max(text) + 0.05) / (background.min(text) + 0.05);
     assert!(
         contrast >= 4.5,
@@ -154,8 +166,10 @@ fn assert_label_chip_contrast(chip: &str) {
     );
 }
 
-fn label_chip_rgb(chip: &str, prefix: &str) -> [u8; 3] {
-    let (_, channels) = chip.split_once(prefix).expect("chip has an RGB color");
+fn rendered_rgb(rendered: &str, prefix: &str) -> [u8; 3] {
+    let (_, channels) = rendered
+        .split_once(prefix)
+        .expect("output has an RGB color");
     let (channels, _) = channels
         .split_once('m')
         .expect("color ends with SGR terminator");
@@ -167,7 +181,7 @@ fn label_chip_rgb(chip: &str, prefix: &str) -> [u8; 3] {
         .expect("color has three channels")
 }
 
-fn label_relative_luminance(rgb: [u8; 3]) -> f64 {
+fn relative_luminance(rgb: [u8; 3]) -> f64 {
     let [red, green, blue] = rgb.map(|channel| {
         let srgb = f64::from(channel) / 255.0;
         if srgb <= 0.04045 {

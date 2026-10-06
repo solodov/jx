@@ -9,10 +9,12 @@ const BLACK_ITALIC_STYLE: &str = "\x1b[3m\x1b[30m";
 pub(in crate::commands) const DIM_STYLE: &str = "\x1b[2m";
 pub(in crate::commands) const DRAFT_ROW_STYLE: &str = "\x1b[2m\x1b[38;2;184;184;184m";
 pub(in crate::commands) const GREEN_STYLE: &str = "\x1b[32m";
+pub(in crate::commands) const GREEN_BOLD_STYLE: &str = "\x1b[1m\x1b[32m";
 const GREEN_ITALIC_STYLE: &str = "\x1b[3m\x1b[32m";
 const MERGED_APPROVED_REVIEWER_STYLE: &str = "\x1b[38;2;118;108;96m";
 const ORANGE_STYLE: &str = "\x1b[38;2;194;95;0m";
-pub(in crate::commands) const CONFLICT_STYLE: &str = "\x1b[31m";
+const RED_STYLE: &str = "\x1b[31m";
+pub(in crate::commands) const VIOLET_STYLE: &str = "\x1b[38;2;112;96;160m";
 pub(in crate::commands) const PASTEL_BLUE_STYLE: &str = "\x1b[38;2;130;165;218m";
 const RED_BOLD_STYLE: &str = "\x1b[1m\x1b[31m";
 const YELLOW_STYLE: &str = "\x1b[33m";
@@ -321,11 +323,11 @@ pub(in crate::commands) fn pull_request_stack_review_lag(
     )
 }
 
+/// Highlights overdue wait age here, independently of the review-state cell.
 pub(in crate::commands) fn render_review_lag_cell(
     cell: &ReviewLagCell,
     color: bool,
     restore_style: &str,
-    merged: bool,
     subdued_only: bool,
 ) -> String {
     let label = format!("{:<width$}", cell.label, width = REVIEW_LAG_WIDTH);
@@ -334,9 +336,6 @@ pub(in crate::commands) fn render_review_lag_cell(
     }
     if subdued_only {
         return format!("{DIM_STYLE}{label}{RESET_STYLE}{restore_style}");
-    }
-    if merged && cell.label != "—" {
-        return format!("{GREEN_STYLE}{label}{RESET_STYLE}{restore_style}");
     }
     if cell.over_threshold {
         return format!("{RED_BOLD_STYLE}{label}{RESET_STYLE}{restore_style}");
@@ -438,7 +437,7 @@ fn pull_request_reviewer_token(
     let style = match state {
         ReviewerTokenState::Requested => BLACK_BOLD_STYLE,
         ReviewerTokenState::ChangesRequested => RED_BOLD_STYLE,
-        ReviewerTokenState::Commented => ORANGE_STYLE,
+        ReviewerTokenState::Commented => RED_STYLE,
         ReviewerTokenState::Addressed => BLACK_ITALIC_STYLE,
         ReviewerTokenState::Approved => GREEN_STYLE,
         ReviewerTokenState::ApprovedWithComments => GREEN_ITALIC_STYLE,
@@ -626,7 +625,9 @@ pub(in crate::commands) fn pull_request_node_symbol(
 ) -> String {
     let symbol = if status.is_some_and(pull_request_has_merge_conflict) {
         "⊘"
-    } else if status.is_some_and(|status| status.closed && !status.merged) {
+    } else if status.is_some_and(|status| status.merged) {
+        "●"
+    } else if status.is_some_and(|status| status.closed) {
         "⊖"
     } else if draft {
         "◌"
@@ -674,81 +675,94 @@ pub(in crate::commands) fn pull_request_node_title_with_restore(
     }
 }
 
-/// Renders a three-column check label, or a plain symbol; unavailable checks leave a blank cell.
-pub(in crate::commands) fn pull_request_check_cell(
+/// Colors a PR number by conflict status, never by checks or reviews; completed PRs are neutral.
+pub(in crate::commands) fn pull_request_mergeability_label(
+    label: &str,
     status: Option<&PullRequestStatusRecord>,
-    merged: bool,
     color: bool,
     restore_style: &str,
 ) -> String {
-    let signal = if merged {
-        Some(("✓", PullRequestStatusStyle::Good))
-    } else {
-        match status.map(|status| status.check_status) {
-            Some(PullRequestCheckStatus::Passing) => Some(("✓", PullRequestStatusStyle::Good)),
-            Some(PullRequestCheckStatus::Failing) => Some(("✗", PullRequestStatusStyle::Bad)),
-            Some(PullRequestCheckStatus::Pending) => Some(("◷", PullRequestStatusStyle::Warn)),
-            Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => None,
+    if !color {
+        return label.to_owned();
+    }
+    let style = match status
+        .filter(|status| !status.closed && !status.merged)
+        .map(|status| status.merge_status)
+    {
+        Some(PullRequestMergeStatus::Mergeable) => GREEN_STYLE,
+        Some(PullRequestMergeStatus::Conflicting) => RED_STYLE,
+        Some(PullRequestMergeStatus::Unknown) | None if restore_style.is_empty() => {
+            return label.to_owned();
         }
+        Some(PullRequestMergeStatus::Unknown) | None => "\x1b[39m",
+    };
+    format!("\x1b[22m{style}{label}{RESET_STYLE}{restore_style}")
+}
+
+/// Renders only check results; unavailable checks leave a blank cell, even after merging.
+pub(in crate::commands) fn pull_request_check_cell(
+    status: Option<&PullRequestStatusRecord>,
+    color: bool,
+    restore_style: &str,
+) -> String {
+    let signal = match status.map(|status| status.check_status) {
+        Some(PullRequestCheckStatus::Passing) => Some(("✓", PullRequestStatusStyle::Good)),
+        Some(PullRequestCheckStatus::Failing) => Some(("✗", PullRequestStatusStyle::Bad)),
+        Some(PullRequestCheckStatus::Pending) => Some(("◷", PullRequestStatusStyle::Warn)),
+        Some(PullRequestCheckStatus::Missing | PullRequestCheckStatus::Unknown) | None => None,
     };
     render_pull_request_status_cell("Chk", signal, color, restore_style)
 }
 
-/// Renders known stack review state only for PRs with requested or actual reviewers.
+/// Renders the aggregate review summary, independently of mergeability, lifecycle, and wait age.
 pub(in crate::commands) fn pull_request_review_cell(
     status: Option<&PullRequestStatusRecord>,
-    merged: bool,
     color: bool,
-    review_lag_over_threshold: bool,
     restore_style: &str,
 ) -> String {
     render_pull_request_status_cell(
         "Rev",
-        stack_review_signal(status, merged, review_lag_over_threshold),
+        pull_request_review_signal(status),
         color,
         restore_style,
     )
 }
 
-fn stack_review_signal(
+/// Gives change requests priority, then distinguishes partial approval from completed review.
+fn pull_request_review_signal(
     status: Option<&PullRequestStatusRecord>,
-    merged: bool,
-    review_lag_over_threshold: bool,
 ) -> Option<(&'static str, PullRequestStatusStyle)> {
     let status = status?;
     if !pull_request_has_reviewers(status) {
         return None;
-    }
-    if merged {
-        return Some(("✓", PullRequestStatusStyle::Good));
     }
     if status.review_status == PullRequestReviewStatus::ChangesRequested
         || !status.changes_requested_reviewers.is_empty()
     {
         return Some(("!", PullRequestStatusStyle::Bad));
     }
-    if status.review_status == PullRequestReviewStatus::Approved
-        || !status.approved_reviewers.is_empty()
-    {
+    if !status.approved_reviewers.is_empty() {
         return Some((
             "✓",
             if status.review_status == PullRequestReviewStatus::Approved
                 && status.commented_reviewers.is_empty()
             {
-                PullRequestStatusStyle::Good
+                PullRequestStatusStyle::Approved
             } else {
-                PullRequestStatusStyle::Comment
+                PullRequestStatusStyle::Good
             },
         ));
     }
     if !status.commented_reviewers.is_empty() {
         return Some(("!", PullRequestStatusStyle::Comment));
     }
-    if !status.requested_reviewers.is_empty() {
-        return Some((
-            "?",
-            pull_request_review_wait_style(review_lag_over_threshold),
-        ));
+    if !status.requested_reviewers.is_empty()
+        || matches!(
+            status.review_status,
+            PullRequestReviewStatus::ReviewRequired | PullRequestReviewStatus::ReviewRequested
+        )
+    {
+        return Some(("?", PullRequestStatusStyle::Waiting));
     }
     None
 }
@@ -764,23 +778,14 @@ pub(in crate::commands) fn pull_request_has_reviewers(status: &PullRequestStatus
         || !status.review_activity.is_empty()
 }
 
-pub(in crate::commands) fn pull_request_review_wait_style(
-    review_lag_over_threshold: bool,
-) -> PullRequestStatusStyle {
-    if review_lag_over_threshold {
-        PullRequestStatusStyle::Bad
-    } else {
-        PullRequestStatusStyle::Info
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(in crate::commands) enum PullRequestStatusStyle {
     Good,
     Bad,
     Comment,
+    Approved,
     Warn,
-    Info,
+    Waiting,
 }
 
 /// Renders a full-intensity status label or a padded plain symbol, then restores the row style.
@@ -799,9 +804,10 @@ pub(in crate::commands) fn render_pull_request_status_cell(
     let style = match style {
         PullRequestStatusStyle::Good => GREEN_STYLE,
         PullRequestStatusStyle::Bad => RED_BOLD_STYLE,
-        PullRequestStatusStyle::Comment => ORANGE_STYLE,
+        PullRequestStatusStyle::Comment => RED_STYLE,
+        PullRequestStatusStyle::Approved => GREEN_BOLD_STYLE,
         PullRequestStatusStyle::Warn => YELLOW_STYLE,
-        PullRequestStatusStyle::Info => CYAN_STYLE,
+        PullRequestStatusStyle::Waiting => VIOLET_STYLE,
     };
     format!("\x1b[22m{style}{label}{RESET_STYLE}{restore_style}")
 }

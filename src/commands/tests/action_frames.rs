@@ -148,8 +148,9 @@ fn review_frames_keep_clickable_links_and_distinct_targets_across_resizes() {
                     assert_eq!(row.context.local_commit_id, None);
                     assert_eq!(row.context.local_change_id, None);
                     if color {
+                        let label = format!("\x1b[22m{GREEN_STYLE}12{RESET_STYLE}");
                         assert!(
-                            text.contains(&osc8_link(&row.context.pr_url, "12")),
+                            text.contains(&osc8_link(&row.context.pr_url, &label)),
                             "{text:?}"
                         );
                     }

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn stack_status_alias_column_is_left_aligned_capped_and_matches_pr_styling() {
+fn stack_status_alias_column_is_left_aligned_capped_and_neutral() {
     let report = alias_report();
     let aliases = BTreeMap::from([
         ("topic/101".to_owned(), "q".to_owned()),
@@ -47,19 +47,16 @@ fn stack_status_alias_column_is_left_aligned_capped_and_matches_pr_styling() {
                         105 => "   ",
                         _ => unreachable!(),
                     };
-                    let number_label = number.to_string();
-                    let (alias, pr) = if color && number == 103 {
-                        (
-                            format!("{GREEN_STYLE}{label}{RESET_STYLE}"),
-                            format!("{GREEN_STYLE}{number_label}{RESET_STYLE}"),
-                        )
-                    } else {
-                        (label.to_owned(), number_label)
-                    };
+                    let alias = label;
                     let row_style = if color && number == 102 {
                         DRAFT_ROW_STYLE
                     } else {
                         ""
+                    };
+                    let pr = if color && !row_style.is_empty() {
+                        format!("\x1b[22m\x1b[39m{number}{RESET_STYLE}{row_style}")
+                    } else {
+                        number.to_string()
                     };
                     assert!(
                         text.starts_with(&format!(

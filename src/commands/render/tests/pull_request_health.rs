@@ -47,7 +47,7 @@ fn reviewer_tokens_keep_styles_and_age_with_short_names() {
     for (state, style) in [
         (ReviewerTokenState::Requested, BLACK_BOLD_STYLE),
         (ReviewerTokenState::ChangesRequested, RED_BOLD_STYLE),
-        (ReviewerTokenState::Commented, ORANGE_STYLE),
+        (ReviewerTokenState::Commented, RED_STYLE),
         (ReviewerTokenState::Addressed, BLACK_ITALIC_STYLE),
         (ReviewerTokenState::Approved, GREEN_STYLE),
         (ReviewerTokenState::ApprovedWithComments, GREEN_ITALIC_STYLE),

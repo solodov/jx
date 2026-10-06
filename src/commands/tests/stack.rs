@@ -400,25 +400,25 @@ fn stack_status_renders_review_decision_labels() {
 
     assert!(result
         .stdout
-        .contains("\x1b[32mRev\x1b[0m —    ◯ Stacked approved"));
+        .contains("\x1b[1m\x1b[32mRev\x1b[0m —    ◯ Stacked approved"));
     assert!(result
         .stdout
-        .contains("\x1b[32mRev\x1b[0m —    ◯ Approved clean"));
+        .contains("\x1b[1m\x1b[32mRev\x1b[0m —    ◯ Approved clean"));
     assert!(result
         .stdout
-        .contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ Approved with comments"));
+        .contains("\x1b[32mRev\x1b[0m —    ◯ Approved with comments"));
     assert!(result
         .stdout
-        .contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ Comments pending"));
+        .contains("\x1b[31mRev\x1b[0m —    ◯ Comments pending"));
     assert!(result
         .stdout
         .contains("\x1b[1m\x1b[31mRev\x1b[0m —    ◯ Changes requested"));
+    assert!(result.stdout.contains(&format!(
+        "{VIOLET_STYLE}Rev{RESET_STYLE} —    ◯ Waiting reviewer"
+    )));
     assert!(result
         .stdout
-        .contains("\x1b[36mRev\x1b[0m —    ◯ Waiting reviewer"));
-    assert!(result
-        .stdout
-        .contains("\x1b[38;2;194;95;0mRev\x1b[0m —    ◯ Approval pending gate"));
+        .contains("\x1b[32mRev\x1b[0m —    ◯ Approval pending gate"));
     assert!(!result.stdout.contains("Chk Rev Lag"));
 }
 
@@ -710,7 +710,7 @@ fn stack_status_renders_dismissed_reviewers_without_active_requests() {
         .expect("stack status succeeds");
 
     assert!(result.stdout.contains(&format!(
-        "{} ✓       —    ◯ Dismissed reviewers  reviewer-one, reviewer-two, reviewer-three",
+        "{} ✓   ?   —    ◯ Dismissed reviewers  reviewer-one, reviewer-two, reviewer-three",
         stack_status_pull_request_cell(103)
     )));
 }
@@ -835,18 +835,18 @@ review_wait_threshold = "4h"
     )
     .expect("colored stack status succeeds");
 
-    assert!(result
-        .stdout
-        .contains("\x1b[1m\x1b[31mRev\x1b[0m \x1b[1m\x1b[31m5h  \x1b[0m ◯ Old waiting"));
-    assert!(result
-        .stdout
-        .contains("\x1b[36mRev\x1b[0m \x1b[2m1h  \x1b[0m ◯ Fresh waiting"));
     assert!(result.stdout.contains(&format!(
-        "\x1b[22m\x1b[1m\x1b[31mRev{RESET_STYLE}{DRAFT_ROW_STYLE} {DIM_STYLE}6h  {RESET_STYLE}{DRAFT_ROW_STYLE} ◌ Draft waiting"
+        "{VIOLET_STYLE}Rev{RESET_STYLE} \x1b[1m\x1b[31m5h  {RESET_STYLE} ◯ Old waiting"
+    )));
+    assert!(result.stdout.contains(&format!(
+        "{VIOLET_STYLE}Rev{RESET_STYLE} {DIM_STYLE}1h  {RESET_STYLE} ◯ Fresh waiting"
+    )));
+    assert!(result.stdout.contains(&format!(
+        "\x1b[22m{VIOLET_STYLE}Rev{RESET_STYLE}{DRAFT_ROW_STYLE} {DIM_STYLE}6h  {RESET_STYLE}{DRAFT_ROW_STYLE} ◌ Draft waiting"
     )));
     assert!(result
         .stdout
-        .contains("\x1b[32mRev\x1b[0m \x1b[32m7h  \x1b[0m \x1b[32m● Merged change\x1b[0m"));
+        .contains("\x1b[1m\x1b[32mRev\x1b[0m \x1b[2m7h  \x1b[0m \x1b[32m● Merged change\x1b[0m"));
 }
 
 #[test]
@@ -1405,27 +1405,28 @@ fn stack_status_interactive_layout_preserves_titles_with_many_reviewers() {
                     assert_eq!(row.context.local_commit_id, None);
                     assert_eq!(row.context.local_change_id, None);
                     let text = frame.text.lines().nth(row.line).expect("PR row has a line");
+                    let label = if color {
+                        let restore = if draft { DRAFT_ROW_STYLE } else { "" };
+                        format!(
+                            "\x1b[22m{GREEN_STYLE}{}{RESET_STYLE}{restore}",
+                            row.context.pr_number
+                        )
+                    } else {
+                        row.context.pr_number.to_string()
+                    };
                     assert!(
-                        text.contains(&osc8_link(
-                            &row.context.pr_url,
-                            &row.context.pr_number.to_string()
-                        )),
+                        text.contains(&osc8_link(&row.context.pr_url, &label)),
                         "{text:?}"
                     );
                 }
                 let output = frame.text;
                 for (number, title_chars) in [(119, 37), (120, 35)] {
-                    let row = output
-                        .lines()
-                        .find(|line| {
-                            line.contains(&osc8_link(
-                                &format!(
-                                    "https://github.com/example-owner/example-repo/pull/{number}"
-                                ),
-                                &number.to_string(),
-                            ))
-                        })
-                        .expect("stack row renders");
+                    let context = frame
+                        .rows
+                        .iter()
+                        .find(|row| row.context.pr_number == number)
+                        .expect("stack row has a context");
+                    let row = output.lines().nth(context.line).expect("stack row renders");
                     let title_excerpt =
                         format!("{}…", title.chars().take(title_chars).collect::<String>());
 
@@ -2066,7 +2067,7 @@ fn stack_status_resolves_merged_branch_only_stack_nodes() {
         &[vec![452]]
     );
     assert!(result.stdout.contains(&format!(
-        "{} ✓       —    ● Merged branch-only status",
+        "{} ✗       —    ● Merged branch-only status",
         stack_status_pull_request_cell(452)
     )));
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
@@ -2252,10 +2253,8 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .contains("\x1b[1m\x1b[30mreviewer-pending\x1b[0m"));
     assert!(result
         .stdout
-        .contains("\x1b[38;2;194;95;0mreviewer-commented-requested\x1b[0m"));
-    assert!(result
-        .stdout
-        .contains("\x1b[38;2;194;95;0mreviewer-commented\x1b[0m"));
+        .contains("\x1b[31mreviewer-commented-requested\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[31mreviewer-commented\x1b[0m"));
     assert!(result
         .stdout
         .contains("\x1b[3m\x1b[30mreviewer-addressed\x1b[0m"));
@@ -2266,7 +2265,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
     assert!(result.stdout.contains(
         "\x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m ui \x1b[0m\x1b[2m\x1b[38;2;184;184;184m  draft-pending, draft-approved"
     ));
-    assert!(result.stdout.contains("\x1b[32m112\x1b[0m"));
+    assert!(!result.stdout.contains("\x1b[32m112\x1b[0m"));
     assert!(result.stdout.contains("\x1b[32m● Merged change\x1b[0m"));
     assert!(result.stdout.contains(
         "\x1b[32m● Merged change\x1b[0m \x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m done \x1b[0m"
@@ -2278,9 +2277,7 @@ ignored_labels_when_merged = ["auto-merge", "run-ci"]
         .expect("merged row renders");
     assert!(!merged_line.contains("run-ci"));
     assert!(!merged_line.contains("auto-merge"));
-    assert!(result
-        .stdout
-        .contains("\x1b[38;2;194;95;0mmerged-commented\x1b[0m"));
+    assert!(result.stdout.contains("\x1b[31mmerged-commented\x1b[0m"));
     assert!(result
         .stdout
         .contains("\x1b[38;2;118;108;96mmerged-approved\x1b[0m"));
@@ -2587,7 +2584,10 @@ fn stack_status_subdues_draft_merge_conflict_rows() {
         .find(|line| line.contains("Draft conflict"))
         .expect("draft conflict row renders");
     assert!(draft_line.starts_with(DRAFT_ROW_STYLE));
-    assert!(!draft_line.starts_with(CONFLICT_STYLE));
+    assert!(!draft_line.starts_with("\x1b[31m"));
+    assert!(draft_line.contains(&format!(
+        "\x1b[22m\x1b[31m304{RESET_STYLE}{DRAFT_ROW_STYLE}"
+    )));
     assert!(draft_line.contains("⊘ Draft conflict  draft-reviewer"));
 }
 

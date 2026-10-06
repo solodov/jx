@@ -1,8 +1,8 @@
 use super::*;
 
+const RED_STYLE: &str = "\x1b[31m";
 const RED_BOLD_STYLE: &str = "\x1b[1m\x1b[31m";
 const YELLOW_STYLE: &str = "\x1b[33m";
-const CYAN_STYLE: &str = "\x1b[36m";
 
 #[test]
 fn check_cells_use_colored_labels_or_plain_symbols_and_blank_unavailable_status() {
@@ -15,26 +15,26 @@ fn check_cells_use_colored_labels_or_plain_symbols_and_blank_unavailable_status(
         (PullRequestCheckStatus::Unknown, "", ""),
     ] {
         status.check_status = check_status;
-        for row_style in ["", DRAFT_ROW_STYLE, PASTEL_BLUE_STYLE, CONFLICT_STYLE] {
-            for color in [false, true] {
-                let cell = pull_request_check_cell(Some(&status), false, color, row_style);
-                let expected = if symbol.is_empty() {
-                    "   ".to_owned()
-                } else if color {
-                    format!("\x1b[22m{style}Chk{RESET_STYLE}{row_style}")
-                } else {
-                    format!("{symbol:<3}")
-                };
-                assert_eq!(cell, expected);
-                assert_eq!(rendered_visible_width(&cell), 3);
+        for merged in [false, true] {
+            status.merged = merged;
+            status.closed = merged;
+            for row_style in ["", DRAFT_ROW_STYLE, PASTEL_BLUE_STYLE, RED_STYLE] {
+                for color in [false, true] {
+                    let cell = pull_request_check_cell(Some(&status), color, row_style);
+                    let expected = if symbol.is_empty() {
+                        "   ".to_owned()
+                    } else if color {
+                        format!("\x1b[22m{style}Chk{RESET_STYLE}{row_style}")
+                    } else {
+                        format!("{symbol:<3}")
+                    };
+                    assert_eq!(cell, expected);
+                    assert_eq!(rendered_visible_width(&cell), 3);
+                }
             }
         }
     }
-    assert_eq!(pull_request_check_cell(None, false, true, ""), "   ");
-    assert_eq!(
-        pull_request_check_cell(None, true, true, ""),
-        format!("\x1b[22m{GREEN_STYLE}Chk{RESET_STYLE}"),
-    );
+    assert_eq!(pull_request_check_cell(None, true, ""), "   ");
 }
 
 #[test]
@@ -62,14 +62,8 @@ fn stack_review_cells_require_actual_reviewers_in_every_lifecycle() {
                 status.closed = closed;
                 status.merged = merged;
                 for color in [false, true] {
-                    assert_eq!(
-                        pull_request_review_cell(Some(&status), merged, color, false, ""),
-                        "   "
-                    );
-                    assert_eq!(
-                        pull_request_review_cell(None, merged, color, false, ""),
-                        "   "
-                    );
+                    assert_eq!(pull_request_review_cell(Some(&status), color, ""), "   ");
+                    assert_eq!(pull_request_review_cell(None, color, ""), "   ");
                 }
             }
         }
@@ -171,39 +165,33 @@ fn dashboard_profile_lookups_exclude_suggestion_only_users() {
 #[test]
 fn stack_review_cells_preserve_review_state_colors_and_plain_symbols() {
     let mut status = review_status_record(12, "Title", "author", false);
-    for (review_status, overdue, symbol, style) in [
-        (PullRequestReviewStatus::Approved, false, "✓", GREEN_STYLE),
+    for (review_status, symbol, style) in [
+        (PullRequestReviewStatus::Approved, "✓", GREEN_BOLD_STYLE),
         (
             PullRequestReviewStatus::ChangesRequested,
-            false,
             "!",
             RED_BOLD_STYLE,
         ),
-        (
-            PullRequestReviewStatus::ReviewRequested,
-            false,
-            "?",
-            CYAN_STYLE,
-        ),
-        (
-            PullRequestReviewStatus::ReviewRequested,
-            true,
-            "?",
-            RED_BOLD_STYLE,
-        ),
+        (PullRequestReviewStatus::ReviewRequested, "?", VIOLET_STYLE),
     ] {
         status.review_status = review_status;
-        for (draft, closed, row_style) in [
-            (false, false, ""),
-            (true, false, DRAFT_ROW_STYLE),
-            (false, true, PASTEL_BLUE_STYLE),
+        status.approved_reviewers = if review_status == PullRequestReviewStatus::Approved {
+            vec!["example-reviewer".to_owned()]
+        } else {
+            Vec::new()
+        };
+        for (draft, closed, merged, row_style) in [
+            (false, false, false, ""),
+            (true, false, false, DRAFT_ROW_STYLE),
+            (false, true, false, PASTEL_BLUE_STYLE),
+            (false, true, true, ""),
         ] {
             status.draft = draft;
             status.closed = closed;
+            status.merged = merged;
             status.base_branch = "topic/parent".to_owned();
             for color in [false, true] {
-                let cell =
-                    pull_request_review_cell(Some(&status), false, color, overdue, row_style);
+                let cell = pull_request_review_cell(Some(&status), color, row_style);
                 let expected = if color {
                     format!("\x1b[22m{style}Rev{RESET_STYLE}{row_style}")
                 } else {
@@ -222,6 +210,10 @@ fn stack_review_cells_keep_submitted_reviews_visible_after_requests_clear() {
     approved.requested_reviewers = ReviewerSelection::default();
     approved.review_status = PullRequestReviewStatus::Approved;
     approved.approved_reviewers = vec!["reviewer".to_owned()];
+    let mut approved_with_comments = approved.clone();
+    approved_with_comments.commented_reviewers = vec!["reviewer".to_owned()];
+    let mut qualified = approved.clone();
+    qualified.review_status = PullRequestReviewStatus::ReviewRequested;
     let mut changed = approved.clone();
     changed.approved_reviewers.clear();
     changed.review_status = PullRequestReviewStatus::Unknown;
@@ -230,21 +222,263 @@ fn stack_review_cells_keep_submitted_reviews_visible_after_requests_clear() {
     commented.changes_requested_reviewers.clear();
     commented.commented_reviewers = vec!["reviewer".to_owned()];
     for (mut status, style, symbol) in [
-        (approved, GREEN_STYLE, "✓"),
+        (approved, GREEN_BOLD_STYLE, "✓"),
+        (approved_with_comments, GREEN_STYLE, "✓"),
+        (qualified, GREEN_STYLE, "✓"),
         (changed, RED_BOLD_STYLE, "!"),
-        (commented, "\x1b[38;2;194;95;0m", "!"),
+        (commented, RED_STYLE, "!"),
     ] {
         for draft in [false, true] {
             status.draft = draft;
             let row_style = if draft { DRAFT_ROW_STYLE } else { "" };
             assert_eq!(
-                pull_request_review_cell(Some(&status), false, true, false, row_style),
+                pull_request_review_cell(Some(&status), true, row_style),
                 format!("\x1b[22m{style}Rev{RESET_STYLE}{row_style}"),
             );
             assert_eq!(
-                pull_request_review_cell(Some(&status), false, false, false, row_style),
+                pull_request_review_cell(Some(&status), false, row_style),
                 format!("{symbol:<3}"),
             );
+        }
+    }
+}
+
+#[test]
+fn both_tables_keep_wait_age_in_lag_without_changing_review_color() {
+    for draft in [false, true] {
+        let mut status = review_status_record(12, "Waiting review", "author", draft);
+        let since = chrono::Utc::now() - chrono::Duration::hours(5);
+        status.created_at = Some(since.to_rfc3339());
+        for (threshold, lag_style) in [
+            (None, ""),
+            (Some(4 * 3600), RED_BOLD_STYLE),
+            (Some(8 * 3600), DIM_STYLE),
+        ] {
+            let row = ReviewRequestRowView {
+                status: status.clone(),
+                state: crate::domain::ReviewRequestState::New,
+                viewer_signal: ReviewRequestViewerSignal::None,
+                lag_since_unix: Some(since.timestamp()),
+                dismissal: None,
+            };
+            for layout in [
+                PullRequestTableLayout::Flow,
+                PullRequestTableLayout::FitTerminal,
+            ] {
+                for color in [false, true] {
+                    for frame in render_both_tables(&row, threshold, color, layout) {
+                        let row = frame
+                            .text
+                            .lines()
+                            .nth(frame.rows[0].line)
+                            .expect("PR row exists");
+                        let expected = if !color {
+                            "?   5h  ".to_owned()
+                        } else {
+                            let restore = if draft { DRAFT_ROW_STYLE } else { "" };
+                            let lag_style = if draft { DIM_STYLE } else { lag_style };
+                            let lag = if lag_style.is_empty() {
+                                "5h  ".to_owned()
+                            } else {
+                                format!("{lag_style}5h  {RESET_STYLE}{restore}")
+                            };
+                            format!("\x1b[22m{VIOLET_STYLE}Rev{RESET_STYLE}{restore} {lag}")
+                        };
+                        assert!(row.contains(&expected), "{row:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn both_tables_keep_mergeability_checks_and_aggregate_reviews_independent() {
+    for (merge_status, pr_style) in [
+        (PullRequestMergeStatus::Mergeable, GREEN_STYLE),
+        (PullRequestMergeStatus::Conflicting, RED_STYLE),
+        (PullRequestMergeStatus::Unknown, ""),
+    ] {
+        for (review_status, approval, comments, changes, review_style, symbol) in [
+            (
+                PullRequestReviewStatus::Approved,
+                true,
+                false,
+                false,
+                GREEN_BOLD_STYLE,
+                "✓",
+            ),
+            (
+                PullRequestReviewStatus::Approved,
+                true,
+                true,
+                false,
+                GREEN_STYLE,
+                "✓",
+            ),
+            (
+                PullRequestReviewStatus::ReviewRequired,
+                true,
+                false,
+                false,
+                GREEN_STYLE,
+                "✓",
+            ),
+            (
+                PullRequestReviewStatus::ReviewRequested,
+                false,
+                false,
+                false,
+                VIOLET_STYLE,
+                "?",
+            ),
+            (
+                PullRequestReviewStatus::ReviewRequired,
+                false,
+                true,
+                false,
+                RED_STYLE,
+                "!",
+            ),
+            (
+                PullRequestReviewStatus::Approved,
+                true,
+                true,
+                true,
+                RED_BOLD_STYLE,
+                "!",
+            ),
+        ] {
+            let mut status = review_status_record(12, "Independent state", "author", false);
+            status.merge_status = merge_status;
+            status.check_status = PullRequestCheckStatus::Failing;
+            status.review_status = review_status;
+            if approval {
+                status.approved_reviewers = vec!["peer-reviewer".to_owned()];
+            }
+            if comments {
+                status.commented_reviewers = vec!["peer-reviewer".to_owned()];
+            }
+            if changes {
+                status.changes_requested_reviewers = vec!["another-reviewer".to_owned()];
+            }
+            status.dismissed_reviewers = vec!["example-reviewer".to_owned()];
+            let row = ReviewRequestRowView {
+                status,
+                state: crate::domain::ReviewRequestState::New,
+                viewer_signal: ReviewRequestViewerSignal::DismissedApproval,
+                lag_since_unix: None,
+                dismissal: None,
+            };
+            for layout in [
+                PullRequestTableLayout::Flow,
+                PullRequestTableLayout::FitTerminal,
+            ] {
+                for color in [false, true] {
+                    for frame in render_both_tables(&row, None, color, layout) {
+                        let text = frame
+                            .text
+                            .lines()
+                            .nth(frame.rows[0].line)
+                            .expect("PR row exists");
+                        if color {
+                            let label = if pr_style.is_empty() {
+                                "12".to_owned()
+                            } else {
+                                format!("\x1b[22m{pr_style}12{RESET_STYLE}")
+                            };
+                            assert!(
+                                text.contains(&osc8_link(
+                                    row.status.url.as_deref().unwrap(),
+                                    &label
+                                )),
+                                "{text:?}"
+                            );
+                            assert!(
+                                text.contains(&format!("\x1b[22m{RED_BOLD_STYLE}Chk{RESET_STYLE}")),
+                                "{text:?}"
+                            );
+                            assert!(
+                                text.contains(&format!("\x1b[22m{review_style}Rev{RESET_STYLE}")),
+                                "{text:?}"
+                            );
+                            assert!(!text.starts_with(RED_STYLE), "{text:?}");
+                            assert!(!text.contains("\x1b[38;2;194;95;0mRev"), "{text:?}");
+                        } else {
+                            assert!(text.contains(&format!("✗   {symbol:<3} —")), "{text:?}");
+                        }
+                        assert!(rendered_visible_width(text) <= 120);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn completed_rows_keep_actual_checks_and_reviews_and_subdue_lag() {
+    let mut status = review_status_record(12, "Completed state", "author", false);
+    status.merged = true;
+    status.closed = true;
+    status.check_status = PullRequestCheckStatus::Failing;
+    status.commented_reviewers = vec!["example-reviewer".to_owned()];
+    let since = chrono::Utc::now() - chrono::Duration::hours(5);
+    status.created_at = Some(since.to_rfc3339());
+    let row = ReviewRequestRowView {
+        status,
+        state: crate::domain::ReviewRequestState::Commented,
+        viewer_signal: ReviewRequestViewerSignal::None,
+        lag_since_unix: Some(since.timestamp()),
+        dismissal: None,
+    };
+    for frame in render_both_tables(&row, Some(4 * 3600), true, PullRequestTableLayout::Flow) {
+        let text = frame
+            .text
+            .lines()
+            .nth(frame.rows[0].line)
+            .expect("PR row exists");
+        assert!(
+            text.contains(&osc8_link(row.status.url.as_deref().unwrap(), "12")),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!("\x1b[22m{RED_BOLD_STYLE}Chk{RESET_STYLE}")),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!(
+                "\x1b[22m{RED_STYLE}Rev{RESET_STYLE} {DIM_STYLE}5h  {RESET_STYLE}"
+            )),
+            "{text:?}"
+        );
+        assert!(text.contains("● Completed state"), "{text:?}");
+    }
+}
+
+#[test]
+fn mergeability_numbers_clear_lifecycle_color_and_restore_it_afterwards() {
+    for (merge_status, style) in [
+        (PullRequestMergeStatus::Mergeable, GREEN_STYLE),
+        (PullRequestMergeStatus::Conflicting, RED_STYLE),
+        (PullRequestMergeStatus::Unknown, "\x1b[39m"),
+    ] {
+        let mut status = review_status_record(12, "Title", "author", true);
+        status.merge_status = merge_status;
+        for restore in [DRAFT_ROW_STYLE, PASTEL_BLUE_STYLE] {
+            assert_eq!(
+                pull_request_mergeability_label("12", Some(&status), true, restore),
+                format!("\x1b[22m{style}12{RESET_STYLE}{restore}"),
+            );
+            assert_eq!(
+                pull_request_mergeability_label("12", Some(&status), false, restore),
+                "12"
+            );
+            status.closed = true;
+            assert_eq!(
+                pull_request_mergeability_label("12", Some(&status), true, restore),
+                format!("\x1b[22m\x1b[39m12{RESET_STYLE}{restore}"),
+            );
+            status.closed = false;
         }
     }
 }
@@ -500,9 +734,9 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                         }
                     } else if color {
                         let review_style = if number == 15 {
-                            GREEN_STYLE
+                            GREEN_BOLD_STYLE
                         } else {
-                            CYAN_STYLE
+                            VIOLET_STYLE
                         };
                         assert!(
                             row.contains(&format!(
@@ -514,7 +748,9 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
                     if color && draft {
                         assert!(row.starts_with(DRAFT_ROW_STYLE), "{row:?}");
                         assert!(row.contains(&format!("\x1b[22m\x1b[48;2;232;232;232m\x1b[38;2;98;98;98m backend {RESET_STYLE}{DRAFT_ROW_STYLE}")), "{row:?}");
-                        assert!(!row.contains(BOLD_STYLE), "{row:?}");
+                        if number != 15 {
+                            assert!(!row.contains(BOLD_STYLE), "{row:?}");
+                        }
                         assert!(!row.contains("\x1b[38;2;194;95;0m"), "{row:?}");
                         assert!(row.ends_with(RESET_STYLE), "{row:?}");
                     } else if color && number == 16 {
@@ -526,4 +762,60 @@ fn both_tables_preserve_status_colors_and_alignment_on_subdued_rows() {
             }
         }
     }
+}
+
+fn render_both_tables(
+    row: &ReviewRequestRowView,
+    threshold: Option<u64>,
+    color: bool,
+    layout: PullRequestTableLayout,
+) -> [PullRequestTableFrame; 2] {
+    let status = &row.status;
+    let view = ReviewRequestsView {
+        viewer: "example-reviewer".to_owned(),
+        repositories: vec![ReviewRequestRepositoryView {
+            repository: GitHubRepository {
+                owner: "example-owner".to_owned(),
+                name: "repo".to_owned(),
+            },
+            layout_key: None,
+            root: None,
+            display_root: None,
+            rows: vec![row.clone()],
+            external: false,
+            review_wait_threshold_seconds: threshold,
+        }],
+    };
+    let pull_request = pull_request_choice_record(
+        status.number,
+        &status.title,
+        &status.head_branch,
+        &status.base_branch,
+        status.draft,
+    );
+    let report = PullRequestStackStatusReport {
+        repository: preview_plan().repository,
+        snapshot: PullRequestStackSnapshot::from_metadata(
+            &StackMetadata::default(),
+            &[],
+            &[pull_request],
+            PullRequestStackSelection::default(),
+        ),
+        statuses: BTreeMap::from([(status.number, status.clone())]),
+        trunk: None,
+        review_wait_threshold_seconds: threshold,
+    };
+    let entry = GlobalStackStatusEntry::current(PathBuf::from("/repo"), &report);
+    [
+        render_review_requests(&view, color, Some(120), layout, &BTreeMap::new()),
+        render_global_stack_status(
+            &[entry],
+            1,
+            Path::new("/repo"),
+            color,
+            Some(120),
+            layout,
+            &BTreeMap::new(),
+        ),
+    ]
 }

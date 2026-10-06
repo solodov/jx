@@ -451,22 +451,19 @@ fn review_request_row(
     let row_color = color;
     let on_ice = review_request_is_on_ice(&row.status);
     let row_style = review_request_row_style(row, color);
-    let pr = review_request_pr_cell(&repository.repository, &row.status, row_color);
-    let check = pull_request_check_cell(Some(&row.status), row.status.merged, row_color, row_style);
+    let pr = review_request_pr_cell(&repository.repository, &row.status, row_color, row_style);
+    let check = pull_request_check_cell(Some(&row.status), row_color, row_style);
     let lag = review_lag_cell(
         review_request_lag_timestamp(row, viewer),
         repository.review_wait_threshold_seconds,
     );
-    let state = review_request_state_cell(
-        &row.status,
-        row.state,
-        row.viewer_signal,
-        viewer,
-        row_color,
-        lag.over_threshold,
+    let state = pull_request_review_cell(Some(&row.status), row_color, row_style);
+    let lag = render_review_lag_cell(
+        &lag,
+        color && !on_ice,
         row_style,
+        row.status.draft || row.status.closed || row.status.merged,
     );
-    let lag = render_review_lag_cell(&lag, color && !on_ice, row_style, false, row.status.draft);
     let title = review_request_title(row, row_color, layout, display_names);
     let pr_padding = " "
         .repeat(PULL_REQUEST_STATUS_PR_WIDTH.saturating_sub(row.status.number.to_string().len()));
@@ -520,8 +517,6 @@ fn review_request_row_style(row: &ReviewRequestRowView, color: bool) -> &'static
         PASTEL_BLUE_STYLE
     } else if row.status.draft {
         DRAFT_ROW_STYLE
-    } else if pull_request_has_merge_conflict(&row.status) {
-        CONFLICT_STYLE
     } else {
         ""
     }
@@ -531,12 +526,19 @@ fn review_request_is_on_ice(status: &PullRequestStatusRecord) -> bool {
     status.closed && !status.merged
 }
 
+/// Links the PR number while sharing mergeability styling with stack status.
 fn review_request_pr_cell(
     repository: &GitHubRepository,
     status: &PullRequestStatusRecord,
     color: bool,
+    restore_style: &str,
 ) -> String {
-    let label = status.number.to_string();
+    let label = pull_request_mergeability_label(
+        &status.number.to_string(),
+        Some(status),
+        color,
+        restore_style,
+    );
     let url = review_request_url(repository, status);
     if color {
         osc8_link(&url, &label)
@@ -550,69 +552,6 @@ fn review_request_state_waits_on_viewer(state: ReviewRequestState) -> bool {
         state,
         ReviewRequestState::New | ReviewRequestState::Answered | ReviewRequestState::Again
     )
-}
-
-/// Returns true when a policy-visible non-viewer approval exists while this row still waits on the viewer.
-fn review_request_waits_on_viewer_with_peer_approval(
-    status: &PullRequestStatusRecord,
-    state: ReviewRequestState,
-    viewer: &str,
-) -> bool {
-    review_request_state_waits_on_viewer(state)
-        && !status
-            .approved_reviewers
-            .iter()
-            .any(|reviewer| reviewer == viewer)
-        && status
-            .approved_reviewers
-            .iter()
-            .any(|reviewer| reviewer != viewer)
-}
-
-/// Renders the viewer's review signal only when the PR has requested or actual reviewers.
-fn review_request_state_cell(
-    status: &PullRequestStatusRecord,
-    state: ReviewRequestState,
-    viewer_signal: ReviewRequestViewerSignal,
-    viewer: &str,
-    color: bool,
-    review_lag_over_threshold: bool,
-    restore_style: &str,
-) -> String {
-    if !pull_request_has_reviewers(status) {
-        return render_pull_request_status_cell("Rev", None, color, restore_style);
-    }
-    if viewer_signal == ReviewRequestViewerSignal::DismissedApproval
-        || review_request_waits_on_viewer_with_peer_approval(status, state, viewer)
-    {
-        return render_pull_request_status_cell(
-            "Rev",
-            Some(("✓", PullRequestStatusStyle::Comment)),
-            color,
-            restore_style,
-        );
-    }
-    let signal = match state {
-        ReviewRequestState::New | ReviewRequestState::Answered | ReviewRequestState::Again => (
-            "?",
-            pull_request_review_wait_style(review_lag_over_threshold),
-        ),
-        ReviewRequestState::ChangesRequested => ("!", PullRequestStatusStyle::Bad),
-        ReviewRequestState::Commented => ("!", PullRequestStatusStyle::Comment),
-        ReviewRequestState::Approved => (
-            "✓",
-            if status
-                .commented_reviewers
-                .iter()
-                .any(|reviewer| reviewer == viewer)
-            {
-                PullRequestStatusStyle::Comment
-            } else {
-                PullRequestStatusStyle::Good
-            },
-        ),
-    };
-    render_pull_request_status_cell("Rev", Some(signal), color, restore_style)
 }
 
 fn review_request_label_chips(row: &ReviewRequestRowView, color: bool) -> Vec<String> {
