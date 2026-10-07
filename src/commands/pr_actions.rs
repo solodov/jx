@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::{prepare_pr_action, PrActionContext, PrActionUnavailable, PreparedPrAction};
 use crate::repository::ResolvedPrAction;
+mod capture;
 mod execution;
 mod log_file;
 pub(super) use execution::{PrActionFailure, RunningPrAction};

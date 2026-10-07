@@ -122,13 +122,13 @@ struct HookLogContext<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HookLog {
-    path: Option<PathBuf>,
+    sink: Option<LogSink>,
 }
 
 impl HookLog {
     fn from_environment(environment: &RuntimeEnvironment) -> Self {
         Self {
-            path: hook_log_path(environment),
+            sink: hook_log_path(environment).and_then(|path| LogSink::open(path).ok()),
         }
     }
 
@@ -139,22 +139,7 @@ impl HookLog {
         message: Option<&str>,
         output: Option<&str>,
     ) {
-        let Some(path) = &self.path else {
-            return;
-        };
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            if std::fs::create_dir_all(parent).is_err() {
-                return;
-            }
-        }
-        let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        else {
+        let Some(sink) = &self.sink else {
             return;
         };
         let mut record = serde_json::json!({
@@ -173,9 +158,7 @@ impl HookLog {
         if let Some(output) = output {
             record["output"] = serde_json::Value::String(output.to_owned());
         }
-        if serde_json::to_writer(&mut file, &record).is_ok() {
-            let _ = writeln!(file);
-        }
+        let _ = sink.append_json(&record);
     }
 }
 

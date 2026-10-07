@@ -9,21 +9,17 @@ use super::*;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Map, Value};
 use std::{
-    fs::{self, File, OpenOptions},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant, SystemTime},
 };
 
 const DEFAULT_PERF_LOG_FILE: &str = "jx-perf.log";
 static NEXT_SPAN_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Append-only destination for command performance spans.
+/// Rotating diagnostic destination for command performance spans.
 #[derive(Debug, Clone)]
 pub(super) struct PerfLog {
-    writer: Option<Arc<Mutex<File>>>,
+    writer: Option<LogSink>,
 }
 
 impl PerfLog {
@@ -32,20 +28,9 @@ impl PerfLog {
         let Some(path) = perf_log_path(environment) else {
             return Self::disabled();
         };
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            if fs::create_dir_all(parent).is_err() {
-                return Self::disabled();
-            }
-        }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map(|file| Self {
-                writer: Some(Arc::new(Mutex::new(file))),
+        LogSink::open(path)
+            .map(|writer| Self {
+                writer: Some(writer),
             })
             .unwrap_or_else(|_| Self::disabled())
     }
@@ -79,7 +64,7 @@ impl PerfLog {
 
 /// One active traced operation.
 pub(super) struct PerfSpan {
-    writer: Option<Arc<Mutex<File>>>,
+    writer: Option<LogSink>,
     trace_id: String,
     span_id: String,
     parent_span_id: Option<String>,
@@ -217,13 +202,7 @@ impl PerfSpan {
             return;
         };
 
-        let event = self.event();
-        let Ok(mut writer) = writer.lock() else {
-            return;
-        };
-        if serde_json::to_writer(&mut *writer, &event).is_ok() {
-            let _ = writer.write_all(b"\n");
-        }
+        let _ = writer.append_json(&self.event());
     }
 
     fn event(&self) -> Value {
@@ -435,6 +414,7 @@ fn format_system_time(time: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn perf_span_writes_json_event_with_steps() {

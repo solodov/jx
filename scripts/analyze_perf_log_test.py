@@ -102,6 +102,51 @@ class SyncDiagnosticsTest(unittest.TestCase):
         self.assertIn("outcome=abandoned", capture(analyzer.print_sync_diagnostics, records))
 
 
+class RotatedHistoryTest(unittest.TestCase):
+    def test_numbered_archives_are_read_oldest_first_with_source_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perf[1].log"
+            for suffix, index in [(".10", 10), (".2", 2), (".1", 1), ("", 0)]:
+                source = path.with_name(path.name + suffix)
+                source.write_text(json.dumps({"index": index}) + "\n", encoding="utf-8")
+            path.with_name(path.name + ".lock").write_text("not a record", encoding="utf-8")
+            path.with_name(path.name + ".1.extra").write_text("not a record", encoding="utf-8")
+            records, skipped = analyzer.read_records(path)
+            self.assertEqual([record["index"] for record in records], [10, 2, 1, 0])
+            self.assertEqual([record["_lineno"] for record in records], [1, 2, 3, 4])
+            self.assertEqual(analyzer.record_location(records[0]), "perf[1].log.10:1")
+            self.assertEqual(analyzer.record_location(records[-1]), "perf[1].log:1")
+            self.assertEqual(skipped, 0)
+
+    def test_command_windows_include_spans_across_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perf.log"
+            path.with_name(path.name + ".1").write_text("not json\n" + json.dumps({
+                "op": "jj.fetch_origin", "started_at": "2026-10-01T00:00:00Z",
+                "pid": 123, "duration_us": 10,
+                "steps": [{"name": "rebase_result", "diagnostic": True, "outcome": "abandoned"}],
+            }) + "\n", encoding="utf-8")
+            path.write_text(json.dumps({
+                "op": "command.run", "command": "sync", "pid": 123,
+                "started_at": "2026-10-01T00:00:00Z", "duration_us": 1_000_000,
+            }) + "\n", encoding="utf-8")
+            records, skipped = analyzer.read_records(path)
+            command = analyzer.matching_commands(records, "sync")[-1]
+            output = capture(analyzer.print_window, records, command, 30)
+            self.assertEqual(skipped, 1)
+            self.assertIn("perf.log:1", output)
+            self.assertIn("nested records: 1", output)
+            self.assertIn("outcome=abandoned", output)
+
+    def test_archives_remain_readable_when_the_active_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perf.log"
+            path.with_name(path.name + ".1").write_text('{"index": 1}\n', encoding="utf-8")
+            records, skipped = analyzer.read_records(path)
+            self.assertEqual(records[0]["index"], 1)
+            self.assertEqual(skipped, 0)
+
+
 def record(op, start, lineno):
     return {
         "op": op, "started_at": start.isoformat(), "_start": start,

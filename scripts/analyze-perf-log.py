@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -60,7 +61,7 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         type=Path,
         default=DEFAULT_LOG_PATH,
-        help=f"perf log path (default: {DEFAULT_LOG_PATH})",
+        help=f"perf log path, including numbered archives (default: {DEFAULT_LOG_PATH})",
     )
     parser.add_argument(
         "--command",
@@ -98,30 +99,49 @@ def positive_int(value: str) -> int:
 
 
 def read_records(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Read retained JSONL history oldest first, preserving physical source locations."""
     records: list[dict[str, Any]] = []
     skipped = 0
-    with path.open(encoding="utf-8") as handle:
-        for lineno, line in enumerate(handle, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                skipped += 1
-                continue
-            if not isinstance(record, dict):
-                skipped += 1
-                continue
-            record["_lineno"] = lineno
-            if started_at := record.get("started_at"):
-                start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                record["_start"] = start
-                record["_end"] = start + timedelta(
-                    microseconds=record.get("duration_us", 0)
-                )
-            records.append(record)
+    lineno = 0
+    for source in log_paths(path):
+        with source.open(encoding="utf-8") as handle:
+            for file_lineno, line in enumerate(handle, 1):
+                lineno += 1
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    skipped += 1
+                    continue
+                if not isinstance(record, dict):
+                    skipped += 1
+                    continue
+                record["_lineno"] = lineno
+                record["_source"] = str(source)
+                record["_file_lineno"] = file_lineno
+                if started_at := record.get("started_at"):
+                    start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                    record["_start"] = start
+                    record["_end"] = start + timedelta(
+                        microseconds=record.get("duration_us", 0)
+                    )
+                records.append(record)
     return records, skipped
+
+
+def log_paths(path: Path) -> list[Path]:
+    """Find numbered archives without matching lock files or other logs."""
+    pattern = re.compile(re.escape(path.name) + r"\.([1-9][0-9]*)")
+    archives = []
+    for candidate in path.parent.iterdir():
+        if match := pattern.fullmatch(candidate.name):
+            archives.append((int(match[1]), candidate))
+    sources = [source for _, source in sorted(archives, reverse=True)]
+    if path.exists() or not sources:
+        sources.append(path)
+    return sources
 
 
 def matching_commands(
@@ -164,7 +184,7 @@ def print_window(
         )
     ]
     print(
-        f"\n=== window for command line {command['_lineno']} "
+        f"\n=== window for command {record_location(command)} "
         f"{command.get('started_at', '')} {duration(command)} ==="
     )
     print_command(command)
@@ -261,7 +281,7 @@ def print_step_spans(records: list[dict[str, Any]], top_steps: int) -> None:
     for span in spans:
         extras = event_extras(span)
         suffix = f"  {extras}" if extras else ""
-        print(f"  span line {span['_lineno']} {event_label(span)} {duration(span)}{suffix}")
+        print(f"  span {record_location(span)} {event_label(span)} {duration(span)}{suffix}")
         for step in sorted(
             [step for step in span.get("steps", []) if not step.get("diagnostic")],
             key=lambda item: item.get("duration_us", 0), reverse=True
@@ -277,10 +297,17 @@ def print_event(record: dict[str, Any]) -> None:
     extras = event_extras(record)
     suffix = f"  {extras}" if extras else ""
     print(
-        f"{record['_lineno']:>5} {record.get('started_at', ''):<28} "
+        f"{record_location(record)} {record.get('started_at', ''):<28} "
         f"{event_label(record):<48} {str(record.get('status', '')):<5} "
         f"{duration(record):>9}{suffix}"
     )
+
+
+def record_location(record: dict[str, Any]) -> str:
+    """Show the archive filename and its own line number when available."""
+    if source := record.get("_source"):
+        return f"{Path(source).name}:{record['_file_lineno']}"
+    return f"line {record['_lineno']}"
 
 
 def print_step(step: dict[str, Any], indent: str) -> None:

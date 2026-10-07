@@ -1,11 +1,12 @@
+use super::capture::CapturedProcess;
 use super::*;
 use crate::repository::PrActionOnSuccess;
-use std::{fs::File, process::Child, time::Instant};
+use std::time::Instant;
 
 /// A quiet command and its log, retained through a configured reload after the child exits.
 /// Dropping a live command cancels and reaps it.
 pub(in crate::commands) struct RunningPrAction {
-    child: Option<Child>,
+    process: Option<CapturedProcess>,
     title: String,
     on_success: PrActionOnSuccess,
     log: ActionLog,
@@ -13,7 +14,7 @@ pub(in crate::commands) struct RunningPrAction {
 }
 
 impl RunningPrAction {
-    /// Opens the log before spawning; child streams never inherit the dashboard's terminal.
+    /// Opens the log before spawning; child streams are captured, never given terminal or log handles.
     pub(in crate::commands) fn start(
         action: PreparedPrAction,
         environment: &RuntimeEnvironment,
@@ -22,29 +23,10 @@ impl RunningPrAction {
         let mut log = ActionLog::open(environment, &action, action_set)?;
         log.record("start", None)
             .map_err(|error| log.unavailable("Action not started", error))?;
-        let child = (|| {
-            let (program, arguments) = action
-                .command
-                .split_first()
-                .ok_or_else(|| io::Error::other("action has no executable"))?;
-            let mut command = ProcessCommand::new(program);
-            command
-                .args(arguments)
-                .current_dir(&action.cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(log.file.try_clone()?))
-                .stderr(Stdio::from(log.file.try_clone()?));
-            // Isolate descendants so cancelling an action cannot signal the dashboard.
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                command.process_group(0);
-            }
-            command.spawn()
-        })();
-        match child {
-            Ok(child) => Ok(Self {
-                child: Some(child),
+        let process = CapturedProcess::spawn(&action.command, &action.cwd, log.sink.clone());
+        match process {
+            Ok(process) => Ok(Self {
+                process: Some(process),
                 title: action.title,
                 on_success: action.on_success,
                 log,
@@ -60,10 +42,9 @@ impl RunningPrAction {
 
     /// Returns a result once finished, leaving the UI free to handle keys and resizes while running.
     pub(in crate::commands) fn poll(&mut self) -> Option<Result<(), PrActionFailure>> {
-        match self.child.as_mut()?.try_wait() {
-            Ok(None) => None,
-            Ok(Some(status)) => {
-                self.child = None;
+        match self.process.as_mut()?.poll()? {
+            Ok(status) => {
+                self.process = None;
                 let message = status.to_string();
                 Some(if status.success() {
                     let status = if self.on_success == PrActionOnSuccess::None {
@@ -84,7 +65,7 @@ impl RunningPrAction {
                 Some(Err(self.log.failure(
                     &self.title,
                     "failed",
-                    &format!("could not wait: {error}"),
+                    &format!("execution or output capture failed: {error}"),
                 )))
             }
         }
@@ -138,21 +119,15 @@ impl RunningPrAction {
     }
 
     fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            #[cfg(unix)]
-            // SAFETY: this unreaped child owns the private process group created at spawn.
-            unsafe {
-                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut process) = self.process.take() {
+            process.stop();
         }
     }
 }
 
 impl Drop for RunningPrAction {
     fn drop(&mut self) {
-        if self.child.is_some() && self.poll().is_none() {
+        if self.process.is_some() && self.poll().is_none() {
             self.stop();
             let _ = self.log.record("cancelled", Some("dashboard closed"));
         } else if self.log.refresh_started.is_some() {
@@ -181,8 +156,7 @@ impl From<String> for PrActionFailure {
 }
 
 struct ActionLog {
-    file: File,
-    path: PathBuf,
+    sink: LogSink,
     metadata: serde_json::Value,
     started: Instant,
     refresh_started: Option<Instant>,
@@ -195,7 +169,7 @@ impl ActionLog {
         action_set: PrActionSet,
     ) -> Result<Self, PrActionFailure> {
         let started = Instant::now();
-        let (file, path) = open_action_log(environment).map_err(|message| PrActionFailure {
+        let sink = open_action_log(environment).map_err(|message| PrActionFailure {
             message: format!("Action not started: {message}"),
             log_path: None,
         })?;
@@ -212,8 +186,7 @@ impl ActionLog {
             "on_success": action.on_success.as_str(),
         });
         Ok(Self {
-            file,
-            path,
+            sink,
             metadata,
             started,
             refresh_started: None,
@@ -236,14 +209,14 @@ impl ActionLog {
         }
         // Delimit metadata from raw child output, including output without a final newline.
         let record = format!("\n[jx-action] {}\n", self.metadata);
-        self.file.write_all(record.as_bytes())
+        self.sink.append(record.as_bytes())
     }
 
     fn failure(&mut self, title: &str, status: &str, detail: &str) -> PrActionFailure {
         match self.record(status, Some(detail)) {
             Ok(()) => PrActionFailure {
                 message: format!("{title} {status}"),
-                log_path: Some(self.path.clone()),
+                log_path: Some(self.sink.path().to_path_buf()),
             },
             Err(error) => self.unavailable(
                 &format!("{title} {status}: {detail}; logging failed"),
@@ -254,7 +227,7 @@ impl ActionLog {
 
     fn unavailable(&self, message: &str, error: io::Error) -> PrActionFailure {
         PrActionFailure {
-            message: format!("{message}: {}: {error}", self.path.display()),
+            message: format!("{message}: {}: {error}", self.sink.path().display()),
             log_path: None,
         }
     }

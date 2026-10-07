@@ -1080,13 +1080,14 @@ fn apply_pull_request_effects(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PullRequestHandlerLog {
-    path: Option<PathBuf>,
+    sink: Option<LogSink>,
 }
 
 impl PullRequestHandlerLog {
     fn from_environment(environment: &RuntimeEnvironment) -> Self {
         Self {
-            path: pull_request_handler_log_path(environment),
+            sink: pull_request_handler_log_path(environment)
+                .and_then(|path| LogSink::open(path).ok()),
         }
     }
 
@@ -1099,22 +1100,7 @@ impl PullRequestHandlerLog {
         status: &str,
         message: Option<&str>,
     ) {
-        let Some(path) = &self.path else {
-            return;
-        };
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            if std::fs::create_dir_all(parent).is_err() {
-                return;
-            }
-        }
-        let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        else {
+        let Some(sink) = &self.sink else {
             return;
         };
         let mut record = serde_json::json!({
@@ -1135,9 +1121,7 @@ impl PullRequestHandlerLog {
         if let Some(message) = message {
             record["message"] = serde_json::Value::String(message.to_owned());
         }
-        if serde_json::to_writer(&mut file, &record).is_ok() {
-            let _ = writeln!(file);
-        }
+        let _ = sink.append_json(&record);
     }
 }
 
@@ -1341,13 +1325,13 @@ fn apply_work_item_effects(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorkItemHandlerLog {
-    path: Option<PathBuf>,
+    sink: Option<LogSink>,
 }
 
 impl WorkItemHandlerLog {
     fn from_environment(environment: &RuntimeEnvironment) -> Self {
         Self {
-            path: work_item_handler_log_path(environment),
+            sink: work_item_handler_log_path(environment).and_then(|path| LogSink::open(path).ok()),
         }
     }
 
@@ -1360,22 +1344,7 @@ impl WorkItemHandlerLog {
         status: &str,
         message: Option<&str>,
     ) {
-        let Some(path) = &self.path else {
-            return;
-        };
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            if std::fs::create_dir_all(parent).is_err() {
-                return;
-            }
-        }
-        let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        else {
+        let Some(sink) = &self.sink else {
             return;
         };
         let mut record = serde_json::json!({
@@ -1395,9 +1364,7 @@ impl WorkItemHandlerLog {
         if let Some(message) = message {
             record["message"] = serde_json::Value::String(message.to_owned());
         }
-        if serde_json::to_writer(&mut file, &record).is_ok() {
-            let _ = writeln!(file);
-        }
+        let _ = sink.append_json(&record);
     }
 }
 

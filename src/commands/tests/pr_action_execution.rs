@@ -217,6 +217,69 @@ fn pending_actions_can_be_cancelled_and_dropped_without_terminal_prompts() {
     assert!(log.contains("dashboard closed"));
 }
 
+#[cfg(unix)]
+#[test]
+fn large_action_output_is_drained_before_success_and_rotates_through_the_sink() {
+    let temp = tempfile::tempdir().unwrap();
+    let environment = action_environment(temp.path());
+    let path = temp.path().join(".local/state/jx/jx-actions.log");
+    LogSink::open(&path).unwrap();
+    fs::write(&path, vec![b'x'; 20 * 1024 * 1024 - 1024]).unwrap();
+    let action = invocation(&[
+        "sh", "-c",
+        "i=0; while [ \"$i\" -lt 100 ]; do printf '%08000d' 0; printf '%08000d' 1 >&2; i=$((i + 1)); done; printf 'stdout tail'; printf 'stderr tail' >&2",
+    ], temp.path());
+    let mut running = RunningPrAction::start(action, &environment, PrActionSet::Review).unwrap();
+    wait_for_action(&mut running).unwrap();
+    let log = fs::read_to_string(&path).unwrap();
+    let success = log.find("\"status\":\"success\"").unwrap();
+    assert!(log.find("stdout tail").unwrap() < success);
+    assert!(log.find("stderr tail").unwrap() < success);
+    assert!(path.metadata().unwrap().len() <= 20 * 1024 * 1024);
+    let archive = path.with_extension("log.1");
+    assert!(archive.metadata().unwrap().len() <= 20 * 1024 * 1024);
+}
+
+#[cfg(unix)]
+#[test]
+fn output_logging_failures_do_not_deadlock_a_child_with_full_pipes() {
+    let temp = tempfile::tempdir().unwrap();
+    let environment = action_environment(temp.path());
+    let action = invocation(&[
+        "sh", "-c",
+        "while [ ! -f release ]; do sleep 0.01; done; i=0; while [ \"$i\" -lt 100 ]; do printf '%08000d' 0; printf '%08000d' 1 >&2; i=$((i + 1)); done",
+    ], temp.path());
+    let mut running = RunningPrAction::start(action, &environment, PrActionSet::Review).unwrap();
+    let path = temp.path().join(".local/state/jx/jx-actions.log");
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    fs::write(temp.path().join("release"), "").unwrap();
+    let failure = wait_for_action(&mut running).unwrap_err();
+    assert!(failure.log_path.is_none());
+    assert!(failure.message.contains("output capture failed"));
+    assert!(failure.message.contains("logging failed"));
+}
+
+#[cfg(unix)]
+#[test]
+fn descendants_retaining_output_pipes_do_not_leave_capture_running_forever() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut running = RunningPrAction::start(
+        invocation(
+            &["sh", "-c", "sleep 30 & printf 'background started'; exit 0"],
+            temp.path(),
+        ),
+        &action_environment(temp.path()),
+        PrActionSet::Review,
+    )
+    .unwrap();
+    let failure = wait_for_action(&mut running).unwrap_err();
+    let log = fs::read_to_string(failure.log_path.unwrap()).unwrap();
+    assert!(log.contains("background started"));
+    assert!(log.contains("action output did not close"));
+    assert!(!log.contains("\"status\":\"success\""));
+}
+
 #[test]
 fn action_loading_uses_selected_checkout_not_caller_and_external_prs_use_global_config() {
     let temp = tempfile::tempdir().unwrap();

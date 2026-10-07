@@ -1,6 +1,5 @@
 use super::*;
 use crate::commands::pr_actions::{open_action_log, PrActionFailure, PrActionSet};
-use std::io::Write;
 
 /// Records standalone refresh failures before giving the status line a log link.
 pub(super) fn record_refresh_failure(
@@ -9,7 +8,8 @@ pub(super) fn record_refresh_failure(
     action_set: PrActionSet,
 ) -> PrActionFailure {
     let logged = (|| {
-        let (mut file, path) = open_action_log(environment)?;
+        let sink = open_action_log(environment)?;
+        let path = sink.path().to_path_buf();
         let record = serde_json::json!({
             "at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "pid": std::process::id(),
@@ -21,7 +21,7 @@ pub(super) fn record_refresh_failure(
             "status": "refresh_failed",
             "message": message,
         });
-        writeln!(file, "\n[jx-dashboard] {record}")
+        sink.append(format!("\n[jx-dashboard] {record}\n").as_bytes())
             .map_err(|error| format!("cannot write log {}: {error}", path.display()))?;
         Ok::<_, String>(path)
     })();

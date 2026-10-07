@@ -2993,6 +2993,7 @@ dependencies = [
  "octocrab",
  "pollster 1.0.1",
  "regex",
+ "rolling-file",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4306,6 +4307,15 @@ name = "roff"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
+
+[[package]]
+name = "rolling-file"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8395b4f860856b740f20a296ea2cd4d823e81a2658cf05ef61be22916026a906"
+dependencies = [
+ "chrono",
+]
 
 [[package]]
 name = "rpassword"
