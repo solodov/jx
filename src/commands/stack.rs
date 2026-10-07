@@ -1338,9 +1338,13 @@ fn non_empty_stack_publish_facts(
     Ok(facts)
 }
 
+/// Selects the working-copy change by default, expanding it only for full-stack publication.
 fn stack_publish_selection(revisions: &[String], apply_to_stack: bool) -> StackPublishSelection {
     match (revisions, apply_to_stack) {
-        ([], _) => StackPublishSelection::InferredStack { anchor: None },
+        ([], false) => StackPublishSelection::ExplicitRevisions {
+            revisions: vec!["@".to_owned()],
+        },
+        ([], true) => StackPublishSelection::InferredStack { anchor: None },
         ([anchor], true) => StackPublishSelection::InferredStack {
             anchor: Some(anchor.clone()),
         },

@@ -3386,8 +3386,8 @@ fn stack_plan_renders_neighbourhood_tree_without_github_mutations() {
 }
 
 #[test]
-fn stack_publish_without_revision_publishes_inferred_stack() {
-    // Verifies: stack publish expands the working-copy stack when no explicit revset is supplied.
+fn stack_publish_apply_to_stack_without_revision_publishes_inferred_stack() {
+    // Verifies: --apply-to-stack expands the working-copy stack without an explicit revset.
     let workspace = TestWorkspace::new();
     workspace.write_git_config(
         r#"
@@ -3587,10 +3587,10 @@ fn stack_publish_intent_flags_apply_to_current_commit_only() {
     child.target_change.change_id = "bbbbbbbb22222222".to_owned();
     child.target_change.commit_id = "22222222bbbbbbbb".to_owned();
     child.target_change.description = "TASK-123: Child change".to_owned();
-    child.nearest_ancestor_bookmark = None;
+    child.nearest_ancestor_bookmark = Some("example-user/00-aaaaaaaa".to_owned());
     child.stack_index = 1;
     let root_pr =
-        pull_request_choice_record(42, "Root change", "example-user/00-aaaaaaaa", "main", false);
+        pull_request_choice_record(41, "Root change", "example-user/00-aaaaaaaa", "main", false);
     let services = FakeServices {
         stack_publish_facts: Some(StackPublishFacts {
             nodes: vec![
@@ -3603,8 +3603,8 @@ fn stack_publish_intent_flags_apply_to_current_commit_only() {
                     parent_index: Some(0),
                 },
             ],
-            publish_indexes: vec![0, 1],
-            anchor_index: Some(1),
+            publish_indexes: vec![1],
+            anchor_index: None,
             metrics: StackPublishMetrics::default(),
         }),
         reviewer_candidates: vec![ReviewerCandidate::new(
@@ -3618,14 +3618,14 @@ fn stack_publish_intent_flags_apply_to_current_commit_only() {
         sync_pull_requests: vec![
             root_pr,
             pull_request_choice_record(
-                43,
+                42,
                 "TASK-123: Child change",
-                "example-user/01-bbbbbbbb",
+                "example-user/TASK-123-01-bbbbbbbb",
                 "example-user/00-aaaaaaaa",
                 true,
             ),
         ],
-        expected_labels_by_publish: Some(vec![Vec::new(), vec!["needs-review".to_owned()]]),
+        expected_labels_by_publish: Some(vec![vec!["needs-review".to_owned()]]),
         ..FakeServices::default()
     };
 
@@ -3651,26 +3651,25 @@ fn stack_publish_intent_flags_apply_to_current_commit_only() {
 
     assert_eq!(
         services.pull_request_plan_task_ids.borrow().as_slice(),
-        &[None, Some("TASK-123".to_owned())]
+        &[Some("TASK-123".to_owned())]
     );
     let published_plans = services.published_plans.borrow();
-    assert_eq!(published_plans[0].labels, Vec::<String>::new());
-    assert_eq!(published_plans[0].reviewers, ReviewerSelection::default());
-    assert!(!published_plans[0].draft);
-    assert_eq!(published_plans[1].labels, ["needs-review".to_owned()]);
-    assert!(published_plans[1].reviewers.is_empty());
-    assert!(published_plans[1].draft);
+    assert_eq!(published_plans.len(), 1);
+    assert_eq!(published_plans[0].base, "example-user/00-aaaaaaaa");
+    assert_eq!(published_plans[0].labels, ["needs-review".to_owned()]);
+    assert!(published_plans[0].reviewers.is_empty());
+    assert!(published_plans[0].draft);
 
     let metadata = read_stack_metadata(&workspace.path()).expect("stack metadata reads");
     let root = metadata
         .nodes
         .iter()
-        .find(|node| node.pull_request == Some(42))
+        .find(|node| node.pull_request == Some(41))
         .expect("root node exists");
     let child = metadata
         .nodes
         .iter()
-        .find(|node| node.pull_request == Some(43))
+        .find(|node| node.pull_request == Some(42))
         .expect("child node exists");
     assert!(root.work_ids.is_empty());
     assert!(root.fixes_work_ids.is_empty());
@@ -4069,8 +4068,12 @@ fn stack_publish_ignores_empty_commits_in_selected_stack() {
         ..FakeServices::default()
     };
 
-    let result = run_with_args_and_services(["jx", "stack", "publish"], &environment, &services)
-        .expect("stack publishes non-empty child");
+    let result = run_with_args_and_services(
+        ["jx", "stack", "publish", "--apply-to-stack"],
+        &environment,
+        &services,
+    )
+    .expect("stack publishes non-empty child");
 
     assert_eq!(services.published_pull_request_count.get(), 1);
     assert_eq!(
@@ -4207,7 +4210,7 @@ fn stack_publish_declined_existing_pr_refreshes_context_only() {
     let child_branch = "example-user/01-bbbbbbbb";
     let root_pr = pull_request_choice_record(50, "Root change", root_branch, "main", false);
     let child_pr = pull_request_choice_record(51, "Child change", child_branch, root_branch, false);
-    let confirmer = SequencePullRequestConfirmer::new([false, true]);
+    let confirmer = SequencePullRequestConfirmer::new([true, false]);
     let services = FakeServices {
         stack_publish_facts: Some(StackPublishFacts {
             nodes: vec![
@@ -4234,7 +4237,7 @@ fn stack_publish_declined_existing_pr_refreshes_context_only() {
     };
 
     let result = run_with_args_and_prompts(
-        ["jx", "stack", "publish"],
+        ["jx", "stack", "publish", "--apply-to-stack"],
         &environment,
         &services,
         &SelectAllReviewers,
@@ -4242,7 +4245,10 @@ fn stack_publish_declined_existing_pr_refreshes_context_only() {
     )
     .expect("stack publish proceeds past declined existing PR");
 
-    assert_eq!(confirmer.titles.borrow().as_slice(), ["Child change"]);
+    assert_eq!(
+        confirmer.titles.borrow().as_slice(),
+        ["Root change", "Child change"]
+    );
     assert_eq!(services.published_pull_request_count.get(), 1);
     assert_eq!(
         services.push_bookmark_calls.borrow().as_slice(),
@@ -4397,7 +4403,7 @@ fn stack_publish_declined_unpublished_parent_skips_descendants() {
     };
 
     let result = run_with_args_and_prompts(
-        ["jx", "stack", "publish"],
+        ["jx", "stack", "publish", "--apply-to-stack"],
         &environment,
         &services,
         &SelectAllReviewers,
@@ -4405,7 +4411,7 @@ fn stack_publish_declined_unpublished_parent_skips_descendants() {
     )
     .expect("stack publish cancellation succeeds");
 
-    assert!(confirmer.titles.borrow().is_empty());
+    assert_eq!(confirmer.titles.borrow().as_slice(), ["Root change"]);
     assert_eq!(services.published_pull_request_count.get(), 0);
     assert!(services.push_bookmark_calls.borrow().is_empty());
     assert!(services.sync_pull_request_pushes.borrow().is_empty());
@@ -4464,7 +4470,14 @@ fn stack_publish_readiness_selectors_can_create_mixed_ready_draft_stack() {
     };
 
     run_with_args_and_services(
-        ["jx", "stack", "publish", "--draft", "--ready=root"],
+        [
+            "jx",
+            "stack",
+            "publish",
+            "--apply-to-stack",
+            "--draft",
+            "--ready=root",
+        ],
         &environment,
         &services,
     )

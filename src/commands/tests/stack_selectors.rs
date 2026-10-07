@@ -1,6 +1,114 @@
 use super::*;
 
 #[test]
+fn publish_help_explains_current_change_default_and_full_stack_opt_in() {
+    for command in ["publish", "pub"] {
+        let help = cli()
+            .try_get_matches_from(["jx", "stack", command, "--help"])
+            .expect_err("help prints instead of running publish")
+            .to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(help.contains("Publish the working-copy change by default"));
+        assert!(help.contains("Use --apply-to-stack to publish the full linear stack"));
+    }
+}
+
+#[test]
+fn default_publish_matches_explicit_current_selection_with_unpublished_stack_context() {
+    // Verifies: accepting existing reviewers publishes only the current PR, not its unpublished relatives.
+    let mut expected_output = None;
+    for selector in [None, Some("@"), Some("bbbbbbbb"), Some("42")] {
+        let workspace = TestWorkspace::new();
+        let branch = "example-user/01-bbbbbbbb";
+        selector_context(&workspace, vec![selector_node(42, branch)]);
+        let environment = RuntimeEnvironment::new(workspace.path(), []);
+        let nodes = ["aaaaaaaa", "bbbbbbbb", "cccccccc"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, change_id)| {
+                let mut workspace = workspace_facts();
+                workspace.target_change.change_id = change_id.to_owned();
+                workspace.target_change.commit_id = format!("commit-{index}");
+                workspace.target_change.description = format!("Change {index}");
+                workspace.nearest_ancestor_bookmark = None;
+                workspace.stack_index = index;
+                crate::jj::StackPublishNodeFacts {
+                    workspace,
+                    parent_index: index.checked_sub(1),
+                }
+            })
+            .collect::<Vec<_>>();
+        let inferred = StackPublishFacts {
+            nodes,
+            publish_indexes: vec![0, 1, 2],
+            anchor_index: Some(1),
+            metrics: StackPublishMetrics::default(),
+        };
+        let mut selected = inferred.clone();
+        selected.nodes.truncate(2);
+        selected.publish_indexes = vec![1];
+        selected.anchor_index = None;
+        let mut pull_request = pull_request_choice_record(42, "Change 1", branch, "main", false);
+        pull_request.reviewers = ReviewerSelection::new(["alice", "bob"], ["platform"]);
+        let services = FakeServices {
+            stack_publish_facts: Some(inferred),
+            stack_publish_facts_by_revision: ["@", "bbbbbbbb", "commit-1"]
+                .into_iter()
+                .map(|revision| (revision.to_owned(), selected.clone()))
+                .collect(),
+            local_bookmark_commit_ids: BTreeMap::from([(branch.to_owned(), "commit-1".to_owned())]),
+            pull_requests_by_head: BTreeMap::from([(branch.to_owned(), pull_request.clone())]),
+            pull_request_action: PullRequestAction::Updated,
+            ..FakeServices::default()
+        };
+        let confirmer = SequencePullRequestConfirmer::new([true]);
+        let mut args = vec!["jx", "stack", "pub"];
+        if let Some(selector) = selector {
+            args.extend(["-r", selector]);
+        }
+
+        let result = run_with_args_and_prompts(
+            args,
+            &environment,
+            &services,
+            &CheckedReviewerSelector,
+            &confirmer,
+        )
+        .expect("current PR publishes without publishing its relatives");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .stdout
+            .contains(&format!("Updated {}", example_pull_request_link(42))));
+        if let Some(expected) = &expected_output {
+            assert_eq!(&result.stdout, expected);
+        } else {
+            expected_output = Some(result.stdout);
+        }
+        assert_eq!(confirmer.titles.borrow().as_slice(), ["Change 1"]);
+        assert_eq!(services.push_bookmark_calls.borrow().as_slice(), [branch]);
+        assert_eq!(services.published_pull_request_count.get(), 1);
+        let plans = services.published_plans.borrow();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].target_commit_id, "commit-1");
+        assert_eq!(plans[0].base, "main");
+        assert_eq!(plans[0].reviewers, pull_request.reviewers);
+        assert_eq!(plans[0].existing_pull_request.as_ref().unwrap().number, 42);
+        let revision = match selector {
+            None => "@",
+            Some("42") => "commit-1",
+            Some(revision) => revision,
+        };
+        assert_eq!(
+            services.stack_publish_selections.borrow().first(),
+            Some(&StackPublishSelection::ExplicitRevisions {
+                revisions: vec![revision.to_owned()],
+            }),
+        );
+    }
+}
+
+#[test]
 fn cached_pr_numbers_select_current_local_commits_and_preserve_other_revisions() {
     let workspace = TestWorkspace::new();
     let context = selector_context(&workspace, vec![selector_node(305743, "topic/current")]);

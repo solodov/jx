@@ -1670,7 +1670,7 @@ fn stack_command() -> ClapCommand {
                 .visible_alias("pub")
                 .about("Publish or update GitHub pull requests for a local stack")
                 .long_about(
-                    "Publish or update GitHub pull requests for a local stack.\n\nPublish the working copy's linear stack by default. Use --revision with commits, local bookmarks, revsets, or cached PR numbers for exact selections within one linear stack; with --apply-to-stack, one selected revision instead anchors the full stack. A cached PR number selects its local bookmark's current commit. Publish options affect the current or single selected PR unless --apply-to-stack broadens their scope. Stack-wide fix intent belongs to the final PR.\n\nReviewer selection applies only to ready PRs after readiness overrides. Drafts retain their reviewers; an all-draft selection skips the picker. To add reviewers to one draft, select it explicitly without --apply-to-stack: `jx stack pub -r REVISION -R alice`.",
+                    "Publish or update GitHub pull requests for a local stack.\n\nPublish the working-copy change by default, using surrounding stack changes only as context. Use --revision with commits, local bookmarks, revsets, or cached PR numbers for exact selections within one linear stack. Use --apply-to-stack to publish the full linear stack containing the working copy or one selected revision. A cached PR number selects its local bookmark's current commit. Publish options affect the current or single selected PR unless --apply-to-stack broadens their scope. Stack-wide fix intent belongs to the final PR.\n\nReviewer selection applies only to ready PRs after readiness overrides. Drafts retain their reviewers; an all-draft selection skips the picker. To add reviewers to one draft, select it explicitly without --apply-to-stack: `jx stack pub -r REVISION -R alice`.",
                 )
                 .arg(stack_publish_revision_arg())
                 .arg(task_id_arg())
@@ -2347,7 +2347,7 @@ fn apply_to_stack_arg() -> Arg {
         .short('A')
         .long("apply-to-stack")
         .action(ArgAction::SetTrue)
-        .help("Apply publish intent to every published PR; reviewer selection still applies only to ready PRs")
+        .help("Publish the full stack for the current or single selected change and apply intent to all published PRs; reviewers still apply only to ready PRs")
 }
 
 fn no_event_handlers_arg() -> Arg {
