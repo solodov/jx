@@ -495,7 +495,7 @@ fn review_request_row(
     }
 }
 
-/// Returns the exact timestamp shared by review row ordering and the displayed lag.
+/// Returns the timestamp used to display how long a review has been waiting.
 pub(in crate::commands) fn review_request_lag_timestamp(
     row: &ReviewRequestRowView,
     viewer: &str,

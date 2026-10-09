@@ -26,6 +26,7 @@ mod approval_policy;
 mod draft_reviewers;
 mod review_checks;
 mod stack_context;
+mod stack_order;
 
 #[test]
 fn pull_request_stack_snapshot_layers_live_prs_over_metadata() {

@@ -1506,7 +1506,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("review")
                 .about("Show pull requests requesting your review")
                 .long_about(
-                    "Show GitHub pull requests needing your attention, grouped by repository with longest-waiting reviews first.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
+                    "Show GitHub pull requests needing your attention, grouped by repository with oldest pull requests first.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())
@@ -1648,7 +1648,7 @@ fn stack_command() -> ClapCommand {
             ClapCommand::new("status")
                 .about("Show trunk, check, and review status for pull request stacks")
                 .long_about(
-                    "Show trunk freshness, checks, and reviews for your open PRs and stored stacks, including PRs without local bookmarks. Human output includes local jj change aliases beside PR numbers.\n\nRefresh the local cache without changing GitHub PRs or pushing branches. With --all, scan configured repositories even without existing stack metadata.",
+                    "Show trunk freshness, checks, and reviews for your open PRs and stored stacks, including PRs without local bookmarks. Stacks with the oldest PRs appear first, with parents before children. Human output includes local jj change aliases beside PR numbers.\n\nRefresh the local cache without changing GitHub PRs or pushing branches. With --all, scan configured repositories even without existing stack metadata.",
                 )
                 .arg(stack_status_all_arg())
                 .arg(stack_status_jobs_arg())

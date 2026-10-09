@@ -244,7 +244,7 @@ fn stack_status_table_rows(
     display_names: &BTreeMap<String, String>,
 ) -> Vec<StackStatusTableRow> {
     snapshot
-        .rows()
+        .rows_oldest_first()
         .into_iter()
         .map(|row| {
             let pull_request_number = row.node.pull_request_number();
@@ -808,9 +808,10 @@ fn stack_status_pull_requests_json(
     report: &PullRequestStackStatusReport,
 ) -> Vec<StackStatusPullRequestJson> {
     visible_stack_status_snapshot(report)
-        .nodes
-        .iter()
-        .filter_map(|node| {
+        .rows_oldest_first()
+        .into_iter()
+        .filter_map(|row| {
+            let node = row.node;
             let number = node.pull_request_number()?;
             let status = report.statuses.get(&number);
             Some(StackStatusPullRequestJson {

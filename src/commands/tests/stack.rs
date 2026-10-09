@@ -3,6 +3,8 @@ use crate::github::PullRequestMergeStatus;
 
 #[path = "stack_discovery.rs"]
 mod discovery;
+#[path = "stack_order.rs"]
+mod order;
 
 #[test]
 fn stack_help_describes_cached_display_and_live_refresh() {

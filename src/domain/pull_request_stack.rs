@@ -409,9 +409,14 @@ impl PullRequestStackSnapshot {
         apply_current_selection(nodes, selection)
     }
 
-    /// Returns every stack node in merge order with tree prefixes for renderers.
+    /// Returns newest stacks first, preserving merge order and tree prefixes within each stack.
     pub fn rows(&self) -> Vec<PullRequestStackRow<'_>> {
-        pull_request_stack_rows(&self.nodes)
+        pull_request_stack_rows(&self.nodes, StackRootOrder::NewestFirst)
+    }
+
+    /// Orders stacks by their oldest PR number, retaining merge order and putting unpublished stacks last.
+    pub fn rows_oldest_first(&self) -> Vec<PullRequestStackRow<'_>> {
+        pull_request_stack_rows(&self.nodes, StackRootOrder::OldestFirst)
     }
 
     /// Returns the connected stack component around a selected branch or PR.
@@ -1293,15 +1298,24 @@ fn preserve_missing_ancestors(
     }
 }
 
-fn pull_request_stack_rows(nodes: &[PullRequestStackNode]) -> Vec<PullRequestStackRow<'_>> {
-    let hierarchy = StackHierarchy::new(nodes);
+#[derive(Clone, Copy)]
+enum StackRootOrder {
+    NewestFirst,
+    OldestFirst,
+}
+
+fn pull_request_stack_rows(
+    nodes: &[PullRequestStackNode],
+    order: StackRootOrder,
+) -> Vec<PullRequestStackRow<'_>> {
+    let hierarchy = StackHierarchy::new(nodes, order);
     let mut tree = PullRequestStackTree::new(nodes, hierarchy.children);
     tree.append_roots(&hierarchy.roots);
 
     let mut unvisited = (0..nodes.len())
         .filter(|index| !tree.visited.contains(index))
         .collect::<Vec<_>>();
-    sort_stack_root_indexes_newest_first(&mut unvisited, nodes, &tree.children);
+    sort_stack_root_indexes(&mut unvisited, nodes, &tree.children, order);
     tree.append_roots(&unvisited);
 
     tree.rows
@@ -1331,7 +1345,7 @@ fn connected_stack_indexes(
     pending: &mut Vec<usize>,
 ) -> BTreeSet<usize> {
     let indexes_by_branch = stack_indexes_by_branch(nodes);
-    let hierarchy = StackHierarchy::new(nodes);
+    let hierarchy = StackHierarchy::new(nodes, StackRootOrder::NewestFirst);
     let mut selected = BTreeSet::new();
 
     while let Some(index) = pending.pop() {
@@ -1355,7 +1369,7 @@ fn ordered_selected_stack_indexes(
     nodes: &[PullRequestStackNode],
     selected: &BTreeSet<usize>,
 ) -> Vec<usize> {
-    let hierarchy = StackHierarchy::new(nodes);
+    let hierarchy = StackHierarchy::new(nodes, StackRootOrder::NewestFirst);
     let mut roots = selected
         .iter()
         .copied()
@@ -1367,7 +1381,12 @@ fn ordered_selected_stack_indexes(
                 .is_none_or(|parent| !selected.contains(&parent) || parent == *index)
         })
         .collect::<Vec<_>>();
-    sort_stack_root_indexes_newest_first(&mut roots, nodes, &hierarchy.children);
+    sort_stack_root_indexes(
+        &mut roots,
+        nodes,
+        &hierarchy.children,
+        StackRootOrder::NewestFirst,
+    );
 
     let mut ordered = Vec::new();
     append_selected_stack_indexes(&mut ordered, &roots, &hierarchy.children, selected);
@@ -1398,7 +1417,7 @@ struct StackHierarchy {
 }
 
 impl StackHierarchy {
-    fn new(nodes: &[PullRequestStackNode]) -> Self {
+    fn new(nodes: &[PullRequestStackNode], order: StackRootOrder) -> Self {
         let indexes_by_branch = stack_indexes_by_branch(nodes);
         let mut children = vec![Vec::new(); nodes.len()];
         let mut roots = Vec::new();
@@ -1413,7 +1432,7 @@ impl StackHierarchy {
             }
         }
 
-        sort_stack_root_indexes_newest_first(&mut roots, nodes, &children);
+        sort_stack_root_indexes(&mut roots, nodes, &children, order);
         for child_indexes in &mut children {
             sort_stack_node_indexes(child_indexes, nodes);
         }
@@ -1510,14 +1529,19 @@ fn sort_stack_node_indexes(indexes: &mut [usize], nodes: &[PullRequestStackNode]
     });
 }
 
-fn sort_stack_root_indexes_newest_first(
+fn sort_stack_root_indexes(
     indexes: &mut [usize],
     nodes: &[PullRequestStackNode],
     children: &[Vec<usize>],
+    order: StackRootOrder,
 ) {
     indexes.sort_by(|left, right| {
-        stack_root_sort_key(*right, nodes, children)
-            .cmp(&stack_root_sort_key(*left, nodes, children))
+        let left_key = stack_root_sort_key(*left, nodes, children, order);
+        let right_key = stack_root_sort_key(*right, nodes, children, order);
+        match order {
+            StackRootOrder::NewestFirst => right_key.cmp(&left_key),
+            StackRootOrder::OldestFirst => left_key.cmp(&right_key),
+        }
     });
 }
 
@@ -1525,28 +1549,38 @@ fn stack_root_sort_key<'a>(
     index: usize,
     nodes: &'a [PullRequestStackNode],
     children: &[Vec<usize>],
+    order: StackRootOrder,
 ) -> (u64, &'a str, &'a str) {
+    let number = stack_age_pull_request_number(index, nodes, children, &mut BTreeSet::new(), order);
+    let unpublished = match order {
+        StackRootOrder::NewestFirst => 0,
+        StackRootOrder::OldestFirst => u64::MAX,
+    };
     (
-        stack_newest_pull_request_number(index, nodes, children, &mut BTreeSet::new()).unwrap_or(0),
+        number.unwrap_or(unpublished),
         nodes[index].title.as_str(),
         nodes[index].branch.as_str(),
     )
 }
 
-fn stack_newest_pull_request_number(
+fn stack_age_pull_request_number(
     index: usize,
     nodes: &[PullRequestStackNode],
     children: &[Vec<usize>],
     visited: &mut BTreeSet<usize>,
+    order: StackRootOrder,
 ) -> Option<u64> {
     if !visited.insert(index) {
         return None;
     }
-    children[index]
+    let numbers = children[index]
         .iter()
-        .filter_map(|child| stack_newest_pull_request_number(*child, nodes, children, visited))
-        .chain(nodes[index].pull_request_number())
-        .max()
+        .filter_map(|child| stack_age_pull_request_number(*child, nodes, children, visited, order))
+        .chain(nodes[index].pull_request_number());
+    match order {
+        StackRootOrder::NewestFirst => numbers.max(),
+        StackRootOrder::OldestFirst => numbers.min(),
+    }
 }
 
 fn stack_node_sort_key(node: &PullRequestStackNode) -> (u8, u64, &str, &str) {

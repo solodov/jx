@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn review_orders_exact_lag_within_unchanged_repository_groups() {
+fn review_orders_oldest_prs_first_within_unchanged_repository_groups() {
     let workspace = review_workspace();
     let beta = workspace.create_jj_workspace("projects/api-beta");
     TestWorkspace::write_git_config_at(
@@ -58,7 +58,7 @@ fn review_orders_exact_lag_within_unchanged_repository_groups() {
             .collect(),
         ..FakeServices::default()
     };
-    let expected = vec![12, 15, 20, 80, 40, 30, 99, 90, 8, 7, 9, 10];
+    let expected = vec![12, 15, 20, 30, 40, 80, 90, 99, 7, 8, 9, 10];
 
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("human review renders");
@@ -98,7 +98,7 @@ fn review_orders_exact_lag_within_unchanged_repository_groups() {
 }
 
 #[test]
-fn cached_review_uses_the_same_lag_order_without_fetching() {
+fn cached_review_uses_the_same_pr_age_order_without_fetching() {
     let workspace = review_workspace();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let repository = GitHubRepository {
@@ -107,7 +107,7 @@ fn cached_review_uses_the_same_lag_order_without_fetching() {
     };
     // Keep request events later than the store-generated first_seen timestamp without sleeping.
     let since = chrono::Utc::now().timestamp() + 86_400;
-    let statuses = [(12, since), (30, since + 60), (40, since + 60)].map(|(number, timestamp)| {
+    let statuses = [(40, since), (12, since + 60), (30, since + 30)].map(|(number, timestamp)| {
         let mut status = review_with_lag(number, None).status;
         status.timeline_events = vec![review_requested_at(timestamp)];
         status
@@ -136,7 +136,7 @@ fn cached_review_uses_the_same_lag_order_without_fetching() {
     )
     .expect("cached review renders");
     let output = serde_json::from_str(&result.stdout).expect("valid JSON");
-    assert_eq!(review_numbers(&output), vec![12, 40, 30]);
+    assert_eq!(review_numbers(&output), vec![12, 30, 40]);
     assert!(services.pull_request_status_calls.borrow().is_empty());
 }
 
@@ -147,7 +147,7 @@ fn review_help_explains_inbox_order_and_local_state() {
         .expect_err("help prints")
         .to_string();
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(help.contains("grouped by repository with longest-waiting reviews first"));
+    assert!(help.contains("grouped by repository with oldest pull requests first"));
     assert!(help.contains("without contacting GitHub"));
     assert!(help.contains("Dismissals are local"));
 }
