@@ -93,7 +93,13 @@ zoxide = "auto"
         .stdout
         .contains("command jx work complete --navigation --format picker --prefix \"$query\""));
     assert!(result.stdout.contains("__jx_u_fzf_completion"));
-    assert!(result.stdout.contains("fzf --height=~60%"));
+    assert_eq!(
+        result
+            .stdout
+            .matches("fzf --height=~60% --layout=reverse --ignore-case")
+            .count(),
+        2
+    );
     assert!(result.stdout.contains("local key_width=0 max_key_width=64"));
     assert!(result.stdout.contains("local display_candidates=()"));
     assert!(result

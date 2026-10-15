@@ -194,7 +194,7 @@ __jx_work_delete_fzf_completion() {
 
   (( ${#display_candidates[@]} > 0 )) || return 0
 
-  output="$(printf '%s\n' "${display_candidates[@]}" | fzf --height=~60% --layout=reverse --no-sort --delimiter=$'\t' --with-nth=2 --nth=1 --query "$cur" --header='Enter: complete workspace to delete')" || {
+  output="$(printf '%s\n' "${display_candidates[@]}" | fzf --height=~60% --layout=reverse --ignore-case --no-sort --delimiter=$'\t' --with-nth=2 --nth=1 --query "$cur" --header='Enter: complete workspace to delete')" || {
     __jx_work_delete_redraw_current_line
     COMPREPLY=()
     return 0
@@ -737,7 +737,7 @@ bind '"\e[0n": redraw-current-line' 2>/dev/null || true
 
   (( ${{#display_candidates[@]}} > 0 )) || return 0
 
-  output="$(printf '%s\n' "${{display_candidates[@]}}" | fzf --height=~60% --layout=reverse --no-sort --delimiter=$'\t' --with-nth=2 --nth=1 --query "$cur" --header='Enter: complete navigation target')" || {{
+  output="$(printf '%s\n' "${{display_candidates[@]}}" | fzf --height=~60% --layout=reverse --ignore-case --no-sort --delimiter=$'\t' --with-nth=2 --nth=1 --query "$cur" --header='Enter: complete navigation target')" || {{
     {helper_prefix}_redraw_current_line
     COMPREPLY=()
     return 0

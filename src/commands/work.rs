@@ -546,7 +546,7 @@ pub(super) fn filter_navigation_work_locations_by_query(
         .collect()
 }
 
-/// Builds shell navigation completions for work keys and slash-addressed child directories.
+/// Builds case-insensitive navigation completions, preserving work-key and directory spelling.
 pub(super) fn complete_navigation_work_locations_by_query(
     locations: &[WorkLocation],
     query: &str,
@@ -575,9 +575,10 @@ fn slash_query_literal_key_candidates(
         return Vec::new();
     }
 
+    let query = query.to_lowercase();
     locations
         .iter()
-        .filter(|location| location.key.starts_with(query))
+        .filter(|location| location.key.to_lowercase().starts_with(&query))
         .cloned()
         .collect()
 }
@@ -1069,6 +1070,7 @@ struct NavigationScore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NavigationMatchRank {
     Exact,
+    CaseInsensitiveExact,
     Prefix,
     TokenPrefix,
     Contains,
@@ -1247,14 +1249,21 @@ fn navigation_relative_path_key(path: &Path) -> Option<String> {
         .map(|components| components.join("/"))
 }
 
+/// Ranks matches without case sensitivity, preferring an exact spelling when available.
 fn navigation_match_rank(candidate: &str, query: &str) -> Option<NavigationMatchRank> {
     if candidate == query {
-        Some(NavigationMatchRank::Exact)
-    } else if candidate.starts_with(query) {
+        return Some(NavigationMatchRank::Exact);
+    }
+
+    let candidate = candidate.to_lowercase();
+    let query = query.to_lowercase();
+    if candidate == query {
+        Some(NavigationMatchRank::CaseInsensitiveExact)
+    } else if candidate.starts_with(&query) {
         Some(NavigationMatchRank::Prefix)
-    } else if navigation_token_prefix_match(candidate, query) {
+    } else if navigation_token_prefix_match(&candidate, &query) {
         Some(NavigationMatchRank::TokenPrefix)
-    } else if candidate.contains(query) {
+    } else if candidate.contains(&query) {
         Some(NavigationMatchRank::Contains)
     } else {
         None

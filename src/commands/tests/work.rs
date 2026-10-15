@@ -1775,6 +1775,176 @@ slug_repositories = ["example-org/*"]
 }
 
 #[test]
+fn work_navigation_ignores_case_and_preserves_repository_spelling() {
+    let workspace = TestWorkspace::new_uninitialized_under("outside");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "example"
+root = "~/projects"
+path = "{repo}"
+"#,
+    );
+    let primary = workspace.home.join("projects/IRIX");
+    create_jj_workspace_marker(&primary);
+    create_jj_workspace_marker(&workspace.home.join("projects/other"));
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    for query in ["iri", "iRi", "IRI", "irix", "IrIx"] {
+        for format in ["simple", "picker"] {
+            let completion = run_with_args_and_services(
+                [
+                    "jx",
+                    "work",
+                    "complete",
+                    "--navigation",
+                    "--format",
+                    format,
+                    "--prefix",
+                    query,
+                ],
+                &environment,
+                &services,
+            )
+            .expect("case-insensitive navigation completion succeeds");
+            let expected = if format == "picker" {
+                format!("IRIX\t{}\n", primary.display())
+            } else {
+                "IRIX\n".to_owned()
+            };
+            assert_eq!(completion.stdout, expected, "query: {query}");
+        }
+
+        let root = run_with_args_and_services(
+            ["jx", "work", "root", "--navigation", query],
+            &environment,
+            &services,
+        )
+        .expect("case-insensitive navigation resolution succeeds");
+        assert_eq!(root.stdout, format!("{}\n", primary.display()));
+    }
+}
+
+#[test]
+fn work_navigation_ignores_case_in_qualified_keys_and_subpaths() {
+    let workspace = TestWorkspace::new_uninitialized_under("outside");
+    workspace.write_home_file(
+        ".config/jx/config.toml",
+        r#"
+[[layout.rules]]
+source = "github"
+owner = "ExampleOrg"
+root = "~/projects"
+path = "{repo}"
+
+[shell]
+slug_repositories = ["ExampleOrg/*"]
+"#,
+    );
+    let primary = workspace.home.join("projects/IRIX");
+    let managed = workspace
+        .home
+        .join("projects/.work/IRIX/FD-123-Update-Stack");
+    let child = primary.join("Sources/NestedDir");
+    create_jj_workspace_marker(&primary);
+    create_jj_workspace_marker(&managed);
+    fs::create_dir_all(&child).expect("create nested directory");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let services = FakeServices::default();
+
+    let qualified = run_with_args_and_services(
+        [
+            "jx",
+            "work",
+            "complete",
+            "--navigation",
+            "--prefix",
+            "exampleorg/iri",
+        ],
+        &environment,
+        &services,
+    )
+    .expect("case-insensitive slug completion succeeds");
+    assert_eq!(
+        qualified.stdout,
+        "ExampleOrg/IRIX\nExampleOrg/IRIX@FD-123-Update-Stack\n"
+    );
+
+    for (query, key, path) in [
+        (
+            "exampleorg/irix@fd-123-upd-stack",
+            "ExampleOrg/IRIX@FD-123-Update-Stack",
+            &managed,
+        ),
+        ("upd-stack", "ExampleOrg/IRIX@FD-123-Update-Stack", &managed),
+        (
+            "irix/sources/ne",
+            "ExampleOrg/IRIX/Sources/NestedDir",
+            &child,
+        ),
+        (
+            "exampleorg/irix/sources/",
+            "ExampleOrg/IRIX/Sources/NestedDir",
+            &child,
+        ),
+    ] {
+        let completion = run_with_args_and_services(
+            [
+                "jx",
+                "work",
+                "complete",
+                "--navigation",
+                "--format",
+                "picker",
+                "--prefix",
+                query,
+            ],
+            &environment,
+            &services,
+        )
+        .expect("case-insensitive qualified completion succeeds");
+        assert_eq!(completion.stdout, format!("{key}\t{}\n", path.display()));
+
+        let root = run_with_args_and_services(
+            ["jx", "work", "root", "--navigation", key],
+            &environment,
+            &services,
+        )
+        .expect("completed navigation target resolves");
+        assert_eq!(root.stdout, format!("{}\n", path.display()));
+    }
+}
+
+#[test]
+fn work_navigation_prefers_exact_spelling_and_rejects_case_insensitive_ties() {
+    use crate::commands::work::{resolve_navigation_work_location, WorkLocation};
+
+    let workspace = TestWorkspace::new_uninitialized_under("outside");
+    let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
+    let locations = ["IRIX", "irix"].map(|key| WorkLocation {
+        key: key.to_owned(),
+        root: workspace.home.join(key),
+    });
+
+    for location in &locations {
+        assert_eq!(
+            resolve_navigation_work_location(&locations, &location.key, &environment)
+                .expect("exact spelling resolves"),
+            location.root
+        );
+    }
+    for query in ["iri", "IrIx"] {
+        assert!(matches!(
+            resolve_navigation_work_location(&locations, query, &environment),
+            Err(RepositoryError::WorkLocationAmbiguous { .. })
+        ));
+    }
+}
+
+#[test]
 fn work_navigation_matches_substrings_in_qualified_keys() {
     // Verifies: repository-qualified workspace keys use the same substring matching as bare keys.
     let workspace = TestWorkspace::new_uninitialized_under("outside");
