@@ -129,7 +129,7 @@ fn syncable_tracked_push_skips_bookmarks_with_conflicted_commits() {
         .expect("tracked updates classify");
 
     let split = subject
-        .split_conflicted_tracked_bookmark_updates(updates)
+        .split_syncable_bookmark_updates(updates)
         .expect("conflicted updates split");
 
     assert_eq!(
@@ -207,6 +207,199 @@ fn syncable_tracked_push_includes_unchanged_bookmark_pr_metadata() {
             ("example-user/parent", Some("Parent PR"), Some("main")),
         ]
     );
+}
+
+#[test]
+fn syncable_push_preserves_remote_bookmark_when_rebase_drops_duplicate_change() {
+    // Verifies: an already-landed patch never replaces its PR head or description with trunk.
+    let fixture = TestWorkspace::new("push-syncable-duplicate-change");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, topic) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let base = write_child_with_files(
+            tx.repo_mut(),
+            &root,
+            "old trunk",
+            &[("chunk-size.txt", b"500\n")],
+        )
+        .await;
+        let topic = write_child_with_files(
+            tx.repo_mut(),
+            &base,
+            "Original PR\n\nReduce the chunk size",
+            &[("chunk-size.txt", b"100\n")],
+        )
+        .await;
+        let trunk = write_child_with_files(
+            tx.repo_mut(),
+            &base,
+            "Someone else's upstream change",
+            &[("chunk-size.txt", b"100\n")],
+        )
+        .await;
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_origin_bookmark(tx.repo_mut(), "topic", topic.id());
+        set_local_bookmark(tx.repo_mut(), "topic", topic.id());
+
+        let stats = rebase_trunk_child_changes_onto_updated_trunk(
+            tx.repo_mut(),
+            &[TrunkChildChange {
+                commit_id: topic.id().clone(),
+                change_id: topic.change_id().clone(),
+            }],
+            &trunk,
+            &RevsetExpression::none(),
+            &BTreeMap::new(),
+            &HashSet::new(),
+            &mut |_| {},
+        )
+        .await
+        .expect("duplicate change rebases");
+        assert_eq!(stats.abandoned_empty_commits, 1);
+        assert_eq!(
+            tx.repo()
+                .view()
+                .get_local_bookmark(RefName::new("topic"))
+                .as_normal(),
+            Some(trunk.id())
+        );
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), trunk.id().clone())
+            .expect("set current workspace on updated trunk");
+        let repo = tx
+            .commit("arrange duplicate PR change")
+            .await
+            .expect("commit");
+        (workspace, repo, topic)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    // No transport is configured: attempting to push would fail this test.
+    for _ in 0..2 {
+        let outcome = subject.push_syncable_tracked().expect("sync skips trunk");
+        assert_eq!(outcome.pushed.pushed_refs, 0);
+        assert!(outcome.pushed.bookmarks.is_empty());
+        assert!(outcome.pushed.pushed_commits.is_empty());
+        assert!(outcome.skipped_conflicted_bookmarks.is_empty());
+    }
+    let outcome = subject
+        .push_syncable_revision(Some("topic"))
+        .expect("selected sync skips trunk");
+    assert_eq!(outcome.pushed.pushed_refs, 0);
+    assert!(outcome.pushed.bookmarks.is_empty());
+    assert_eq!(
+        subject
+            .repo
+            .view()
+            .get_remote_bookmark(
+                RefName::new("topic").to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
+            )
+            .target
+            .as_normal(),
+        Some(topic.id())
+    );
+}
+
+#[test]
+fn syncable_push_ignores_changed_and_unchanged_bookmarks_in_trunk_history() {
+    // Verifies: current and historical trunk targets cannot be pushed or supply PR metadata.
+    let fixture = TestWorkspace::new("push-syncable-trunk-history");
+    let settings = user_settings().expect("settings");
+    let (workspace, repo, topic) = pollster::block_on(async {
+        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let base = write_child(tx.repo_mut(), &root, "historical trunk").await;
+        let trunk = write_child(tx.repo_mut(), &base, "current trunk").await;
+        let topic = write_child(tx.repo_mut(), &base, "Original PR").await;
+        set_origin_bookmark(tx.repo_mut(), "main", trunk.id());
+        set_local_bookmark(tx.repo_mut(), "main", trunk.id());
+        for (branch, target) in [("at-trunk", &trunk), ("before-trunk", &base)] {
+            set_origin_bookmark(tx.repo_mut(), branch, topic.id());
+            set_local_bookmark(tx.repo_mut(), branch, target.id());
+        }
+        for (branch, target) in [("unchanged-trunk", &trunk), ("unchanged-history", &base)] {
+            set_origin_bookmark(tx.repo_mut(), branch, target.id());
+            set_local_bookmark(tx.repo_mut(), branch, target.id());
+        }
+        tx.repo_mut()
+            .set_wc_commit(workspace.workspace_name().to_owned(), base.id().clone())
+            .expect("leave current workspace behind updated trunk");
+        let repo = tx.commit("arrange trunk bookmarks").await.expect("commit");
+        (workspace, repo, topic)
+    });
+    let mut subject = JjWorkspace { workspace, repo };
+
+    let outcome = subject
+        .push_syncable_tracked()
+        .expect("sync skips trunk history");
+    assert_eq!(outcome.pushed.pushed_refs, 0);
+    assert!(outcome.pushed.bookmarks.is_empty());
+    for branch in [
+        "at-trunk",
+        "before-trunk",
+        "unchanged-trunk",
+        "unchanged-history",
+    ] {
+        let outcome = subject
+            .push_syncable_revision(Some(branch))
+            .expect("selected sync skips trunk history");
+        assert_eq!(outcome.pushed.pushed_refs, 0);
+        assert!(outcome.pushed.bookmarks.is_empty());
+    }
+    for branch in ["at-trunk", "before-trunk"] {
+        assert_eq!(
+            subject
+                .repo
+                .view()
+                .get_remote_bookmark(
+                    RefName::new(branch).to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME)),
+                )
+                .target
+                .as_normal(),
+            Some(topic.id())
+        );
+    }
+}
+
+#[test]
+fn bookmark_pull_request_description_ignores_trunk_history() {
+    // Verifies: even explicit push summaries cannot copy upstream commit messages into PRs.
+    let fixture = TestWorkspace::new("bookmark-pr-description-trunk-history");
+    let settings = user_settings().expect("settings");
+    let (repo, base, trunk) = pollster::block_on(async {
+        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
+            .await
+            .expect("initialize jj workspace");
+        let root = repo.store().root_commit();
+        let mut tx = repo.start_transaction();
+        let base = write_child(tx.repo_mut(), &root, "Unrelated old title\n\nOld body").await;
+        let trunk = write_child(tx.repo_mut(), &base, "Unrelated title\n\nUnrelated body").await;
+        let repo = tx
+            .commit("arrange trunk descriptions")
+            .await
+            .expect("commit");
+        (repo, base, trunk)
+    });
+    let trunk_ref = TrackedPushTrunk {
+        branch: "main".to_owned(),
+        id: trunk.id().clone(),
+    };
+
+    for target in [&base, &trunk] {
+        assert_eq!(
+            bookmark_pull_request_description(repo.as_ref(), Some(target.id()), Some(&trunk_ref))
+                .expect("description resolves"),
+            None
+        );
+    }
 }
 
 #[test]

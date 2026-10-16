@@ -1973,8 +1973,8 @@ fn record_sync_push_metrics(span: &mut PerfSpan, metrics: &SyncPushMetrics) {
     );
     record_sync_push_metric_step(
         span,
-        "split_conflicted_updates",
-        metrics.split_conflicted_updates_us,
+        "split_syncable_updates",
+        metrics.split_syncable_updates_us,
         attrs.clone(),
     );
     record_sync_push_metric_step(

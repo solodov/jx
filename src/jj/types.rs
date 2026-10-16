@@ -648,7 +648,7 @@ pub struct SyncPushMetrics {
     pub unchanged_bookmark_count: usize,
     pub pushed_commit_count: usize,
     pub tracked_origin_bookmark_updates_us: u64,
-    pub split_conflicted_updates_us: u64,
+    pub split_syncable_updates_us: u64,
     pub push_tracked_updates_us: u64,
     pub tracked_push_trunk_us: u64,
     pub pushed_bookmark_summaries_us: u64,

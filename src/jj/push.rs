@@ -140,7 +140,7 @@ impl JjWorkspace {
         self.changed_files_for_updates(&updates)
     }
 
-    /// Pushes tracked bookmarks whose push ranges do not contain conflicted commits.
+    /// Pushes tracked bookmarks beyond trunk whose push ranges contain no conflicts.
     pub fn push_syncable_tracked(&mut self) -> Result<SyncPushOutcome, JjError> {
         Ok(self.push_syncable_tracked_with_metrics()?.outcome)
     }
@@ -163,11 +163,11 @@ impl JjWorkspace {
         metrics.tracked_push_trunk_us = duration_us(started.elapsed());
 
         let started = Instant::now();
-        let split = self.split_conflicted_tracked_bookmark_updates_with_trunk_id(
+        let split = self.split_syncable_bookmark_updates_with_trunk_id(
             updates,
             trunk.as_ref().map(|trunk| &trunk.id),
         )?;
-        metrics.split_conflicted_updates_us = duration_us(started.elapsed());
+        metrics.split_syncable_updates_us = duration_us(started.elapsed());
         metrics.skipped_conflicted_count = split.skipped_conflicted.len();
 
         metrics.pushable_update_count = split.pushable.len();
@@ -208,7 +208,7 @@ impl JjWorkspace {
         })
     }
 
-    /// Pushes one selected bookmarked revision when its push range has no conflicts.
+    /// Pushes a selected bookmark beyond trunk when its push range has no conflicts.
     pub fn push_syncable_revision(
         &mut self,
         revision: Option<&str>,
@@ -246,7 +246,7 @@ impl JjWorkspace {
             });
         };
 
-        let split = self.split_conflicted_tracked_bookmark_updates(vec![(
+        let split = self.split_syncable_bookmark_updates(vec![(
             RefNameBuf::from(selection.branch.as_str()),
             update,
         )])?;
@@ -299,6 +299,7 @@ impl JjWorkspace {
         }
     }
 
+    /// Returns metadata for an unchanged selected bookmark only when it is outside trunk history.
     fn unchanged_sync_bookmark_outcome(
         &self,
         branch: &str,
@@ -312,14 +313,23 @@ impl JjWorkspace {
             },
         );
         let trunk = self.tracked_push_trunk();
-        Ok(TrackedPushOutcome {
-            pushed_refs: 0,
-            bookmarks: pushed_bookmark_summaries(
+        let bookmarks = if bookmark_target_is_on_trunk(
+            self.repo.as_ref(),
+            Some(target_id),
+            trunk.as_ref().map(|trunk| &trunk.id),
+        )? {
+            Vec::new()
+        } else {
+            pushed_bookmark_summaries(
                 self.repo.as_ref(),
                 &[update],
                 trunk.as_ref(),
                 self.workspace.workspace_name(),
-            )?,
+            )?
+        };
+        Ok(TrackedPushOutcome {
+            pushed_refs: 0,
+            bookmarks,
             pushed_commits: Vec::new(),
         })
     }
@@ -482,7 +492,7 @@ impl JjWorkspace {
         trunk: Option<&TrackedPushTrunk>,
     ) -> Result<Vec<PushedBookmarkSummary>, JjError> {
         let updates =
-            self.unchanged_tracked_origin_bookmark_updates(exclude, trunk.map(|trunk| &trunk.id));
+            self.unchanged_tracked_origin_bookmark_updates(exclude, trunk.map(|trunk| &trunk.id))?;
         pushed_bookmark_summaries(
             self.repo.as_ref(),
             &updates,
@@ -491,44 +501,54 @@ impl JjWorkspace {
         )
     }
 
+    /// Selects unchanged tracked bookmarks with local work outside trunk history.
     fn unchanged_tracked_origin_bookmark_updates(
         &self,
         exclude: &BTreeSet<String>,
         trunk_id: Option<&CommitId>,
-    ) -> Vec<BookmarkPushUpdate> {
-        self.repo
+    ) -> Result<Vec<BookmarkPushUpdate>, JjError> {
+        let mut updates = Vec::new();
+        for (name, targets) in self
+            .repo
             .view()
             .local_remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
-            .filter_map(|(name, targets)| {
-                if exclude.contains(name.as_str()) || !targets.remote_ref.is_tracked() {
-                    return None;
-                }
-                let local = targets.local_target.as_normal()?;
-                let remote = targets.remote_ref.target.as_normal()?;
-                if local != remote || trunk_id == Some(local) {
-                    return None;
-                }
+        {
+            if exclude.contains(name.as_str()) || !targets.remote_ref.is_tracked() {
+                continue;
+            }
+            let (Some(local), Some(remote)) = (
+                targets.local_target.as_normal(),
+                targets.remote_ref.target.as_normal(),
+            ) else {
+                continue;
+            };
+            if local != remote
+                || bookmark_target_is_on_trunk(self.repo.as_ref(), Some(local), trunk_id)?
+            {
+                continue;
+            }
 
-                Some((
-                    name.to_owned(),
-                    Diff {
-                        before: Some(local.clone()),
-                        after: Some(local.clone()),
-                    },
-                ))
-            })
-            .collect()
+            updates.push((
+                name.to_owned(),
+                Diff {
+                    before: Some(local.clone()),
+                    after: Some(local.clone()),
+                },
+            ));
+        }
+        Ok(updates)
     }
 
-    pub(super) fn split_conflicted_tracked_bookmark_updates(
+    /// Excludes trunk-history targets and separates conflicted updates from safe sync pushes.
+    pub(super) fn split_syncable_bookmark_updates(
         &self,
         updates: Vec<BookmarkPushUpdate>,
     ) -> Result<SyncableBookmarkUpdates, JjError> {
         let trunk_id = self.tracked_push_trunk_id();
-        self.split_conflicted_tracked_bookmark_updates_with_trunk_id(updates, trunk_id.as_ref())
+        self.split_syncable_bookmark_updates_with_trunk_id(updates, trunk_id.as_ref())
     }
 
-    fn split_conflicted_tracked_bookmark_updates_with_trunk_id(
+    fn split_syncable_bookmark_updates_with_trunk_id(
         &self,
         updates: Vec<BookmarkPushUpdate>,
         trunk_id: Option<&CommitId>,
@@ -537,6 +557,11 @@ impl JjWorkspace {
         let mut skipped_conflicted = Vec::new();
 
         for (name, update) in updates {
+            // Rebase can move a PR bookmark to trunk when its patch has landed elsewhere.
+            // Keep the remote PR head intact instead of force-pushing unrelated trunk commits.
+            if bookmark_target_is_on_trunk(self.repo.as_ref(), update.after.as_ref(), trunk_id)? {
+                continue;
+            }
             let conflicted_commits = self.conflicted_commits_for_update(
                 &update,
                 trunk_id,
@@ -613,15 +638,14 @@ impl JjWorkspace {
         self.tracked_push_trunk().map(|trunk| trunk.id)
     }
 
+    /// Resolves the fetched trunk independently of the current workspace's ancestry.
     fn tracked_push_trunk(&self) -> Option<TrackedPushTrunk> {
-        self.current_commit().ok().and_then(|current| {
-            self.resolve_trunk(&current)
-                .ok()
-                .map(|(branch, trunk)| TrackedPushTrunk {
-                    branch,
-                    id: trunk.id().clone(),
-                })
-        })
+        self.resolve_unanchored_origin_trunk()
+            .ok()
+            .map(|(branch, trunk)| TrackedPushTrunk {
+                branch,
+                id: trunk.id().clone(),
+            })
     }
 
     pub(super) fn pushed_commits_for_updates(
@@ -833,7 +857,7 @@ pub(super) fn commit_description(
         .transpose()
 }
 
-/// Returns the local description that should back a PR for a pushed bookmark target.
+/// Returns a pushed bookmark's local PR description, never an upstream commit message.
 pub(super) fn bookmark_pull_request_description(
     repo: &dyn jj_lib::repo::Repo,
     target_id: Option<&CommitId>,
@@ -842,6 +866,9 @@ pub(super) fn bookmark_pull_request_description(
     let Some(target_id) = target_id else {
         return Ok(None);
     };
+    if bookmark_target_is_on_trunk(repo, Some(target_id), trunk.map(|trunk| &trunk.id))? {
+        return Ok(None);
+    }
     let description_commit_id = match bookmark_pull_request_stack_base(repo, target_id, trunk)? {
         Some(base) => first_linear_stack_commit_id(repo, target_id, &base.id)?
             .unwrap_or_else(|| target_id.clone()),
@@ -945,6 +972,18 @@ fn nearest_linear_stack_parent_bookmark(
         }
         cursor = load_commit_from_repo(repo, parent_id)?;
     }
+}
+
+/// Checks whether a bookmark targets trunk or one of its ancestors, leaving deletions eligible.
+fn bookmark_target_is_on_trunk(
+    repo: &dyn jj_lib::repo::Repo,
+    target_id: Option<&CommitId>,
+    trunk_id: Option<&CommitId>,
+) -> Result<bool, JjError> {
+    let (Some(target_id), Some(trunk_id)) = (target_id, trunk_id) else {
+        return Ok(false);
+    };
+    is_ancestor_or_equal_in_repo(repo, target_id, trunk_id)
 }
 
 fn commit_full_description(
