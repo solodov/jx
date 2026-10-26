@@ -7,9 +7,10 @@ fn export_git_refs_updates_backing_git_bookmark_view() {
     let settings = user_settings().expect("settings");
 
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -35,9 +36,10 @@ fn prepare_initial_publish_target_describes_undescribed_root_child() {
     let fixture = TestWorkspace::new("prepare-initial-description");
     let settings = user_settings().expect("settings");
     let (workspace, repo, initial) = pollster::block_on(async {
-        let (mut workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (mut workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let initial =
@@ -91,9 +93,10 @@ fn prepare_initial_publish_target_snapshots_fresh_repo_files() {
     fs::write(fixture.path().join("README.md"), b"hello\n").expect("write working-copy file");
     let settings = user_settings().expect("settings");
     let (workspace, repo, initial_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let current_id = repo
             .view()
             .get_wc_commit_id(workspace.workspace_name())
@@ -133,9 +136,10 @@ fn prepare_initial_publish_target_describes_empty_fresh_repo_commit() {
     let fixture = TestWorkspace::new("prepare-empty-initial-description");
     let settings = user_settings().expect("settings");
     let (workspace, repo, initial_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let current_id = repo
             .view()
             .get_wc_commit_id(workspace.workspace_name())

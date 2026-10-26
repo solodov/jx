@@ -5,9 +5,10 @@ fn fetch_rebases_unbookmarked_children_when_import_abandons_stack_root() {
     let fixture = TestWorkspace::new("fetch-import-abandoned-root");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize workspace");
         let mut tx = repo.start_transaction();
         let old_trunk = write_child_with_files(
             tx.repo_mut(),
@@ -104,12 +105,12 @@ fn fetch_rebases_unbookmarked_children_when_import_abandons_stack_root() {
             .view()
             .get_local_bookmark(RefName::new("topic/root"))
             .is_present());
-        assert!(tx
-            .repo()
-            .resolve_change_id(landed.change_id())
-            .expect("resolve landed change")
-            .and_then(|targets| targets.into_visible())
-            .is_none());
+        assert!(
+            pollster::block_on(tx.repo().resolve_change_id(landed.change_id()))
+                .expect("resolve landed change")
+                .and_then(|targets| targets.into_visible())
+                .is_none()
+        );
 
         let expected = write_child_with_files(
             tx.repo_mut(),
@@ -138,9 +139,10 @@ fn fetch_redirects_abandoned_prefixes_without_moving_protected_or_unrelated_stac
     let fixture = TestWorkspace::new("fetch-import-abandoned-prefix");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let root = repo.store().root_commit();
         let base = write_child(tx.repo_mut(), &root, "old trunk").await;
@@ -252,9 +254,10 @@ fn fetch_recovers_previously_stranded_children_without_new_import_abandonments()
     let fixture = TestWorkspace::new("fetch-import-stranded-child");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let base = write_child_with_files(
             tx.repo_mut(),
@@ -330,8 +333,7 @@ fn fetch_recovers_previously_stranded_children_without_new_import_abandonments()
 
 /// Resolves a local change after import and trunk repair have rewritten it.
 fn visible_import_commit(repo: &dyn jj_lib::repo::Repo, old: &Commit) -> Commit {
-    let ids = repo
-        .resolve_change_id(old.change_id())
+    let ids = pollster::block_on(repo.resolve_change_id(old.change_id()))
         .expect("resolve change")
         .expect("change remains indexed")
         .into_visible()

@@ -42,11 +42,11 @@ use jj_lib::{
     backend::{BackendError, ChangeId, CommitId, Timestamp},
     commit::Commit,
     config::{ConfigGetResultExt as _, ConfigLayer, ConfigSource, StackedConfig},
+    default_backend_factories::{default_backend_factories, default_working_copy_factories},
     extensions_map::ExtensionsMap,
     git::{
-        self, FetchTagsOverride, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress,
-        GitPushOptions, GitPushRefTargets, GitSettings, GitSidebandLineTerminator,
-        GitSubprocessCallback,
+        self, GitFetch, GitFetchRefExpression, GitImportOptions, GitProgress, GitPushOptions,
+        GitPushRefTargets, GitSettings, GitSidebandLineTerminator, GitSubprocessCallback,
     },
     graph::{GraphEdge, GraphEdgeType, TopoGroupedGraph},
     id_prefix::IdPrefixContext,
@@ -56,8 +56,8 @@ use jj_lib::{
     op_store::RefTarget,
     ref_name::{RefName, RefNameBuf, RemoteName, WorkspaceName, WorkspaceNameBuf},
     refs::{classify_ref_push_action, LocalAndRemoteRef, RefPushAction},
-    repo::{MutableRepo, ReadonlyRepo, Repo as _, StoreFactories},
-    repo_path::{RepoPath, RepoPathUiConverter},
+    repo::{MutableRepo, ReadonlyRepo, Repo as _},
+    repo_path::RepoPath,
     revset::{
         self, ResolvedRevsetExpression, RevsetDiagnostics, RevsetExpression, RevsetExtensions,
         RevsetParseContext, RevsetWorkspaceContext,
@@ -68,9 +68,9 @@ use jj_lib::{
     },
     settings::UserSettings,
     str_util::StringExpression,
+    ui_path::RepoPathUiConverter,
     workspace::{
-        default_working_copy_factories, DefaultWorkspaceLoaderFactory, Workspace, WorkspaceLoader,
-        WorkspaceLoaderFactory as _,
+        DefaultWorkspaceLoaderFactory, Workspace, WorkspaceLoader, WorkspaceLoaderFactory as _,
     },
 };
 use thiserror::Error;

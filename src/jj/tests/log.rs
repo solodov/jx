@@ -10,8 +10,12 @@ fn current_workspace_log_snapshots_pending_disk_changes() {
 
     let fixture = TestWorkspace::new("workspace-log-snapshot");
     let settings = log_test_settings().expect("settings");
-    pollster::block_on(Workspace::init_internal_git(&settings, fixture.path()))
-        .expect("initialize jj workspace");
+    pollster::block_on(Workspace::init_internal_git(
+        &settings,
+        fixture.path(),
+        gix::hash::Kind::Sha1,
+    ))
+    .expect("initialize jj workspace");
     fs::write(fixture.path().join("README.md"), "pending\n").expect("write pending file");
 
     let mut timings = LogTimings::default();
@@ -56,9 +60,13 @@ fn log_timings_keep_completed_phases_and_the_template_error() {
         "[templates]\nlog = 'missing_template_function()'\n",
     )
     .unwrap()]);
-    let settings = UserSettings::from_config(config).unwrap();
-    let (workspace, repo) =
-        pollster::block_on(Workspace::init_internal_git(&settings, fixture.path())).unwrap();
+    let settings = UserSettings::from_config_and_home_dir(config, None).unwrap();
+    let (workspace, repo) = pollster::block_on(Workspace::init_internal_git(
+        &settings,
+        fixture.path(),
+        gix::hash::Kind::Sha1,
+    ))
+    .unwrap();
     let mut timings = LogTimings::default();
 
     let error =
@@ -99,9 +107,10 @@ fn workspace_log_preserves_configured_jj_revset() {
     let fixture = TestWorkspace::new("workspace-log");
     let settings = log_test_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -143,9 +152,10 @@ fn workspace_log_keeps_current_empty_workspace_head_and_omits_others() {
     let settings = log_test_settings().expect("settings");
     let (workspace, repo, current_empty_change_id, idle_empty_change_id) =
         pollster::block_on(async {
-            let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-                .await
-                .expect("initialize jj workspace");
+            let (workspace, repo) =
+                Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                    .await
+                    .expect("initialize jj workspace");
             let root = repo.store().root_commit();
             let mut tx = repo.start_transaction();
             let trunk = write_child_with_files(
@@ -314,9 +324,10 @@ fn workspace_log_omits_commit_ids_from_jx_default_header() {
     let fixture = TestWorkspace::new("workspace-log-compact-header");
     let settings = log_test_settings().expect("settings");
     let (workspace, repo, current_change_id, current_commit_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child(tx.repo_mut(), &root, "current workspace change").await;
@@ -414,9 +425,10 @@ fn workspace_log_renders_compact_commit_age() {
     let fixture = TestWorkspace::new("workspace-log-compact-age");
     let settings = log_test_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let mut signature = root.committer().clone();
@@ -462,9 +474,10 @@ fn workspace_log_ellipsizes_long_description_line() {
     let fixture = TestWorkspace::new("workspace-log-ellipsized-description");
     let settings = log_test_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let description = format!(
@@ -518,11 +531,12 @@ email = "me@example.com"
     )
     .expect("user config parses")]);
     jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
-    let settings = UserSettings::from_config(config).expect("settings load");
+    let settings = UserSettings::from_config_and_home_dir(config, None).expect("settings load");
     let (workspace, repo, mine_change_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let mut mine_author = root.author().clone();
@@ -590,11 +604,12 @@ color = "always"
     )
     .expect("user config parses")]);
     jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
-    let settings = UserSettings::from_config(config).expect("settings load");
+    let settings = UserSettings::from_config_and_home_dir(config, None).expect("settings load");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let mut author = root.author().clone();
@@ -655,11 +670,12 @@ color = "always"
     )
     .expect("color config parses")]);
     jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
-    let settings = UserSettings::from_config(config).expect("settings load");
+    let settings = UserSettings::from_config_and_home_dir(config, None).expect("settings load");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -717,11 +733,12 @@ color = "always"
     )
     .expect("color config parses")]);
     jj_lib::config::migrate(&mut config, &default_config_migrations()).expect("config migrates");
-    let settings = UserSettings::from_config(config).expect("settings load");
+    let settings = UserSettings::from_config_and_home_dir(config, None).expect("settings load");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -767,9 +784,10 @@ fn workspace_log_links_pull_request_annotations_for_matching_bookmarks() {
     let fixture = TestWorkspace::new("workspace-log-pr-links");
     let settings = log_test_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child(tx.repo_mut(), &root, "current workspace change").await;

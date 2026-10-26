@@ -8,11 +8,11 @@ use crate::github::{
 };
 use jj_lib::{
     config::StackedConfig,
+    default_backend_factories::{default_backend_factories, default_working_copy_factories},
     git,
     ref_name::RemoteName,
-    repo::StoreFactories,
     settings::UserSettings,
-    workspace::{default_working_copy_factories, Workspace},
+    workspace::Workspace,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2591,7 +2591,8 @@ fn symlink_file(target: &Path, link: &Path) -> io::Result<()> {
 }
 
 fn test_settings() -> UserSettings {
-    UserSettings::from_config(StackedConfig::with_defaults()).expect("test settings")
+    UserSettings::from_config_and_home_dir(StackedConfig::with_defaults(), None)
+        .expect("test settings")
 }
 
 fn reviewer_users(names: impl IntoIterator<Item = &'static str>) -> Vec<ReviewerTarget> {
@@ -2745,8 +2746,12 @@ impl TestWorkspace {
         let root = env::temp_dir().join(format!("jx-test-{}-{unique}", std::process::id()));
         fs::create_dir_all(&root).expect("create workspace root");
         let settings = test_settings();
-        pollster::block_on(Workspace::init_internal_git(&settings, &root))
-            .expect("initialize jj workspace");
+        pollster::block_on(Workspace::init_internal_git(
+            &settings,
+            &root,
+            gix::hash::Kind::Sha1,
+        ))
+        .expect("initialize jj workspace");
         Self { root }
     }
 
@@ -2775,7 +2780,7 @@ impl TestWorkspace {
     fn write_git_config(&self, contents: &str) {
         for remote in test_config_remotes(contents) {
             let settings = test_settings();
-            let store_factories = StoreFactories::default();
+            let store_factories = default_backend_factories();
             let working_copy_factories = default_working_copy_factories();
             let workspace = Workspace::load(
                 &settings,
@@ -2793,7 +2798,6 @@ impl TestWorkspace {
                 RemoteName::new(&remote.name),
                 &remote.url,
                 None,
-                gix::remote::fetch::Tags::None,
             )
             .expect("add remote");
             pollster::block_on(tx.commit(format!("arrange test remote {}", remote.name)))

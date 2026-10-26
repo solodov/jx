@@ -33,7 +33,7 @@ pub(in crate::jj) fn record_root_snapshot(
             let bookmarks = repo
                 .view()
                 .local_bookmarks()
-                .filter(|(_, target)| target.added_ids().any(|id| id == commit.id()))
+                .filter(|(_, target)| target.adds().flatten().any(|id| id == commit.id()))
                 .map(|(name, _)| name.as_str())
                 .collect::<Vec<_>>();
             attrs.push(fetch_trace_attr("bookmarks", bookmarks.join(",")));
@@ -111,7 +111,12 @@ pub(in crate::jj) fn record_import_details(
     stats: &git::GitImportStats,
     trace: &mut dyn FnMut(FetchTraceStep),
 ) {
-    for (symbol, (old, new)) in &stats.changed_remote_bookmarks {
+    for git::GitImportRefUpdate {
+        symbol,
+        old_remote_ref: old,
+        new_target: new,
+    } in &stats.changed_remote_bookmarks
+    {
         let mut attrs = vec![
             fetch_trace_attr("branch", symbol.name.as_str()),
             fetch_trace_attr("remote", symbol.remote.as_str()),
@@ -144,9 +149,17 @@ pub(in crate::jj) fn record_import_details(
 }
 
 fn ref_target(target: &RefTarget) -> String {
-    if target.has_conflict() {
-        let removed = target.removed_ids().map(CommitId::hex).collect::<Vec<_>>();
-        let added = target.added_ids().map(CommitId::hex).collect::<Vec<_>>();
+    if !target.is_resolved() {
+        let removed = target
+            .removes()
+            .flatten()
+            .map(CommitId::hex)
+            .collect::<Vec<_>>();
+        let added = target
+            .adds()
+            .flatten()
+            .map(CommitId::hex)
+            .collect::<Vec<_>>();
         format!(
             "removed=[{}],added=[{}]",
             removed.join(","),

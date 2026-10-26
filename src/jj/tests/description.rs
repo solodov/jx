@@ -6,9 +6,10 @@ fn rewrite_commit_description_updates_selected_commit_and_descendants() {
     let fixture = TestWorkspace::new("rewrite-description");
     let settings = user_settings().expect("settings");
     let (workspace, repo, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child(tx.repo_mut(), &root, "old title").await;

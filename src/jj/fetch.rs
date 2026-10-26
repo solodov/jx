@@ -330,7 +330,7 @@ impl JjWorkspace {
         for branch in branches {
             let bookmark = RefName::new(branch);
             let target = self.repo.view().get_local_bookmark(bookmark);
-            if target.has_conflict() {
+            if !target.is_resolved() {
                 return Err(JjError::ConflictedBookmark {
                     branch: branch.clone(),
                 });
@@ -796,10 +796,11 @@ fn resolve_visible_trunk_child_change(
     child: &TrunkChildChange,
 ) -> Result<Option<Commit>, JjError> {
     let Some(targets) =
-        repo.resolve_change_id(&child.change_id)
-            .map_err(|error| JjError::Index {
+        pollster::block_on(repo.resolve_change_id(&child.change_id)).map_err(|error| {
+            JjError::Index {
                 message: error.to_string(),
-            })?
+            }
+        })?
     else {
         return Ok(None);
     };

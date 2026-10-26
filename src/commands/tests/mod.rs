@@ -22,11 +22,11 @@ use crate::{
 };
 use jj_lib::{
     config::StackedConfig,
+    default_backend_factories::{default_backend_factories, default_working_copy_factories},
     git,
     ref_name::RemoteName,
-    repo::StoreFactories,
     settings::UserSettings,
-    workspace::{default_working_copy_factories, Workspace},
+    workspace::Workspace,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -968,11 +968,15 @@ impl CommandServices for FakeServices {
         self.init_repository_calls
             .set(self.init_repository_calls.get() + 1);
         let settings = test_settings();
-        pollster::block_on(Workspace::init_internal_git(&settings, current_dir))
-            .map(|_| ())
-            .map_err(|error| JjError::InitFailed {
-                status: error.to_string(),
-            })
+        pollster::block_on(Workspace::init_internal_git(
+            &settings,
+            current_dir,
+            gix::hash::Kind::Sha1,
+        ))
+        .map(|_| ())
+        .map_err(|error| JjError::InitFailed {
+            status: error.to_string(),
+        })
     }
 
     fn add_workspace(
@@ -2037,7 +2041,8 @@ fn status_workspace_facts() -> StatusWorkspaceFacts {
 }
 
 fn test_settings() -> UserSettings {
-    UserSettings::from_config(StackedConfig::with_defaults()).expect("test settings")
+    UserSettings::from_config_and_home_dir(StackedConfig::with_defaults(), None)
+        .expect("test settings")
 }
 
 fn fake_pull_request_description(description: &str) -> (String, String) {
@@ -2105,8 +2110,12 @@ impl TestWorkspace {
     fn new_under(relative_path: &str) -> Self {
         let workspace = Self::new_uninitialized_under(relative_path);
         let settings = test_settings();
-        pollster::block_on(Workspace::init_internal_git(&settings, &workspace.root))
-            .expect("initialize jj workspace");
+        pollster::block_on(Workspace::init_internal_git(
+            &settings,
+            &workspace.root,
+            gix::hash::Kind::Sha1,
+        ))
+        .expect("initialize jj workspace");
         workspace
     }
 
@@ -2154,8 +2163,12 @@ impl TestWorkspace {
         let root = self.home.join(relative_path);
         fs::create_dir_all(&root).expect("create workspace root");
         let settings = test_settings();
-        pollster::block_on(Workspace::init_internal_git(&settings, &root))
-            .expect("initialize jj workspace");
+        pollster::block_on(Workspace::init_internal_git(
+            &settings,
+            &root,
+            gix::hash::Kind::Sha1,
+        ))
+        .expect("initialize jj workspace");
         root
     }
 
@@ -2166,7 +2179,7 @@ impl TestWorkspace {
     fn write_git_config_at(root: &Path, contents: &str) {
         for (name, url) in test_config_remotes(contents) {
             let settings = test_settings();
-            let store_factories = StoreFactories::default();
+            let store_factories = default_backend_factories();
             let working_copy_factories = default_working_copy_factories();
             let workspace =
                 Workspace::load(&settings, root, &store_factories, &working_copy_factories)
@@ -2175,14 +2188,7 @@ impl TestWorkspace {
                 pollster::block_on(workspace.repo_loader().load_at_head()).expect("load jj repo");
             let mut tx = repo.start_transaction();
 
-            git::add_remote(
-                tx.repo_mut(),
-                RemoteName::new(&name),
-                &url,
-                None,
-                gix::remote::fetch::Tags::None,
-            )
-            .expect("add remote");
+            git::add_remote(tx.repo_mut(), RemoteName::new(&name), &url, None).expect("add remote");
             pollster::block_on(tx.commit(format!("arrange test remote {name}")))
                 .expect("commit remote");
         }

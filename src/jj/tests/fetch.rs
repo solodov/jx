@@ -17,9 +17,10 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
     let fixture = TestWorkspace::new("fetch-main-master-default");
     let settings = user_settings().expect("settings");
     let (workspace, repo, master_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let main = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -60,9 +61,10 @@ fn fetch_trunk_uses_live_default_branch_after_sideways_trunk_rewrite() {
     let fixture = TestWorkspace::new("fetch-sideways-main-default");
     let settings = user_settings().expect("settings");
     let (workspace, repo, remote_main_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_base = write_child(tx.repo_mut(), &root, "old base").await;
@@ -111,9 +113,10 @@ fn fetch_trunk_uses_origin_trunk_when_protecting_historical_stack() {
     let fixture = TestWorkspace::new("fetch-protected-default-not-ancestor");
     let settings = user_settings().expect("settings");
     let (workspace, repo, main_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let stale_pr = write_child(tx.repo_mut(), &root, "stale landed PR").await;
@@ -158,9 +161,10 @@ fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
     let fixture = TestWorkspace::new("fetch-change-id-trunk-child");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
@@ -194,9 +198,7 @@ fn fetch_rebase_uses_jj_rewrite_mapping_before_trunk_repair() {
         assert_eq!(stats.rebased_descendants, 1);
         assert_eq!(stats.rebased_trunk_children, 0);
         assert_eq!(stats.skipped_trunk_children, 1);
-        let visible = tx
-            .repo()
-            .resolve_change_id(local_child.change_id())
+        let visible = pollster::block_on(tx.repo().resolve_change_id(local_child.change_id()))
             .expect("change id resolves")
             .expect("change remains visible")
             .into_visible()
@@ -213,9 +215,10 @@ fn fetch_rebase_skips_protected_trunk_child_subtree() {
     let fixture = TestWorkspace::new("fetch-protected-trunk-child");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
@@ -244,20 +247,20 @@ fn fetch_rebase_skips_protected_trunk_child_subtree() {
         assert_eq!(stats.rebased_trunk_children, 0);
         assert_eq!(stats.rebased_descendants, 0);
         assert_eq!(stats.skipped_trunk_children, 1);
-        let visible_child = tx
-            .repo()
-            .resolve_change_id(protected_child.change_id())
-            .expect("change id resolves")
-            .expect("protected child remains visible")
-            .into_visible()
-            .expect("visible child commit");
-        let visible_descendant = tx
-            .repo()
-            .resolve_change_id(protected_descendant.change_id())
-            .expect("change id resolves")
-            .expect("protected descendant remains visible")
-            .into_visible()
-            .expect("visible descendant commit");
+        let visible_child =
+            pollster::block_on(tx.repo().resolve_change_id(protected_child.change_id()))
+                .expect("change id resolves")
+                .expect("protected child remains visible")
+                .into_visible()
+                .expect("visible child commit");
+        let visible_descendant = pollster::block_on(
+            tx.repo()
+                .resolve_change_id(protected_descendant.change_id()),
+        )
+        .expect("change id resolves")
+        .expect("protected descendant remains visible")
+        .into_visible()
+        .expect("visible descendant commit");
         let child = load_commit_from_repo(tx.repo(), &visible_child[0]).expect("load child");
         let descendant =
             load_commit_from_repo(tx.repo(), &visible_descendant[0]).expect("load descendant");
@@ -272,9 +275,10 @@ fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
     let fixture = TestWorkspace::new("fetch-landed-trunk-child-descendants");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old hypothetical trunk").await;
@@ -312,20 +316,18 @@ fn fetch_rebase_moves_descendants_of_landed_trunk_child_to_updated_trunk() {
         assert_eq!(stats.skipped_trunk_children, 1);
         assert_eq!(stats.rebased_trunk_children, 1);
         assert_eq!(stats.rebased_descendants, 1);
-        let visible_default = tx
-            .repo()
-            .resolve_change_id(empty_default.change_id())
-            .expect("default change id resolves")
-            .expect("default remains visible")
-            .into_visible()
-            .expect("visible default commit");
-        let visible_follow_up = tx
-            .repo()
-            .resolve_change_id(follow_up.change_id())
-            .expect("follow-up change id resolves")
-            .expect("follow-up remains visible")
-            .into_visible()
-            .expect("visible follow-up commit");
+        let visible_default =
+            pollster::block_on(tx.repo().resolve_change_id(empty_default.change_id()))
+                .expect("default change id resolves")
+                .expect("default remains visible")
+                .into_visible()
+                .expect("visible default commit");
+        let visible_follow_up =
+            pollster::block_on(tx.repo().resolve_change_id(follow_up.change_id()))
+                .expect("follow-up change id resolves")
+                .expect("follow-up remains visible")
+                .into_visible()
+                .expect("visible follow-up commit");
         let default = load_commit_from_repo(tx.repo(), &visible_default[0]).expect("load default");
         let follow_up =
             load_commit_from_repo(tx.repo(), &visible_follow_up[0]).expect("load follow-up");
@@ -346,9 +348,10 @@ fn fetch_rebase_recovers_previously_protected_historical_stacks() {
     let fixture = TestWorkspace::new("fetch-historical-protected-stacks");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
@@ -457,12 +460,11 @@ fn fetch_rebase_recovers_previously_protected_historical_stacks() {
         assert_eq!(stats.abandoned_empty_commits, 1);
         assert_eq!(stats.rebased_trunk_children, 1);
         assert_eq!(stats.rebased_descendants, 2);
-        let visible_merged = tx
-            .repo()
-            .resolve_change_id(merged_root.change_id())
-            .expect("merged change resolves")
-            .and_then(|targets| targets.into_visible())
-            .unwrap_or_default();
+        let visible_merged =
+            pollster::block_on(tx.repo().resolve_change_id(merged_root.change_id()))
+                .expect("merged change resolves")
+                .and_then(|targets| targets.into_visible())
+                .unwrap_or_default();
         assert!(visible_merged.is_empty());
         let merged_follow_up = visible_fetch_commit(tx.repo(), &merged_follow_up);
         let unmerged_root = visible_fetch_commit(tx.repo(), &unmerged_root);
@@ -485,9 +487,10 @@ fn fetch_root_selection_excludes_immutable_unrelated_and_nested_changes() {
     let fixture = TestWorkspace::new("fetch-historical-root-selection");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
@@ -566,9 +569,10 @@ fn fetch_rebase_recovers_descendants_when_landed_root_is_already_in_trunk() {
     let fixture = TestWorkspace::new("fetch-historical-landed-root");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old trunk").await;
@@ -606,8 +610,7 @@ fn fetch_rebase_recovers_descendants_when_landed_root_is_already_in_trunk() {
 
 /// Resolves a test change after fetch has rewritten its commit.
 fn visible_fetch_commit(repo: &dyn jj_lib::repo::Repo, original: &Commit) -> Commit {
-    let visible = repo
-        .resolve_change_id(original.change_id())
+    let visible = pollster::block_on(repo.resolve_change_id(original.change_id()))
         .expect("change resolves")
         .expect("change remains visible")
         .into_visible()
@@ -623,9 +626,10 @@ fn fetch_repair_moves_abandoned_other_workspace_to_updated_trunk() {
     let fixture = TestWorkspace::new("fetch-repair-abandoned-other-workspace");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
@@ -707,9 +711,10 @@ fn fetch_repair_moves_abandoned_current_workspace_to_updated_trunk() {
     let fixture = TestWorkspace::new("fetch-repair-abandoned-current-workspace");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_trunk = write_child(tx.repo_mut(), &root, "old main trunk").await;
@@ -772,9 +777,10 @@ fn fetch_origin_refs_selects_trunk_tracked_and_refresh_bookmarks_only() {
     let fixture = TestWorkspace::new("fetch-tracked-bookmarks");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;

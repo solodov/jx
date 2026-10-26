@@ -11,7 +11,7 @@ impl JjWorkspace {
         self.ensure_git_backed()?;
         let branch_ref = RefName::new(branch);
         let local_target = self.repo.view().get_local_bookmark(branch_ref);
-        if local_target.has_conflict() {
+        if !local_target.is_resolved() {
             return Err(JjError::ConflictedBookmark {
                 branch: branch.to_owned(),
             });
@@ -28,7 +28,7 @@ impl JjWorkspace {
             .repo
             .view()
             .get_remote_bookmark(branch_ref.to_remote_symbol(RemoteName::new(&origin_remote)));
-        if origin_ref.target.has_conflict() {
+        if !origin_ref.target.is_resolved() {
             return Err(JjError::ConflictedRemoteBookmark {
                 branch: branch.to_owned(),
                 remote: origin_remote,
@@ -116,7 +116,7 @@ impl JjWorkspace {
             .repo
             .view()
             .get_remote_bookmark(RefName::new(branch).to_remote_symbol(RemoteName::new(remote)));
-        if remote_ref.target.has_conflict() {
+        if !remote_ref.target.is_resolved() {
             return Err(JjError::ConflictedRemoteBookmark {
                 branch: branch.to_owned(),
                 remote: remote.to_owned(),

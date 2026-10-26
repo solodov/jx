@@ -51,7 +51,13 @@ pub(super) fn user_settings() -> Result<UserSettings, JjError> {
     let mut config = StackedConfig::with_defaults();
     config.extend_layers(default_config_layers());
     jj_lib::config::migrate(&mut config, &default_config_migrations()).map_err(log_error)?;
-    UserSettings::from_config(config).map_err(|error| JjError::Settings {
+    UserSettings::from_config_and_home_dir(
+        config,
+        jj_cli::config::ConfigEnv::from_environment()
+            .home_dir()
+            .map(Path::to_path_buf),
+    )
+    .map_err(|error| JjError::Settings {
         message: error.to_string(),
     })
 }
@@ -76,10 +82,16 @@ pub(super) fn load_workspace_for_log(
         .create(workspace_root)
         .map_err(log_error)?;
     let config = resolved_workspace_config_for_log(&ui, loader.as_ref())?;
-    let settings = UserSettings::from_config(config).map_err(|error| JjError::Settings {
+    let settings = UserSettings::from_config_and_home_dir(
+        config,
+        jj_cli::config::ConfigEnv::from_environment()
+            .home_dir()
+            .map(Path::to_path_buf),
+    )
+    .map_err(|error| JjError::Settings {
         message: error.to_string(),
     })?;
-    let store_factories = StoreFactories::default();
+    let store_factories = default_backend_factories();
     let working_copy_factories = default_working_copy_factories();
     let workspace = loader
         .load(&settings, &store_factories, &working_copy_factories)
@@ -723,7 +735,7 @@ pub(super) fn render_log_graph<'repo>(
             .evaluate_to_commit_ids()
             .map_err(log_error)?;
         while let Some(prio) = pollster::block_on(prio_stream.try_next()).map_err(log_error)? {
-            if has_commit(&prio).map_err(log_error)? {
+            if pollster::block_on(has_commit(&prio)).map_err(log_error)? {
                 forward_iter.prioritize_branch(prio);
             }
         }

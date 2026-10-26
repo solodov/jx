@@ -33,7 +33,7 @@ impl JjWorkspace {
             let started = Instant::now();
             let bookmark = RefName::new(branch);
             let targets = self.local_and_origin_bookmark_targets(bookmark);
-            if targets.local_target.has_conflict() {
+            if !targets.local_target.is_resolved() {
                 return Err(JjError::ConflictedBookmark {
                     branch: branch.clone(),
                 });
@@ -217,7 +217,7 @@ impl JjWorkspace {
         let selection = self.sync_bookmark_selection_for_revision(revision)?;
         let bookmark = RefName::new(&selection.branch);
         let targets = self.local_and_origin_bookmark_targets(bookmark);
-        if targets.local_target.has_conflict() {
+        if !targets.local_target.is_resolved() {
             return Err(JjError::ConflictedBookmark {
                 branch: selection.branch,
             });
@@ -271,7 +271,7 @@ impl JjWorkspace {
             .filter(|selector| !selector.is_empty())
         {
             let target = self.repo.view().get_local_bookmark(RefName::new(selector));
-            if target.has_conflict() {
+            if !target.is_resolved() {
                 return Err(JjError::ConflictedBookmark {
                     branch: selector.to_owned(),
                 });
@@ -597,7 +597,7 @@ impl JjWorkspace {
             .repo
             .view()
             .remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
-            .flat_map(|(_, remote_ref)| remote_ref.target.added_ids().cloned())
+            .flat_map(|(_, remote_ref)| remote_ref.target.adds().flatten().cloned())
             .collect::<Vec<_>>();
         let revset = ResolvedRevsetExpression::commits(old_heads)
             .range(&ResolvedRevsetExpression::commit(new_head))
@@ -696,7 +696,7 @@ impl JjWorkspace {
             .repo
             .view()
             .remote_bookmarks(RemoteName::new(ORIGIN_REMOTE_NAME))
-            .flat_map(|(_, remote_ref)| remote_ref.target.added_ids().cloned())
+            .flat_map(|(_, remote_ref)| remote_ref.target.adds().flatten().cloned())
             .collect::<Vec<_>>();
         let revset = ResolvedRevsetExpression::commits(old_heads)
             .range(&ResolvedRevsetExpression::commits(new_heads))

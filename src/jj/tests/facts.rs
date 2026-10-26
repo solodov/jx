@@ -6,9 +6,10 @@ fn facts_report_trunk_target_bookmarks_and_stack_index() {
     let fixture = TestWorkspace::new("linear");
     let settings = user_settings().expect("settings");
     let (workspace, repo, trunk, ancestor, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -66,9 +67,10 @@ fn facts_report_changed_files_for_selected_commit() {
     let fixture = TestWorkspace::new("changed-files");
     let settings = user_settings().expect("settings");
     let (workspace, repo, ancestor, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -122,9 +124,10 @@ fn facts_for_revision_reports_selected_commit_without_changing_workspace() {
     let fixture = TestWorkspace::new("selected-revision");
     let settings = user_settings().expect("settings");
     let (workspace, repo, ancestor, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -164,9 +167,10 @@ fn push_facts_reuse_local_bookmark_without_origin_trunk() {
     let fixture = TestWorkspace::new("push-facts-local-bookmark-no-trunk");
     let settings = user_settings().expect("settings");
     let (workspace, repo, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child(tx.repo_mut(), &root, "current change").await;
@@ -201,9 +205,10 @@ fn facts_prefer_main_when_other_origin_bookmarks_are_also_ancestors() {
     let fixture = TestWorkspace::new("main-preferred");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -234,9 +239,10 @@ fn facts_exclude_trunk_bookmarks_from_nearest_stack_ancestor() {
     let fixture = TestWorkspace::new("trunk-bookmarks-not-stack-base");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -268,9 +274,10 @@ fn status_facts_reports_each_requested_remote_trunk() {
     let fixture = TestWorkspace::new("status-remotes");
     let settings = user_settings().expect("settings");
     let (workspace, repo, origin_trunk, upstream_trunk) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let origin_trunk = write_child(tx.repo_mut(), &root, "origin trunk").await;
@@ -328,9 +335,10 @@ fn status_facts_prefers_trunk_branch_without_scanning_all_remote_bookmarks() {
     let fixture = TestWorkspace::new("status-trunk-fast-path");
     let settings = user_settings().expect("settings");
     let (workspace, repo, trunk) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -373,9 +381,10 @@ fn global_fetch_ready_accepts_empty_current_child_of_origin_trunk() {
     let fixture = TestWorkspace::new("global-fetch-ready");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child_with_files(
@@ -414,9 +423,10 @@ fn global_fetch_ready_rejects_changed_current() {
     let fixture = TestWorkspace::new("global-fetch-local-work");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child_with_files(
@@ -458,9 +468,10 @@ fn status_facts_ignore_empty_working_copy_commit() {
     let fixture = TestWorkspace::new("status-empty-current");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child_with_files(
@@ -499,9 +510,10 @@ fn stack_trunk_status_facts_use_semantic_trunk_for_historical_pr_stack() {
     let fixture = TestWorkspace::new("stack-status-historical-pr-trunk");
     let settings = user_settings().expect("settings");
     let (workspace, repo, main_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let stale_pr = write_child(tx.repo_mut(), &root, "stale landed PR").await;
@@ -540,9 +552,10 @@ fn facts_reject_ambiguous_origin_trunk_candidates() {
     let fixture = TestWorkspace::new("ambiguous-trunk");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "shared trunk").await;
@@ -577,9 +590,10 @@ fn facts_keep_main_master_trunk_ambiguity_for_read_only_checks() {
     let fixture = TestWorkspace::new("main-master-ambiguous-trunk");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let main = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -615,9 +629,10 @@ fn facts_reject_non_linear_stack_paths() {
     let fixture = TestWorkspace::new("non-linear");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;

@@ -141,7 +141,7 @@ impl JjWorkspace {
             let branch_name = branch.as_str().to_owned();
             let ref_target = &remote_ref.target;
 
-            if ref_target.has_conflict() {
+            if !ref_target.is_resolved() {
                 metrics.conflicted_bookmark_count += 1;
                 conflicted.push(branch_name);
                 continue;

@@ -14,9 +14,7 @@ impl JjWorkspace {
                 continue;
             };
             let commit = self.load_commit(commit_id)?;
-            let targets = self
-                .repo
-                .resolve_change_id(commit.change_id())
+            let targets = pollster::block_on(self.repo.resolve_change_id(commit.change_id()))
                 .map_err(|error| JjError::Index {
                     message: error.to_string(),
                 })?;
@@ -62,12 +60,13 @@ impl JjWorkspace {
         commits
             .into_iter()
             .map(|(bookmark, commit)| {
-                let length = prefix_index
-                    .shortest_change_prefix_len(self.repo.as_ref(), commit.change_id())
-                    .map_err(|error| JjError::Index {
-                        message: error.to_string(),
-                    })?
-                    .max(1);
+                let length = pollster::block_on(
+                    prefix_index.shortest_change_prefix_len(self.repo.as_ref(), commit.change_id()),
+                )
+                .map_err(|error| JjError::Index {
+                    message: error.to_string(),
+                })?
+                .max(1);
                 let alias = commit
                     .change_id()
                     .reverse_hex()

@@ -19,6 +19,7 @@ use super::*;
 
 mod bookmark_aliases;
 mod bookmarks;
+mod colocated;
 mod description;
 mod diff;
 mod facts;
@@ -43,7 +44,7 @@ fn log_test_settings() -> Result<UserSettings, JjError> {
     let mut config = StackedConfig::with_defaults();
     config.extend_layers(jx_default_config_layers());
     jj_lib::config::migrate(&mut config, &default_config_migrations()).map_err(log_error)?;
-    UserSettings::from_config(config).map_err(|error| JjError::Settings {
+    UserSettings::from_config_and_home_dir(config, None).map_err(|error| JjError::Settings {
         message: error.to_string(),
     })
 }

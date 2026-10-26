@@ -5,9 +5,10 @@ fn pr_action_revision_requires_exact_local_head_and_does_not_follow_rewritten_ch
     let fixture = TestWorkspace::new("pr-action-revision");
     let settings = user_settings().unwrap();
     let (workspace, repo, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .unwrap();
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .unwrap();
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child(tx.repo_mut(), &root, "PR head").await;

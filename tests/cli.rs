@@ -226,10 +226,14 @@ impl TestWorkspace {
         let root =
             std::env::temp_dir().join(format!("jx-cli-test-{}-{unique}", std::process::id()));
         fs::create_dir_all(&root).expect("create workspace root");
-        let settings =
-            UserSettings::from_config(StackedConfig::with_defaults()).expect("test settings");
-        pollster::block_on(Workspace::init_internal_git(&settings, &root))
-            .expect("initialize jj workspace");
+        let settings = UserSettings::from_config_and_home_dir(StackedConfig::with_defaults(), None)
+            .expect("test settings");
+        pollster::block_on(Workspace::init_internal_git(
+            &settings,
+            &root,
+            gix::hash::Kind::Sha1,
+        ))
+        .expect("initialize jj workspace");
         Self { root }
     }
 

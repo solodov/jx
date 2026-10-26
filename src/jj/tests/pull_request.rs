@@ -6,9 +6,10 @@ fn pull_request_candidates_include_linear_descendant_bookmarks() {
     let fixture = TestWorkspace::new("pr-candidate-descendant");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -42,9 +43,10 @@ fn pull_request_candidates_order_selected_bookmarks_before_descendants() {
     let fixture = TestWorkspace::new("pr-candidate-order");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -76,9 +78,10 @@ fn pull_request_bookmarks_include_all_local_bookmark_heads() {
     let fixture = TestWorkspace::new("pr-bookmarks-all-local");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -113,9 +116,10 @@ fn pull_request_candidates_resolve_explicit_commit_prefix() {
     let fixture = TestWorkspace::new("pr-candidate-commit-prefix");
     let settings = user_settings().expect("settings");
     let (workspace, repo, selected_prefix) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -150,9 +154,10 @@ fn pull_request_candidates_fall_back_to_exact_local_bookmark() {
     let fixture = TestWorkspace::new("pr-candidate-bookmark-selector");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child(tx.repo_mut(), &root, "current change").await;
@@ -184,9 +189,10 @@ fn pull_request_candidates_keep_ambiguous_revision_errors() {
     let fixture = TestWorkspace::new("pr-candidate-ambiguous-selector");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let first = write_child(tx.repo_mut(), &root, "first change").await;

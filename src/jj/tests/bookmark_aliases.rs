@@ -5,9 +5,10 @@ fn aliases_use_current_local_change_ids_and_skip_unusable_bookmarks() {
     let fixture = TestWorkspace::new("bookmark-change-aliases");
     let settings = alias_settings("bookmarks()");
     let (workspace, repo, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .unwrap();
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .unwrap();
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old = write_alias_change(
@@ -79,9 +80,10 @@ fn aliases_follow_configured_log_prefix_scope_and_retain_long_unique_prefixes() 
         let fixture = TestWorkspace::new("bookmark-alias-scope");
         let settings = alias_settings(scope);
         let (workspace, repo, selected) = pollster::block_on(async {
-            let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-                .await
-                .unwrap();
+            let (workspace, repo) =
+                Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                    .await
+                    .unwrap();
             let root = repo.store().root_commit();
             let mut tx = repo.start_transaction();
             let selected = write_alias_change(
@@ -132,9 +134,10 @@ fn aliases_avoid_prefixes_shadowed_by_local_bookmark_names() {
     let fixture = TestWorkspace::new("bookmark-alias-shadow");
     let settings = alias_settings("bookmarks()");
     let (workspace, repo, selected) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .unwrap();
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .unwrap();
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let selected = write_alias_change(
@@ -175,7 +178,7 @@ fn alias_settings(scope: &str) -> UserSettings {
         &format!("[revsets]\nshort-prefixes = \"{scope}\"\n"),
     )
     .unwrap()]);
-    UserSettings::from_config(config).unwrap()
+    UserSettings::from_config_and_home_dir(config, None).unwrap()
 }
 
 async fn write_alias_change(

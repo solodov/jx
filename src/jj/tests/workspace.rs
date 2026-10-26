@@ -14,8 +14,12 @@ fn workspace_entries_use_repository_root_for_current_workspace() {
     // Verifies: Current workspace removal can resolve the active root even when jj has no recorded path for it.
     let fixture = TestWorkspace::new("workspace-entries-current-root");
     let settings = user_settings().expect("settings");
-    pollster::block_on(Workspace::init_internal_git(&settings, fixture.path()))
-        .expect("initialize jj workspace");
+    pollster::block_on(Workspace::init_internal_git(
+        &settings,
+        fixture.path(),
+        gix::hash::Kind::Sha1,
+    ))
+    .expect("initialize jj workspace");
 
     let entries = jj_workspace_entries(fixture.path()).expect("workspace entries load");
 
@@ -76,8 +80,12 @@ fn workspace_add_preflight_rejects_existing_destination() {
     // Verifies: Workspace-add preflight rejects an existing destination before invoking jj.
     let fixture = TestWorkspace::new("workspace-add-existing-destination");
     let settings = user_settings().expect("settings");
-    pollster::block_on(Workspace::init_internal_git(&settings, fixture.path()))
-        .expect("initialize jj workspace");
+    pollster::block_on(Workspace::init_internal_git(
+        &settings,
+        fixture.path(),
+        gix::hash::Kind::Sha1,
+    ))
+    .expect("initialize jj workspace");
     let destination = fixture.path().join("existing-workspace");
     fs::create_dir_all(&destination).expect("create existing destination");
 
@@ -101,9 +109,10 @@ fn workspace_shared_path_preflight_rejects_tracked_exact_path_only() {
     let fixture = TestWorkspace::new("shared-path-tracked-exact");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let current = write_child_with_files(
@@ -142,9 +151,10 @@ fn workspace_shared_path_preflight_uses_selected_revision() {
     let fixture = TestWorkspace::new("shared-path-selected-revision");
     let settings = user_settings().expect("settings");
     let (ancestor_id, current_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let ancestor = write_child(tx.repo_mut(), &root, "ancestor without shared path").await;

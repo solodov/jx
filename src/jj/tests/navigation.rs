@@ -6,9 +6,10 @@ fn previous_commit_moves_and_renders_surrounding_chain() {
     let fixture = TestWorkspace::new("previous-navigation");
     let settings = user_settings().expect("settings");
     let (workspace, repo, middle) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &root, "shared base").await;
@@ -53,9 +54,10 @@ fn next_commit_moves_to_single_child() {
     let fixture = TestWorkspace::new("next-navigation");
     let settings = user_settings().expect("settings");
     let (workspace, repo, middle) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &root, "shared base").await;
@@ -94,9 +96,10 @@ fn previous_commit_rejects_immutable_parent() {
     let fixture = TestWorkspace::new("previous-navigation-immutable");
     let settings = user_settings().expect("settings");
     let (workspace, repo, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &root, "shared base").await;
@@ -132,9 +135,10 @@ fn next_commit_rejects_branching_children() {
     let fixture = TestWorkspace::new("next-navigation-branching");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &root, "shared base").await;

@@ -6,9 +6,10 @@ fn advance_trunk_skips_current_change_that_is_not_based_on_current_trunk() {
     let fixture = TestWorkspace::new("advance-trunk-historical-pr");
     let settings = user_settings().expect("settings");
     let (workspace, repo, main_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let stale_pr = write_child_with_files(

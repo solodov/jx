@@ -237,7 +237,6 @@ pub(super) fn fetch_origin_refs(
                     refspecs,
                     &mut callback,
                     None,
-                    Some(FetchTagsOverride::NoTags),
                 )
                 .map_err(|error| JjError::Fetch {
                     message: error.to_string(),
@@ -406,7 +405,7 @@ pub(super) fn load_origin_branch(
     let symbol = RefName::new(branch).to_remote_symbol(RemoteName::new(ORIGIN_REMOTE_NAME));
     let target = &repo.view().get_remote_bookmark(symbol).target;
 
-    if target.has_conflict() {
+    if !target.is_resolved() {
         return Err(JjError::ConflictedTrunk {
             remote: ORIGIN_REMOTE_NAME.to_owned(),
             branches: vec![branch.to_owned()],
@@ -438,11 +437,11 @@ pub(super) fn is_ancestor_or_equal_in_repo(
     ancestor: &CommitId,
     descendant: &CommitId,
 ) -> Result<bool, JjError> {
-    repo.index()
-        .is_ancestor(ancestor, descendant)
-        .map_err(|error| JjError::Index {
+    pollster::block_on(repo.index().is_ancestor(ancestor, descendant)).map_err(|error| {
+        JjError::Index {
             message: error.to_string(),
-        })
+        }
+    })
 }
 
 pub(super) struct SilentGitCallback;
@@ -615,7 +614,6 @@ impl JjWorkspace {
             RemoteName::new(ORIGIN_REMOTE_NAME),
             remote_url,
             None,
-            gix::remote::fetch::Tags::None,
         )
         .map_err(|error| JjError::RemoteAdd {
             remote: ORIGIN_REMOTE_NAME.to_owned(),
@@ -677,17 +675,12 @@ impl JjWorkspace {
     pub fn add_git_remote(&mut self, remote: &str, remote_url: &str) -> Result<(), JjError> {
         self.ensure_git_backed()?;
         let mut tx = self.repo.start_transaction();
-        git::add_remote(
-            tx.repo_mut(),
-            RemoteName::new(remote),
-            remote_url,
-            None,
-            gix::remote::fetch::Tags::None,
-        )
-        .map_err(|error| JjError::RemoteAdd {
-            remote: remote.to_owned(),
-            message: error.to_string(),
-        })?;
+        git::add_remote(tx.repo_mut(), RemoteName::new(remote), remote_url, None).map_err(
+            |error| JjError::RemoteAdd {
+                remote: remote.to_owned(),
+                message: error.to_string(),
+            },
+        )?;
         let repo = pollster::block_on(tx.commit(format!("jx git remote add {remote}"))).map_err(
             |error| JjError::Transaction {
                 message: error.to_string(),

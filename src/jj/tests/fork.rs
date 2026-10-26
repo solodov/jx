@@ -6,9 +6,10 @@ fn fork_sync_plan_identifies_rebase_stack_root() {
     let fixture = TestWorkspace::new("fork-sync-plan-rebase");
     let settings = user_settings().expect("settings");
     let (workspace, repo) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &root, "old source").await;
@@ -47,9 +48,10 @@ fn fork_sync_rebases_stack_and_moves_branch() {
     let fixture = TestWorkspace::new("fork-sync-apply-rebase");
     let settings = user_settings().expect("settings");
     let (workspace, repo, upstream_id, old_head_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &root, "old source").await;
@@ -121,9 +123,10 @@ fn fork_sync_fast_forwards_branch_and_rebases_local_children() {
     let fixture = TestWorkspace::new("fork-sync-fast-forward");
     let settings = user_settings().expect("settings");
     let (workspace, repo, upstream_id, current_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old_main = write_child(tx.repo_mut(), &root, "old source").await;

@@ -4,7 +4,7 @@ impl JjWorkspace {
     /// Resolves an exact local bookmark to its current commit without remote or fragment fallback.
     pub fn local_bookmark_commit_id(&self, branch: &str) -> Result<String, JjError> {
         let target = self.repo.view().get_local_bookmark(RefName::new(branch));
-        if target.has_conflict() {
+        if !target.is_resolved() {
             return Err(JjError::ConflictedBookmark {
                 branch: branch.to_owned(),
             });
@@ -48,7 +48,7 @@ impl JjWorkspace {
             let bookmark = RefName::new(branch);
             let existing_target = self.repo.view().get_local_bookmark(bookmark);
 
-            if existing_target.has_conflict() {
+            if !existing_target.is_resolved() {
                 return Err(JjError::ConflictedBookmark {
                     branch: branch.clone(),
                 });

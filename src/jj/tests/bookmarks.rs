@@ -5,9 +5,10 @@ fn local_bookmark_commit_ids_use_exact_current_local_targets() {
     let fixture = TestWorkspace::new("local-bookmark-commit");
     let settings = user_settings().unwrap();
     let (workspace, repo, current_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .unwrap();
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .unwrap();
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let old = write_child(tx.repo_mut(), &root, "previously pushed").await;
@@ -45,9 +46,10 @@ fn ensure_bookmark_creates_reuses_and_rejects_other_change() {
     let fixture = TestWorkspace::new("bookmark-mutation");
     let settings = user_settings().expect("settings");
     let (workspace, repo, trunk, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;
@@ -132,9 +134,10 @@ fn sync_bookmark_selection_requires_one_bookmark_unless_named() {
     let fixture = TestWorkspace::new("sync-bookmark-selection");
     let settings = user_settings().expect("settings");
     let (workspace, repo, ambiguous_commit_id) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let trunk = write_child(tx.repo_mut(), &root, "main trunk").await;

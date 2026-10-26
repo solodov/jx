@@ -78,20 +78,25 @@ fn fetch_diagnostics_receive_timestamps_without_changing_span_status() {
 #[test]
 fn skipped_push_trace_records_bookmark_and_conflicting_commits() {
     let root = tempfile::tempdir().expect("tempdir");
-    let settings =
-        jj_lib::settings::UserSettings::from_config(jj_lib::config::StackedConfig::with_defaults())
-            .expect("settings");
+    let settings = jj_lib::settings::UserSettings::from_config_and_home_dir(
+        jj_lib::config::StackedConfig::with_defaults(),
+        None,
+    )
+    .expect("settings");
     pollster::block_on(async {
-        let (_, repo) = jj_lib::workspace::Workspace::init_internal_git(&settings, root.path())
-            .await
-            .expect("workspace");
+        let (_, repo) = jj_lib::workspace::Workspace::init_internal_git(
+            &settings,
+            root.path(),
+            gix::hash::Kind::Sha1,
+        )
+        .await
+        .expect("workspace");
         let mut tx = repo.start_transaction();
         jj_lib::git::add_remote(
             tx.repo_mut(),
             jj_lib::ref_name::RemoteName::new("origin"),
             "https://github.com/owner/repo.git",
             None,
-            gix::remote::fetch::Tags::None,
         )
         .expect("origin");
         tx.commit("test origin").await.expect("commit");

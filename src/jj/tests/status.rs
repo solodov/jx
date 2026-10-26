@@ -41,9 +41,10 @@ fn selected_revision_status_accepts_bookmark_fragments_without_moving_current() 
     let fixture = TestWorkspace::new("selected-status-bookmark-fragment");
     let settings = user_settings().expect("settings");
     let (workspace, repo, selected, current) = pollster::block_on(async {
-        let (workspace, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("initialize jj workspace");
+        let (workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
         let root = repo.store().root_commit();
         let mut tx = repo.start_transaction();
         let selected = write_child_with_files(

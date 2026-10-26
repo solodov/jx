@@ -16,10 +16,16 @@ impl JjWorkspace {
             .create(&workspace_root)
             .map_err(workspace_load_error)?;
         let config = resolved_workspace_config_for_workspace_load(&ui, loader.as_ref())?;
-        let settings = UserSettings::from_config(config).map_err(|error| JjError::Settings {
+        let settings = UserSettings::from_config_and_home_dir(
+            config,
+            jj_cli::config::ConfigEnv::from_environment()
+                .home_dir()
+                .map(Path::to_path_buf),
+        )
+        .map_err(|error| JjError::Settings {
             message: error.to_string(),
         })?;
-        let store_factories = StoreFactories::default();
+        let store_factories = default_backend_factories();
         let working_copy_factories = default_working_copy_factories();
         let workspace = loader
             .load(&settings, &store_factories, &working_copy_factories)
@@ -210,7 +216,7 @@ impl JjWorkspace {
             let branch_name = branch.as_str().to_owned();
             let ref_target = &remote_ref.target;
 
-            if ref_target.has_conflict() {
+            if !ref_target.is_resolved() {
                 conflicted.push(branch_name);
                 continue;
             }
@@ -370,7 +376,7 @@ impl JjWorkspace {
             let branch_name = branch.as_str().to_owned();
             let ref_target = &remote_ref.target;
 
-            if ref_target.has_conflict() {
+            if !ref_target.is_resolved() {
                 metrics.conflicted_bookmark_count += 1;
                 conflicted.push(branch_name);
                 continue;
@@ -460,7 +466,7 @@ impl JjWorkspace {
             .get_remote_bookmark(RefName::new(branch).to_remote_symbol(RemoteName::new(remote)));
         let ref_target = &remote_ref.target;
 
-        if ref_target.has_conflict() {
+        if !ref_target.is_resolved() {
             metrics.remote_bookmark_count += 1;
             metrics.conflicted_bookmark_count += 1;
             return Ok(None);
@@ -610,12 +616,11 @@ impl JjWorkspace {
         ancestor: &CommitId,
         descendant: &CommitId,
     ) -> Result<bool, JjError> {
-        self.repo
-            .index()
-            .is_ancestor(ancestor, descendant)
-            .map_err(|error| JjError::Index {
+        pollster::block_on(self.repo.index().is_ancestor(ancestor, descendant)).map_err(|error| {
+            JjError::Index {
                 message: error.to_string(),
-            })
+            }
+        })
     }
 
     pub(super) fn load_commit(&self, commit_id: &CommitId) -> Result<Commit, JjError> {

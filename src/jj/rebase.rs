@@ -20,7 +20,7 @@ impl JjWorkspace {
         }
 
         let local_target = self.repo.view().get_local_bookmark(bookmark);
-        if local_target.has_conflict() {
+        if !local_target.is_resolved() {
             return Err(JjError::ConflictedBookmark {
                 branch: branch.clone(),
             });

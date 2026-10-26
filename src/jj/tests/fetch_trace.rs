@@ -6,9 +6,10 @@ fn fetch_trace_identifies_empty_drop_and_clean_descendant() {
     let fixture = TestWorkspace::new("fetch-trace-empty-drop");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &repo.store().root_commit(), "base").await;
         let topic =
@@ -58,9 +59,10 @@ fn fetch_trace_identifies_new_propagated_and_preexisting_conflicts() {
     let fixture = TestWorkspace::new("fetch-trace-conflicts");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let base = write_child_with_files(
             tx.repo_mut(),
@@ -150,9 +152,10 @@ fn fetch_trace_explains_skipped_roots_and_import_rewrites() {
     let fixture = TestWorkspace::new("fetch-trace-skips");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &repo.store().root_commit(), "base").await;
         let landed = write_child(tx.repo_mut(), &base, "landed").await;
@@ -230,9 +233,10 @@ fn fetch_trace_preserves_bookmark_identity_before_deletion() {
     let fixture = TestWorkspace::new("fetch-trace-import");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let topic = write_child(tx.repo_mut(), &repo.store().root_commit(), "topic").await;
         set_local_bookmark(tx.repo_mut(), "topic/root", topic.id());
@@ -256,11 +260,12 @@ fn fetch_trace_preserves_bookmark_identity_before_deletion() {
         tx.repo_mut()
             .set_local_bookmark_target(RefName::new("topic/root"), RefTarget::absent());
         let stats = git::GitImportStats {
-            changed_remote_bookmarks: vec![(
+            changed_remote_bookmarks: vec![git::GitImportRefUpdate::new(
                 RefName::new("topic/root")
                     .to_remote_symbol(RemoteName::new("origin"))
                     .to_owned(),
-                (old_remote, RefTarget::absent()),
+                old_remote,
+                RefTarget::absent(),
             )],
             abandoned_commits: vec![topic.clone()],
             rewritten_commit_ids: HashSet::from([topic.id().clone()]),
@@ -285,9 +290,10 @@ fn fetch_trace_bounds_conflict_paths_without_recording_file_contents() {
     let fixture = TestWorkspace::new("fetch-trace-many-conflicts");
     let settings = user_settings().expect("settings");
     pollster::block_on(async {
-        let (_, repo) = Workspace::init_internal_git(&settings, fixture.path())
-            .await
-            .expect("workspace");
+        let (_, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("workspace");
         let mut tx = repo.start_transaction();
         let base = write_child(tx.repo_mut(), &repo.store().root_commit(), "base").await;
         let paths = (0..25)
