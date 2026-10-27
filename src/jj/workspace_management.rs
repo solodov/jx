@@ -23,7 +23,7 @@ pub fn run_jj_git_init(current_dir: &Path) -> Result<(), JjError> {
     }
 }
 
-/// Adds a jj workspace at the resolved destination while keeping command output concise.
+/// Adds a jj workspace, recovering a stale Git registration at its destination if needed.
 pub fn run_jj_workspace_add(
     current_dir: &Path,
     options: &WorkspaceAddOptions,
@@ -63,6 +63,9 @@ pub fn run_jj_workspace_add(
     if output.status.success() {
         Ok(())
     } else {
+        // jj creates the destination before invoking Git. Don't leave an empty
+        // directory blocking retries, but preserve any partially created state.
+        let _ = fs::remove_dir(&options.destination);
         Err(JjError::WorkspaceAddFailed {
             status: process_failure_summary(output.status, &output.stderr),
         })
@@ -73,13 +76,14 @@ fn preflight_workspace_add(
     current_dir: &Path,
     options: &WorkspaceAddOptions,
 ) -> Result<(), JjError> {
-    match fs::symlink_metadata(&options.destination) {
+    let destination_exists = match fs::symlink_metadata(&options.destination) {
+        Ok(metadata) if metadata.is_dir() && directory_is_empty(&options.destination)? => true,
         Ok(_) => {
             return Err(JjError::WorkspacePathExists {
                 path: options.destination.clone(),
             });
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(source) => {
             return Err(JjError::WorkspaceIo {
                 action: "inspect workspace path",
@@ -87,13 +91,95 @@ fn preflight_workspace_add(
                 source,
             });
         }
-    }
+    };
 
     validate_workspace_shared_paths_untracked(
         current_dir,
         options.revision.as_deref(),
         &options.shared_paths,
-    )
+    )?;
+    let recovered = recover_stale_git_worktree(current_dir, options)?;
+    if destination_exists && !recovered {
+        return Err(JjError::WorkspacePathExists {
+            path: options.destination.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Clears only the destination's stale Git registration, never forcing locks or deleting contents.
+fn recover_stale_git_worktree(
+    current_dir: &Path,
+    options: &WorkspaceAddOptions,
+) -> Result<bool, JjError> {
+    let workspace = JjWorkspace::load(find_jj_workspace_root(current_dir)?)?;
+    // A workspace still tracked by jj needs an explicit forget, not Git-only recovery.
+    if workspace
+        .repo
+        .view()
+        .get_wc_commit_id(WorkspaceName::new(&options.name))
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let Ok(git_repo) = git::get_git_repo(workspace.repo.store()) else {
+        return Ok(false);
+    };
+    let recovery_error = |message| JjError::WorkspaceGitRecovery {
+        path: options.destination.clone(),
+        message,
+    };
+    let destination = gix::path::realpath(current_dir.join(&options.destination))
+        .map_err(|error| recovery_error(error.to_string()))?;
+    let worktrees = git_repo
+        .worktrees()
+        .map_err(|error| recovery_error(error.to_string()))?;
+    for worktree in worktrees {
+        let Ok(base) = worktree
+            .base()
+            .and_then(|path| gix::path::realpath(path).map_err(io::Error::other))
+        else {
+            continue;
+        };
+        if base != destination {
+            continue;
+        }
+        if worktree.is_locked() {
+            return Err(recovery_error(
+                "worktree is locked; unlock it explicitly before reusing this path".to_owned(),
+            ));
+        }
+        let subprocess_options =
+            git::GitSubprocessOptions::from_settings(workspace.workspace.settings())
+                .map_err(settings_error)?;
+        // A failed jj add may have left an empty directory. remove_dir refuses
+        // nonempty directories and symlinks, including ones created since preflight.
+        match fs::remove_dir(&destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(recovery_error(error.to_string())),
+        }
+        // Unlike prune, this leaves every unrelated stale registration intact.
+        // No --force: Git must also enforce its lock and worktree safety checks.
+        let output = Command::new(&subprocess_options.executable_path)
+            .arg("--git-dir")
+            .arg(git_repo.common_dir())
+            .args(["worktree", "remove", "--"])
+            .arg(&destination)
+            .envs(&subprocess_options.environment)
+            .current_dir(current_dir)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| recovery_error(error.to_string()))?;
+        if !output.status.success() {
+            return Err(recovery_error(process_failure_summary(
+                output.status,
+                &output.stderr,
+            )));
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub(super) fn validate_workspace_shared_paths_untracked(
@@ -212,7 +298,7 @@ pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, J
         .collect()
 }
 
-/// Forgets a jj workspace after moving its managed directory aside, then deletes it.
+/// Forgets and unlinks a jj workspace after moving its directory aside, then deletes it.
 pub fn remove_jj_workspace(
     current_dir: &Path,
     options: &WorkspaceRemoveOptions,
@@ -242,6 +328,24 @@ pub fn remove_jj_workspace(
             });
         }
         return Err(error);
+    }
+
+    // The recorded path no longer exists, so `jj workspace forget` cannot
+    // unlink its Git worktree. Use the moved gitlink before deleting it.
+    if tombstone.join(".git").is_file() {
+        let workspace = JjWorkspace::load(current_dir)?;
+        let subprocess_options =
+            git::GitSubprocessOptions::from_settings(workspace.workspace.settings())
+                .map_err(settings_error)?;
+        git::unlink_worktree(workspace.repo.store(), subprocess_options, &tombstone).map_err(
+            |error| JjError::WorkspaceRemove {
+                name: options.name.clone(),
+                message: format!(
+                    "could not unlink Git worktree at `{}`: {error}",
+                    tombstone.display()
+                ),
+            },
+        )?;
     }
 
     fs::remove_dir_all(&tombstone).map_err(|source| JjError::WorkspaceIo {

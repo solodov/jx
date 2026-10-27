@@ -85,6 +85,8 @@ pub enum JjError {
     WorkspaceAddFailed { status: String },
     #[error("Workspace path already exists: {path}")]
     WorkspacePathExists { path: PathBuf },
+    #[error("Could not clear stale Git worktree registration for `{path}`: {message}")]
+    WorkspaceGitRecovery { path: PathBuf, message: String },
     #[error("Refusing to share tracked workspace paths in the selected checkout: {paths:?}")]
     WorkspaceSharedPathsTracked { paths: Vec<String> },
     #[error("Invalid shared workspace path `{path}`: {message}")]

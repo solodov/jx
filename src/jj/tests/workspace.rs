@@ -76,6 +76,84 @@ fn workspace_cleanup_keeps_non_empty_managed_parents() {
 }
 
 #[test]
+fn workspace_removal_allows_recreating_colocated_workspace() {
+    assert_workspace_removal_allows_recreation(true);
+}
+
+#[test]
+fn workspace_removal_allows_recreating_non_colocated_workspace() {
+    assert_workspace_removal_allows_recreation(false);
+}
+
+/// Exercises deletion through the real jj CLI, including a sibling that must survive.
+fn assert_workspace_removal_allows_recreation(colocated: bool) {
+    let fixture = TestWorkspace::new("workspace-removal-recreation");
+    let primary = fixture.path().join("primary");
+    fs::create_dir_all(&primary).expect("create primary workspace");
+    let settings = user_settings().expect("settings");
+    if colocated {
+        pollster::block_on(Workspace::init_colocated_git(
+            &settings,
+            &primary,
+            gix::hash::Kind::Sha1,
+        ))
+        .expect("initialize colocated workspace");
+    } else {
+        pollster::block_on(Workspace::init_internal_git(
+            &settings,
+            &primary,
+            gix::hash::Kind::Sha1,
+        ))
+        .expect("initialize non-colocated workspace");
+    }
+    fs::write(
+        primary.join(".jj/repo/config.toml"),
+        "[git]\ncolocate = true\n",
+    )
+    .expect("enable colocation for colocated primary");
+    let cleanup_root = fixture.path().join(".work");
+    let options = WorkspaceAddOptions {
+        name: "on-duty".to_owned(),
+        destination: cleanup_root.join("jx/on-duty"),
+        revision: None,
+        shared_paths: Vec::new(),
+    };
+    run_jj_workspace_add(&primary, &options).expect("add workspace");
+    let sibling = WorkspaceAddOptions {
+        name: "other".to_owned(),
+        destination: cleanup_root.join("jx/other"),
+        ..options.clone()
+    };
+    run_jj_workspace_add(&primary, &sibling).expect("add sibling workspace");
+    fs::write(sibling.destination.join("keep.txt"), "sibling work\n").expect("write sibling work");
+    assert_eq!(options.destination.join(".git").is_file(), colocated);
+
+    let original_dir = std::env::current_dir().expect("current directory");
+    let result = remove_jj_workspace(
+        &primary,
+        &WorkspaceRemoveOptions {
+            name: options.name.clone(),
+            root: options.destination.clone(),
+            cleanup_root,
+        },
+    );
+    std::env::set_current_dir(original_dir).expect("restore test working directory");
+    result.expect("remove workspace");
+
+    assert!(!options.destination.exists());
+    assert!(!primary.join(".git/worktrees/on-duty").exists());
+    assert_eq!(
+        fs::read_to_string(sibling.destination.join("keep.txt")).expect("read sibling work"),
+        "sibling work\n",
+    );
+    if colocated {
+        assert!(primary.join(".git/worktrees/other").is_dir());
+    }
+    run_jj_workspace_add(&primary, &options).expect("recreate workspace at the same path");
+    assert_eq!(options.destination.join(".git").is_file(), colocated);
+}
+
+#[test]
 fn workspace_add_preflight_rejects_existing_destination() {
     // Verifies: Workspace-add preflight rejects an existing destination before invoking jj.
     let fixture = TestWorkspace::new("workspace-add-existing-destination");
@@ -101,6 +179,169 @@ fn workspace_add_preflight_rejects_existing_destination() {
     .expect_err("existing destination is rejected");
 
     assert!(matches!(error, JjError::WorkspacePathExists { path } if path == destination));
+}
+
+#[test]
+fn workspace_add_recovers_missing_registered_git_worktree() {
+    assert_workspace_add_recovers_stale_git_worktree(false);
+}
+
+#[test]
+fn workspace_add_recovers_empty_registered_git_worktree() {
+    assert_workspace_add_recovers_stale_git_worktree(true);
+}
+
+#[test]
+fn workspace_add_preserves_locked_stale_git_worktree() {
+    let (_fixture, primary, options) = stale_git_worktree_fixture();
+    let registration = primary.join(".git/worktrees/on-duty");
+    fs::write(registration.join("locked"), "keep this worktree\n").expect("lock worktree");
+    fs::create_dir(&options.destination).expect("leave empty directory from failed add");
+
+    let error = run_jj_workspace_add(&primary, &options).expect_err("locked worktree rejected");
+
+    assert!(error.to_string().contains("locked"), "{error}");
+    assert!(registration.join("locked").is_file());
+    assert!(options.destination.is_dir());
+}
+
+#[test]
+fn workspace_add_preserves_nonempty_stale_git_worktree_directory() {
+    let (_fixture, primary, options) = stale_git_worktree_fixture();
+    fs::create_dir(&options.destination).expect("create destination");
+    fs::write(options.destination.join("keep.txt"), "local work\n").expect("write local work");
+
+    let error = run_jj_workspace_add(&primary, &options).expect_err("nonempty directory rejected");
+
+    assert!(matches!(error, JjError::WorkspacePathExists { .. }));
+    assert_eq!(
+        fs::read_to_string(options.destination.join("keep.txt")).expect("read local work"),
+        "local work\n",
+    );
+    assert!(primary.join(".git/worktrees/on-duty").is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_add_preserves_symlink_at_stale_git_worktree_destination() {
+    let (_fixture, primary, options) = stale_git_worktree_fixture();
+    std::os::unix::fs::symlink("missing-target", &options.destination).expect("create symlink");
+
+    let error = run_jj_workspace_add(&primary, &options).expect_err("symlink rejected");
+
+    assert!(matches!(error, JjError::WorkspacePathExists { .. }));
+    assert_eq!(
+        fs::read_link(&options.destination).expect("read symlink"),
+        PathBuf::from("missing-target"),
+    );
+    assert!(primary.join(".git/worktrees/on-duty").is_dir());
+}
+
+#[test]
+fn workspace_add_validates_shared_paths_before_recovering_stale_registration() {
+    let (_fixture, primary, mut options) = stale_git_worktree_fixture();
+    fs::write(primary.join("tracked.txt"), "tracked\n").expect("write tracked file");
+    JjWorkspace::load_after_working_copy_snapshot(&primary).expect("snapshot primary workspace");
+    options.shared_paths = vec!["tracked.txt".to_owned()];
+
+    let error = run_jj_workspace_add(&primary, &options).expect_err("tracked shared path rejected");
+
+    assert!(matches!(error, JjError::WorkspaceSharedPathsTracked { .. }));
+    assert!(primary.join(".git/worktrees/on-duty").is_dir());
+    assert!(!options.destination.exists());
+}
+
+#[test]
+fn workspace_add_does_not_recover_workspace_still_tracked_by_jj() {
+    let (_fixture, primary, options) = stale_git_worktree_fixture();
+    run_jj_workspace_add(&primary, &options).expect("add workspace");
+    fs::remove_dir_all(&options.destination).expect("delete workspace files");
+
+    let error =
+        run_jj_workspace_add(&primary, &options).expect_err("duplicate jj workspace rejected");
+
+    assert!(matches!(error, JjError::WorkspaceAddFailed { .. }));
+    assert!(primary.join(".git/worktrees/on-duty").is_dir());
+    assert!(!options.destination.exists());
+}
+
+#[test]
+fn workspace_add_cleans_empty_directory_after_git_failure() {
+    let (_fixture, primary, options) = stale_git_worktree_fixture();
+    run_jj_workspace_add(&primary, &options).expect("recover registration and add workspace");
+    let other = WorkspaceAddOptions {
+        name: "other".to_owned(),
+        destination: options.destination.with_file_name("other"),
+        ..options
+    };
+    fs::write(
+        primary.join(".jj/repo/config.toml"),
+        "[git]\ncolocate = true\nexecutable-path = '/nonexistent/jx-test-git'\n",
+    )
+    .expect("configure failing Git executable");
+
+    let error = run_jj_workspace_add(&primary, &other).expect_err("Git executable fails");
+
+    assert!(matches!(error, JjError::WorkspaceAddFailed { .. }));
+    assert!(!other.destination.exists());
+}
+
+/// Recovers only the selected destination, leaving another stale registration intact.
+fn assert_workspace_add_recovers_stale_git_worktree(existing_empty_directory: bool) {
+    let (_fixture, primary, mut options) = stale_git_worktree_fixture();
+    let unrelated = options.destination.with_file_name("unrelated");
+    create_stale_git_worktree(&primary, &unrelated);
+    if existing_empty_directory {
+        fs::create_dir(&options.destination).expect("leave empty directory from failed add");
+    }
+    // Match Git's recorded path even when the request uses a different spelling.
+    options.destination = primary.join("../.work/backend/on-duty");
+
+    run_jj_workspace_add(&primary, &options).expect("recover stale registration and add workspace");
+
+    assert!(options.destination.join(".git").is_file());
+    assert!(options.destination.join(".jj").is_dir());
+    assert!(primary.join(".git/worktrees/unrelated").is_dir());
+    assert!(!unrelated.exists());
+}
+
+/// Initializes a colocated repository with a Git registration but no destination directory.
+fn stale_git_worktree_fixture() -> (TestWorkspace, PathBuf, WorkspaceAddOptions) {
+    let fixture = TestWorkspace::new("workspace-add-stale-registration");
+    let primary = fixture.path().join("primary");
+    fs::create_dir_all(&primary).expect("create primary workspace");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(Workspace::init_colocated_git(
+        &settings,
+        &primary,
+        gix::hash::Kind::Sha1,
+    ))
+    .expect("initialize colocated workspace");
+    fs::write(
+        primary.join(".jj/repo/config.toml"),
+        "[git]\ncolocate = true\n",
+    )
+    .expect("enable colocation");
+    let options = WorkspaceAddOptions {
+        name: "on-duty".to_owned(),
+        destination: fixture.path().join(".work/backend/on-duty"),
+        revision: None,
+        shared_paths: Vec::new(),
+    };
+    create_stale_git_worktree(&primary, &options.destination);
+    (fixture, primary, options)
+}
+
+/// Simulates a Git worktree whose files were deleted without unregistering it.
+fn create_stale_git_worktree(primary: &Path, destination: &Path) {
+    fs::create_dir_all(destination.parent().expect("worktree parent")).expect("create parent");
+    let workspace = JjWorkspace::load(primary).expect("load primary workspace");
+    let subprocess_options =
+        git::GitSubprocessOptions::from_settings(workspace.workspace.settings())
+            .expect("Git settings");
+    git::create_worktree(workspace.repo.store(), subprocess_options, destination)
+        .expect("create Git worktree");
+    fs::remove_dir_all(destination).expect("delete worktree files without unregistering");
 }
 
 #[test]
