@@ -1626,7 +1626,7 @@ fn decide_review_request(input: ReviewDecisionInput<'_>) -> ReviewDecision {
         {
             Some("non_default_branch")
         } else if auto_redismiss_allowed {
-            review_request_auto_dismiss_reason(input.status, input.viewer, state)
+            review_request_auto_dismiss_reason(&input, state)
         } else {
             None
         };
@@ -1710,12 +1710,28 @@ fn review_history_viewer_lost_approval(history: &[PullRequestHistoryRecord], vie
     })
 }
 
+/// Hides completed reviews while respecting attention already handled by a dismissal.
 fn review_request_auto_dismiss_reason(
-    status: &PullRequestStatusRecord,
-    viewer: &str,
+    input: &ReviewDecisionInput<'_>,
     state: ReviewRequestState,
 ) -> Option<&'static str> {
-    review_request_auto_dismiss_reason_after(status, viewer, state, None)
+    if state == ReviewRequestState::Approved {
+        let dismissed_at_unix = input
+            .actions
+            .iter()
+            .rev()
+            .find(|action| action.action == "dismiss")
+            .map(|action| action.changed_at_unix);
+        return review_approval_attention_reason(
+            input.status,
+            input.history,
+            input.viewer,
+            dismissed_at_unix,
+        )
+        .is_none()
+        .then_some("approved");
+    }
+    review_request_auto_dismiss_reason_after(input.status, input.viewer, state, None)
 }
 
 /// Returns whether a PR is stacked behind a non-trunk base and should wait off-inbox.
@@ -1728,12 +1744,16 @@ fn review_request_targets_non_default_branch(status: &PullRequestStatusRecord) -
         })
 }
 
+/// Checks review state after explicit attention and local dismissal rules have been applied.
 fn review_request_auto_dismiss_reason_after(
     status: &PullRequestStatusRecord,
     viewer: &str,
     state: ReviewRequestState,
     active_response_after: Option<&str>,
 ) -> Option<&'static str> {
+    if state == ReviewRequestState::Approved {
+        return Some("approved");
+    }
     if status.draft {
         return (!draft_review_needs_attention(status, viewer, active_response_after))
             .then_some("draft");
@@ -1757,6 +1777,29 @@ fn review_request_auto_dismiss_reason_after(
         ReviewRequestState::ChangesRequested | ReviewRequestState::Commented => Some("commented"),
         ReviewRequestState::New | ReviewRequestState::Answered | ReviewRequestState::Again => None,
     }
+}
+
+/// Finds explicit attention newer than both the viewer's latest review activity and dismissal.
+fn review_approval_attention_reason(
+    status: &PullRequestStatusRecord,
+    history: &[PullRequestHistoryRecord],
+    viewer: &str,
+    dismissed_at_unix: Option<i64>,
+) -> Option<&'static str> {
+    let handled_at_unix = dismissed_at_unix
+        .max(review_viewer_activity_at(status, viewer).and_then(review_timestamp_unix))
+        .unwrap_or(i64::MIN);
+    if review_history_has_reviewer_requested_after_unix(history, viewer, handled_at_unix) {
+        return Some("fresh_review_request");
+    }
+    if review_history_has_reviewer_mention_after_unix(history, viewer, handled_at_unix)
+        || review_viewer_mention_at(status, viewer)
+            .and_then(review_timestamp_unix)
+            .is_some_and(|mentioned_at_unix| mentioned_at_unix > handled_at_unix)
+    {
+        return Some("mentioned");
+    }
+    None
 }
 
 fn review_dismissal_allows_auto_redismiss(reason: &str) -> bool {
@@ -1902,7 +1945,7 @@ fn review_action_dismissal_resurface_reason(
     viewer: &str,
     state: ReviewRequestState,
 ) -> &'static str {
-    if action.reason.as_deref() == Some("draft") {
+    if action.reason.as_deref() == Some("draft") && state != ReviewRequestState::Approved {
         return draft_action_dismissal_resurface_reason(action, history, status, viewer);
     }
     if action.reason.as_deref() == Some("peer_approval") {
@@ -1924,7 +1967,17 @@ fn review_action_dismissal_resurface_reason(
             "no_longer_hidden"
         };
     }
-    if review_history_has_reviewer_requested_after_unix(history, viewer, action.changed_at_unix) {
+    if state == ReviewRequestState::Approved {
+        if let Some(reason) =
+            review_approval_attention_reason(status, history, viewer, Some(action.changed_at_unix))
+        {
+            return reason;
+        }
+    } else if review_history_has_reviewer_requested_after_unix(
+        history,
+        viewer,
+        action.changed_at_unix,
+    ) {
         return "fresh_review_request";
     }
     if review_history_has_event_after_unix(history, "head_changed", action.changed_at_unix)
@@ -1934,7 +1987,9 @@ fn review_action_dismissal_resurface_reason(
     {
         return "head_changed";
     }
-    if review_action_has_new_author_response(action, history, status, viewer) {
+    if state != ReviewRequestState::Approved
+        && review_action_has_new_author_response(action, history, status, viewer)
+    {
         return "author_response";
     }
     if action.source == "automatic"

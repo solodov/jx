@@ -3,6 +3,8 @@ use super::*;
 #[path = "action_frames.rs"]
 mod action_frames;
 
+#[path = "review_attention.rs"]
+mod attention;
 #[path = "review_cache.rs"]
 mod cache;
 #[path = "review_checks.rs"]
@@ -1626,13 +1628,13 @@ fn review_auto_dismissed_comment_resurfaces_on_author_response() {
 }
 
 #[test]
-fn review_does_not_auto_dismiss_after_active_author_response() {
-    // Verifies: an author reply remains visible across refreshes until the viewer acts again.
+fn review_does_not_auto_dismiss_unapproved_review_after_active_author_response() {
+    // Verifies: an author reply to an unapproved review stays visible until the viewer acts again.
     let workspace = review_workspace();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let mut status = review_status_record(12, "Author needs follow-up", "example-author", false);
     status.requested_reviewers = ReviewerSelection::default();
-    status.approved_reviewers = vec!["example-reviewer".to_owned()];
+    status.commented_reviewers = vec!["example-reviewer".to_owned()];
     status.review_activity = vec![PullRequestReviewActivity {
         reviewer: "example-reviewer".to_owned(),
         reviewed_at: "2026-01-01T12:00:00Z".to_owned(),
