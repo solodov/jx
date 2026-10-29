@@ -13,7 +13,7 @@ fn parse_remote_default_branch_reads_head_symref() {
 
 #[test]
 fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() {
-    // Verifies: Networked fetch can use live remote HEAD when stale cached main/master refs conflict.
+    // Verifies: Live remote HEAD breaks cached main/master ambiguity even off the selected ancestry.
     let fixture = TestWorkspace::new("fetch-main-master-default");
     let settings = user_settings().expect("settings");
     let (workspace, repo, master_id) = pollster::block_on(async {
@@ -25,7 +25,7 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
         let mut tx = repo.start_transaction();
         let main = write_child(tx.repo_mut(), &root, "main trunk").await;
         let master = write_child(tx.repo_mut(), &main, "master trunk").await;
-        let current = write_child(tx.repo_mut(), &master, "current change").await;
+        let current = write_child(tx.repo_mut(), &main, "current change").await;
 
         set_origin_bookmark(tx.repo_mut(), "main", main.id());
         set_origin_bookmark(tx.repo_mut(), "master", master.id());
@@ -41,10 +41,8 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
         (workspace, repo, master_id)
     });
     let subject = JjWorkspace { workspace, repo };
-    let target = subject.current_commit().expect("current commit loads");
-
     let selection = subject
-        .resolve_fetch_trunk_with_default_branch(&target, |_| Some("master".to_owned()))
+        .resolve_fetch_trunk_with_default_branch(|_| Some("master".to_owned()))
         .expect("live default branch breaks fetch trunk tie");
 
     assert_eq!(selection.branch, "master");
@@ -56,7 +54,7 @@ fn fetch_trunk_uses_live_default_branch_to_break_cached_main_master_ambiguity() 
 }
 
 #[test]
-fn fetch_trunk_uses_live_default_branch_after_sideways_trunk_rewrite() {
+fn fetch_trunk_uses_cached_origin_after_sideways_trunk_rewrite() {
     // Verifies: Fetch can still select origin trunk after local main was rewritten sideways.
     let fixture = TestWorkspace::new("fetch-sideways-main-default");
     let settings = user_settings().expect("settings");
@@ -96,11 +94,11 @@ fn fetch_trunk_uses_live_default_branch_after_sideways_trunk_rewrite() {
         (workspace, repo, remote_main_id)
     });
     let subject = JjWorkspace { workspace, repo };
-    let target = subject.current_commit().expect("current commit loads");
-
     let selection = subject
-        .resolve_fetch_trunk_with_default_branch(&target, |_| Some("main".to_owned()))
-        .expect("live default branch recovers cached sideways trunk");
+        .resolve_fetch_trunk_with_default_branch(|_| {
+            panic!("cached origin trunk should not need a live default branch")
+        })
+        .expect("fetch selects cached origin trunk after a sideways rewrite");
 
     assert_eq!(selection.branch, "main");
     assert_eq!(selection.commit.id(), &remote_main_id);
@@ -108,51 +106,57 @@ fn fetch_trunk_uses_live_default_branch_after_sideways_trunk_rewrite() {
 }
 
 #[test]
-fn fetch_trunk_uses_origin_trunk_when_protecting_historical_stack() {
-    // Verifies: protected sync fetches semantic trunk even when PR refs are the only ancestors.
-    let fixture = TestWorkspace::new("fetch-protected-default-not-ancestor");
-    let settings = user_settings().expect("settings");
-    let (workspace, repo, main_id) = pollster::block_on(async {
-        let (workspace, repo) =
-            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+fn fetch_trunk_uses_origin_trunk_when_selected_stack_is_behind() {
+    // Verifies: Sync selects main with zero, one, or multiple ancestor PR refs, protected or not.
+    for pr_bookmark_count in [2, 1, 0] {
+        let fixture = TestWorkspace::new("fetch-default-not-ancestor");
+        let settings = user_settings().expect("settings");
+        let (workspace, repo, main_id) = pollster::block_on(async {
+            let (workspace, repo) =
+                Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                    .await
+                    .expect("initialize jj workspace");
+            let root = repo.store().root_commit();
+            let mut tx = repo.start_transaction();
+            let stale_pr = write_child(tx.repo_mut(), &root, "stale landed PR").await;
+            let historical_base =
+                write_child(tx.repo_mut(), &stale_pr, "historical trunk base").await;
+            let current = write_child(tx.repo_mut(), &historical_base, "current PR head").await;
+            let main = write_child(tx.repo_mut(), &historical_base, "current main trunk").await;
+
+            set_origin_bookmark(tx.repo_mut(), "main", main.id());
+            if pr_bookmark_count >= 1 {
+                set_origin_bookmark(tx.repo_mut(), "topic/current", current.id());
+            }
+            if pr_bookmark_count >= 2 {
+                set_origin_bookmark(tx.repo_mut(), "topic/stale", stale_pr.id());
+            }
+            set_local_bookmark(tx.repo_mut(), "topic/current", current.id());
+            tx.repo_mut()
+                .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
+                .expect("set current working-copy change");
+
+            let main_id = main.id().clone();
+            let repo = tx
+                .commit("arrange fetch default non-ancestor workspace")
                 .await
-                .expect("initialize jj workspace");
-        let root = repo.store().root_commit();
-        let mut tx = repo.start_transaction();
-        let stale_pr = write_child(tx.repo_mut(), &root, "stale landed PR").await;
-        let historical_base = write_child(tx.repo_mut(), &stale_pr, "historical trunk base").await;
-        let current = write_child(tx.repo_mut(), &historical_base, "protected PR head").await;
-        let main = write_child(tx.repo_mut(), &historical_base, "current main trunk").await;
+                .expect("commit");
+            (workspace, repo, main_id)
+        });
+        let subject = JjWorkspace { workspace, repo };
 
-        set_origin_bookmark(tx.repo_mut(), "main", main.id());
-        set_origin_bookmark(tx.repo_mut(), "topic/current", current.id());
-        set_origin_bookmark(tx.repo_mut(), "topic/stale", stale_pr.id());
-        tx.repo_mut()
-            .set_wc_commit(workspace.workspace_name().to_owned(), current.id().clone())
-            .expect("set current working-copy change");
+        for protected_rebase_roots in [Vec::new(), vec!["topic/current".to_owned()]] {
+            let selection = subject
+                .resolve_fetch_trunk(&FetchOptions {
+                    protected_rebase_roots,
+                })
+                .expect("fetch chooses semantic trunk");
 
-        let main_id = main.id().clone();
-        let repo = tx
-            .commit("arrange protected fetch default non-ancestor workspace")
-            .await
-            .expect("commit");
-        (workspace, repo, main_id)
-    });
-    let subject = JjWorkspace { workspace, repo };
-    let target = subject.current_commit().expect("current commit loads");
-
-    let selection = subject
-        .resolve_fetch_trunk(
-            &target,
-            &FetchOptions {
-                protected_rebase_roots: vec!["topic/current".to_owned()],
-            },
-        )
-        .expect("protected fetch chooses semantic trunk");
-
-    assert_eq!(selection.branch, "main");
-    assert_eq!(selection.commit.id(), &main_id);
-    assert!(selection.refresh_bookmarks.is_empty());
+            assert_eq!(selection.branch, "main");
+            assert_eq!(selection.commit.id(), &main_id);
+            assert!(selection.refresh_bookmarks.is_empty());
+        }
+    }
 }
 
 #[test]

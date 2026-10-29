@@ -62,7 +62,7 @@ impl JjWorkspace {
                 "current_commit",
                 current_before.id().hex(),
             )],
-            || self.resolve_fetch_trunk(&current_before, &options),
+            || self.resolve_fetch_trunk(&options),
             |result| match result {
                 Ok(selection) => vec![
                     fetch_trace_attr("branch", &selection.branch),
@@ -382,10 +382,9 @@ impl JjWorkspace {
         .map_err(log_error)
     }
 
-    /// Resolves the trunk branch fetch should refresh, using live remote HEAD to break stale local ambiguity.
+    /// Resolves origin trunk independently of the selected change's ancestry.
     pub(super) fn resolve_fetch_trunk(
         &self,
-        target: &Commit,
         options: &FetchOptions,
     ) -> Result<FetchTrunkSelection, JjError> {
         if !options.protected_rebase_roots.is_empty() {
@@ -397,18 +396,17 @@ impl JjWorkspace {
             });
         }
 
-        self.resolve_fetch_trunk_with_default_branch(target, |remote| {
+        self.resolve_fetch_trunk_with_default_branch(|remote| {
             live_remote_default_branch(&self.workspace_root(), remote)
         })
     }
 
-    /// Chooses a fetch trunk from cached jj state, using live remote HEAD to recover stale trunk selection.
+    /// Chooses cached origin trunk, using live remote HEAD only to break ambiguous branch choices.
     pub(super) fn resolve_fetch_trunk_with_default_branch(
         &self,
-        target: &Commit,
         live_default_branch: impl FnOnce(&str) -> Option<String>,
     ) -> Result<FetchTrunkSelection, JjError> {
-        match self.resolve_trunk(target) {
+        match self.resolve_unanchored_origin_trunk() {
             Ok((branch, commit)) => Ok(FetchTrunkSelection {
                 branch,
                 commit,
@@ -422,26 +420,11 @@ impl JjWorkspace {
                     return Err(JjError::AmbiguousTrunk { remote, branches });
                 }
 
-                let (branch, commit) = self.resolve_trunk_for_remote_with_hint(
-                    target,
-                    &remote,
-                    Some(&default_branch),
-                )?;
-                Ok(FetchTrunkSelection {
-                    branch,
-                    commit,
-                    refresh_bookmarks: branches,
-                })
-            }
-            Err(JjError::MissingTrunk { remote }) if remote == ORIGIN_REMOTE_NAME => {
-                let Some(default_branch) = live_default_branch(&remote) else {
-                    return Err(JjError::MissingTrunk { remote });
-                };
                 let commit = load_origin_branch(self.repo.as_ref(), &default_branch)?;
                 Ok(FetchTrunkSelection {
                     branch: default_branch,
                     commit,
-                    refresh_bookmarks: Vec::new(),
+                    refresh_bookmarks: branches,
                 })
             }
             Err(error) => Err(error),
