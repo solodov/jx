@@ -6,6 +6,7 @@ pub(super) fn select_publish_reviewers(
     intent_positions: &BTreeSet<usize>,
     request: &StackPublishRequest,
     selector: &dyn ReviewerSelector,
+    display_names: &BTreeMap<String, String>,
     span: &mut PerfSpan,
 ) -> Result<(), ReviewerSelectionError> {
     let ready_positions = intent_positions
@@ -46,7 +47,7 @@ pub(super) fn select_publish_reviewers(
             if ready_positions.is_empty() {
                 Ok(ReviewerSelection::default())
             } else {
-                selector.select_reviewers(&candidates, &preselected)
+                selector.select_reviewers(&candidates, &preselected, display_names)
             }
         },
     )?;
@@ -70,6 +71,37 @@ pub(super) fn select_publish_reviewers(
         };
     }
     Ok(())
+}
+
+/// Collects user identities needed by the reviewer picker and per-PR previews.
+pub(super) fn publish_reviewer_logins(
+    plans: &[PullRequestPlan],
+    positions: &BTreeSet<usize>,
+    cli_reviewers: &[ReviewerTarget],
+) -> Vec<String> {
+    let mut logins = BTreeSet::new();
+    let mut targets = cli_reviewers.iter().collect::<Vec<_>>();
+    for plan in plans
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| positions.contains(position))
+        .map(|(_, plan)| plan)
+    {
+        logins.extend(plan.effective_reviewers().users.iter().cloned());
+        if !plan.draft {
+            targets.extend(
+                plan.reviewer_candidates
+                    .iter()
+                    .map(|candidate| &candidate.target),
+            );
+        }
+    }
+    for target in targets {
+        if let ReviewerTarget::User { login } = target {
+            logins.insert(login.clone());
+        }
+    }
+    logins.into_iter().collect()
 }
 
 fn draft_reviewer_scope_notice(

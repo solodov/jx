@@ -214,6 +214,7 @@ impl PullRequestPreviewer for RecordingPullRequestPreviewer {
         _plan: &PullRequestPlan,
         _current_dir: &Path,
         _prepare_effects: &[PullRequestEventEffect],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<(), JjError> {
         self.events.borrow_mut().push("preview");
         Ok(())
@@ -230,6 +231,7 @@ impl ReviewerSelector for RecordingReviewerSelector {
         &self,
         _candidates: &[ReviewerCandidate],
         _preselected: &[ReviewerTarget],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         self.events.borrow_mut().push("reviewers");
         Ok(self.selected.clone())
@@ -247,6 +249,7 @@ impl ReviewerSelector for CancellingReviewerSelector {
         &self,
         _candidates: &[ReviewerCandidate],
         _preselected: &[ReviewerTarget],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         Err(ReviewerSelectionError::Cancelled)
     }
@@ -257,6 +260,7 @@ impl ReviewerSelector for FixedReviewerSelector {
         &self,
         _candidates: &[ReviewerCandidate],
         _preselected: &[ReviewerTarget],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         Ok(self.selected.clone())
     }
@@ -269,6 +273,7 @@ impl ReviewerSelector for CheckedReviewerSelector {
         &self,
         candidates: &[ReviewerCandidate],
         preselected: &[ReviewerTarget],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         let choices = reviewer_choices(candidates, preselected);
         Ok(selection_from_choices(

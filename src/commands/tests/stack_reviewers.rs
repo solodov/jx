@@ -209,6 +209,117 @@ fn metadata_only_draft_updates_use_the_same_opt_in_rules() {
     }
 }
 
+#[test]
+fn publish_loads_full_names_once_for_picker_and_ready_and_draft_previews() {
+    let workspace = reviewer_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let mut services = reviewer_stack_services(&[false, true]);
+    services.reviewer_candidates = vec![
+        ReviewerCandidate::new(ReviewerTarget::user("candidate"), vec!["global".to_owned()]),
+        ReviewerCandidate::new(
+            ReviewerTarget::team("ExampleOrg/platform", "platform"),
+            Vec::new(),
+        ),
+    ];
+    services.github_user_display_names = BTreeMap::from([
+        ("alice".to_owned(), "Alice Example".to_owned()),
+        ("candidate".to_owned(), "Candidate Full Name".to_owned()),
+        ("existing-0".to_owned(), "Existing Ready".to_owned()),
+        ("existing-1".to_owned(), "Existing Draft".to_owned()),
+        ("ExampleOrg/platform".to_owned(), "Not a user".to_owned()),
+    ]);
+    let previewer = NamedReviewerPreviewer::default();
+    run_with_args_and_progress(
+        ["jx", "stack", "pub", "-A", "-R", "alice"],
+        &environment,
+        &services,
+        &NoProgress,
+        PromptHandlers {
+            pull_request_previewer: &previewer,
+            reviewer_selector: &NamedReviewerSelector,
+            ..test_prompt_handlers()
+        },
+        OutputMode::plain(),
+    )
+    .expect("stack publishes with full reviewer names");
+
+    assert_eq!(services.github_user_display_name_calls.get(), 1);
+    let previews = previewer.previews.borrow();
+    assert_eq!(previews.len(), 2);
+    assert!(previews[0].contains("Reviewers: Alice Example, Existing Ready, team-0 (team)"));
+    assert!(previews[1].contains("Reviewers: Existing Draft, team-1 (team) (unchanged)"));
+    assert_eq!(
+        services.published_plans.borrow()[0].reviewers.users,
+        ["alice", "existing-0"]
+    );
+}
+
+#[test]
+fn publish_with_only_team_reviewers_does_not_load_user_names() {
+    let workspace = reviewer_workspace();
+    let environment = RuntimeEnvironment::new(workspace.path(), []);
+    let services = FakeServices::default();
+    run_with_args_and_reviewer_selector(
+        ["jx", "stack", "pub", "-R", "ExampleOrg/platform"],
+        &environment,
+        &services,
+        &CheckedReviewerSelector,
+    )
+    .expect("stack publishes with a team reviewer");
+    assert_eq!(services.github_user_display_name_calls.get(), 0);
+    assert_eq!(
+        services.published_plans.borrow()[0].reviewers.teams,
+        ["platform"]
+    );
+}
+
+struct NamedReviewerSelector;
+
+impl ReviewerSelector for NamedReviewerSelector {
+    fn select_reviewers(
+        &self,
+        candidates: &[ReviewerCandidate],
+        preselected: &[ReviewerTarget],
+        display_names: &BTreeMap<String, String>,
+    ) -> Result<ReviewerSelection, ReviewerSelectionError> {
+        assert_eq!(
+            display_names.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["alice", "candidate", "existing-0", "existing-1"]
+        );
+        let choices = reviewer_choices(candidates, preselected);
+        assert!(choices.iter().any(|choice| choice
+            .label(display_names)
+            .starts_with("Candidate Full Name")));
+        Ok(selection_from_choices(
+            choices.iter().filter(|choice| choice.checked),
+        ))
+    }
+}
+
+#[derive(Default)]
+struct NamedReviewerPreviewer {
+    previews: std::cell::RefCell<Vec<String>>,
+}
+
+impl PullRequestPreviewer for NamedReviewerPreviewer {
+    fn show_preview(
+        &self,
+        plan: &PullRequestPlan,
+        current_dir: &Path,
+        prepare_effects: &[PullRequestEventEffect],
+        display_names: &BTreeMap<String, String>,
+    ) -> Result<(), JjError> {
+        self.previews.borrow_mut().push(render_pull_request_preview(
+            plan,
+            current_dir,
+            prepare_effects,
+            display_names,
+            OutputMode::plain(),
+        )?);
+        Ok(())
+    }
+}
+
 fn reviewer_workspace() -> TestWorkspace {
     let workspace = TestWorkspace::new();
     workspace.write_git_config(

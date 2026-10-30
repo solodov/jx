@@ -38,8 +38,14 @@ fn status_and_publish_share_commit_content_for_plain_and_colored_output() {
             .unwrap();
             let status_output =
                 render_workspace_status(&status, &workspace.path(), output).unwrap();
-            let preview =
-                render_pull_request_preview(&plan, &workspace.path(), &[], output).unwrap();
+            let preview = render_pull_request_preview(
+                &plan,
+                &workspace.path(),
+                &[],
+                &BTreeMap::new(),
+                output,
+            )
+            .unwrap();
             assert!(status_output.contains(&format!("\n\n{content}\n\n")));
             assert!(preview.contains(&format!("\n\n{content}\n\n")));
             assert!(
@@ -73,9 +79,14 @@ fn publish_matches_native_jj_status_file_colors_including_repo_overrides() {
     let native = JjWorkspace::current_status(&workspace.path(), true).unwrap();
     let mut plan = preview_plan();
     plan.change_lines = vec!["A added.txt".to_owned()];
-    let preview =
-        render_pull_request_preview(&plan, &workspace.path(), &[], commit_output(true, 80))
-            .unwrap();
+    let preview = render_pull_request_preview(
+        &plan,
+        &workspace.path(),
+        &[],
+        &BTreeMap::new(),
+        commit_output(true, 80),
+    )
+    .unwrap();
     let file_line = native
         .change_lines
         .iter()
@@ -89,9 +100,14 @@ fn publish_matches_native_jj_status_file_colors_including_repo_overrides() {
     let status_output =
         render_workspace_status(&native, &workspace.path(), commit_output(true, 80)).unwrap();
     assert!(status_output.lines().any(|line| line == file_line));
-    let plain =
-        render_pull_request_preview(&plan, &workspace.path(), &[], commit_output(false, 80))
-            .unwrap();
+    let plain = render_pull_request_preview(
+        &plan,
+        &workspace.path(),
+        &[],
+        &BTreeMap::new(),
+        commit_output(false, 80),
+    )
+    .unwrap();
     assert!(plain.lines().any(|line| line == "A added.txt"));
 }
 

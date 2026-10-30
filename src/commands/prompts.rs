@@ -21,6 +21,7 @@ pub(super) trait PullRequestPreviewer {
         plan: &PullRequestPlan,
         current_dir: &Path,
         prepare_effects: &[PullRequestEventEffect],
+        display_names: &BTreeMap<String, String>,
     ) -> Result<(), JjError>;
 }
 
@@ -32,6 +33,7 @@ impl PullRequestPreviewer for TerminalPullRequestPreviewer {
         plan: &PullRequestPlan,
         current_dir: &Path,
         prepare_effects: &[PullRequestEventEffect],
+        display_names: &BTreeMap<String, String>,
     ) -> Result<(), JjError> {
         eprint!(
             "{}",
@@ -39,6 +41,7 @@ impl PullRequestPreviewer for TerminalPullRequestPreviewer {
                 plan,
                 current_dir,
                 prepare_effects,
+                display_names,
                 OutputMode {
                     color: io::stderr().is_terminal(),
                     terminal_width: None
@@ -59,6 +62,7 @@ impl PullRequestPreviewer for NoPullRequestPreview {
         _plan: &PullRequestPlan,
         _current_dir: &Path,
         _prepare_effects: &[PullRequestEventEffect],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<(), JjError> {
         Ok(())
     }
@@ -712,6 +716,7 @@ pub(super) trait ReviewerSelector {
         &self,
         candidates: &[ReviewerCandidate],
         preselected: &[ReviewerTarget],
+        display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError>;
 }
 
@@ -730,6 +735,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
         &self,
         candidates: &[ReviewerCandidate],
         preselected: &[ReviewerTarget],
+        display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         let choices = reviewer_choices(candidates, preselected);
         if choices.is_empty() {
@@ -747,7 +753,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
 
         let labels = choices
             .iter()
-            .map(ReviewerChoice::label)
+            .map(|choice| choice.label(display_names))
             .collect::<Vec<_>>();
         let defaults = choices
             .iter()
@@ -771,7 +777,7 @@ impl ReviewerSelector for TerminalReviewerSelector {
         let selected_reviewers = selection_from_indexes(&choices, &selected);
         eprintln!(
             "Reviewers for ready PRs: {}",
-            reviewer_selection_summary(&choices, &selected)
+            reviewer_selection_summary(&choices, &selected, display_names)
         );
         Ok(selected_reviewers)
     }
@@ -786,6 +792,7 @@ impl ReviewerSelector for SelectAllReviewers {
         &self,
         candidates: &[ReviewerCandidate],
         preselected: &[ReviewerTarget],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<ReviewerSelection, ReviewerSelectionError> {
         let choices = reviewer_choices(candidates, preselected);
         Ok(selection_from_choices(choices.iter()))
@@ -803,13 +810,20 @@ const REVIEWER_HINT_STYLE: &str = "\x1b[38;5;244m";
 const REVIEWER_HINT_RESET_STYLE: &str = "\x1b[0m";
 
 impl ReviewerChoice {
-    pub(super) fn label(&self) -> String {
-        let name = self.target.display_name();
+    pub(super) fn label(&self, display_names: &BTreeMap<String, String>) -> String {
+        let name = self.display_name(display_names);
         match reviewer_reason_hint(&self.reasons) {
             Some(hint) => {
                 format!("{name:<24} {REVIEWER_HINT_STYLE}{hint}{REVIEWER_HINT_RESET_STYLE}")
             }
             None => name.to_owned(),
+        }
+    }
+
+    fn display_name<'a>(&'a self, display_names: &'a BTreeMap<String, String>) -> &'a str {
+        match &self.target {
+            ReviewerTarget::User { login } => pull_request_user_full_name(login, display_names),
+            ReviewerTarget::Team { .. } => self.target.display_name(),
         }
     }
 }
@@ -894,11 +908,15 @@ pub(super) fn selection_from_indexes(
     selection_from_choices(selected.iter().filter_map(|index| choices.get(*index)))
 }
 
-fn reviewer_selection_summary(choices: &[ReviewerChoice], selected: &[usize]) -> String {
+fn reviewer_selection_summary(
+    choices: &[ReviewerChoice],
+    selected: &[usize],
+    display_names: &BTreeMap<String, String>,
+) -> String {
     let names = selected
         .iter()
         .filter_map(|index| choices.get(*index))
-        .map(|choice| choice.target.display_name().to_owned())
+        .map(|choice| choice.display_name(display_names).to_owned())
         .collect::<Vec<_>>();
     if names.is_empty() {
         "none".to_owned()
@@ -927,3 +945,7 @@ pub(super) fn selection_from_targets<'a>(
 
     ReviewerSelection::new(users, teams)
 }
+
+#[cfg(test)]
+#[path = "tests/reviewer_names.rs"]
+mod reviewer_names;

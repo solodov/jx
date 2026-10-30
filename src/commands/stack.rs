@@ -769,17 +769,41 @@ impl StackPublishExecution<'_> {
         let mut plans = plans_result?;
         add_projected_stack_context_to_existing_plans(&mut plans);
         span.set([perf_attr("plan_count", plans.len())]);
-        self.progress.finish();
 
         let intent_plan_positions = stack_publish_intent_plan_positions(&facts, &intent_indexes);
         let confirmation_plan_positions =
             stack_publish_intent_plan_positions(&facts, &confirmation_indexes);
+
+        let reviewer_logins =
+            reviewers::publish_reviewer_logins(&plans, &intent_plan_positions, &request.reviewers);
+        let display_names = span.measure_with_result_attrs(
+            "load_reviewer_names",
+            [perf_attr("login_count", reviewer_logins.len())],
+            || {
+                let names = if reviewer_logins.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    self.progress.status("Loading reviewer names…");
+                    self.services
+                        .github_user_display_names(&self.context.token_source, &reviewer_logins)
+                };
+                Ok::<_, CommandError>(names)
+            },
+            |result| {
+                result
+                    .as_ref()
+                    .map(|names| vec![perf_attr("display_name_count", names.len())])
+                    .unwrap_or_default()
+            },
+        )?;
+        self.progress.finish();
 
         match reviewers::select_publish_reviewers(
             &mut plans,
             &intent_plan_positions,
             &request,
             self.prompts.reviewer_selector,
+            &display_names,
             span,
         ) {
             Ok(()) => {}
@@ -807,6 +831,7 @@ impl StackPublishExecution<'_> {
                     plans,
                     &confirmation_plan_positions,
                     &prepare_effects,
+                    &display_names,
                 )
             },
         )?;
@@ -1104,6 +1129,7 @@ impl StackPublishExecution<'_> {
         plans: Vec<PullRequestPlan>,
         intent_plan_positions: &BTreeSet<usize>,
         prepare_effects: &[PullRequestEventEffect],
+        display_names: &BTreeMap<String, String>,
     ) -> Result<StackPublishPlanSelection, CommandError> {
         let mut selected = StackPublishPlanSelection::default();
         let mut blocked_branches = BTreeSet::new();
@@ -1128,6 +1154,7 @@ impl StackPublishExecution<'_> {
                 &plan,
                 self.environment.current_dir(),
                 prepare_effects,
+                display_names,
             )?;
             if self
                 .prompts

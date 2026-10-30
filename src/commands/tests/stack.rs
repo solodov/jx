@@ -6013,6 +6013,7 @@ impl PullRequestPreviewer for TitleRecordingPullRequestPreviewer {
         plan: &PullRequestPlan,
         _current_dir: &Path,
         _prepare_effects: &[PullRequestEventEffect],
+        _display_names: &BTreeMap<String, String>,
     ) -> Result<(), JjError> {
         self.events
             .borrow_mut()

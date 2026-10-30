@@ -13,6 +13,7 @@ pub(in crate::commands) fn render_pull_request_preview(
     plan: &PullRequestPlan,
     current_dir: &Path,
     prepare_effects: &[PullRequestEventEffect],
+    display_names: &BTreeMap<String, String>,
     output: OutputMode,
 ) -> Result<String, JjError> {
     let mut header = vec![pull_request_preview_header(plan)];
@@ -38,7 +39,7 @@ pub(in crate::commands) fn render_pull_request_preview(
         blocks.push(content);
     }
 
-    let mut metadata = vec![pull_request_reviewer_preview(plan)];
+    let mut metadata = vec![pull_request_reviewer_preview(plan, display_names)];
     if !plan.labels.is_empty() {
         metadata.push(format!("Labels: {}", plan.labels.join(", ")));
     }
@@ -48,9 +49,16 @@ pub(in crate::commands) fn render_pull_request_preview(
 }
 
 /// Shows the effective reviewers and distinguishes preserved requests from explicit draft additions.
-fn pull_request_reviewer_preview(plan: &PullRequestPlan) -> String {
+fn pull_request_reviewer_preview(
+    plan: &PullRequestPlan,
+    display_names: &BTreeMap<String, String>,
+) -> String {
     let reviewers = plan.effective_reviewers();
-    let mut names = reviewers.users.clone();
+    let mut names = reviewers
+        .users
+        .iter()
+        .map(|login| pull_request_user_full_name(login, display_names).to_owned())
+        .collect::<Vec<_>>();
     names.extend(reviewers.teams.iter().map(|team| format!("{team} (team)")));
     let summary = if names.is_empty() {
         "none".to_owned()
@@ -67,6 +75,18 @@ fn pull_request_reviewer_preview(plan: &PullRequestPlan) -> String {
         ""
     };
     format!("Reviewers: {summary}{note}")
+}
+
+/// Uses a user's full public name for publishing UI, falling back to their GitHub login.
+pub(in crate::commands) fn pull_request_user_full_name<'a>(
+    login: &'a str,
+    display_names: &'a BTreeMap<String, String>,
+) -> &'a str {
+    display_names
+        .get(login)
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(login)
 }
 
 const LOG_LINE_STYLE: &str = "\x1b[2m\x1b[38;5;244m";

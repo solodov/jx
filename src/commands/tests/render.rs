@@ -299,15 +299,15 @@ fn reviewer_selection_formats_cli_reviewers_first_and_summarizes_reasons() {
 
     assert_eq!(choices[0].target.display_name(), "cli-reviewer");
     assert!(choices[0].checked);
-    assert_eq!(choices[0].label(), "cli-reviewer");
+    assert_eq!(choices[0].label(&BTreeMap::new()), "cli-reviewer");
     assert_eq!(choices[1].target.display_name(), "ExampleOrg/frontend");
     assert!(choices[1].checked);
     assert_eq!(
-        choices[1].label(),
+        choices[1].label(&BTreeMap::new()),
         "ExampleOrg/frontend      \x1b[38;5;244mmatched 3 files\x1b[0m"
     );
     assert_eq!(
-        choices[2].label(),
+        choices[2].label(&BTreeMap::new()),
         "example-reviewer         \x1b[38;5;244mglobal\x1b[0m"
     );
     assert!(!choices[2].checked);
@@ -392,8 +392,14 @@ fn pull_request_preview_renders_legacy_stack_context_as_terminal_links() {
     plan.title = "Child change".to_owned();
     plan.body = "Authored body\n\n<!-- jx-stack:start -->\n### Pull request stack\n\n◯ [#6 Root](https://github.com/example-owner/example-repo/pull/6)\n└ ◉ **[#7 Child **notes**](https://github.com/example-owner/example-repo/pull/7)** — this PR\n&nbsp;&nbsp;└ ◌ [#8 Draft](https://github.com/example-owner/example-repo/pull/8) — draft\n<!-- jx-stack:end -->".to_owned();
 
-    let preview =
-        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 160)).unwrap();
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &[],
+        &BTreeMap::new(),
+        commit_output(false, 160),
+    )
+    .unwrap();
 
     assert!(!preview.contains("jx-stack"), "{preview:?}");
     assert!(!preview.contains("]("), "{preview:?}");
@@ -429,8 +435,14 @@ fn pull_request_preview_renders_nested_stack_lists_with_number_only_links() {
         "\n\n<!-- jx-stack:end -->",
     ).to_owned();
 
-    let preview =
-        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 180)).unwrap();
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &[],
+        &BTreeMap::new(),
+        commit_output(false, 180),
+    )
+    .unwrap();
     let root_link = osc8_link("https://github.com/example-owner/example-repo/pull/6", "#6");
     let child_link = osc8_link("https://github.com/example-owner/example-repo/pull/7", "#7");
     let nested_link = osc8_link("https://github.com/example-owner/example-repo/pull/8", "#8");
@@ -471,6 +483,7 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
         &plan,
         Path::new("."),
         &prepare_effects,
+        &BTreeMap::new(),
         commit_output(false, 80),
     )
     .unwrap();
@@ -492,6 +505,7 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
         &plan,
         &workspace.path(),
         &prepare_effects,
+        &BTreeMap::new(),
         commit_output(true, 80),
     )
     .unwrap();
@@ -521,22 +535,66 @@ fn pull_request_preview_focuses_on_publish_state_and_changed_files() {
 #[test]
 fn pull_request_preview_distinguishes_draft_reviewer_outcomes() {
     let mut plan = preview_plan();
+    let display_names = BTreeMap::from([
+        ("alice".to_owned(), "Alice Example".to_owned()),
+        ("bob".to_owned(), "Robert Example".to_owned()),
+    ]);
     plan.draft = true;
-    let preview =
-        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 80)).unwrap();
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &[],
+        &display_names,
+        commit_output(false, 80),
+    )
+    .unwrap();
     assert!(preview.contains("Reviewers: none (draft)"));
 
     let mut existing = existing_pull_request(true);
     existing.reviewers = ReviewerSelection::new(["bob"], ["platform"]);
     plan.existing_pull_request = Some(existing);
-    let preview =
-        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 80)).unwrap();
-    assert!(preview.contains("Reviewers: bob, platform (team) (unchanged)"));
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &[],
+        &display_names,
+        commit_output(false, 80),
+    )
+    .unwrap();
+    assert!(preview.contains("Reviewers: Robert Example, platform (team) (unchanged)"));
 
     plan.reviewers = ReviewerSelection::new(["alice", "bob"], ["platform"]);
-    let preview =
-        render_pull_request_preview(&plan, Path::new("."), &[], commit_output(false, 80)).unwrap();
-    assert!(preview.contains("Reviewers: alice, bob, platform (team) (explicit draft request)"));
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &[],
+        &display_names,
+        commit_output(false, 80),
+    )
+    .unwrap();
+    assert!(preview.contains(
+        "Reviewers: Alice Example, Robert Example, platform (team) (explicit draft request)"
+    ));
+}
+
+#[test]
+fn pull_request_preview_uses_full_names_with_login_fallbacks_and_unchanged_teams() {
+    let mut plan = preview_plan();
+    plan.reviewers = ReviewerSelection::new(["alice", "blank", "no-profile"], ["platform"]);
+    let display_names = BTreeMap::from([
+        ("alice".to_owned(), " Alice Example ".to_owned()),
+        ("blank".to_owned(), " \t\n".to_owned()),
+        ("platform".to_owned(), "Not a user".to_owned()),
+    ]);
+    let preview = render_pull_request_preview(
+        &plan,
+        Path::new("."),
+        &[],
+        &display_names,
+        commit_output(false, 120),
+    )
+    .unwrap();
+    assert!(preview.contains("Reviewers: Alice Example, blank, no-profile, platform (team)"));
 }
 
 #[test]
@@ -564,7 +622,8 @@ fn pull_request_preview_wraps_description_at_the_same_width_as_status() {
     plan.title = "Example preview title".to_owned();
     plan.body = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda".to_owned();
     let output = commit_output(false, 28);
-    let preview = render_pull_request_preview(&plan, Path::new("."), &[], output).unwrap();
+    let preview =
+        render_pull_request_preview(&plan, Path::new("."), &[], &BTreeMap::new(), output).unwrap();
     let mut status = workspace_status();
     status.description = format!("{}\n\n{}", plan.title, plan.body);
     status.change_lines = plan.change_lines.clone();
