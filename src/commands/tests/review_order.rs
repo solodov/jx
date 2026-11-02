@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn review_orders_oldest_prs_first_within_unchanged_repository_groups() {
+fn review_orders_longest_waiting_first_within_unchanged_repository_groups() {
     let workspace = review_workspace();
     let beta = workspace.create_jj_workspace("projects/api-beta");
     TestWorkspace::write_git_config_at(
@@ -29,8 +29,8 @@ fn review_orders_oldest_prs_first_within_unchanged_repository_groups() {
         history_overrides_creation,
         review_with_lag(30, Some(since + 3)),
         review_with_lag(40, Some(since + 3)),
-        review_with_lag(90, None),
-        review_with_lag(99, Some(i64::MAX)),
+        review_with_lag(1, None),
+        review_with_lag(2, Some(i64::MAX)),
         review_with_lag(7, Some(since - 86_400)),
         review_with_lag(8, Some(since - 172_800)),
         review_with_lag(9, Some(since - 864_000)),
@@ -58,7 +58,7 @@ fn review_orders_oldest_prs_first_within_unchanged_repository_groups() {
             .collect(),
         ..FakeServices::default()
     };
-    let expected = vec![12, 15, 20, 30, 40, 80, 90, 99, 7, 8, 9, 10];
+    let expected = vec![12, 15, 20, 80, 30, 40, 1, 2, 8, 7, 9, 10];
 
     let result = run_with_args_and_services(["jx", "review"], &environment, &services)
         .expect("human review renders");
@@ -75,7 +75,7 @@ fn review_orders_oldest_prs_first_within_unchanged_repository_groups() {
         expected
     );
     for (number, row) in &rows[..8] {
-        if [90, 99].contains(number) {
+        if [1, 2].contains(number) {
             assert!(row.contains("—    ◯"), "{row}");
         } else {
             assert!(row.contains("7h"), "{row}");
@@ -95,10 +95,39 @@ fn review_orders_oldest_prs_first_within_unchanged_repository_groups() {
     assert_eq!(rows[8]["repository"], "example-owner/api-beta");
     assert_eq!(rows[10]["repository"], "aaa-owner/external");
     assert_eq!(rows[11]["repository"], "zzz-owner/external");
+
+    let snapshot = load_review_dashboard_snapshot(
+        ReviewRequest {
+            action: ReviewAction::Show,
+            repo_filters: Vec::new(),
+            interactive: true,
+            refresh_seconds: 300,
+            format: ReviewFormat::Human,
+            cached: false,
+        },
+        &environment,
+        &services,
+        ReviewCleanupMode::ReadOnly,
+    )
+    .expect("dashboard loads");
+    let frame = snapshot
+        .render(DashboardRenderOptions {
+            color: false,
+            terminal_width: Some(120),
+        })
+        .expect("dashboard renders");
+    assert_eq!(
+        frame
+            .rows
+            .iter()
+            .map(|row| row.context.pr_number)
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 #[test]
-fn cached_review_uses_the_same_pr_age_order_without_fetching() {
+fn cached_review_uses_the_same_wait_order_without_fetching() {
     let workspace = review_workspace();
     let environment = RuntimeEnvironment::new(workspace.path(), workspace.home_environment());
     let repository = GitHubRepository {
@@ -136,7 +165,7 @@ fn cached_review_uses_the_same_pr_age_order_without_fetching() {
     )
     .expect("cached review renders");
     let output = serde_json::from_str(&result.stdout).expect("valid JSON");
-    assert_eq!(review_numbers(&output), vec![12, 30, 40]);
+    assert_eq!(review_numbers(&output), vec![40, 30, 12]);
     assert!(services.pull_request_status_calls.borrow().is_empty());
 }
 
@@ -147,7 +176,7 @@ fn review_help_explains_inbox_order_and_local_state() {
         .expect_err("help prints")
         .to_string();
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(help.contains("grouped by repository with oldest pull requests first"));
+    assert!(help.contains("grouped by repository with longest-waiting reviews first"));
     assert!(help.contains("without contacting GitHub"));
     assert!(help.contains("Dismissals are local"));
 }

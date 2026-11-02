@@ -1506,7 +1506,7 @@ pub(super) fn cli() -> ClapCommand {
             ClapCommand::new("review")
                 .about("Show pull requests requesting your review")
                 .long_about(
-                    "Show GitHub pull requests needing your attention, grouped by repository with oldest pull requests first.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
+                    "Show GitHub pull requests needing your attention, grouped by repository with longest-waiting reviews first.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())

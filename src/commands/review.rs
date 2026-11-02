@@ -564,7 +564,7 @@ fn group_review_candidates(
     (candidate_keys, grouped)
 }
 
-/// Builds rows after status/history policy, dismissal rules, and inbox-only CI filtering.
+/// Builds rows in longest-waiting order after policy, dismissal, and CI filtering.
 fn build_review_repository_view(
     context: &ReviewViewContext<'_>,
     repository: &GitHubRepository,
@@ -643,8 +643,10 @@ fn build_review_repository_view(
             dismissal: decision.dismissal,
         });
     }
-    // GitHub PR numbers increase with creation order within each repository.
-    rows.sort_by_key(|row| row.status.number);
+    rows.sort_by_cached_key(|row| {
+        let since = review_request_lag_timestamp(row, viewer);
+        (since.is_none(), since, row.status.number)
+    });
     if rows.is_empty() {
         return Ok(None);
     }
