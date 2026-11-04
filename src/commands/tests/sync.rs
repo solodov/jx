@@ -23,6 +23,7 @@ fn sync_pull_request_status(
         base_branch: "main".to_owned(),
         default_branch: Some("main".to_owned()),
         author: Some("example-user".to_owned()),
+        assignees: Vec::new(),
         draft: false,
         merged: false,
         closed: false,

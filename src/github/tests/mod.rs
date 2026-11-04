@@ -181,6 +181,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     let status = map_graphql_pull_request_status(GraphQlPullRequestStatus {
         number: 42,
         title: "Example change".to_owned(),
+        assignees: Default::default(),
         url: "https://github.com/example-owner/example-repo/pull/42".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/example".to_owned(),
@@ -565,6 +566,7 @@ fn maps_pull_request_status_rollup_and_review_decision() {
     let review_required = map_graphql_pull_request_status(GraphQlPullRequestStatus {
         number: 43,
         title: "Waiting change".to_owned(),
+        assignees: Default::default(),
         url: "https://github.com/example-owner/example-repo/pull/43".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/waiting".to_owned(),
@@ -614,6 +616,7 @@ fn maps_top_level_author_comments_as_reviewer_responses() {
     let status = map_graphql_pull_request_status(GraphQlPullRequestStatus {
         number: 44,
         title: "Conversation response".to_owned(),
+        assignees: Default::default(),
         url: "https://github.com/example-owner/example-repo/pull/44".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         head_ref_name: "topic/conversation".to_owned(),
@@ -694,13 +697,14 @@ fn maps_top_level_author_comments_as_reviewer_responses() {
 }
 
 #[test]
-fn review_request_search_queries_include_existing_review_activity() {
-    // Verifies: the review inbox starts from active review requests and prior viewer reviews.
+fn review_request_search_queries_include_assignments_and_existing_review_activity() {
+    // Verifies: the inbox includes assignments, active review requests, and prior viewer reviews.
     assert_eq!(
         REVIEW_REQUEST_SEARCH_QUERIES,
         &[
             "is:pr is:open review-requested:@me -author:@me",
             "is:pr is:open reviewed-by:@me -author:@me",
+            "is:pr is:open assignee:@me -author:@me",
         ]
     );
 }

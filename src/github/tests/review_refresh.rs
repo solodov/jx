@@ -12,12 +12,14 @@ fn summary_and_full_snapshot_capture_the_same_review_key() {
     );
     assert_eq!(status.approved_reviewers, ["peer"]);
     assert_eq!(status.requested_reviewers.users, ["reviewer"]);
+    assert_eq!(status.assignees, ["reviewer"]);
 
     for query in [
         pull_request_update_summary_query(&[12]),
         pull_request_status_query(&[12]),
     ] {
         assert!(query.contains("...PullRequestReviewRefreshFields"));
+        assert!(query.contains("assignees(first: 100)"));
         assert_eq!(query.matches(REVIEW_REFRESH_FRAGMENT).count(), 1);
     }
 }
@@ -62,6 +64,28 @@ fn dismissal_rerequest_and_new_comment_review_invalidate_the_review_key() {
 }
 
 #[test]
+fn assignment_changes_invalidate_the_cache_without_other_pr_changes() {
+    let before = pull_request_payload();
+    for assignees in [
+        json!({"nodes": []}),
+        json!({"nodes": [{"login": "other"}]}),
+        json!({"nodes": [{"login": "reviewer"}, {"login": "other"}]}),
+    ] {
+        let mut after = before.clone();
+        after["assignees"] = assignees;
+        assert_ne!(
+            summary(&before).review_refresh_key,
+            summary(&after).review_refresh_key
+        );
+        assert_eq!(summary(&before).updated_at, summary(&after).updated_at);
+        assert_eq!(
+            status(&after).review_refresh_key,
+            Some(summary(&after).review_refresh_key)
+        );
+    }
+}
+
+#[test]
 fn review_connection_order_does_not_invalidate_the_cache() {
     let mut before = pull_request_payload();
     before["reviewRequests"]["nodes"]
@@ -69,12 +93,20 @@ fn review_connection_order_does_not_invalidate_the_cache() {
         .unwrap()
         .push(json!({"requestedReviewer": {"__typename": "User", "login": "other"}}));
     before["reviewRequests"]["totalCount"] = json!(2);
+    before["assignees"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"login": "other"}));
     let mut reordered = before.clone();
     reordered["latestReviews"]["nodes"]
         .as_array_mut()
         .unwrap()
         .reverse();
     reordered["reviewRequests"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    reordered["assignees"]["nodes"]
         .as_array_mut()
         .unwrap()
         .reverse();
@@ -92,6 +124,14 @@ fn old_snapshots_remain_readable_without_a_review_key() {
     let restored: PullRequestStatusRecord = serde_json::from_value(old).unwrap();
     assert_eq!(restored.review_refresh_key, None);
     assert_eq!(restored.approved_reviewers, current.approved_reviewers);
+}
+
+#[test]
+fn old_snapshots_remain_readable_without_assignees() {
+    let mut old = serde_json::to_value(status(&pull_request_payload())).unwrap();
+    old.as_object_mut().unwrap().remove("assignees");
+    let restored: PullRequestStatusRecord = serde_json::from_value(old).unwrap();
+    assert!(restored.assignees.is_empty());
 }
 
 fn summary(payload: &Value) -> PullRequestUpdateSummary {
@@ -113,6 +153,7 @@ fn pull_request_payload() -> Value {
         "baseRefName": "main",
         "baseRepository": {"defaultBranchRef": {"name": "main"}},
         "author": {"__typename": "User", "login": "author"},
+        "assignees": {"nodes": [{"login": "reviewer"}]},
         "isDraft": false,
         "merged": false,
         "closed": false,

@@ -1,11 +1,12 @@
 use super::*;
 
-/// Canonicalizes review facts shared by summary and full queries, ignoring connection ordering.
+/// Canonicalizes review and assignment facts from both queries, ignoring connection ordering.
 /// Capture this from the full response too, so a review arriving between queries is not lost.
 pub(super) fn review_refresh_key(
     decision: Option<&str>,
     requests: &GraphQlReviewRequests,
     reviews: &GraphQlReviews,
+    assignees: &GraphQlAssignees,
 ) -> String {
     let mut requested = requests
         .nodes
@@ -33,13 +34,30 @@ pub(super) fn review_refresh_key(
         })
         .collect::<Vec<_>>();
     latest_reviews.sort_unstable();
-    serde_json::to_string(&(decision, requests.total_count, requested, latest_reviews))
-        .expect("review freshness facts serialize")
+    let mut assigned = assignees
+        .nodes
+        .iter()
+        .map(|user| &user.login)
+        .collect::<Vec<_>>();
+    assigned.sort_unstable();
+    serde_json::to_string(&(
+        decision,
+        requests.total_count,
+        requested,
+        latest_reviews,
+        assigned,
+    ))
+    .expect("review freshness facts serialize")
 }
 
 // Both queries must capture the same facts; avoid loading discussion bodies in the summary.
 pub(super) const REVIEW_REFRESH_FRAGMENT: &str = r#"fragment PullRequestReviewRefreshFields on PullRequest {
   reviewDecision
+  assignees(first: 100) {
+    nodes {
+      login
+    }
+  }
   reviewRequests(first: 100) {
     totalCount
     nodes {
@@ -64,6 +82,16 @@ pub(super) const REVIEW_REFRESH_FRAGMENT: &str = r#"fragment PullRequestReviewRe
   }
 }
 "#;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct GraphQlAssignees {
+    pub(crate) nodes: Vec<GraphQlAssignee>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GraphQlAssignee {
+    pub(crate) login: String,
+}
 
 #[cfg(test)]
 #[path = "../tests/review_refresh.rs"]

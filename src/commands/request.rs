@@ -1504,9 +1504,9 @@ pub(super) fn cli() -> ClapCommand {
         .subcommand(ClapCommand::new("check").about("Check repository and PR readiness"))
         .subcommand(
             ClapCommand::new("review")
-                .about("Show pull requests requesting your review")
+                .about("Show pull requests needing your attention")
                 .long_about(
-                    "Show GitHub pull requests needing your attention, grouped by repository with longest-waiting reviews first.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
+                    "Show GitHub pull requests assigned to you, requesting your review, or previously reviewed by you, grouped by repository with longest-waiting reviews first. Assigned drafts are included; completed reviews stay hidden unless new attention is requested.\n\nFetch live state by default, or use --cached for the last local inbox without contacting GitHub. Dismissals are local; they do not submit or change GitHub reviews.",
                 )
                 .arg(dashboard_interactive_arg())
                 .arg(dashboard_refresh_seconds_arg())
@@ -2025,7 +2025,7 @@ fn review_repo_filter_arg() -> Arg {
     Arg::new("repository-filter")
         .value_name("REPO_GLOB")
         .num_args(0..)
-        .help("Filter review requests by configured key or provider/owner/repo glob")
+        .help("Filter the review inbox by configured key or provider/owner/repo glob")
 }
 
 fn review_dismiss_pull_request_arg() -> Arg {

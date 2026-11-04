@@ -2664,6 +2664,7 @@ fn pull_request_status_record(number: u64, title: &str) -> PullRequestStatusReco
         base_branch: "main".to_owned(),
         default_branch: Some("main".to_owned()),
         author: Some("example-author".to_owned()),
+        assignees: Vec::new(),
         draft: false,
         merged: false,
         closed: false,

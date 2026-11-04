@@ -4783,6 +4783,7 @@ mod tests {
             base_branch: "main".to_owned(),
             default_branch: Some("main".to_owned()),
             author: Some("example-author".to_owned()),
+            assignees: Vec::new(),
             draft: false,
             merged: false,
             closed: false,

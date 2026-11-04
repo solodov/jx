@@ -176,7 +176,7 @@ pub struct PullRequestReviewRequests {
     pub requests: Vec<PullRequestReviewRequest>,
 }
 
-/// Pull request requesting review from or already reviewed by the authenticated viewer.
+/// Pull request assigned to, requesting review from, or already reviewed by the viewer.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 pub struct PullRequestReviewRequest {
     pub repository: GitHubRepository,
@@ -191,7 +191,7 @@ pub struct PullRequestUpdateSummary {
     pub updated_at: String,
     pub latest_commit_oid: Option<String>,
     pub checks: Vec<PullRequestCheck>,
-    /// Canonical review/request facts; GitHub may not advance updatedAt for review changes.
+    /// Canonical review/request/assignment facts; updatedAt alone may miss review changes.
     pub review_refresh_key: String,
 }
 
@@ -282,6 +282,9 @@ pub struct PullRequestStatusRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
     pub author: Option<String>,
+    /// GitHub logins assigned to the pull request, independent of review requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignees: Vec<String>,
     pub draft: bool,
     pub merged: bool,
     pub closed: bool,
@@ -293,7 +296,7 @@ pub struct PullRequestStatusRecord {
     pub checks: Vec<PullRequestCheck>,
     pub merge_status: PullRequestMergeStatus,
     pub review_status: PullRequestReviewStatus,
-    /// Raw review/request freshness key, independent of rendered review state and repo policy.
+    /// Raw review/request/assignment freshness key, independent of review state and repo policy.
     /// Older snapshots omit this key and are refreshed on the next live load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_refresh_key: Option<String>,

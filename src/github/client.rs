@@ -5,7 +5,7 @@ use authored_pull_requests::{
     load_authored_pull_request_inventory, map_authored_open_pull_request,
 };
 mod review_refresh;
-use review_refresh::{review_refresh_key, REVIEW_REFRESH_FRAGMENT};
+use review_refresh::{review_refresh_key, GraphQlAssignees, REVIEW_REFRESH_FRAGMENT};
 
 /// GitHub API operations exposed to command/domain services.
 #[async_trait]
@@ -127,7 +127,7 @@ pub trait GitHubClient: Send + Sync {
         numbers: &[u64],
     ) -> Result<Vec<PullRequestStatusRecord>, GitHubError>;
 
-    /// Searches open pull requests requesting review from the authenticated viewer.
+    /// Finds open PRs assigned to, requesting review from, or already reviewed by the viewer.
     async fn review_requests(&self) -> Result<PullRequestReviewRequests, GitHubError> {
         Ok(PullRequestReviewRequests {
             viewer: AuthenticatedUser {
@@ -137,7 +137,7 @@ pub trait GitHubClient: Send + Sync {
         })
     }
 
-    /// Searches configured repositories for open pull requests requesting review from the authenticated viewer.
+    /// Finds review inbox candidates within the configured repositories.
     async fn review_requests_for_repositories(
         &self,
         repositories: &[GitHubRepository],
@@ -1152,6 +1152,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 pub(super) const REVIEW_REQUEST_SEARCH_QUERIES: &[&str] = &[
     "is:pr is:open review-requested:@me -author:@me",
     "is:pr is:open reviewed-by:@me -author:@me",
+    "is:pr is:open assignee:@me -author:@me",
 ];
 
 const REVIEW_REQUESTS_OPERATION: &str = "search review requests";
@@ -1830,6 +1831,7 @@ struct GraphQlPullRequestUpdateSummary {
     review_requests: GraphQlReviewRequests,
     #[serde(rename = "latestReviews")]
     latest_reviews: GraphQlReviews,
+    assignees: GraphQlAssignees,
     commits: GraphQlPullRequestStatusCommits,
 }
 
@@ -1847,6 +1849,7 @@ pub(super) struct GraphQlPullRequestStatus {
     #[serde(rename = "baseRepository")]
     pub(super) base_repository: Option<GraphQlPullRequestBaseRepository>,
     pub(super) author: Option<GraphQlReviewAuthor>,
+    pub(super) assignees: GraphQlAssignees,
     #[serde(rename = "isDraft")]
     pub(super) is_draft: bool,
     pub(super) merged: bool,
@@ -2213,6 +2216,7 @@ fn map_graphql_pull_request_update_summary(
             pull.review_decision.as_deref(),
             &pull.review_requests,
             &pull.latest_reviews,
+            &pull.assignees,
         ),
         number: pull.number,
         updated_at: pull.updated_at,
@@ -2231,6 +2235,7 @@ pub(super) fn map_graphql_pull_request_status(
         pull.review_decision.as_deref(),
         &pull.review_requests,
         &pull.latest_reviews,
+        &pull.assignees,
     );
     let requested_reviewer_count = pull.review_requests.total_count;
     let pull_request_author = pull.author.as_ref().map(|author| author.login.as_str());
@@ -2318,6 +2323,12 @@ pub(super) fn map_graphql_pull_request_status(
             .and_then(|repository| repository.default_branch_ref)
             .map(|branch| branch.name),
         author: pull.author.map(|author| author.login),
+        assignees: pull
+            .assignees
+            .nodes
+            .into_iter()
+            .map(|user| user.login)
+            .collect(),
         draft: pull.is_draft,
         merged: pull.merged,
         closed: pull.closed,

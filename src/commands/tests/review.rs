@@ -3,6 +3,8 @@ use super::*;
 #[path = "action_frames.rs"]
 mod action_frames;
 
+#[path = "review_assigned.rs"]
+mod assigned;
 #[path = "review_attention.rs"]
 mod attention;
 #[path = "review_cache.rs"]
@@ -2818,6 +2820,7 @@ fn review_status_record(
         base_branch: "main".to_owned(),
         default_branch: Some("main".to_owned()),
         author: Some(author.to_owned()),
+        assignees: Vec::new(),
         draft,
         merged: false,
         closed: false,

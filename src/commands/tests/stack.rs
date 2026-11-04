@@ -3254,6 +3254,7 @@ fn stack_status_record(
         base_branch: base_branch.to_owned(),
         default_branch: Some("main".to_owned()),
         author: None,
+        assignees: Vec::new(),
         draft: false,
         merged: false,
         closed: false,

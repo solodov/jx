@@ -1404,6 +1404,7 @@ fn pull_request_status(number: u64, title: &str, merged: bool) -> PullRequestSta
         base_branch: "main".to_owned(),
         default_branch: Some("main".to_owned()),
         author: None,
+        assignees: Vec::new(),
         draft: false,
         merged,
         closed: false,

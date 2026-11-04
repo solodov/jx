@@ -1757,8 +1757,17 @@ fn review_request_auto_dismiss_reason_after(
         return Some("approved");
     }
     if status.draft {
-        return (!draft_review_needs_attention(status, viewer, active_response_after))
-            .then_some("draft");
+        if draft_review_needs_attention(status, viewer, active_response_after) {
+            return None;
+        }
+        // Assignment allows draft review, but does not request another completed review.
+        if !status
+            .assignees
+            .iter()
+            .any(|user| user.eq_ignore_ascii_case(viewer))
+        {
+            return Some("draft");
+        }
     }
     if status
         .requested_reviewers
