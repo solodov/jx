@@ -223,9 +223,12 @@ impl From<WorkAddSetupError> for CommandError {
 
 /// Runs command orchestration using process arguments and environment.
 pub fn run_from_process() -> Result<CommandResult, CommandError> {
-    install_interrupt_cursor_restore()?;
-    let environment = RuntimeEnvironment::from_process()?;
-    run_with_args(env::args_os(), &environment)
+    install_interrupt_handler()?;
+    let result = (|| {
+        let environment = RuntimeEnvironment::from_process()?;
+        run_with_args(env::args_os(), &environment)
+    })();
+    finish_interrupted_command(result)
 }
 
 /// Runs command orchestration with injected arguments and environment.

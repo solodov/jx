@@ -21,6 +21,7 @@ fn refresh_logging_failures_are_reported_even_if_later_writes_recover() {
                 refresh_started: None,
             },
             refresh_log_error: None,
+            cancelling: false,
         };
         action.refresh_started("live");
         if recover {

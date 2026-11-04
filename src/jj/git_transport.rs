@@ -254,7 +254,7 @@ pub(super) fn fetch_origin_refs(
         ],
         || {
             pollster::block_on(fetcher.import_refs()).map_err(|error| JjError::Import {
-                message: error.to_string(),
+                message: format_error_chain(&error),
             })
         },
         import_refs_result_attrs,
@@ -378,7 +378,7 @@ pub(super) fn fetch_import_options(git_settings: &GitSettings) -> GitImportOptio
 /// Exports jj bookmark changes back to the backing Git refs before committing an operation.
 pub(super) fn export_git_refs(mut_repo: &mut MutableRepo) -> Result<(), JjError> {
     let stats = git::export_refs(mut_repo).map_err(|error| JjError::Export {
-        message: error.to_string(),
+        message: format_error_chain(&error),
     })?;
 
     if stats.failed_bookmarks.is_empty() && stats.failed_tags.is_empty() {
@@ -390,12 +390,29 @@ pub(super) fn export_git_refs(mut_repo: &mut MutableRepo) -> Result<(), JjError>
     })
 }
 
+/// Includes each failed ref and its underlying cause, including Git lock paths.
 pub(super) fn export_failure_message(stats: &git::GitExportStats) -> String {
-    format!(
+    let mut message = format!(
         "{} bookmark(s) and {} tag(s) could not be exported",
         stats.failed_bookmarks.len(),
         stats.failed_tags.len()
-    )
+    );
+    for (symbol, reason) in stats.failed_bookmarks.iter().chain(&stats.failed_tags) {
+        message.push_str(&format!("\n  {symbol}: {}", format_error_chain(reason)));
+    }
+    message
+}
+
+/// Retains nested causes when crossing the string-based jj error boundary.
+pub(super) fn format_error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
 }
 
 pub(super) fn load_origin_branch(

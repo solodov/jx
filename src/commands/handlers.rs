@@ -1344,6 +1344,7 @@ fn handle_global_sync(
     let mut entries = Vec::new();
 
     for (index, repository) in repositories.into_iter().enumerate() {
+        check_interrupted()?;
         progress.percentage(&format!("Syncing {}", repository.key), index, total);
         entries.push(GlobalSyncEntry {
             root: repository.root.clone(),
@@ -1355,6 +1356,7 @@ fn handle_global_sync(
                 services,
             ),
         });
+        check_interrupted()?;
         progress.percentage(&format!("Syncing {}", repository.key), index + 1, total);
     }
 
@@ -1543,6 +1545,7 @@ fn global_sync_existing_origin(
     )?;
     let mut changed = fetch_outcome_changed(&fetch);
     changed |= maybe_advance_trunk_for_sync(&context, services)?;
+    check_interrupted()?;
     let push = services.push_syncable_tracked(&context)?;
     changed |= sync_push_changed(&push);
 
@@ -1602,6 +1605,7 @@ fn global_sync_existing_origin_push_first(
         changed |= maybe_advance_trunk_for_sync(&context, services)?;
     }
 
+    check_interrupted()?;
     let mut push = match services.push_syncable_tracked(&context) {
         Ok(push) => {
             changed |= sync_push_changed(&push);
@@ -1630,6 +1634,7 @@ fn global_sync_existing_origin_push_first(
     let fetch = services.fetch_origin_with_options(&context, rebase_plan.fetch_options.clone())?;
     changed |= fetch_outcome_changed(&fetch);
     changed |= maybe_advance_trunk_for_sync(&context, services)?;
+    check_interrupted()?;
     let retry_push = services.push_syncable_tracked(&context)?;
     changed |= sync_push_changed(&retry_push);
     match &mut push {
@@ -1666,6 +1671,7 @@ fn finish_global_sync(
     services: &dyn CommandServices,
     completion: GlobalSyncCompletion<'_>,
 ) -> Result<GlobalSyncOutcome, CommandError> {
+    check_interrupted()?;
     let manager = PullRequestStackManager::new(context, services, PerfLog::disabled(), environment);
     let pull_request_push =
         pull_request_sync_push(&completion.push.pushed, completion.protected_branches);
@@ -1698,6 +1704,7 @@ fn maybe_advance_trunk_for_sync(
         return Ok(false);
     }
 
+    check_interrupted()?;
     let advance = services.advance_trunk_for_sync(context)?;
     Ok(advance_trunk_changed(&advance))
 }
@@ -1750,8 +1757,12 @@ fn fetch_origin_with_options_and_retries(
     let mut attempt = 0;
 
     loop {
+        check_jj_interrupted()?;
         match services.fetch_origin_with_options(context, options.clone()) {
-            Ok(outcome) => return Ok(outcome),
+            Ok(outcome) => {
+                check_jj_interrupted()?;
+                return Ok(outcome);
+            }
             Err(error) if should_retry_origin_fetch(&error) && attempt < retry_delays.len() => {
                 let delay = retry_delays[attempt];
                 attempt += 1;
@@ -2296,6 +2307,7 @@ fn sync_current_stack_traced(
         || push_syncable_stack_branches(&context, services, &selection.branches),
         sync_push_outcome_result_attrs,
     )?;
+    check_interrupted()?;
     progress.status("Syncing pull request descriptions…");
     let pull_request_push = pull_request_sync_push(&push.pushed, &rebase_plan.protected_branches);
     let pull_request_push = pull_request_sync_push_with_conflicted_bookmarks(
@@ -2349,6 +2361,7 @@ pub(super) fn push_syncable_stack_branches(
     let mut seen_commits = BTreeSet::new();
 
     for branch in branches {
+        check_interrupted()?;
         let next = services.push_syncable_revision(context, Some(branch))?;
         pushed.pushed_refs += next.pushed.pushed_refs;
         pushed.bookmarks.extend(
@@ -2463,6 +2476,7 @@ fn sync_selected_revision_traced(
         || services.push_syncable_revision(&context, selection.revision),
         sync_push_outcome_result_attrs,
     )?;
+    check_interrupted()?;
     progress.status("Syncing pull request description…");
     let manager = PullRequestStackManager::new(
         &context,
@@ -2638,6 +2652,7 @@ fn sync_missing_origin(
     let target =
         services.prepare_initial_publish_target(&local_context.workspace_root, &plan.target)?;
 
+    check_interrupted()?;
     progress.status(&format!("Creating private {} repository", plan.remote_url));
     let creation = services.create_repository(&local_context, &plan.repository)?;
     progress.status(&format!(
@@ -2730,6 +2745,7 @@ fn sync_existing_origin_traced(
     };
     progress.status("Pushing tracked bookmarks…");
     let push_step = span.start_step("push_syncable_tracked", Vec::new());
+    check_interrupted()?;
     let push_result = services.push_syncable_tracked_with_metrics(&context);
     if let Ok(outcome) = &push_result {
         record_sync_push_metrics(span, &outcome.metrics);
@@ -2740,6 +2756,7 @@ fn sync_existing_origin_traced(
         push_result.as_ref().err(),
     );
     let push = push_result?.outcome;
+    check_interrupted()?;
     progress.status("Syncing pull request descriptions…");
     let manager = PullRequestStackManager::new(
         &context,

@@ -244,8 +244,22 @@ impl DashboardStatus {
             let elapsed = now.saturating_duration_since(action.started).as_secs();
             return Some(StatusMessage {
                 kind: StatusKind::Working,
-                body: format!("Running {}… {elapsed}s", action.title),
-                hint: running.map(|_| "Esc cancel".to_owned()),
+                body: format!(
+                    "{} {}… {elapsed}s",
+                    if action.cancelling {
+                        "Stopping"
+                    } else {
+                        "Running"
+                    },
+                    action.title,
+                ),
+                hint: running.map(|action| {
+                    if action.cancelling {
+                        "Esc/Ctrl-C force exit (may leave Git locks)".to_owned()
+                    } else {
+                        "Esc cancel".to_owned()
+                    }
+                }),
             });
         }
         if let Some(refresh) = self

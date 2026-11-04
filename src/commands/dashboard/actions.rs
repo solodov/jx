@@ -33,6 +33,7 @@ impl DashboardActions {
             title: action.title.clone(),
             target: action.target.clone(),
             started: Instant::now(),
+            cancelling: false,
         });
         self.on_success = action.on_success;
         match RunningPrAction::start(action, environment, action_set) {
@@ -68,15 +69,22 @@ impl DashboardActions {
         self.completed.take()
     }
 
-    /// Cancels active work without losing a success that raced with the cancel key.
+    /// Requests cleanup on first cancel; a second cancel explicitly forces termination.
     pub(super) fn cancel(&mut self) -> bool {
         if self.poll_running() {
             return true;
         }
-        let Some(running) = self.running.take() else {
+        let Some(running) = &mut self.running else {
             return false;
         };
-        self.complete(DashboardActionOutcome::Cancelled(running.cancel()));
+        if running.is_cancelling() {
+            let running = self.running.take().unwrap();
+            self.complete(DashboardActionOutcome::Cancelled(running.force_cancel()));
+        } else if let Err(error) = running.request_cancel() {
+            self.complete(DashboardActionOutcome::Failed(error));
+        } else if let Some(info) = &mut self.info {
+            info.cancelling = true;
+        }
         true
     }
 
@@ -131,6 +139,14 @@ impl DashboardActions {
                 }
                 DashboardActionOutcome::Succeeded(self.on_success)
             }
+            Err(error)
+                if self
+                    .running
+                    .as_ref()
+                    .is_some_and(RunningPrAction::is_cancelling) =>
+            {
+                DashboardActionOutcome::Cancelled(error)
+            }
             Err(error) => DashboardActionOutcome::Failed(error),
         };
         self.complete(outcome);
@@ -152,6 +168,7 @@ pub(super) struct DashboardActionInfo {
     pub(super) title: String,
     pub(super) target: PrActionKey,
     pub(super) started: Instant,
+    pub(super) cancelling: bool,
 }
 
 pub(super) struct DashboardActionCompletion {

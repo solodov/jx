@@ -126,7 +126,7 @@ pub(super) fn run_interactive_dashboard(
     let mut activity = DashboardActivity::new(loader, environment, action_set, refresh_seconds);
 
     loop {
-        if interrupts.take_pending() {
+        for _ in 0..interrupts.take_pending() {
             activity.status.clear_notice();
             if !activity.actions.cancel() {
                 return Ok(CommandResult::with_exit_code(String::new(), 130));

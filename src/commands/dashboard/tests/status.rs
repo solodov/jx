@@ -1,4 +1,15 @@
 use super::*;
+
+#[test]
+fn cancelling_action_shows_cleanup_wait_and_force_warning() {
+    let now = Instant::now();
+    let mut action = action(now);
+    action.cancelling = true;
+    let status = DashboardStatus::default();
+    let line = status.line(Some(&action), now, 160).unwrap();
+    assert!(line.contains("Stopping dismiss/fix tests"));
+    assert!(line.contains("may leave Git locks"));
+}
 use crate::commands::dashboard::test_support::context;
 
 #[test]
@@ -447,5 +458,6 @@ fn action(now: Instant) -> DashboardActionInfo {
         title: "dismiss/fix tests".to_owned(),
         target: context(12, "owner/repo").key(),
         started: now,
+        cancelling: false,
     }
 }

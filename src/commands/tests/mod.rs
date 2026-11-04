@@ -41,6 +41,8 @@ mod clone;
 mod diff;
 mod fetch;
 mod fork;
+#[cfg(unix)]
+mod interrupt;
 mod log;
 mod open;
 mod pull_request;
@@ -451,6 +453,7 @@ struct FakeServices {
     fetch_origin_roots: std::cell::RefCell<Vec<PathBuf>>,
     fetch_options: std::cell::RefCell<Vec<FetchOptions>>,
     fetch_origin_failures_before_success: std::cell::Cell<usize>,
+    fetch_origin_hook: Option<Box<dyn Fn() -> Result<(), JjError>>>,
     push_tracked_roots: std::cell::RefCell<Vec<PathBuf>>,
     push_syncable_revision_requests: std::cell::RefCell<Vec<Option<String>>>,
     push_rejections_before_success: std::cell::Cell<usize>,
@@ -667,6 +670,7 @@ impl Default for FakeServices {
             fetch_origin_roots: std::cell::RefCell::new(Vec::new()),
             fetch_options: std::cell::RefCell::new(Vec::new()),
             fetch_origin_failures_before_success: std::cell::Cell::new(0),
+            fetch_origin_hook: None,
             push_tracked_roots: std::cell::RefCell::new(Vec::new()),
             push_syncable_revision_requests: std::cell::RefCell::new(Vec::new()),
             push_rejections_before_success: std::cell::Cell::new(0),
@@ -1554,6 +1558,9 @@ impl CommandServices for FakeServices {
             .borrow_mut()
             .push(context.workspace_root.clone());
         self.fetch_options.borrow_mut().push(options);
+        if let Some(hook) = &self.fetch_origin_hook {
+            hook()?;
+        }
         let remaining_failures = self.fetch_origin_failures_before_success.get();
         if remaining_failures > 0 {
             self.fetch_origin_failures_before_success

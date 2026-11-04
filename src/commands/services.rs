@@ -2034,6 +2034,7 @@ struct CapturedCommandOutput {
 }
 
 fn run_captured_command(cwd: &Path, command: &[String]) -> io::Result<CapturedCommandOutput> {
+    check_interrupted()?;
     let mut command = command.iter();
     let program = command
         .next()
@@ -2066,7 +2067,14 @@ fn stack_base_policy_for_context(context: &RepositoryContext) -> StackBasePolicy
 
 /// Loads jj-lib state after jj has captured pending working-copy changes.
 fn load_current_jj_workspace(context: &RepositoryContext) -> Result<JjWorkspace, JjError> {
+    check_jj_interrupted()?;
     JjWorkspace::load_after_working_copy_snapshot(&context.workspace_root)
+}
+
+/// Checks cancellation before starting a new jj operation, never during its transaction.
+fn load_jj_workspace(root: impl Into<PathBuf>) -> Result<JjWorkspace, JjError> {
+    check_jj_interrupted()?;
+    JjWorkspace::load(root)
 }
 
 /// Loads remote status facts from a freshly snapshotted working-copy view.
@@ -2111,18 +2119,22 @@ impl CommandServices for ProductionServices<'_> {
     }
 
     fn previous_commit_log(&self, current_dir: &Path) -> Result<String, JjError> {
+        check_jj_interrupted()?;
         JjWorkspace::move_to_previous_commit_and_render_log(current_dir)
     }
 
     fn next_commit_log(&self, current_dir: &Path) -> Result<String, JjError> {
+        check_jj_interrupted()?;
         JjWorkspace::move_to_next_commit_and_render_log(current_dir)
     }
 
     fn clone_repository(&self, current_dir: &Path, plan: &ClonePlan) -> Result<(), JjError> {
+        check_jj_interrupted()?;
         run_jj_git_clone(current_dir, &plan.remote_url, &plan.destination)
     }
 
     fn init_repository(&self, current_dir: &Path) -> Result<(), JjError> {
+        check_jj_interrupted()?;
         run_jj_git_init(current_dir)
     }
 
@@ -2131,6 +2143,7 @@ impl CommandServices for ProductionServices<'_> {
         current_dir: &Path,
         options: &WorkspaceAddOptions,
     ) -> Result<(), JjError> {
+        check_jj_interrupted()?;
         run_jj_workspace_add(current_dir, options)
     }
 
@@ -2147,6 +2160,7 @@ impl CommandServices for ProductionServices<'_> {
         current_dir: &Path,
         options: &WorkspaceRemoveOptions,
     ) -> Result<(), JjError> {
+        check_jj_interrupted()?;
         remove_jj_workspace(current_dir, options)
     }
 
@@ -2154,6 +2168,7 @@ impl CommandServices for ProductionServices<'_> {
         &self,
         workspace_root: &Path,
     ) -> Result<InitialPublishTarget, JjError> {
+        check_jj_interrupted()?;
         JjWorkspace::load_after_working_copy_snapshot(workspace_root)?.initial_publish_target()
     }
 
@@ -2162,7 +2177,7 @@ impl CommandServices for ProductionServices<'_> {
         workspace_root: &Path,
         target: &InitialPublishTarget,
     ) -> Result<InitialPublishTarget, JjError> {
-        JjWorkspace::load(workspace_root.to_path_buf())?.prepare_initial_publish_target(target)
+        load_jj_workspace(workspace_root.to_path_buf())?.prepare_initial_publish_target(target)
     }
 
     fn create_repository(
@@ -2183,7 +2198,7 @@ impl CommandServices for ProductionServices<'_> {
         remote_url: &str,
         target: &InitialPublishTarget,
     ) -> Result<BootstrapPushOutcome, JjError> {
-        JjWorkspace::load(workspace_root.to_path_buf())?.bootstrap_origin_main(remote_url, target)
+        load_jj_workspace(workspace_root.to_path_buf())?.bootstrap_origin_main(remote_url, target)
     }
 
     fn workspace_status(
@@ -2201,7 +2216,7 @@ impl CommandServices for ProductionServices<'_> {
         target_commit_id: &str,
         description: &str,
     ) -> Result<CommitDescriptionRewrite, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_jj_workspace(context.workspace_root.clone())?
             .rewrite_commit_description(target_commit_id, description)
     }
 
@@ -2337,7 +2352,7 @@ impl CommandServices for ProductionServices<'_> {
         fix: bool,
         setup: bool,
     ) -> Result<GitRemoteUpdate, JjError> {
-        let mut workspace = JjWorkspace::load(context.workspace_root.clone())?;
+        let mut workspace = load_jj_workspace(context.workspace_root.clone())?;
         let current_url = workspace
             .git_remotes()?
             .into_iter()
@@ -2385,7 +2400,7 @@ impl CommandServices for ProductionServices<'_> {
     }
 
     fn fetch_remote(&self, context: &RepositoryContext, remote: &str) -> Result<(), JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.fetch_remote(remote)
+        load_jj_workspace(context.workspace_root.clone())?.fetch_remote(remote)
     }
 
     fn fork_sync_branch_plan(
@@ -2395,7 +2410,7 @@ impl CommandServices for ProductionServices<'_> {
         upstream_remote: &str,
         upstream_branch: &str,
     ) -> Result<ForkSyncBranchPlan, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.fork_sync_branch_plan(
+        load_jj_workspace(context.workspace_root.clone())?.fork_sync_branch_plan(
             branch,
             upstream_remote,
             upstream_branch,
@@ -2407,7 +2422,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         plan: &ForkSyncBranchPlan,
     ) -> Result<ForkSyncBranchOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.apply_fork_sync_branch_plan(plan)
+        load_jj_workspace(context.workspace_root.clone())?.apply_fork_sync_branch_plan(plan)
     }
 
     fn origin_can_push(&self, context: &RepositoryContext) -> Result<bool, WorkflowError> {
@@ -2438,7 +2453,7 @@ impl CommandServices for ProductionServices<'_> {
     }
 
     fn pull_request_bookmarks(&self, context: &RepositoryContext) -> Result<Vec<String>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.pull_request_bookmarks()
+        load_jj_workspace(context.workspace_root.clone())?.pull_request_bookmarks()
     }
 
     fn pull_request_candidate_bookmarks(
@@ -2446,7 +2461,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         selector: Option<&str>,
     ) -> Result<Vec<String>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?
+        load_jj_workspace(context.workspace_root.clone())?
             .pull_request_candidate_bookmarks(selector)
     }
 
@@ -2868,7 +2883,7 @@ impl CommandServices for ProductionServices<'_> {
             ],
         );
         let result = (|| {
-            let mut workspace = JjWorkspace::load(context.workspace_root.clone())?;
+            let mut workspace = load_jj_workspace(context.workspace_root.clone())?;
             span.set([perf_attr("jj_workspace", workspace.workspace_name())]);
             let mut trace = |step| record_fetch_trace_step(&mut span, step);
             workspace.fetch_origin_with_options_and_trace(options, &mut trace)
@@ -2912,7 +2927,7 @@ impl CommandServices for ProductionServices<'_> {
         workspace_root: &Path,
         bookmarks: &[String],
     ) -> Result<BTreeMap<String, String>, JjError> {
-        JjWorkspace::load(workspace_root)?.local_bookmark_change_aliases(bookmarks)
+        load_jj_workspace(workspace_root)?.local_bookmark_change_aliases(bookmarks)
     }
 
     fn local_bookmark_commit_id(
@@ -2947,7 +2962,7 @@ impl CommandServices for ProductionServices<'_> {
         branch: &str,
         target_commit_id: &str,
     ) -> Result<BookmarkUpdate, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.ensure_bookmark(branch, target_commit_id)
+        load_jj_workspace(context.workspace_root.clone())?.ensure_bookmark(branch, target_commit_id)
     }
 
     fn ensure_bookmarks(
@@ -2955,7 +2970,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         targets: &[(String, String)],
     ) -> Result<Vec<BookmarkUpdate>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.ensure_bookmarks(targets)
+        load_jj_workspace(context.workspace_root.clone())?.ensure_bookmarks(targets)
     }
 
     fn push_bookmark(
@@ -2963,7 +2978,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         branch: &str,
     ) -> Result<PushOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_bookmark(branch)
+        load_jj_workspace(context.workspace_root.clone())?.push_bookmark(branch)
     }
 
     fn push_bookmarks_with_metrics(
@@ -2971,18 +2986,18 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         branches: &[String],
     ) -> Result<PushBookmarksOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_bookmarks_with_metrics(branches)
+        load_jj_workspace(context.workspace_root.clone())?.push_bookmarks_with_metrics(branches)
     }
 
     fn advance_trunk_for_sync(
         &self,
         context: &RepositoryContext,
     ) -> Result<AdvanceTrunkOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.advance_trunk_for_sync()
+        load_jj_workspace(context.workspace_root.clone())?.advance_trunk_for_sync()
     }
 
     fn push_tracked(&self, context: &RepositoryContext) -> Result<TrackedPushOutcome, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.push_tracked_deleted()
+        load_jj_workspace(context.workspace_root.clone())?.push_tracked_deleted()
     }
 
     fn changed_files_for_tracked_push(
@@ -2997,7 +3012,7 @@ impl CommandServices for ProductionServices<'_> {
         context: &RepositoryContext,
         branches: &[String],
     ) -> Result<Vec<String>, JjError> {
-        JjWorkspace::load(context.workspace_root.clone())?.changed_files_for_bookmarks(branches)
+        load_jj_workspace(context.workspace_root.clone())?.changed_files_for_bookmarks(branches)
     }
 
     fn push_syncable_revision(

@@ -199,7 +199,7 @@ fn pending_actions_can_be_cancelled_and_dropped_without_terminal_prompts() {
     )
     .unwrap();
     assert!(running.poll().is_none());
-    let failure = running.cancel();
+    let failure = running.force_cancel();
     assert_eq!(failure.message, "Test cancelled");
     assert_eq!(
         failure.log_path.as_deref(),

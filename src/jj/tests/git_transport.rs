@@ -31,6 +31,62 @@ fn export_git_refs_updates_backing_git_bookmark_view() {
 }
 
 #[test]
+fn import_error_retains_nested_lock_failure() {
+    #[derive(Debug, Error)]
+    #[error("Could not lock packed refs")]
+    struct LockError(#[source] io::Error);
+
+    let error = git::GitImportError::MissingRefAncestor {
+        symbol: RefName::new("main")
+            .to_remote_symbol(RemoteName::new("origin"))
+            .to_owned(),
+        err: BackendError::Other(Box::new(LockError(io::Error::other(
+            "packed-refs.lock already exists",
+        )))),
+    };
+    let message = format_error_chain(&error);
+    assert!(message.contains("main@origin"));
+    assert!(message.contains("Could not lock packed refs"));
+    assert!(message.contains("packed-refs.lock already exists"));
+}
+
+#[test]
+fn export_error_identifies_locked_bookmark_and_can_be_retried() {
+    let fixture = TestWorkspace::new("export-locked-ref");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(async {
+        let (_workspace, repo) =
+            Workspace::init_internal_git(&settings, fixture.path(), gix::hash::Kind::Sha1)
+                .await
+                .expect("initialize jj workspace");
+        let mut tx = repo.start_transaction();
+        let trunk = write_child(tx.repo_mut(), &repo.store().root_commit(), "main").await;
+        set_local_bookmark(tx.repo_mut(), "main", trunk.id());
+        let backend = repo
+            .store()
+            .backend()
+            .downcast_ref::<jj_lib::git_backend::GitBackend>()
+            .unwrap();
+        let resource = backend.git_repo_path().join("refs/heads/main");
+        fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        let lock = gix::lock::File::acquire_to_update_resource(
+            &resource,
+            gix::lock::acquire::Fail::Immediately,
+            None,
+        )
+        .unwrap();
+
+        let message = export_git_refs(tx.repo_mut())
+            .expect_err("locked ref fails export")
+            .to_string();
+        assert!(message.contains("main@git"), "{message}");
+        assert!(message.contains("main.lock"), "{message}");
+        drop(lock);
+        export_git_refs(tx.repo_mut()).expect("retry succeeds after releasing the lock");
+    });
+}
+
+#[test]
 fn prepare_initial_publish_target_describes_undescribed_root_child() {
     // Verifies: Repository bootstrap can publish a fresh jj repo whose first commit lacks text.
     let fixture = TestWorkspace::new("prepare-initial-description");

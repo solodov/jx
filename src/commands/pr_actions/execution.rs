@@ -11,6 +11,7 @@ pub(in crate::commands) struct RunningPrAction {
     on_success: PrActionOnSuccess,
     log: ActionLog,
     refresh_log_error: Option<PrActionFailure>,
+    cancelling: bool,
 }
 
 impl RunningPrAction {
@@ -31,6 +32,7 @@ impl RunningPrAction {
                 on_success: action.on_success,
                 log,
                 refresh_log_error: None,
+                cancelling: false,
             }),
             Err(error) => Err(log.failure(
                 &action.title,
@@ -46,7 +48,11 @@ impl RunningPrAction {
             Ok(status) => {
                 self.process = None;
                 let message = status.to_string();
-                Some(if status.success() {
+                Some(if self.cancelling {
+                    Err(self
+                        .log
+                        .failure(&self.title, "cancelled", "cancelled by operator"))
+                } else if status.success() {
                     let status = if self.on_success == PrActionOnSuccess::None {
                         "success"
                     } else {
@@ -69,6 +75,25 @@ impl RunningPrAction {
                 )))
             }
         }
+    }
+
+    /// Requests asynchronous cancellation so a child jx command can release repository locks.
+    pub(in crate::commands) fn request_cancel(&mut self) -> Result<(), PrActionFailure> {
+        if let Some(process) = &mut self.process {
+            process.interrupt().map_err(|error| {
+                self.log.failure(
+                    &self.title,
+                    "failed",
+                    &format!("could not interrupt: {error}"),
+                )
+            })?;
+            self.cancelling = true;
+        }
+        Ok(())
+    }
+
+    pub(in crate::commands) fn is_cancelling(&self) -> bool {
+        self.cancelling
     }
 
     /// Begins logging the follow-up load; a write failure is reported with its eventual result.
@@ -111,11 +136,14 @@ impl RunningPrAction {
         self.log.failure(&self.title, "refresh_timeout", message)
     }
 
-    /// Cancels an in-flight action without leaving a child running behind the dashboard.
-    pub(in crate::commands) fn cancel(mut self) -> PrActionFailure {
+    /// Forces a second cancellation, which may leave locks held by the terminated command.
+    pub(in crate::commands) fn force_cancel(mut self) -> PrActionFailure {
         self.stop();
-        self.log
-            .failure(&self.title, "cancelled", "cancelled by operator")
+        self.log.failure(
+            &self.title,
+            "cancelled",
+            "cancelled by operator (forced; Git locks may remain)",
+        )
     }
 
     fn stop(&mut self) {

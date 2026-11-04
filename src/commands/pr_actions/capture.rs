@@ -95,6 +95,25 @@ impl CapturedProcess {
         Some(Ok(status))
     }
 
+    /// Requests cancellation without blocking the dashboard or bypassing child cleanup.
+    pub(super) fn interrupt(&mut self) -> io::Result<()> {
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            // SAFETY: the child was spawned into its own process group.
+            if unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGINT) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        if let Some(child) = &mut self.child {
+            child.start_kill()?;
+        }
+        Ok(())
+    }
+
     /// Stops the process group, reaps the child, and cancels pipe readers before releasing their runtime.
     pub(super) fn stop(&mut self) {
         #[cfg(unix)]

@@ -135,7 +135,8 @@ impl DashboardKeyboard {
             )
         }));
         lines.push("Esc: cancel prefix, close menu/help, or cancel action; never exits".to_owned());
-        lines.push("Ctrl-C: interrupt/cancel action; otherwise exits".to_owned());
+        lines.push("Ctrl-C: stop action safely; otherwise exits".to_owned());
+        lines.push("Cancel again: force termination (may leave Git locks)".to_owned());
         lines.push(
             "Menu: j/k or arrows move; Enter selects; Tab/? previews; Esc closes; y/n confirms"
                 .to_owned(),

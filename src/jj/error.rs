@@ -3,6 +3,8 @@ use super::*;
 /// jj workspace failures surfaced as actionable diagnostics.
 #[derive(Debug, Error)]
 pub enum JjError {
+    #[error("Interrupted")]
+    Interrupted,
     #[error("Could not initialize jj settings: {message}")]
     Settings { message: String },
     #[error("Could not load jj workspace: {message}")]
