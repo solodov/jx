@@ -8,6 +8,7 @@ impl JjWorkspace {
         revisions: &[String],
         target: StackMoveTarget,
     ) -> Result<StackMoveOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
 
         let current_before = self.current_commit()?;

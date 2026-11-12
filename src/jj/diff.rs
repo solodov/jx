@@ -64,9 +64,14 @@ pub fn run_jj_git_clone(
 
 /// Runs the selected diff using the chosen renderer and optional test exclusion.
 pub fn run_current_diff(current_dir: &Path, options: &DiffOptions) -> Result<(), JjError> {
+    let workspace = JjWorkspace::load_after_working_copy_snapshot(current_dir)?;
+    let target =
+        workspace.resolve_single_revision(options.revision.as_deref().unwrap_or("@"), "jx diff")?;
+    let revision = target.id().hex();
+    let operation = workspace.repo.op_id().hex();
     let diff_files = if options.no_tests {
         let changed_files =
-            current_diff_file_paths(current_dir, options.revision.as_deref(), &options.paths)?;
+            current_diff_file_paths(current_dir, Some(&revision), &options.paths, &operation)?;
         let diff_files = diff_paths_without_tests(&changed_files);
         if diff_files.is_empty() {
             return Ok(());
@@ -78,9 +83,10 @@ pub fn run_current_diff(current_dir: &Path, options: &DiffOptions) -> Result<(),
 
     run_jj_diff(
         current_dir,
-        options.revision.as_deref(),
+        Some(&revision),
         &options.tool,
         &diff_files,
+        &operation,
     )
 }
 
@@ -88,8 +94,9 @@ fn current_diff_file_paths(
     current_dir: &Path,
     revision: Option<&str>,
     files: &[String],
+    operation: &str,
 ) -> Result<Vec<String>, JjError> {
-    let mut command = Command::new("jj");
+    let mut command = pinned_diff_command(operation);
     command.arg("--no-pager").arg("diff").arg("--name-only");
     add_revision_arg(&mut command, revision);
     add_file_args(&mut command, files);
@@ -121,18 +128,27 @@ fn current_diff_file_paths(
         .collect())
 }
 
+fn pinned_diff_command(operation: &str) -> Command {
+    let mut command = Command::new("jj");
+    command.args(["--at-operation", operation]);
+    command
+}
+
 fn run_jj_diff(
     current_dir: &Path,
     revision: Option<&str>,
     tool: &DiffToolInvocation,
     files: &[String],
+    operation: &str,
 ) -> Result<(), JjError> {
     match tool {
-        DiffToolInvocation::Plain => run_plain_jj_diff(current_dir, revision, files),
+        DiffToolInvocation::Plain => run_plain_jj_diff(current_dir, revision, files, operation),
         DiffToolInvocation::External(tool) => {
-            run_external_jj_diff(current_dir, revision, tool, files)
+            run_external_jj_diff(current_dir, revision, tool, files, operation)
         }
-        DiffToolInvocation::Pipe(tool) => run_piped_jj_diff(current_dir, revision, tool, files),
+        DiffToolInvocation::Pipe(tool) => {
+            run_piped_jj_diff(current_dir, revision, tool, files, operation)
+        }
     }
 }
 
@@ -140,8 +156,9 @@ fn run_plain_jj_diff(
     current_dir: &Path,
     revision: Option<&str>,
     files: &[String],
+    operation: &str,
 ) -> Result<(), JjError> {
-    let mut command = Command::new("jj");
+    let mut command = pinned_diff_command(operation);
     command.arg("diff");
     add_revision_arg(&mut command, revision);
     add_file_args(&mut command, files);
@@ -153,12 +170,13 @@ fn run_external_jj_diff(
     revision: Option<&str>,
     tool: &ExternalDiffTool,
     files: &[String],
+    operation: &str,
 ) -> Result<(), JjError> {
     const JX_DIFF_TOOL_NAME: &str = "jx-diff-tool";
 
     let diff_args = external_diff_args(tool);
 
-    let mut command = Command::new("jj");
+    let mut command = pinned_diff_command(operation);
     command
         .arg("--config")
         .arg(toml_config_assignment(
@@ -190,8 +208,9 @@ fn run_piped_jj_diff(
     revision: Option<&str>,
     tool: &PipeDiffTool,
     files: &[String],
+    operation: &str,
 ) -> Result<(), JjError> {
-    let mut producer_command = Command::new("jj");
+    let mut producer_command = pinned_diff_command(operation);
     producer_command.arg("diff");
     add_revision_arg(&mut producer_command, revision);
     producer_command.args(&tool.producer_args);

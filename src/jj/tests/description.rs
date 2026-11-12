@@ -32,3 +32,29 @@ fn rewrite_commit_description_updates_selected_commit_and_descendants() {
     assert_ne!(rewrite.commit_id, current.id().hex());
     assert_eq!(rewritten.description(), "new title");
 }
+
+#[test]
+fn a_cached_workspace_cannot_rewrite_a_superseded_commit() {
+    let fixture = TestWorkspace::new("rewrite-description-stale");
+    let settings = user_settings().expect("settings");
+    pollster::block_on(Workspace::init_internal_git(
+        &settings,
+        fixture.path(),
+        gix::hash::Kind::Sha1,
+    ))
+    .expect("initialize jj workspace");
+    let mut cached = JjWorkspace::load(fixture.path()).unwrap();
+    let original = cached.current_commit().unwrap().id().hex();
+    let mut other = JjWorkspace::load(fixture.path()).unwrap();
+    let updated = other
+        .rewrite_commit_description(&original, "fresh description")
+        .unwrap();
+    let error = cached
+        .rewrite_commit_description(&original, "stale description")
+        .unwrap_err();
+    assert!(matches!(error, JjError::StaleChange { actual, .. } if actual == updated.commit_id));
+    assert_eq!(
+        cached.current_commit().unwrap().description(),
+        "fresh description"
+    );
+}

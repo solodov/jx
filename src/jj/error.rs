@@ -5,6 +5,24 @@ use super::*;
 pub enum JjError {
     #[error("Interrupted")]
     Interrupted,
+    #[error("Repository mutations are busy; timed out waiting for {path}")]
+    MutationBusy { path: PathBuf },
+    #[error("JJ has concurrent operation heads; reconcile them with jj before retrying. A concurrent mutation may already have been published.")]
+    ConcurrentOperations,
+    #[error("Change is stale: expected {expected}, found {actual}")]
+    StaleChange { expected: String, actual: String },
+    #[error(
+        "Change `{change_id}` is divergent; choose or reconcile its live versions before editing"
+    )]
+    DivergentChange { change_id: String },
+    #[error("Change `{change_id}` is abandoned; select a live change before editing")]
+    AbandonedChange { change_id: String },
+    #[error("Checkout-free edits would rewrite working copies {workspaces:?}; move those workspaces off this stack before retrying")]
+    CheckedOutChanges { workspaces: Vec<String> },
+    #[error("Invalid change request: {message}")]
+    ChangeRequest { message: String },
+    #[error("Could not run jj change operation: {message}")]
+    ChangeCommand { message: String },
     #[error("Could not initialize jj settings: {message}")]
     Settings { message: String },
     #[error("Could not load jj workspace: {message}")]

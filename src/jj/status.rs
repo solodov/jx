@@ -5,7 +5,9 @@ impl JjWorkspace {
     pub fn load_after_working_copy_snapshot(
         current_dir: impl AsRef<Path>,
     ) -> Result<Self, JjError> {
-        let workspace_root = snapshot_working_copy_for_read(current_dir.as_ref())?;
+        let workspace_root = find_jj_workspace_root(current_dir.as_ref())?;
+        let _guard = RepositoryLock::acquire(&workspace_root)?;
+        run_jj_status_unlocked(&workspace_root, false, JjStatusStderr::Capture)?;
         Self::load(workspace_root)
     }
 
@@ -22,7 +24,9 @@ impl JjWorkspace {
     /// Refreshes this wrapper after jj has captured pending disk changes.
     pub(super) fn reload_after_working_copy_snapshot(&mut self) -> Result<(), JjError> {
         let workspace_root = self.workspace.workspace_root().to_path_buf();
-        let refreshed = Self::load_after_working_copy_snapshot(&workspace_root)?;
+        // The caller already owns the mutation guard.
+        run_jj_status_unlocked(&workspace_root, false, JjStatusStderr::Capture)?;
+        let refreshed = Self::load(&workspace_root)?;
         self.workspace = refreshed.workspace;
         self.repo = refreshed.repo;
         Ok(())
@@ -139,6 +143,15 @@ fn run_quiet_jj_status(current_dir: &Path, color: bool) -> Result<String, JjErro
 }
 
 fn run_jj_status_with_stderr(
+    current_dir: &Path,
+    color: bool,
+    stderr: JjStatusStderr,
+) -> Result<String, JjError> {
+    let _guard = RepositoryLock::acquire(current_dir)?;
+    run_jj_status_unlocked(current_dir, color, stderr)
+}
+
+fn run_jj_status_unlocked(
     current_dir: &Path,
     color: bool,
     stderr: JjStatusStderr,

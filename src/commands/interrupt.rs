@@ -6,7 +6,9 @@ use std::sync::{
 
 /// Installs cooperative cancellation; dashboards consume their own interrupt state.
 pub(super) fn install_interrupt_handler() -> io::Result<()> {
-    interrupt_state().map(|_| ())
+    interrupt_state()?;
+    crate::jj::install_mutation_interrupt_check(check_jj_interrupted);
+    Ok(())
 }
 
 /// Lets the dashboard handle interrupts and clean up its terminal and running action.

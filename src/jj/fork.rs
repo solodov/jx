@@ -69,7 +69,18 @@ impl JjWorkspace {
         &mut self,
         plan: &ForkSyncBranchPlan,
     ) -> Result<ForkSyncBranchOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
+        let fresh =
+            self.fork_sync_branch_plan(&plan.branch, &plan.upstream_remote, &plan.upstream_branch)?;
+        if fresh.local_commit_id != plan.local_commit_id
+            || fresh.upstream_commit_id != plan.upstream_commit_id
+            || fresh.origin_commit_id != plan.origin_commit_id
+        {
+            return Err(JjError::ChangeRequest {
+                message: "fork sync plan is stale; plan again before applying".to_owned(),
+            });
+        }
         let old_commit_id = commit_id_from_hex(&plan.local_commit_id)?;
         let upstream_commit_id = commit_id_from_hex(&plan.upstream_commit_id)?;
         let upstream_commit = self.load_commit(&upstream_commit_id)?;

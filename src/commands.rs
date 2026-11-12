@@ -80,6 +80,7 @@ use crate::{
     },
 };
 
+mod change;
 mod checks;
 mod dashboard;
 mod fork;

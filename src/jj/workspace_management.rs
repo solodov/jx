@@ -28,6 +28,7 @@ pub fn run_jj_workspace_add(
     current_dir: &Path,
     options: &WorkspaceAddOptions,
 ) -> Result<(), JjError> {
+    let _guard = RepositoryLock::acquire(current_dir)?;
     preflight_workspace_add(current_dir, options)?;
 
     if let Some(parent) = options.destination.parent() {
@@ -252,6 +253,7 @@ pub fn current_workspace_entry(current_dir: &Path) -> Result<WorkspaceEntry, JjE
 
 /// Lists jj workspaces with their root paths and current-workspace marker.
 pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, JjError> {
+    let _guard = RepositoryLock::acquire(current_dir)?;
     let current_entry = current_workspace_entry(current_dir)?;
     let workspace_root = current_entry.root.clone();
     let current_workspace = current_entry.name.clone();
@@ -260,6 +262,7 @@ pub fn jj_workspace_entries(current_dir: &Path) -> Result<Vec<WorkspaceEntry>, J
         .arg("--color=never")
         .arg("workspace")
         .arg("list")
+        .args(["-T", "name ++ \":\\n\""])
         .current_dir(current_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -303,6 +306,7 @@ pub fn remove_jj_workspace(
     current_dir: &Path,
     options: &WorkspaceRemoveOptions,
 ) -> Result<(), JjError> {
+    let _guard = RepositoryLock::acquire(current_dir)?;
     // Move the process itself to the safe operation directory before deleting so
     // removing the current workspace cannot leave the `jx` process inside it.
     std::env::set_current_dir(current_dir).map_err(|source| JjError::WorkspaceIo {

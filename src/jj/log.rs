@@ -98,11 +98,7 @@ pub(super) fn load_workspace_for_log(
         .map_err(|error| JjError::WorkspaceLoad {
             message: error.to_string(),
         })?;
-    let repo = pollster::block_on(workspace.repo_loader().load_at_head()).map_err(|error| {
-        JjError::RepoLoad {
-            message: error.to_string(),
-        }
-    })?;
+    let repo = load_single_head(workspace.repo_loader())?;
 
     Ok((workspace, repo))
 }

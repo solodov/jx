@@ -8,7 +8,12 @@ pub struct JjWorkspace {
 }
 
 impl JjWorkspace {
-    /// Loads a jj workspace rooted at `workspace_root` using the resolved jj config.
+    /// Loads the nearest workspace without snapshotting or reconciling operations.
+    pub fn load_from_directory(current_dir: &Path) -> Result<Self, JjError> {
+        Self::load(find_jj_workspace_root(current_dir)?)
+    }
+
+    /// Loads a pinned workspace view with resolved JJ config, without snapshotting or merging operations.
     pub fn load(workspace_root: impl Into<PathBuf>) -> Result<Self, JjError> {
         let workspace_root = workspace_root.into();
         let ui = Ui::null();
@@ -32,11 +37,7 @@ impl JjWorkspace {
             .map_err(|error| JjError::WorkspaceLoad {
                 message: error.to_string(),
             })?;
-        let repo = pollster::block_on(workspace.repo_loader().load_at_head()).map_err(|error| {
-            JjError::RepoLoad {
-                message: error.to_string(),
-            }
-        })?;
+        let repo = load_single_head(workspace.repo_loader())?;
 
         Ok(Self { workspace, repo })
     }
@@ -633,12 +634,7 @@ impl JjWorkspace {
     }
 
     pub(super) fn reload_at_head(&mut self) -> Result<(), JjError> {
-        self.repo =
-            pollster::block_on(self.workspace.repo_loader().load_at_head()).map_err(|error| {
-                JjError::RepoLoad {
-                    message: error.to_string(),
-                }
-            })?;
+        self.repo = load_single_head(self.workspace.repo_loader())?;
         Ok(())
     }
 

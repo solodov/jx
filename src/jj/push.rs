@@ -20,6 +20,7 @@ impl JjWorkspace {
         &mut self,
         branches: &[String],
     ) -> Result<PushBookmarksOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let total = Instant::now();
         let mut metrics = PushBookmarksMetrics {
@@ -103,6 +104,7 @@ impl JjWorkspace {
 
     /// Pushes all tracked fixed-origin bookmarks, including local deletions.
     pub fn push_tracked_deleted(&mut self) -> Result<TrackedPushOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let updates = self.tracked_origin_bookmark_updates()?;
         self.push_tracked_updates(
@@ -149,6 +151,7 @@ impl JjWorkspace {
     pub fn push_syncable_tracked_with_metrics(
         &mut self,
     ) -> Result<SyncPushMetricsOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let total = Instant::now();
         let mut metrics = SyncPushMetrics::default();
@@ -213,6 +216,7 @@ impl JjWorkspace {
         &mut self,
         revision: Option<&str>,
     ) -> Result<SyncPushOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let selection = self.sync_bookmark_selection_for_revision(revision)?;
         let bookmark = RefName::new(&selection.branch);

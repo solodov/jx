@@ -34,6 +34,7 @@ impl JjWorkspace {
         &mut self,
         targets: &[(String, String)],
     ) -> Result<Vec<BookmarkUpdate>, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
 
         let mut planned = Vec::new();
@@ -45,6 +46,7 @@ impl JjWorkspace {
                 }
             })?;
             let target = self.load_commit(&target_commit_id)?;
+            self.check_live_commit(&target)?;
             let bookmark = RefName::new(branch);
             let existing_target = self.repo.view().get_local_bookmark(bookmark);
 

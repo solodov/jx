@@ -7,6 +7,7 @@ impl JjWorkspace {
         target_commit_id: &str,
         description: &str,
     ) -> Result<CommitDescriptionRewrite, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
 
         let target_commit_id = CommitId::try_from_hex(target_commit_id).ok_or_else(|| {
@@ -15,6 +16,7 @@ impl JjWorkspace {
             }
         })?;
         let target = self.load_commit(&target_commit_id)?;
+        self.check_live_commit(&target)?;
         if target.description() == description {
             return Ok(CommitDescriptionRewrite {
                 commit_id: target.id().hex(),

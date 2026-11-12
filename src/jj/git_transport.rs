@@ -537,6 +537,7 @@ impl JjWorkspace {
         &mut self,
         target: &InitialPublishTarget,
     ) -> Result<InitialPublishTarget, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let _planned_target_id = initial_publish_commit_id(target)?;
         self.snapshot_working_copy_for_initial_publish()?;
@@ -616,9 +617,11 @@ impl JjWorkspace {
         remote_url: &str,
         target: &InitialPublishTarget,
     ) -> Result<BootstrapPushOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let target_id = initial_publish_commit_id(target)?;
         let target_commit = self.load_commit(&target_id)?;
+        self.check_live_commit(&target_commit)?;
         let branch = "main";
         let current_before = self.current_commit()?;
         let current_before_tree = current_before.tree();
@@ -690,6 +693,7 @@ impl JjWorkspace {
 
     /// Adds a Git remote to the backing repository.
     pub fn add_git_remote(&mut self, remote: &str, remote_url: &str) -> Result<(), JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         let mut tx = self.repo.start_transaction();
         git::add_remote(tx.repo_mut(), RemoteName::new(remote), remote_url, None).map_err(
@@ -709,6 +713,7 @@ impl JjWorkspace {
 
     /// Updates a Git remote's fetch URL in the backing repository.
     pub fn set_git_remote_url(&mut self, remote: &str, remote_url: &str) -> Result<(), JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         git::set_remote_urls(
             self.repo.store(),
@@ -724,6 +729,7 @@ impl JjWorkspace {
 
     /// Fetches one configured Git remote and reloads the jj repository view.
     pub fn fetch_remote(&mut self, remote: &str) -> Result<(), JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
         run_jj_git_fetch_remote(self.workspace.workspace_root(), remote)?;
         self.reload_at_head()

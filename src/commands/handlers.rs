@@ -9,6 +9,7 @@ pub(super) fn handle_request(
     output: OutputMode,
 ) -> Result<CommandResult, CommandError> {
     let stdout = match request {
+        CommandRequest::Change(request) => return change::handle_change(request, environment),
         CommandRequest::Default => {
             return handle_default_request(environment, services, progress, prompts, output);
         }

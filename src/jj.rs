@@ -5,9 +5,9 @@
 //! selected jj change, resolved trunk, remote-backed status state, local
 //! bookmarks, and stack position. Fetch, bookmark, rebase, push transport, and
 //! working-copy mutations stay behind this jj-native boundary so command/domain
-//! services only coordinate high-level workflow intent. The diff passthrough is
-//! the intentional exception: it shells out to `jj diff` so user diff renderer
-//! configuration remains authoritative.
+//! services only coordinate high-level workflow intent. Native diff, revision
+//! search, and isolated-run passthroughs preserve JJ's renderer and execution
+//! behavior; explicit file batches use JJ's tree and transaction APIs.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -78,6 +78,8 @@ use thiserror::Error;
 use crate::repository::ORIGIN_REMOTE_NAME;
 
 mod bookmarks;
+mod change;
+mod coordination;
 mod description;
 mod diff;
 mod error;
@@ -96,6 +98,11 @@ mod types;
 mod workspace;
 mod workspace_management;
 
+pub use change::{
+    ChangeBatch, ChangeRead, ChangeResult, ChangeSnapshot, FileOperation, FileReplacement,
+};
+use coordination::load_single_head;
+pub(crate) use coordination::{install_mutation_interrupt_check, RepositoryLock};
 #[cfg(test)]
 use diff::{diff_paths_without_tests, external_diff_args};
 pub use diff::{

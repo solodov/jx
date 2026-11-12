@@ -3,6 +3,7 @@ use super::*;
 impl JjWorkspace {
     /// Moves the local trunk bookmark to the latest publishable stack commit.
     pub fn advance_trunk_for_sync(&mut self) -> Result<AdvanceTrunkOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
 
         let current_before = self.current_commit()?;

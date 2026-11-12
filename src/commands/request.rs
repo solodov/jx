@@ -20,6 +20,7 @@ pub(super) enum CommandRequest {
     Push(PushRequest),
     Sync(SyncRequest),
     Check,
+    Change(change::ChangeRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +305,9 @@ pub(super) struct PushRequest {
 impl CommandRequest {
     pub(super) fn from_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
         match matches.subcommand() {
+            Some(("change", matches)) => {
+                Ok(Self::Change(change::ChangeRequest::from_matches(matches)))
+            }
             Some(("diff", matches)) => Ok(Self::Diff(DiffRequest {
                 revision: revision(matches),
                 paths: diff_paths(matches),
@@ -377,6 +381,7 @@ impl CommandRequest {
                 perf_attr("has_destination", request.destination.is_some()),
                 perf_attr("locate", request.locate),
             ]),
+            Self::Change(_) => {}
             Self::Work(request) => add_work_perf_attrs(&mut attrs, request),
             Self::Stack(request) => add_stack_perf_attrs(&mut attrs, request),
             Self::Shell(ShellRequest::Init(request)) => {
@@ -430,6 +435,7 @@ impl CommandRequest {
     fn command_path(&self) -> &'static str {
         match self {
             Self::Default => "default",
+            Self::Change(request) => request.command_path(),
             Self::Log => "log",
             Self::Status(_) => "status",
             Self::PreviousCommit => "prev-commit",
@@ -1375,6 +1381,7 @@ pub(super) fn cli() -> ClapCommand {
         .arg_required_else_help(false)
         .subcommand_required(false)
         .arg(yes_arg())
+        .subcommand(change::change_command())
         .subcommand(
             ClapCommand::new("diff")
                 .about("Show a jj diff")

@@ -36,6 +36,7 @@ impl JjWorkspace {
         options: FetchOptions,
         trace: &mut dyn FnMut(FetchTraceStep),
     ) -> Result<FetchOutcome, JjError> {
+        let _guard = self.start_mutation()?;
         self.ensure_git_backed()?;
 
         let current_before = measure_fetch_step(

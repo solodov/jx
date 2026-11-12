@@ -19,6 +19,7 @@ impl JjWorkspace {
 
     /// Moves the active workspace to the current commit's single non-root parent.
     pub fn move_to_previous_commit(&mut self) -> Result<(), JjError> {
+        let _guard = self.start_mutation()?;
         let current = self.current_commit()?;
         let parents = current.parent_ids();
         let [parent_id] = parents else {
@@ -41,6 +42,7 @@ impl JjWorkspace {
 
     /// Moves the active workspace to the current commit's single child.
     pub fn move_to_next_commit(&mut self) -> Result<(), JjError> {
+        let _guard = self.start_mutation()?;
         let current = self.current_commit()?;
         let children = collect_child_ids(self.repo.as_ref(), current.id())?;
         let [child_id] = children.as_slice() else {
@@ -152,7 +154,7 @@ impl JjWorkspace {
         }
     }
 
-    fn is_immutable_commit(&self, commit: &Commit) -> Result<bool, JjError> {
+    pub(super) fn is_immutable_commit(&self, commit: &Commit) -> Result<bool, JjError> {
         let ui = Ui::null();
         let settings = self.workspace.settings();
         let fileset_aliases_map =
